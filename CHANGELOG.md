@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-15: the H8 GEMMs' split-K in larger pieces on discrete cards (+3 % on a B70's 27B prompt)
+
+- `ARC_GEMM_SPLIT` defaults to 34 superblocks on discrete cards (was 17): the 27B's FFN down projection (K = 17,408)
+  runs in 2 split-K pieces instead of 4. A Pro B70's 4K prompt +3.1-3.2 % in three interleaved rounds (2,244 ->
+  2,315 tok/s; `gemm_down` 253 -> 214 ms). Not bit-identical (each piece is rounded on its own): KL against the
+  plain path 0.00145 -> 0.00152 (max 0.039 -> 0.052), same top token 97.55 -> 98.14 % (joshdev-de, issue #27).
+  iGPUs keep 17 and their bits; `ARC_GEMM_SPLIT=17` restores the old default.
+
 ## 2026-11-15: `runz --kl-ref` with `--feed-step` scores the right positions (issue #23, chumbleyjl)
 
 - With `--feed-step N` and a reference of every position, `runz` scored the last piece's rows against the
