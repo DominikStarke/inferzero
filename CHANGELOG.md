@@ -1,8 +1,33 @@
 # Changelog
 
+## 2026-11-15: a self audit and a DeepSeek audit of the day's changes; `website_bench` and `ref_forward` on Linux
+
+Changes since release 2026.11.14.13 reviewed twice, separately, by DeepSeek-V4.1 through Pi and by a Claude reviewer.
+Both found the `gdn_recur` prefetch paths bit-identical, in bounds, and the iGPU path unchanged. Fixed from their
+findings:
+- **`bench/b60_sweep.py` / `.ps1`:** the H8 baseline's split-K was still 17 after the default became 34, so the sweep
+  re-ran the default as a "change" and never measured 17. Its base is now 34 on discrete cards; `--quick` measures 34
+  too (both reviewers).
+- **`h8_splits` (`zero/engine_h8.h`):** cached the first GPU's iGPU / card status, so in a split over an iGPU and a
+  card one of them got the other's default; now only the variable is cached. `ARC_GEMM_SPLIT` is clamped to 0..4096
+  in its three readers (a huge value overflowed the piece count and left the output unwritten).
+- **The launcher:** `--install-service` refuses an existing unit before downloading a model, not after; a file system
+  without hard links falls back to an exclusive create instead of a traceback; `Environment=` lines keep `$` (systemd
+  expands it in `ExecStart=` only). Three tests added (`tests/test_zero_launcher.py`: 13).
+- **Docs:** `ARC_GEMM_SPLIT`'s new default is for the H8 GEMMs only; `ARC_GDN_L1PF=1` is off and `ARC_GDN_PF` >= 2
+  makes it do nothing; each B70's L1PF result is attributed to its card; the site's header named the old release; the
+  README and site's B70 numbers are now the Linux card's 2,315 tok/s (issue #27).
+- **Linux:** `tools/ref_forward.cpp` called `_fseeki64` (Windows only): now `plat::fseek64`, so the f32 reference builds
+  with g++. `build.sh` and the Linux package now hold `ref_forward` and `gpu_bench` too.
+- **`bench/website_bench.py`:** the website benchmark in Python for Linux and Windows (the same phases, records and
+  tables as the `.ps1`), its default models now also Gemma 4 31B and DeepSeek-V4.1-Flash IQ2_XS.
+- Not fixed, noted: the split-K 34 default's accuracy was checked against the plain path (KL 0.00152), not yet against
+  the f32 reference; asked for on a B70.
+
 ## 2026-11-15: the H8 GEMMs' split-K in larger pieces on discrete cards (+3 % on a B70's 27B prompt)
 
-- `ARC_GEMM_SPLIT` defaults to 34 superblocks on discrete cards (was 17): the 27B's FFN down projection (K = 17,408)
+- `ARC_GEMM_SPLIT` defaults to 34 superblocks for the H8 GEMMs on discrete cards (was 17; the plain W8 and the
+  x16 GEMMs keep 17, so models without H8 there, the MoE ones and Gemma 4, do not change): the 27B's FFN down projection (K = 17,408)
   runs in 2 split-K pieces instead of 4. A Pro B70's 4K prompt +3.1-3.2 % in three interleaved rounds (2,244 ->
   2,315 tok/s; `gemm_down` 253 -> 214 ms). Not bit-identical (each piece is rounded on its own): KL against the
   plain path 0.00145 -> 0.00152 (max 0.039 -> 0.052), same top token 97.55 -> 98.14 % (joshdev-de, issue #27).

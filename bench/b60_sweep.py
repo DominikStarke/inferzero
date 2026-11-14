@@ -14,7 +14,7 @@
 # Settings (defaults on discrete cards in brackets):
 #   TM      ARC_GEMM_TM, tokens per sub-group [16]      WGY    ARC_GEMM_WGY, sub-groups per work-group [8]
 #   RG      ARC_GEMM_RG, rows per weight slice [4]       CG     ARC_GEMM_CG, column groups per work-group [1]
-#   GRF     ARC_GEMM_GRF, registers per thread [128]     SPLIT  ARC_GEMM_SPLIT, superblocks per split-K piece [17]
+#   GRF     ARC_GEMM_GRF, registers per thread [128]     SPLIT  ARC_GEMM_SPLIT, superblocks per split-K piece [17; H8 34]
 #   X2D     2D loads: pf (with the prefetch) / on / off [pf]
 #   WPF     ARC_GEMM_WPF, the weights prefetched n 64-value chunks ahead, 0 = off [0]
 #   FUSE    ARC_H8_FUSE, H8's weight rotation in the decode pass (1) or after it (0) [1]; H8 only, bit-identical
@@ -196,7 +196,7 @@ grid = {  # (in this order)
     "RG": [2, 4, 8] if quick else [1, 2, 4, 8],
     "CG": [1, 2, 4],
     "GRF": [128, 256],
-    "SPLIT": [0, 17] if quick else [0, 9, 17, 34],
+    "SPLIT": [0, 17, 34] if quick else [0, 9, 17, 34],
     "X2D": ["pf", "on", "off"],
     "WPF": [0, 4] if quick else [0, 2, 4, 8],
     "FUSE": [1, 0],
@@ -213,10 +213,12 @@ for base_name, base_set in (("default (no H8)", {"H8": "off"}), ("H8", {"H8": "o
     out("=== A. %s: one setting at a time" % base_name)
     b = bench(model, base_set, tokens)
     out(line("base", b))
-    # (H8 runs at 4 column groups by default since 2026-11-08: its base is CG 4, so CG 1 and 2 are the changes)
+    # (H8 runs at 4 column groups by default since 2026-11-08: its base is CG 4, so CG 1 and 2 are the changes; and at
+    #  split-K pieces of 34 superblocks since 2026-11-15 (engine_h8.h h8_splits): its base is SPLIT 34, 17 a change)
     bdef = dict(defaults)
     if base_set.get("H8") == "on":
         bdef["CG"] = 4
+        bdef["SPLIT"] = 34
     best_set = dict(base_set)
     single = dict(base_set)
     single_t = b.tps

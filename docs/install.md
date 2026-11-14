@@ -64,7 +64,9 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    Use `--replace-service` only when you intend to replace an existing unit;
    replacement swaps the unit file itself rather than writing through a symlink.
 
-From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz` and `mgpu_probe` into `bin/`.
+From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
+reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks run on both systems: `python3 bench/website_bench.py`,
+`bench/b60_sweep.py`, `bench/decode_try.py`.
 `scripts/make-package-linux.sh` makes the package (into `dist/`). Not on Linux yet: the window launcher, speech
 recording, the NPU (built, not run), `web_view` (Edge); audio formats other than WAV and scanned-PDF pages need
 `ffmpeg` / `pdftoppm` if installed ([linux-port.md](linux-port.md)).

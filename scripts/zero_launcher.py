@@ -214,31 +214,44 @@ def exposed(host):
     return host not in ('', '127.0.0.1', 'localhost', '::1')
 
 
-def install_service(cmd, a):
+def service_unit(a):  # (name, unit path), or (None, message) when the name is not a plain unit name
     name = a.service_name
     if name.endswith('.service'): name = name[:-8]
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}', name):
-        print('--service-name: use a simple unit name, without a path or whitespace')
+        return None, '--service-name: use a simple unit name, without a path or whitespace'
+    base = os.environ.get('XDG_CONFIG_HOME', '')
+    base = base if base.startswith('/') else os.path.join(os.path.expanduser('~'), '.config')
+    return name, os.path.join(base, 'systemd', 'user', name + '.service')
+
+
+def service_refused(a):  # the reason --install-service will not write its unit, or None (checked before a download)
+    name, unit = service_unit(a)
+    if name is None: return unit
+    if os.path.lexists(unit) and not a.replace_service:
+        return (f'{unit} already exists; left unchanged. Use --service-name NAME for a separate service, '
+                'or --replace-service to replace this unit explicitly.')
+    return None
+
+
+def install_service(cmd, a):
+    why = service_refused(a)
+    if why:
+        print(why)
         return 1
+    name, unit = service_unit(a)
     values = list(cmd) + [os.environ[k] for k in CACHE_ENV if os.environ.get(k)]
     if any(('\n' in c or '\r' in c) for c in values):
         print('--install-service: a path, option or cache environment value holds a line break')
         return 1
-    base = os.environ.get('XDG_CONFIG_HOME', '')
-    base = base if base.startswith('/') else os.path.join(os.path.expanduser('~'), '.config')
-    d = os.path.join(base, 'systemd', 'user')
+    d = os.path.dirname(unit)
     os.makedirs(d, exist_ok=True)
-    unit = os.path.join(d, name + '.service')
     existed = os.path.lexists(unit)
-    if existed and not a.replace_service:
-        print(f'{unit} already exists; left unchanged. Use --service-name NAME for a separate service, '
-              'or --replace-service to replace this unit explicitly.')
-        return 1
     # (systemd's own quoting, not the shell's: each word in double quotes with \ and " escaped, and its % specifiers
-    #  and $ variables doubled so a path holding them stays as it is)
-    def sq(c):
-        return '"' + c.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
-    env = ''.join(f'Environment={sq(k + "=" + os.environ[k])}\n' for k in CACHE_ENV if os.environ.get(k))
+    #  doubled; in ExecStart= its $ variables too, which systemd expands there and not in Environment=)
+    def sq(c, dollars=True):
+        c = c.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+        return '"' + (c.replace('$', '$$') if dollars else c) + '"'
+    env = ''.join(f'Environment={sq(k + "=" + os.environ[k], dollars=False)}\n' for k in CACHE_ENV if os.environ.get(k))
     # (KillMode=control-group, the default: the server's children (terminal tool, MCP servers) end with it;
     #  WorkingDirectory: the package, where the server finds its kernels and web UI)
     tmp = None
@@ -257,6 +270,16 @@ def install_service(cmd, a):
             except FileExistsError:
                 print(f'{unit} already exists; left unchanged.')
                 return 1
+            except OSError:
+                # (a file system without hard links, e.g. some FUSE or network homes: an exclusive create instead,
+                #  still never replacing a file that appeared meanwhile)
+                try:
+                    fd = os.open(unit, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                except FileExistsError:
+                    print(f'{unit} already exists; left unchanged.')
+                    return 1
+                with open(tmp, 'rb') as src, os.fdopen(fd, 'wb') as dst:
+                    dst.write(src.read())
     finally:
         if tmp is not None: os.unlink(tmp)
     print(f'{"replaced" if existed else "wrote"} {unit}')
@@ -335,6 +358,11 @@ def menu(a):
 
 
 def start(m, a):
+    if a.install_service:  # (refused before any download, not after several GB of it)
+        why = service_refused(a)
+        if why:
+            print(why)
+            return 1
     path = model_path(m)
     if not path and not download(m, a.yes):
         return 1

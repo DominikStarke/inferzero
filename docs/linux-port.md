@@ -39,7 +39,8 @@ release package and a terminal launcher of its own (step 4, Progress; how to use
 
 - **2026-11-14: step 4, the package and a launcher.** `build.sh` (the g++ build line below, `-ldl` for glibc before
   2.34); `scripts/make-package-linux.sh` makes `inferzero-<version>-linux-x64.tar.gz` (the tracked files plus
-  `bin/runz`, `serverz`, `mgpu_probe` and `bin/PREBUILT.txt`, owned by root in the archive); `zero-launcher.sh` /
+  `bin/runz`, `serverz`, `mgpu_probe` and `bin/PREBUILT.txt`, owned by root in the archive; since 2026-11-15 also
+  `ref_forward` and `gpu_bench`, so `bench/website_bench.py`'s KL runs on Linux); `zero-launcher.sh` /
   `scripts/zero_launcher.py`, a terminal launcher (Python 3, standard library only): `--check` (CPU, Level Zero,
   OpenCL, libgomp, Intel's ICD, the render node or WSL's `/dev/dxg`, the `render` group, RAM), the catalog of
   `scripts/model-catalog.ps1` (`tests/check_catalog_sync.py` keeps the two equal), downloads through

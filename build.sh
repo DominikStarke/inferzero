@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Builds inferzero's Linux programs into bin/ with g++ (docs/linux-port.md): the CLI (runz), the headless server
-# (serverz) and the multi-GPU link probe (mgpu_probe). The Windows build is build.ps1; the kernels are compiled at
-# run time by Intel's driver, as on Windows.
+# (serverz), the multi-GPU link probe (mgpu_probe), the f32 CPU reference the KL checks compare with (ref_forward:
+# bench/website_bench.py, runz --kl-ref) and the GPU's peak rates (gpu_bench). The Windows build is build.ps1; the
+# kernels are compiled at run time by Intel's driver, as on Windows.
 #   ./build.sh                 every program
 #   ./build.sh runz serverz    only these
+# (ref_forward is built without -ffast-math, as the Windows build keeps it off /fp:fast: it is the reference)
 # Needs g++ 13 or newer (C++20) and an x86-64 CPU with AVX2 / FMA / F16C (as the Windows build). Nothing else at
 # build time: Level Zero and OpenCL are loaded at run time (libze_loader.so.1, libOpenCL.so.1).
 set -euo pipefail
 cd "$(dirname "$0")"
 CXX="${CXX:-g++}"
-declare -A SRC=([runz]=zero/runz.cpp [serverz]=zero/serverz.cpp [mgpu_probe]=zero/mgpu_probe.cpp)
+declare -A SRC=([runz]=zero/runz.cpp [serverz]=zero/serverz.cpp [mgpu_probe]=zero/mgpu_probe.cpp
+                [ref_forward]=tools/ref_forward.cpp [gpu_bench]=bench/gpu_bench.cpp)
 targets=("$@")
-[ ${#targets[@]} -eq 0 ] && targets=(runz serverz mgpu_probe)
+[ ${#targets[@]} -eq 0 ] && targets=(runz serverz mgpu_probe ref_forward gpu_bench)
 for t in "${targets[@]}"; do
-  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe)" >&2; exit 2; }
+  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe, ref_forward, gpu_bench)" >&2; exit 2; }
 done
 command -v "$CXX" >/dev/null || { echo "build.sh: $CXX not found (sudo apt install g++)" >&2; exit 1; }
 mkdir -p bin

@@ -11,7 +11,7 @@
 # Settings (defaults on discrete cards in brackets):
 #   TM      ARC_GEMM_TM, tokens per sub-group [16]      WGY    ARC_GEMM_WGY, sub-groups per work-group [8]
 #   RG      ARC_GEMM_RG, rows per weight slice [4]       CG     ARC_GEMM_CG, column groups per work-group [1]
-#   GRF     ARC_GEMM_GRF, registers per thread [128]     SPLIT  ARC_GEMM_SPLIT, superblocks per split-K piece [17]
+#   GRF     ARC_GEMM_GRF, registers per thread [128]     SPLIT  ARC_GEMM_SPLIT, superblocks per split-K piece [17; H8 34]
 #   X2D     2D loads: pf (with the prefetch) / on / off [pf]
 #   WPF     ARC_GEMM_WPF, the weights prefetched n 64-value chunks ahead, 0 = off [0]
 #   FUSE    ARC_H8_FUSE, H8's weight rotation in the decode pass (1) or after it (0) [1]; H8 only, bit-identical
@@ -93,7 +93,7 @@ $grid = [ordered]@{
   RG    = if ($Quick) { @(2, 4, 8) } else { @(1, 2, 4, 8) }
   CG    = @(1, 2, 4)
   GRF   = @(128, 256)
-  SPLIT = if ($Quick) { @(0, 17) } else { @(0, 9, 17, 34) }
+  SPLIT = if ($Quick) { @(0, 17, 34) } else { @(0, 9, 17, 34) }
   X2D   = @("pf", "on", "off")
   WPF   = if ($Quick) { @(0, 4) } else { @(0, 2, 4, 8) }
   FUSE  = @(1, 0)
@@ -109,8 +109,9 @@ foreach ($base in @(@{ name = "default (no H8)"; set = @{ H8 = "off" } }, @{ nam
   "=== A. $($base.name): one setting at a time"
   $b = Invoke-Bench $Model $base.set $Tokens
   Line "base" $b
-  # (H8 runs at 4 column groups by default since 2026-11-08: its base is CG 4, so CG 1 and 2 are the changes)
-  $bdef = $defaults.Clone(); if ($base.set["H8"] -eq "on") { $bdef.CG = 4 }
+  # (H8 runs at 4 column groups by default since 2026-11-08: its base is CG 4, so CG 1 and 2 are the changes; and at
+  #  split-K pieces of 34 superblocks since 2026-11-15 (engine_h8.h h8_splits): its base is SPLIT 34, 17 a change)
+  $bdef = $defaults.Clone(); if ($base.set["H8"] -eq "on") { $bdef.CG = 4; $bdef.SPLIT = 34 }
   $bestSet = $base.set.Clone()
   $single = $base.set.Clone(); $singleT = $b.tps
   foreach ($p in $grid.Keys) {

@@ -92,7 +92,7 @@ static const std::vector<uint8_t>& pack_matrix(int il, int m, int e, int N, int 
   uint64_t off = L.off + (uint64_t)e * L.rec;
   for (int i = 0; i < m; ++i) off += L.part[i];
   std::vector<uint8_t> raw(raw_row * N);
-  _fseeki64(PX->f, (long long)off, SEEK_SET);
+  plat::fseek64(PX->f, (int64_t)off, SEEK_SET);  // (_fseeki64 on Windows, fseeko on Linux: src/platform.h)
   if (fread(raw.data(), 1, raw.size(), PX->f) != raw.size()) { zlog::eprintf("short read in the expert file\n"); exit(1); }
   std::vector<uint8_t> out(row * N), sb(bb * nsb);
   for (int n = 0; n < N; ++n) {

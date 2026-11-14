@@ -126,7 +126,8 @@
   // 2 by default on discrete cards since 2026-11-15: a Pro B70's 27B 4K prompt, gdn_recur 293 -> 263 ms, 2,216 ->
   // 2,247 tok/s, logits identical over 18,566 tokens (joshdev-de, issue #27; 2 / 4 the same, further ahead slower).
   // Where the driver lacks cl_intel_subgroup_buffer_prefetch the kernel ignores it. iGPUs: 0 (unchanged).
-  // ARC_GDN_L1PF=0 turns it off, =D sets the distance
+  // ARC_GDN_L1PF=0 (or 1: the kernel loads one token ahead anyway) turns it off, =D (2-64) sets the distance; with
+  // ARC_GDN_PF >= 2 it does nothing (the register-prefetch loop has no L1 prefetch)
   int xe2_gdn_l1pf() const {
     static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
     return e >= 0 ? e : (zrt::integrated() ? 0 : 2);
@@ -476,7 +477,7 @@
     cl_kernel k = x16_kernel(qtype, cg, tm);
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
-    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
+    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::clamp(atoi(getenv("ARC_GEMM_SPLIT")), 0, 4096) : 17;  // (clamped: no overflow of the piece count)
     // (the fused SwiGLU needs the whole sum in one piece: silu(gate) * (u1 + u2), not silu(gate) * u1 + u2)
     const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
     int wgy = 1;

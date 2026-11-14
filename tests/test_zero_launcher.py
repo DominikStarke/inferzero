@@ -96,6 +96,30 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.unit.read_bytes(), b'other writer')
         self.assertFalse(list(self.unit.parent.glob('.inferzero-*')))
 
+    def test_environment_dollars_kept(self):
+        # (systemd expands $ in ExecStart= but not in Environment=: a cache path keeps its $ there)
+        os.environ['HF_HOME'] = '/cache/$x%y'
+        self.assertEqual(self.install(), 0)
+        self.assertIn('Environment="HF_HOME=/cache/$x%%y"', self.unit.read_text())
+
+    def test_no_hard_links_falls_back(self):
+        # (a file system without hard links: the unit is still written, once, without a temporary file left)
+        with patch.object(launcher.os, 'link', side_effect=PermissionError('no hard links')):
+            self.assertEqual(self.install(), 0)
+        self.assertIn('ExecStart="/usr/bin/serverz"', self.unit.read_text())
+        self.assertFalse(list(self.unit.parent.glob('.inferzero-*')))
+
+    def test_existing_unit_refused_before_download(self):
+        self.unit.parent.mkdir(parents=True)
+        self.unit.write_bytes(b'private Pi unit\n')
+        self.args.install_service = True
+        m = dict(launcher.CATALOG[0])
+        with patch.object(launcher, 'model_path', return_value=None), \
+             patch.object(launcher, 'download', side_effect=AssertionError('downloaded before the refusal')), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(launcher.start(m, self.args), 1)
+        self.assertEqual(self.unit.read_bytes(), b'private Pi unit\n')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -328,16 +328,18 @@
       stage_h8_[w.role] = true;
     }
   }
-  // the split-K pieces of an H8 GEMM: ~17 superblocks each for rows longer than 8192 (ARC_GEMM_SPLIT), one with the
+  // the split-K pieces of an H8 GEMM: 17 or 34 superblocks each for rows longer than 8192 (ARC_GEMM_SPLIT), one with the
   // fused SwiGLU (silu(gate) * (u1 + u2) is not silu(gate) * u1 + u2). Each piece is rounded on its own before it is
   // added to C, so the pieces decide the result's bits: gemm_xw (zero/xe2/engine_xw.h) takes them from here too.
   // Discrete cards: 34 superblocks since 2026-11-15 (2 pieces of the 27B's FFN down, K = 17,408, not 4): a Pro B70's
   // 4K prompt +3.1-3.2 % in three interleaved rounds (2,244 -> 2,315 tok/s, gemm_down 253 -> 214 ms), KL against the
   // plain path 0.00145 -> 0.00152 (max 0.039 -> 0.052), top token 97.55 -> 98.14 % (joshdev-de, issue #27). iGPUs: 17 as
-  // before (the same bits). ARC_GEMM_SPLIT=N sets it, 0: one piece
+  // before (the same bits). ARC_GEMM_SPLIT=N sets it, 0: one piece. (Only the variable is cached: iGPU or card is
+  //  asked per call, so each GPU of a split model gets its own default; the value is clamped so the piece count
+  //  cannot overflow.)
   static int h8_splits(int K, int a) {
-    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT")))
-                                                      : (zrt::integrated() ? 17 : 34);
+    static const int env = getenv("ARC_GEMM_SPLIT") ? std::clamp(atoi(getenv("ARC_GEMM_SPLIT")), 0, 4096) : -1;
+    const int sk_sb = env >= 0 ? env : (zrt::integrated() ? 17 : 34);
     const int nsb = K / 256;
     return a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1;
   }

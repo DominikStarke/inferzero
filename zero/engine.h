@@ -1236,7 +1236,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (ARC_GEMM_SPLIT: superblocks per split-K piece, default 17; 0: no split-K. Not bit-identical to one pass: the
     //  pieces' float sums are added in another order. 27B, 600-token prompt + 8 tokens, against ARC_GEMM_SPLIT=0:
     //  KL mean 0.00067, max 0.0017, the same greedy tokens (laptop, 2026-11-12, audit "needs a GPU" #1))
-    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
+    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::clamp(atoi(getenv("ARC_GEMM_SPLIT")), 0, 4096) : 17;  // (clamped: no overflow of the piece count)
     // (the fused SwiGLU needs the whole sum in one piece: silu(gate) * (u1 + u2), not silu(gate) * u1 + u2; no model
     //  fuses it over rows longer than 8192 yet)
     const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
