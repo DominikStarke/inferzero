@@ -13,18 +13,23 @@
 # 32 x 64. ocloc's register counts say which spill (the kernels' headers); the sweep measures what that costs.
 # -Prefetch (2026-11-13, B60 prefill plan 13.2): the default 32 x 64 with the next chunks prefetched into L1:
 # ARC_GEMM_XW_PF=1 weights / 2 activations / 3 both, ARC_GEMM_XW_PFD=1 / 2 / 4 chunks ahead (all bit-identical).
+# -Group (2026-11-15, after urakozz's pf_gemm_i8): the default 32 x 64 with ARC_GEMM_XW_WGX=2 / 4 / 8 column sub-groups
+# per work-group (the activations shared in L1) and ARC_GEMM_XW_LOCK=1 (the work-group in step each 64-value chunk),
+# alone and together, with and without the prefetch (all bit-identical).
 param(
   [Parameter(Mandatory = $true)][string]$Model,
   [int[]]$Tokens = @(512, 4096, 16384),
   [switch]$Wide,
-  [switch]$Prefetch
+  [switch]$Prefetch,
+  [switch]$Group
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
-$vars = @("ARC_GEMM_XW", "ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_GEMM_XW_GRF", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD")
+$vars = @("ARC_GEMM_XW", "ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_GEMM_XW_GRF", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD",
+          "ARC_GEMM_XW_WGX", "ARC_GEMM_XW_LOCK")
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "inferzero-xw-sweep"
 New-Item -ItemType Directory $tmp -Force | Out-Null
@@ -84,6 +89,14 @@ if ($Prefetch -and -not ($probe -match "gemm_xw8, 8 lanes")) {
     foreach ($d in 1, 2, 4) { $sets["xw pf$pf d$d"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_PF = $pf; ARC_GEMM_XW_PFD = $d } }
   }
 }
+if ($Group -and -not ($probe -match "gemm_xw8, 8 lanes")) {
+  $sets["xw lock"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_LOCK = 1 }
+  foreach ($x in 2, 4, 8) {
+    $sets["xw wgx$x"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_WGX = $x }
+    $sets["xw wgx$x lock"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_WGX = $x; ARC_GEMM_XW_LOCK = 1 }
+  }
+  $sets["xw wgx4 lock pf3"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_WGX = 4; ARC_GEMM_XW_LOCK = 1; ARC_GEMM_XW_PF = 3 }
+}
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"
 $res = @{}
 $base = $null
@@ -98,7 +111,9 @@ foreach ($name in $sets.Keys) {
   # (a shape that did not run, H8 off or its start-up check failed, would match the default by running gemm.cl:
   #  marked, and left out of the fastest-shape choice)
   # (a prefetch set counts only when the engine says it prefetches)
-  $used = ($name -eq "default") -or (($o -match "the H8 GEMMs on XMX with") -and (($name -notmatch " pf") -or ($o -match "gemm_xw prefetches")))
+  # (and a work-group set when it says so)
+  $used = ($name -eq "default") -or (($o -match "the H8 GEMMs on XMX with") -and (($name -notmatch " pf") -or ($o -match "gemm_xw prefetches")) -and
+          (($name -notmatch "wgx|lock") -or ($o -match "gemm_xw work-groups")))
   $same = if (-not $h) { "no logits" } elseif (-not $used) { "xw not used" } elseif ($h -eq $base) { "identical" } else { "DIFFER" }
   "[$name] $note"
   $row = [ordered]@{ set = $name; logits = $same }

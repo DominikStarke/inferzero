@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-11-15: the wide-tile H8 GEMM in larger work-groups, opt-in (after a comparison with urakozz's engine)
+
+- **Why:** on a Pro B70 our prompt GEMMs run at ~62 % of the XMX int8 peak, urakozz's at 72-81 %
+  (urakozz/intel-arc-inference-server, Apache-2.0, `src/kernels/prefill/pf_int8.cl`). Its work-group is 32 sub-groups
+  over 256 tokens x 128 columns, kept in step each 64-value chunk by a split barrier, so the work-group shares both its
+  activations and its weights in L1. Ours stacks 8 sub-groups on the tokens only (256 x 64, not in step), so every
+  64-column block reads the same activation rows again.
+- **What** (`gemm_xw.cl`, `zero/xe2/engine_xw.h`, 16-lane XMX only):
+  - `ARC_GEMM_XW_WGX=2 / 4 / 8`: that many column sub-groups per work-group beside the token ones, each sub-group
+    computing what it did before. Where a matrix's column blocks do not divide, the widest count that does; fewer
+    token sub-groups where the work-group would not fit a Xe-core (32 threads at 256 registers).
+  - `ARC_GEMM_XW_LOCK=1`: a split barrier around each 64-value chunk.
+  - With `ARC_GEMM_XW_PF`, the column sub-groups share the activation prefetch.
+  - Off by default until a B-series card measures it: `.\bench\xw_sweep.ps1 -Model <gguf> -Group`.
+- **Checked** (laptop, DPAS emulated: `ARC_H8=1 ARC_GEMM_XW_TRY=1 ARC_GEMM_XW_LANES=16`, Qwen3.5 4B, a 703-token
+  prompt): logits identical to the default for WGX 2 / 4, LOCK, WGX 4 + LOCK, WGX 8 + LOCK and WGX 2 + PF 3; the
+  start-up check, which now has a shape of two whole work-groups of column blocks, passed each time. All variants
+  build for Battlemage (ocloc `bmg-g21`, 256 registers, 2D loads). Speed: not measured (no XMX here). Without the
+  switches the kernel compiles as before; the iGPU's default path does not run it.
+- **Also found:** urakozz's DeltaNet is not ahead of ours. His `gdn_scan` row is the last of the chunked form's ten
+  launches. His six recurrence kernels take ~155 ms per 2,048 tokens (his probe of 2026-11-10), ~310 ms at 4K, against
+  `gdn_recur`'s 263 ms on a B70 (issue #27).
+
 ## 2026-11-15: no Python in the release packages: the 35b-gsq conversion and the AutoRound import in C++
 
 The packages hold no `.py` file any more, and no step of setup, the launchers, the downloads or the tests a user

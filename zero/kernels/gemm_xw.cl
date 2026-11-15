@@ -17,8 +17,29 @@
 //
 // -DXW_EMU: DPAS emulated with DP4a and shuffles (tests on GPUs without XMX: ARC_GEMM_XW_TRY=1).
 // -DX2D: the activations by 2D block loads, as gemm.cl -DX2D (8 rows x 64 bytes a load).
-// Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
+// Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16 * WGX, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
 // `rgroup` token rows together column block by column block, as gemm.cl, so a weight slice is reused while in L3.
+// WGX (2026-11-15, ARC_GEMM_XW_WGX, after urakozz's pf_gemm_i8: 32 sub-groups over 256 tokens x 128 columns): the
+// work-group's sub-groups side by side on the columns too, WGX column blocks of 16 * XW_NC, so the WGY token sub-groups
+// share their weights and the WGX column sub-groups their activations in L1. Each sub-group computes what it did
+// before, in the same order: the same results bit for bit.
+// -DXW_LOCK (ARC_GEMM_XW_LOCK=1): the work-group in step, a split barrier around each 64-value chunk (arrive before its
+// loads, wait after its DPAS), so the sub-groups that share a chunk's lines read them while they are in L1. Changes
+// no value.
+
+#ifdef XW_LOCK
+#pragma OPENCL EXTENSION cl_intel_split_work_group_barrier : enable
+#ifdef XW_EMU
+#define XW_ARRIVE()
+#define XW_WAIT() barrier(CLK_LOCAL_MEM_FENCE)
+#else
+#define XW_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
+#define XW_WAIT() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
+#endif
+#else
+#define XW_ARRIVE()
+#define XW_WAIT()
+#endif
 
 #define SG 16
 #ifndef XW_TM
@@ -41,6 +62,9 @@
 // read, and so the results, are the same bit for bit
 #ifndef XW_PF
 #define XW_PF 0
+#endif
+#ifndef XW_WGX
+#define XW_WGX 1
 #endif
 #ifndef XW_PFD
 #define XW_PFD 2
@@ -83,12 +107,19 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
                       int rgroup, int s_begin, int s_end, int g_base) {
   // (g_base: the first 16-column group of this launch; N its columns: XW_NC 6 runs a matrix's first 96 * a columns,
   //  and the 32 x 64 kernel the rest from g_base 6 * a, engine_xw.h xw_matmul; 0 and the whole N otherwise)
-  const int NB = N / (SG * XW_NC), rows = M / (XW_TM * (int)get_local_size(1));
+  // (wgx column sub-groups a work-group, sx this one's: the host keeps NB a multiple of wgx, and local size 16 * wgx)
+  const int wgx = XW_WGX;
+#if XW_WGX > 1
+  const int sx = (int)get_local_id(0) / SG;
+#else
+  const int sx = 0;
+#endif
+  const int NB = N / (SG * XW_NC * wgx), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
-  const int nsb = K / 256, g0 = g_base + cb * XW_NC;
+  const int nsb = K / 256, g0 = g_base + (cb * wgx + sx) * XW_NC;
 #ifndef X2D
   __global const char* ap = aq + (size_t)m0 * K;
 #endif
@@ -102,6 +133,7 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
+      XW_ARRIVE();
 #if XW_PF
       // ---- the chunk XW_PFD ahead into L1 while this one's DPAS run (B60 prefill plan 13.2): bit 1 its weights, bit 2
       //      its activations (2D loads only); a prefetch changes no value. Not past this piece's end (s_end)
@@ -114,8 +146,8 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
 #endif
 #if (XW_PF & 2) && defined(X2D)
 #pragma unroll
-          for (int t = 0; t < XW_TG; ++t)
-            intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(qn * 64, m0 + 8 * t));
+          for (int t = 0; t < XW_TG; ++t)  // (the work-group's wgx column sub-groups share these rows: one each)
+            if (t % wgx == sx) intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(qn * 64, m0 + 8 * t));
 #endif
         }
       }
@@ -149,6 +181,7 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
 #pragma unroll
         for (int t = 0; t < XW_TG; ++t) xacc[t][c] = xw_mad(ah[t], hi, xw_mad(al[t], lo, xacc[t][c]));
       }
+      XW_WAIT();
     }
   }
 
