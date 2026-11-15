@@ -3,7 +3,7 @@
 # Intel's checkpoint is safetensors, not GGUF, so it is imported:
 #   1. the AutoRound checkpoint's expert shards (~78 GB, at the revision the importer checks; shards without experts
 #      are not downloaded) and the model-info.json its checks read (each file's size and SHA-256, from the API);
-#   2. tools\import_autoround_experts.py (Python 3.11+, NumPy): their INT4 experts into the AR4_128 expert file
+#   2. bin\import_autoround_experts.exe (tools\import_autoround_experts.cpp): their INT4 experts into the AR4_128 expert file
 #      (~64 GB), every code and scale checked;
 #   3. Unsloth's UD-Q4_K_XL Flash Next (~111 GB, 4 parts) for everything but the experts, and its image projector;
 #   4. bin\import_autoround_pack.exe: the package GGUF (~32 GB) next to the expert file, in

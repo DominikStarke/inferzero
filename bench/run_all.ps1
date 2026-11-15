@@ -1,5 +1,5 @@
 # Full comparison run: tuning of llama.cpp micro-batch size, then every model x engine x test.
-# Results: bench\results\results.jsonl (one JSON object per measurement). Summarize with bench\report.py.
+# Results: bench\results\results.jsonl (one JSON object per measurement). Summarize with bench\report.ps1.
 param(
   [string]$PromptDir = "",
   [string]$Corpus = "",
@@ -52,4 +52,4 @@ foreach ($m in $Models) {
       -PromptFiles $prompts -Corpus $Corpus -Out $out -Ubatch $u
   }
 }
-python (Join-Path $PSScriptRoot "report.py") $out
+& (Join-Path $PSScriptRoot "report.ps1") $out

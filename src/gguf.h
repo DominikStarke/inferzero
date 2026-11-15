@@ -114,7 +114,7 @@ class GgufFile {
       // (a package or a GSQ conversion from before 2026-11-10, keyed arcinferzero.*: refused with the way out,
       //  not loaded without its experts' format or with experts that are not there)
       if (has("arcinferzero.package") || has("arcinferzero.expert_format") || has("arcinfer.expert_format"))
-        throw std::runtime_error("gguf: " + path + " was made before the project's rename (2026-11-10): its arcinferzero.* keys are no longer read. A package: delete its folder under %USERPROFILE%\\.inferzero\\zero\\models, then load the original GGUF, or make the package again with serverz --pack <the original GGUF>. A GSQ model: convert it again with tools\\convert_gsq.py (setup -Models 35b-gsq does)");
+        throw std::runtime_error("gguf: " + path + " was made before the project's rename (2026-11-10): its arcinferzero.* keys are no longer read. A package: delete its folder under %USERPROFILE%\\.inferzero\\zero\\models, then load the original GGUF, or make the package again with serverz --pack <the original GGUF>. A GSQ model: convert it again with bin\\convert_gsq.exe (setup -Models 35b-gsq does)");
     } catch (...) {
       close();
       throw;

@@ -1,7 +1,7 @@
 # The models setup and the launcher offer: each one's repository and files (image projectors included), its size,
 # the RAM it wants, a line for people choosing one, and Install-ArcModel, which downloads it into the Hugging Face
-# cache (scripts\hf-get.ps1: no Python) with a Gemma drafter copied next to its model. 35b-gsq (converted with
-# Python) is setup's own step. Dot-sourced by setup.ps1, get-models.ps1 and the launcher.
+# cache (scripts\hf-get.ps1: no Python) with a Gemma drafter copied next to its model. 35b-gsq (converted by
+# bin\convert_gsq.exe) is setup's own step. Dot-sourced by setup.ps1, get-models.ps1 and the launcher.
 . (Join-Path $PSScriptRoot "hf-get.ps1")
 . (Join-Path $PSScriptRoot "autoround.ps1")  # (flash-ar4: imported, not downloaded as it is; Install-AutoRound)
 $ArcModels = @(
@@ -25,10 +25,10 @@ $ArcModels = @(
     files = @("IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf", "mmproj-Qwen3.8-Flash-Next-f16.gguf")
     extra = @{ repo = "bartowski/Qwen3.8-Flash-Next-GGUF"; file = "mmproj-Qwen3.8-Flash-Next-f16.gguf"; into = "IQ3_S" } },
   # (Intel's AutoRound INT4 experts for Flash Next: safetensors, imported into a package, scripts\autoround.ps1; 78 GB
-  #  of expert shards + Unsloth's 111 GB UD-Q4_K_XL, ~290 GB of disk at the most; Python 3.11 with NumPy. In the
+  #  of expert shards + Unsloth's 111 GB UD-Q4_K_XL, ~290 GB of disk at the most. In the
   #  launcher's list too; setup's "all" leaves it out, as Flash Next)
-  [pscustomobject]@{ key = "flash-ar4"; name = "Qwen3.8 Flash Next, Intel AutoRound INT4 experts (imported; Python 3.11)"; repo = "Intel/Qwen3.8-Flash-Next-W4A16-AutoRound"; gb = 189; disk = 290; ram = 32
-    plain = "Flash Next with Intel's calibrated 4-bit experts, in precise mode. Needs Python 3.11 and ~290 GB of free disk while it imports; from here the AutoRound shards (78 GB) are kept: setup -Models flash-ar4 asks to delete them."
+  [pscustomobject]@{ key = "flash-ar4"; name = "Qwen3.8 Flash Next, Intel AutoRound INT4 experts (imported)"; repo = "Intel/Qwen3.8-Flash-Next-W4A16-AutoRound"; gb = 189; disk = 290; ram = 32
+    plain = "Flash Next with Intel's calibrated 4-bit experts, in precise mode. Needs ~290 GB of free disk while it imports; from here the AutoRound shards (78 GB) are kept: setup -Models flash-ar4 asks to delete them."
     files = @(); install = "autoround"; more_repos = @("unsloth/Qwen3.8-Flash-Next-GGUF") },
   # Google's QAT Q4_0 release has no drafter: Unsloth's copy of the assistant drafter is put next to the model
   [pscustomobject]@{ key = "g12"; name = "Gemma 4 12B (reads images; drafter)"; repo = "google/gemma-4-12B-it-qat-q4_0-gguf"; gb = 7.4; ram = 32

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Linux package: dist/inferzero-<version>-linux-x64.tar.gz, the Linux side of scripts/make-package.ps1. Unpacked
 # anywhere, ./zero-launcher.sh runs without a compiler: bin/ holds runz, serverz, mgpu_probe, ref_forward and gpu_bench built by ./build.sh,
-# bin/PREBUILT.txt says so. It holds every file git tracks (the sources too, so ./build.sh still builds), nothing
+# bin/PREBUILT.txt says so. It holds every file git tracks but the .py ones (the sources too, so ./build.sh still builds), nothing
 # untracked (no recordings, reports or models).
 #   scripts/make-package-linux.sh                       build, then the archive
 #   scripts/make-package-linux.sh --no-build            the programs as they are in bin/
@@ -32,9 +32,11 @@ version="${release:-$(date +%Y.%m.%d)}-$commit$dirty"
 name="inferzero-$version-linux-x64"
 stage="dist/$name"
 rm -rf "$stage"; mkdir -p "$stage/bin"
-# the tracked files, as they are in the working tree (a deleted, not yet committed one skipped)
+# the tracked files, as they are in the working tree (a deleted, not yet committed one skipped), but no .py:
+# nothing a user runs needs Python, and the developers' scripts stay in the repository (2026-11-15)
 git ls-files -z | while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
+  case "$f" in *.py) continue ;; esac
   mkdir -p "$stage/$(dirname "$f")"
   cp -p "$f" "$stage/$f"
 done

@@ -1,6 +1,6 @@
 // An AutoRound package (AR4_128 experts, tools/import_autoround_pack) and its expert file must come from the same
 // checkpoint: the package keeps the checkpoint's 40-digit SHA (inferzero.autoround.revision), the expert file's v1
-// header its first 16 hex digits as the fingerprint (tools/import_autoround_experts.py). A check of the import, not of
+// header its first 16 hex digits as the fingerprint (tools/import_autoround_experts.cpp). A check of the import, not of
 // the weights' bytes. Pull request #25 (chumbleyjl), from the pair audit of 2026-11-14.
 #pragma once
 #include "gguf.h"

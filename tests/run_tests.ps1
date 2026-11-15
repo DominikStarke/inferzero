@@ -13,7 +13,7 @@
 #                              packaged file or the -00001-of- shard)
 #   -DFlash27B / -DFlash35B    DFlash2 drafter folders (containing model.safetensors), zero engine only
 #   -Ref35B <file>             opt-in 35B KL check. tests\data\ref_35b_capital_all.bin is the f32 reference of the
-#                              Qwen3.6-35B-A3B GSQ file (tools\convert_gsq.py), not of Unsloth's UD-IQ4_XS: only pass it
+#                              Qwen3.6-35B-A3B GSQ file (tools\convert_gsq.cpp), not of Unsloth's UD-IQ4_XS: only pass it
 #                              together with the matching -Model35B. A missing file is created with ref_forward.
 #   -PackGguf <file>           small GGUF for bin\test_gguf_pack.exe (output goes to %TEMP% and is deleted)
 #   -SkipGpu                   run only the model-free CPU checks
@@ -199,9 +199,11 @@ if (Test-Path .\bin\test_json.exe) { Unit "JSON parser (numbers, escapes, repeat
 if (Test-Path .\bin\test_sampler.exe) { Unit "sampler" .\bin\test_sampler.exe @() "ALL OK" }
 Unit "tool call streaming" .\bin\tool_stream_test.exe @("3000") "ALL OK"
 
-# chat template rendering vs Jinja (needs python + jinja2)
+# chat template rendering vs Jinja (needs python + jinja2: Jinja2 is the reference, a developer's check only; the
+# release packages hold no .py, so there these two skip)
 $tq35 = Join-Path $Data "qwen35_template.jinja"; $tq38 = Join-Path $Data "qwen38_template.jinja"
-if (-not ((Test-Path $tq35) -and (Test-Path $tq38))) { Skip "chat template (14 cases)" "templates missing in $Data" }
+if (-not (Test-Path tests\test_chat_render.py)) { Skip "chat template (14 cases)" "a developer's check (Python + Jinja2): not in the package" }
+elseif (-not ((Test-Path $tq35) -and (Test-Path $tq38))) { Skip "chat template (14 cases)" "templates missing in $Data" }
 elseif (-not (Test-Path .\bin\chat_render.exe)) { Skip "chat template (14 cases)" "bin\chat_render.exe not built" }
 elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "chat template (14 cases)" "python not found" }
 else {
@@ -212,7 +214,8 @@ else {
 # templates inferzero renders with minja (Gemma 4) vs Jinja2 (needs python with jinja2)
 $tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja") |
   ForEach-Object { Join-Path $Data $_ } | Where-Object { Test-Path $_ }
-if (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
+if (-not (Test-Path tests\test_chat_jinja.py)) { Skip "minja templates" "a developer's check (Python + Jinja2): not in the package" }
+elseif (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
 elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "minja templates" "python not found" }
 else {
   $o = Run-Exe python (@("tests\test_chat_jinja.py", "$root\bin\chat_render.exe") + $tj)
@@ -324,7 +327,7 @@ foreach ($eng in $engines) {
     Check "$tag Gemma 4 $gn slots: bit-identical, misuse refused, memory counted" ($o -match "slots check: passed" -and $o -match "slot bytes: \d+ real, \d+ counted: OK") ([regex]::Match($o, "slot bytes: [^,]*, [^:]*: \w+").Value)
   }
 
-  # 4d. Qwen3.6-35B-A3B GSQ (tools\convert_gsq.py): MoE path vs its f32 CPU reference. Opt-in: the reference in
+  # 4d. Qwen3.6-35B-A3B GSQ (tools\convert_gsq.cpp): MoE path vs its f32 CPU reference. Opt-in: the reference in
   #     tests\data was made from the GSQ file, not from the auto-detected UD-IQ4_XS.
   if (-not $Ref35B) { Skip "$tag 35B-A3B MoE KL vs f32 reference" "opt-in: -Ref35B <file>" }
   elseif (-not (Have $Model35B)) { Skip "$tag 35B-A3B MoE KL vs f32 reference" (Why $Model35B "35B-A3B model") }
@@ -435,7 +438,7 @@ foreach ($eng in $engines) {
     }
     Check "$tag server /health" $up $(if ($srv.HasExited) { "(server exited, code $($srv.ExitCode))" } elseif (-not $up) { "(no answer in $ServerWait s)" } else { "" })
     if (-not $up) { continue }
-    $o = Run-Exe python @("tests\test_tools.py", "http://127.0.0.1:$Port")
+    $o = Run-Exe powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_tools.ps1", "http://127.0.0.1:$Port")
     Check "$tag API tool call" ($o -match "turn 1: finish=tool_calls")
     Check "$tag API prefix reuse" ($o -match "cache_n=([1-9]\d*)")
 

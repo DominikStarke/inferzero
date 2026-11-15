@@ -1,6 +1,6 @@
 // AR4_128 (AutoRound INT4 experts, pull request #22): writes the hybrid package's GGUF. Every tensor of the
 // UD-Q4_K_XL source but the routed experts is kept byte for byte, with its metadata and tokenizer; the 144 expert
-// tensors become virtual AR4_128 ones (no data here), whose records tools/import_autoround_experts.py writes into
+// tensors become virtual AR4_128 ones (no data here), whose records tools/import_autoround_experts.cpp writes into
 // the separate expert file named EXPERTS_BASENAME.
 // usage: import_autoround_pack SOURCE.gguf OUTPUT.gguf EXPERTS_BASENAME SOURCE_REVISION
 // (SOURCE_REVISION: the AutoRound checkpoint's revision, kept as inferzero.autoround.revision)

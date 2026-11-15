@@ -345,7 +345,7 @@ static std::vector<ModelInfo> scan_models() {
     m.bytes = gguf_bytes(c.path.string());  // (a split file: all its parts)
     m.arch = "?";
     int64_t nextn = 0;
-    bool gsq = false;  // qwen35moe: only GSQ 2-bit experts (tools/convert_gsq.py) have kernels
+    bool gsq = false;  // qwen35moe: only GSQ 2-bit experts (tools/convert_gsq.cpp) have kernels
     try {
       GgufFile g(m.path);
       m.arch = g.get_str("general.architecture", "?");

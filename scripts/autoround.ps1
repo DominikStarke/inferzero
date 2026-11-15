@@ -8,7 +8,7 @@
 
 $ArRoot = Split-Path $PSScriptRoot  # (the repository: bin\, tools\, build.ps1; not $root, which a caller has)
 $ArRepo = "Intel/Qwen3.8-Flash-Next-W4A16-AutoRound"
-$ArRevision = "4c67bf686b7f7fd386bae6b07ab59e8ff1d5b897"  # (tools\import_autoround_experts.py REVISION)
+$ArRevision = "4c67bf686b7f7fd386bae6b07ab59e8ff1d5b897"  # (tools\import_autoround_experts.cpp REVISION)
 $Q4Repo = "unsloth/Qwen3.8-Flash-Next-GGUF"
 $Q4Folder = "UD-Q4_K_XL"
 $ArName = "Qwen3.8-Flash-Next-AutoRound-INT4"
@@ -25,35 +25,21 @@ function Install-AutoRound([switch]$DeleteSource, [switch]$Yes) {
   $experts = Join-Path $dir "$ArName.experts"
   if (Test-AutoRound) { Write-Host "    $ArName is there: $dir"; return $dir }
 
-  # Python 3.11+ (hashlib.file_digest) with NumPy, and the packer
+  # the importer and the packer: two exes of the package (built here from the sources when missing). No Python
+  # (the importer was tools\import_autoround_experts.py until 2026-11-15; the C++ one writes the same file, byte for byte)
   # (the programs' output to the screen, | Out-Host: callers discard this function's output, $null = Install-AutoRound,
   #  and the importer's progress lines went with it)
-  $py = $null
-  foreach ($c in "python", "py -3") {
-    [string[]]$parts = $c -split " "
-    $rest = @($parts | Select-Object -Skip 1)
-    try {
-      $v = "$(& $parts[0] @rest -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)".Trim()
-      if ($LASTEXITCODE -eq 0 -and $v -match '^3\.(\d+)$' -and [int]$Matches[1] -ge 11) { $py = $parts; break }
-    } catch {}
+  $tools = @{}
+  foreach ($t in "import_autoround_experts", "import_autoround_pack") {
+    $exe = Join-Path $ArRoot "bin\$t.exe"
+    if (-not (Test-Path $exe)) {
+      Write-Host "    building bin\$t.exe"
+      & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ArRoot "build.ps1") "tools\$t.cpp" | Out-Host
+      if (-not (Test-Path $exe)) { throw "bin\$t.exe could not be built (it needs Visual Studio's C++ tools, or a package from the releases page)" }
+    }
+    $tools[$t] = $exe
   }
-  if (-not $py) { throw "the AutoRound import needs Python 3.11 or newer (https://www.python.org/downloads/, tick 'Add to PATH')" }
-  $pyRest = @($py | Select-Object -Skip 1)
-  $ErrorActionPreference = "Continue"
-  & $py[0] @pyRest -c "import numpy" 2>$null | Out-Null
-  $hasNumpy = $LASTEXITCODE -eq 0
-  $ErrorActionPreference = "Stop"
-  if (-not $hasNumpy) {
-    Write-Host "    installing NumPy (pip) for the import"
-    & $py[0] @pyRest -m pip install -U numpy | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "pip install numpy failed" }
-  }
-  $pack = Join-Path $ArRoot "bin\import_autoround_pack.exe"
-  if (-not (Test-Path $pack)) {
-    Write-Host "    building bin\import_autoround_pack.exe"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ArRoot "build.ps1") "tools\import_autoround_pack.cpp" | Out-Host
-    if (-not (Test-Path $pack)) { throw "bin\import_autoround_pack.exe could not be built (it needs Visual Studio's C++ tools, or a package from the releases page)" }
-  }
+  $pack = $tools["import_autoround_pack"]
   New-Item -ItemType Directory -Force $dir | Out-Null
 
   # 1 + 2: the expert file (skipped when a run before made it)
@@ -75,7 +61,7 @@ function Install-AutoRound([switch]$DeleteSource, [switch]$Yes) {
     $info = Invoke-RestMethod "https://huggingface.co/api/models/$ArRepo/revision/$ArRevision`?blobs=true" -Headers $hdr -TimeoutSec 60
     [IO.File]::WriteAllText((Join-Path $arSnap "model-info.json"), ($info | ConvertTo-Json -Depth 20))
     Write-Host "    2/4 importing the INT4 experts into $experts (reads ~78 GB, checks every code and scale)"
-    & $py[0] @pyRest (Join-Path $ArRoot "tools\import_autoround_experts.py") $arSnap $experts --experimental-format | Out-Host
+    & $tools["import_autoround_experts"] $arSnap $experts --experimental-format | Out-Host
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $experts)) { throw "the expert import failed (run this again: the downloads stay)" }
   } else { Write-Host "    1-2/4 the expert file is there: $experts" }
 

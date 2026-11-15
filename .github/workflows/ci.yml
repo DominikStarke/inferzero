@@ -22,7 +22,8 @@ jobs:
             tests\test_json.cpp tests\test_sampler.cpp tests\test_gguf_pack.cpp tests\test_quant_rows.cpp `
             tests\test_hc.cpp tests\test_fa.cpp tests\test_route.cpp tests\test_chat_store.cpp tests\test_doc_read.cpp `
             tests\test_office.cpp tests\test_pdf_scan.cpp tests\test_audio.cpp tests\test_pbkdf2.cpp `
-            tests\test_autoround_blocks.cpp tests\test_expert_layout.cpp tests\test_autoround_revision.cpp
+            tests\test_autoround_blocks.cpp tests\test_expert_layout.cpp tests\test_autoround_revision.cpp `
+            tools\convert_gsq.cpp tools\import_autoround_experts.cpp tools\import_autoround_pack.cpp
       - name: Unit tests
         shell: powershell
         run: |

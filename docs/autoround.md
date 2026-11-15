@@ -28,18 +28,18 @@ where the server lists it as `qwen3.8-flash-next-autoround` (shortcut `flash-ar4
 it was made from stays listed as a model of its own. The project ships no weights or expert files for it: each
 machine imports its own.
 
-By hand, the same steps (Linux names; on Windows the packer is `bin\import_autoround_pack.exe`, in the release
-package):
+By hand, the same steps (Linux names; on Windows the importer and the packer are `bin\import_autoround_experts.exe` and
+`bin\import_autoround_pack.exe`, in the release package; no Python since 2026-11-15):
 
 ```sh
-python tools/import_autoround_experts.py SOURCE_DIRECTORY AutoRound.experts --experimental-format
-g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -Ithird_party tools/import_autoround_pack.cpp -o /tmp/import_autoround_pack
+g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -pthread -include src/cpu_check.h -include src/log.h -Ithird_party tools/import_autoround_experts.cpp -o /tmp/import_autoround_experts
+/tmp/import_autoround_experts SOURCE_DIRECTORY AutoRound.experts --experimental-format
+g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -pthread -include src/cpu_check.h -include src/log.h -Ithird_party tools/import_autoround_pack.cpp -o /tmp/import_autoround_pack
 /tmp/import_autoround_pack SOURCE_Q4XL.gguf AutoRound.gguf AutoRound.experts 4c67bf686b7f7fd386bae6b07ab59e8ff1d5b897
 ```
 
 - **`SOURCE_DIRECTORY`** holds, at the pinned revision: `config.json`, `model.safetensors.index.json`,
   `model-info.json` from Hugging Face's model API (with each file's SHA-256) and the expert shards the index names.
-  The importer needs NumPy (Python 3.11 or newer).
 - **`--experimental-format`** is required: without it the importer refuses. AR4_128 is inferzero's own type (see
   "The format"), so no build before pull request #22 and no other GGUF reader loads the package.
 - **The last argument** is the checkpoint's revision, which the package keeps (see "The checkpoint check" below).
@@ -76,7 +76,7 @@ g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -Ithird_party tools/import_autoround_pack
 only. The importer reads the 14 shards that hold them (72,296,476,000 bytes). The checkpoint's BF16 PLE table and its
 MTP tensors are not imported: the UD-Q4_K_XL's are used.
 
-**What the importer checks** (tools/import_autoround_experts.py):
+**What the importer checks** (tools/import_autoround_experts.cpp):
 
 - the checkpoint's identity, and every source file's SHA-256 against `model-info.json`;
 - shapes and dtypes;

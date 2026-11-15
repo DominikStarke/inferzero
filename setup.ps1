@@ -4,12 +4,12 @@
 #   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b whisper asr, all, none)
 #   setup -Tests                 also build the test tools and run the regression tests (needs the 4B model)
 #   setup -NoPi                  leave Pi alone
-#   setup -Yes                   do not ask (pip installs, downloads of the models given with -Models)
+#   setup -Yes                   do not ask (the downloads of the models given with -Models)
 #   setup -Rebuild               build the exes from source even in a ready-to-use package (needs Visual Studio)
 #   setup -Help                  all options
 #
-# Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler unless the package is prebuilt, Python for
-# 35b-gsq only, Pi)  2 build bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe, zero_recorder.exe when missing or
+# Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler unless the package is prebuilt; no Python; Pi)
+#  2 build bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe, zero_recorder.exe when missing or
 # older than the sources (a ready-to-use package, bin\PREBUILT.txt: kept as shipped)  3 GPU check (OpenCL 3.0, DP4a,
 # sub-groups, memory)  4 models (Hugging Face cache, downloaded by scripts\hf-get.ps1: no Python; 35b-gsq converted)
 # 5 Pi (zero-pi / zero-server commands, Pi's model list)  6 regression tests (-Tests).
@@ -31,15 +31,15 @@ USAGE
                                  (speech to text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
-  setup -Yes                     do not ask: pip installs and downloads go ahead (with -Models: those models;
+  setup -Yes                     do not ask: downloads go ahead (with -Models: those models;
                                  without: none are downloaded)
   setup -Rebuild                 build the exes from source even in a ready-to-use package (needs Visual Studio)
   setup -Help, --help, -h        this text
 
 STEPS
   1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (not for a
-                   ready-to-use package; vswhere, $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (only
-                   for 35b-gsq), Pi (optional). Missing ones: where to get them.
+                   ready-to-use package; vswhere, $env:ARC_VCVARS = a vcvars64.bat overrides), Pi (optional); no
+                   Python (no step needs it). Missing ones: where to get them.
   2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), zero_recorder.exe (meetings)
                    when missing or older than their sources (a ready-to-use package keeps its own); the compiler
                    output goes to %USERPROFILE%\.inferzero\build.log (shown when a build fails). A running server
@@ -48,8 +48,7 @@ STEPS
   4 models         into the Hugging Face cache (HF_HUB_CACHE / HF_HOME respected) by scripts\hf-get.ps1: curl.exe,
                    resumed after a cut, each file's SHA256 checked; no Python. Gemma with its drafter and image
                    projector (Gemma asks you to accept its terms on huggingface.co: then set HF_TOKEN). 35b-gsq is
-                   converted with Python (tools\convert_gsq.py, the 4B for its tokenizer; huggingface_hub / numpy
-                   installed with pip after asking). The free disk space is checked. Then: every model the server
+                   converted by bin\convert_gsq.exe (the 4B for its tokenizer). The free disk space is checked. Then: every model the server
                    finds, with its context for the current GPU memory.
   5 Pi             scripts\install-pi.ps1: the zero-pi and zero-server commands, Pi's model list. Without Pi:
                    asks to put this folder on PATH, for its zero-server.cmd
@@ -58,8 +57,8 @@ STEPS
 MODELS
   27b  Qwen3.8 27B (ISTA-DASLab GSQ-RCO IQ3_S, MTP)        12.1 GB
   35b  Qwen3.6 35B-A3B (Unsloth UD-IQ4_XS, MTP) + image projector  19.1 GB
-  35b-gsq  Qwen3.6 35B-A3B 2-bit GSQ (converted with Python, no MTP)  12.6 GB download, 11.7 GB converted
-  flash-ar4  Qwen3.8 Flash Next with Intel's AutoRound INT4 experts (safetensors imported with Python 3.11;
+  35b-gsq  Qwen3.6 35B-A3B 2-bit GSQ (converted here, no MTP)  12.6 GB download, 11.7 GB converted
+  flash-ar4  Qwen3.8 Flash Next with Intel's AutoRound INT4 experts (safetensors imported here;
            precise mode by itself)  189 GB download, ~290 GB of disk at the most, ~207 GB kept (the
            UD-Q4_K_XL stays as a model of its own; the AutoRound shards are deleted when you agree)
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
@@ -71,7 +70,7 @@ MODELS
   asr  Qwen3-ASR 1.7B Q8_0 + its projector: the default speech model                  2.4 GB
        (both for zero-server start -Whisper auto: the web UI's Transcripts / Meetings tabs, voice messages)
 
-Not installed by setup: the graphics driver, Visual Studio Build Tools, Python and Pi (vendor installers).
+Not installed by setup: the graphics driver, Visual Studio Build Tools and Pi (vendor installers).
 '@
   exit 0
 }
@@ -114,20 +113,8 @@ elseif ($null -eq $vcvars) {
 elseif ($vcvars) { Ok "C++ compiler: $(Split-Path (Split-Path (Split-Path (Split-Path $vcvars))))" }
 else { Ok "C++ compiler: cl from this Developer prompt ($env:VCToolsInstallDir)" }
 
-# Python (model downloads, 35B conversion)
-$py = $null  # the command line that runs Python, e.g. "python" or "py -3"
-foreach ($c in "python", "py -3") {
-  try {
-    [string[]]$parts = $c -split " "
-    $rest = @($parts | Select-Object -Skip 1)
-    $v = "$(& $parts[0] @rest -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null)".Trim()
-    if ($LASTEXITCODE -eq 0 -and $v -match '^3\.(\d+)' -and [int]$Matches[1] -ge 10) { $py = $parts; Ok "Python $v"; break }
-  } catch {}
-}
-if (-not $py) { Ok "Python: not found (only the 35b-gsq conversion needs it; downloads do not)" }
-function Py { $rest = @($py | Select-Object -Skip 1); & $py[0] @rest @args }
-# (Windows PowerShell turns a native program's redirected stderr into errors, fatal under "Stop": local Continue)
-function PyHas($module) { $ErrorActionPreference = "Continue"; Py -c "import $module" 2>$null | Out-Null; return $LASTEXITCODE -eq 0 }
+# (no Python: the downloads are scripts\hf-get.ps1's, the 35b-gsq conversion bin\convert_gsq.exe's and the flash-ar4
+#  import bin\import_autoround_experts.exe's, since 2026-11-15)
 
 $piBin = Join-Path $env:USERPROFILE ".pi\agent\bin"
 $hasPi = Test-Path $piBin
@@ -201,8 +188,8 @@ $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join
 $arcModels = Join-Path (Get-AppDir) "models"
 $gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
 . (Join-Path $root "scripts\model-catalog.ps1")  # (the models, shared with the launcher; downloads without Python)
-# (35b-gsq: the 2-bit GSQ file, converted with Python: smaller, no MTP; setup's own step)
-$catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted; needs Python)"
+# (35b-gsq: the 2-bit GSQ file, converted by bin\convert_gsq.exe: smaller, no MTP; setup's own step)
+$catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted)"
     repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6; files = @() })
 # (flash-ar4: in the shared list, scripts\model-catalog.ps1, imported by scripts\autoround.ps1, which the list
 #  dot-sources; not scripts\get-autoround.ps1, whose param block set this script's -Yes to false)
@@ -246,14 +233,11 @@ if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {  # its tokenizer comes from
   if (-not $m4.have) { $todo = @($m4) + @($todo | Where-Object { $_.key -ne "4b" }) }
 }
 if ($todo) {
-  # (Python only for the 35B GSQ conversion; every other model downloads with scripts\hf-get.ps1)
-  if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {
-    if (-not $py) { Bad "the 35b-gsq conversion needs Python 3.10+" "Install Python (https://www.python.org/downloads/, tick 'Add to PATH'), or take -Models 35b (no conversion)." }
-    if (-not (PyHas "huggingface_hub")) {
-      if (-not (Ask "Install the Python package huggingface_hub (pip), for the 35b-gsq conversion?")) { Bad "huggingface_hub is needed for 35b-gsq" }
-      Py -m pip install -U huggingface_hub
-      if ($LASTEXITCODE -ne 0) { Bad "pip install huggingface_hub failed" }
-    }
+  # (the 35B GSQ conversion: bin\convert_gsq.exe, of the package or built here from its source)
+  $convert = Join-Path $bin "convert_gsq.exe"
+  if (($todo | Where-Object { $_.key -eq "35b-gsq" }) -and -not (Test-Path $convert)) {
+    & (Join-Path $root "build.ps1") "tools\convert_gsq.cpp" | Out-Host
+    if (-not (Test-Path $convert)) { Bad "bin\convert_gsq.exe could not be built" "take a package from the releases page, or -Models 35b (no conversion)" }
   }
   $gb = ($todo | Measure-Object gb -Sum).Sum
   # (disk: the download and what the first start writes, Flash Next's 56 GB expert file)
@@ -268,14 +252,18 @@ if ($todo) {
     if ($m.key -eq "flash-ar4") {
       try { $null = Install-AutoRound -Yes:$Yes } catch { Bad "the AutoRound import failed" "$_" }
     } elseif ($m.key -eq "35b-gsq") {
-      if (-not (PyHas "numpy")) { Py -m pip install -U numpy; if ($LASTEXITCODE -ne 0) { Bad "pip install numpy failed" } }
-      $snap = Py -c "import sys; from huggingface_hub import snapshot_download; print(snapshot_download(sys.argv[1]))" $m.repo
-      if ($LASTEXITCODE -ne 0) { Bad "download failed: $($m.repo)" }
-      $snap = @($snap)[-1].Trim()
+      # (the whole checkpoint, every file of the repository, by scripts\hf-get.ps1: what huggingface_hub's
+      #  snapshot_download took before 2026-11-15)
+      try {
+        $tok = Get-HfToken; $hh = @{}; if ($tok) { $hh.Authorization = "Bearer $tok" }
+        $files = @(Invoke-RestMethod "https://huggingface.co/api/models/$($m.repo)/tree/main?recursive=1" -Headers $hh -TimeoutSec 60 |
+            ForEach-Object { $_ } | Where-Object { $_.type -eq "file" } | ForEach-Object { $_.path })
+        $snap = Get-HfFiles $m.repo $files
+      } catch { Bad "download failed: $($m.repo)" "$_" }
       $vocab = (Get-ChildItem $hub -Recurse -Filter "Qwen3.5-4B-UD-Q4_K_XL.gguf" | Select-Object -First 1).FullName
       New-Item -ItemType Directory -Force $arcModels | Out-Null
       Write-Host "  converting to $gsq35 (about 3 minutes)..."
-      Py (Join-Path $root "tools\convert_gsq.py") $snap $gsq35 --vocab-from $vocab
+      & $convert $snap $gsq35 --vocab-from $vocab
       if ($LASTEXITCODE -ne 0) { Bad "conversion failed" }
     } else {
       try { $null = Install-ArcModel $m } catch { Bad "download failed: $($m.repo)" "$_" }

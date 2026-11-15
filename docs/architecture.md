@@ -95,7 +95,7 @@ tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cac
             forget), server_projects.h (projects: a folder, its AGENTS.md, its files to the tools), doc_writer.h (DOCX / PDF / RTF
             from Markdown), doc_reader.h + inflate.h (reading DOCX / PDF: outline, BM25 search),
             server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
-            Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
+            Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.cpp (ISTA GSQ checkpoint -> GGUF),
             tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, gpu_bench, ...), run_bench.ps1
             (comparison with llama.cpp), prompt_bench.py, review_data.py (review data); gemm_sweep.ps1 /

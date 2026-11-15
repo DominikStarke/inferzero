@@ -327,7 +327,7 @@ static float bf16f(uint16_t h) {
   return f;
 }
 
-// y[N] = W_e x for routed expert e of a tools/convert_gsq.py tensor pair (2-bit codes in the GPU layout of
+// y[N] = W_e x for routed expert e of a tools/convert_gsq.cpp tensor pair (2-bit codes in the GPU layout of
 // zero/kernels/moe.cl, bf16 scale per 128 inputs), decoded independently of the GPU kernels.
 // Standard GGUF expert tensors ([n_expert][N][K] of any type with a dequantizer): row by row.
 static void expert_mv(const std::string& name, int e, int N, int K, const float* x0, float* y) {

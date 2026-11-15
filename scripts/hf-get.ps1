@@ -41,7 +41,7 @@ function Get-HfLocalPath([string]$snap, [string]$f) {
   return $full
 }
 # downloads $Files of $Repo (paths as the repository lists them, e.g. IQ3_S/x.gguf) and returns the snapshot folder
-# (-Revision: a commit to take instead of the newest, e.g. the one tools\import_autoround_experts.py checks)
+# (-Revision: a commit to take instead of the newest, e.g. the one tools\import_autoround_experts.cpp checks)
 function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub), [string]$Revision = "main") {
   $token = Get-HfToken
   $hdr = @{}

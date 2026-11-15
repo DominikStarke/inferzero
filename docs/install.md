@@ -85,8 +85,8 @@ From the sources: once the graphics driver, Visual Studio Build Tools (C++) and 
 It checks the requirements (and says where to get what is missing), builds `bin\serverz.exe`, `runz.exe`,
 `clinfo.exe`, `transcribez.exe` and `zero_recorder.exe` when they are missing or older than the sources, checks the GPU (OpenCL 3.0, DP4a, sub-groups, GPU
 memory), downloads the chosen models into the Hugging Face cache without Python (Gemma with its drafter and image
-projector; `35b-gsq` and `flash-ar4` are converted with Python, then it installs `huggingface_hub` / `numpy` with
-pip after asking), and
+projector; `35b-gsq` is converted by `bin\convert_gsq.exe`, `flash-ar4` imported by `bin\import_autoround_experts.exe`),
+and
 connects Pi (`zero-pi`, `zero-server`, Pi's model list with each model's context). Running it again only does what
 is missing: a model the server already finds (in the Hugging Face cache, as a package in
 `%USERPROFILE%\.inferzero\zero\models` or in a folder of `model-dirs.txt`) is not downloaded again. Double-clicked,
@@ -102,7 +102,7 @@ safetensors, not GGUF, so it is imported once (pull request #22). `setup -Models
 
 1. downloads the checkpoint's expert shards at the revision the importer checks (~78 GB; the shards without experts
    are skipped) and the file list with every file's SHA-256 (`model-info.json`, from the Hugging Face API);
-2. imports the INT4 experts into an expert file (`tools\import_autoround_experts.py`, ~64 GB), checking every code
+2. imports the INT4 experts into an expert file (`bin\import_autoround_experts.exe`, ~64 GB), checking every code
    and scale;
 3. downloads Unsloth's UD-Q4_K_XL Flash Next (~111 GB) for everything but the experts, and its image projector;
 4. writes the package (`bin\import_autoround_pack.exe`, ~32 GB) next to the expert file in
@@ -124,7 +124,7 @@ affected. A run stopped halfway goes on where it stopped (the downloads resume; 
 | CPU | AVX2 (every Core Ultra has it; the build uses `/arch:AVX2`) | |
 | Graphics driver | Intel Arc & Iris Xe graphics driver (it contains the OpenCL runtime; nothing else to install) | 32.0.101.9033 |
 | Compiler | Visual Studio 2026 Build Tools with the **Desktop development with C++** workload (MSVC + Windows SDK); not for the ready-to-use package | VS Build Tools 18 |
-| Python | only for the `35b-gsq` conversion (Python 3.10 or newer with `huggingface_hub` and `numpy`) and the `flash-ar4` import (3.11 or newer, `numpy`); downloads use `curl.exe` | Python 3.14 |
+| Python | not needed: downloads use `curl.exe`, the `35b-gsq` conversion and the `flash-ar4` import are exes of the package | |
 | Pi (optional) | the Pi coding agent, which runs on Node.js | Node.js 24 |
 | Disk | 3–13 GB per model | |
 
@@ -192,35 +192,30 @@ options of every kernel, to read the driver's own assembly with Intel's `ocloc d
 
 ## 6. Download models
 
-Without Python: `powershell -File scripts\get-models.ps1 4b asr` (the keys of `setup.cmd -Models`, from
-`scripts\model-catalog.ps1`), or any repository's files with
-`powershell -File scripts\hf-get.ps1 <org/name> <file> ...` (curl.exe, resumed after a cut, SHA256 checked, into
-the Hugging Face cache). With Python, install the Hugging Face command-line tool once:
-
-```powershell
-python -m pip install -U huggingface_hub
-```
-
-Then download the models you want. `hf download` puts them in the Hugging Face cache
-(`%USERPROFILE%\.cache\huggingface\hub`), which is where `zero-server` / `zero-pi` look for them, so no paths have to
-be configured. For the Gemma models, the drafter (`mtp-*.gguf`) and the image projector (`mmproj-*.gguf`) must sit
-in the same folder as the model: download them from the same repository in the same command.
+No Python: `powershell -File scripts\get-models.ps1 4b asr` downloads models by the keys of `setup.cmd -Models`
+(`scripts\model-catalog.ps1`; a Gemma model with its drafter copied next to it), and
+`powershell -File scripts\hf-get.ps1 <org/name> <file or folder> ...` any repository's files. Both use curl.exe,
+resume after a cut, check each file's SHA256 and put the files in the Hugging Face cache
+(`%USERPROFILE%\.cache\huggingface\hub`, or `HF_HUB_CACHE` / `HF_HOME`), which is where `zero-server` / `zero-pi`
+look for them, so no paths have to be configured. For the Gemma models, the drafter (`mtp-*.gguf`) and the image
+projector (`mmproj-*.gguf`) must sit in the same folder as the model. (Hugging Face's own `hf download` fills the
+same cache, if you have it.)
 
 | Alias | Model | Command | Size |
 |---|---|---|---|
-| `27b` | Qwen3.8 27B GSQ-RCO (with MTP head) | `hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | 12.1 GB |
-| `9b` | Qwen3.5 9B (with MTP head) | `hf download unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-UD-Q4_K_XL.gguf` | 6.1 GB |
-| `4b` | Qwen3.5 4B (with MTP head) | `hf download unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf` | 3.0 GB |
-| `g12` | Gemma 4 12B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-12B-it-qat-q4_0-gguf` and `hf download unsloth/gemma-4-12B-it-qat-GGUF mtp-gemma-4-12B-it.gguf` | 7.0 + 0.2 + 0.3 GB |
-| `g31` | Gemma 4 31B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder. On a 32 GB laptop part of its weights go into host memory (see USAGE.md) | `hf download google/gemma-4-31B-it-qat-q4_0-gguf` and `hf download unsloth/gemma-4-31B-it-qat-GGUF mtp-gemma-4-31B-it.gguf` | 17.7 + 1.2 + 0.3 GB |
-| `e4b` | Gemma 4 E4B QAT (Google, Q4_0); drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-E4B-it-qat-q4_0-gguf gemma-4-E4B_q4_0-it.gguf gemma-4-E4B-it-mmproj.gguf` (images, audio) and `hf download unsloth/gemma-4-E4B-it-qat-GGUF mtp-gemma-4-E4B-it.gguf` | 5.2 + 0.1 GB |
-| `g26` | Gemma 4 26B-A4B QAT (Google, Q4_0) + image projector; drafter `mtp-gemma-4-26B-A4B-it.gguf` from Unsloth's Gemma 4 26B-A4B QAT GGUF repository, copied next to the model (optional: ~25 tok/s with it) | `hf download google/gemma-4-26B-A4B-it-qat-q4_0-gguf` | 14.4 + 1.2 GB |
-| `35b` | Qwen3.6 35B-A3B UD-IQ4_XS (Unsloth's MTP repository: MTP block + image projector) | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-BF16.gguf` | 18.2 GB + projector |
-| `35b-mtp` | Qwen3.6 35B-A3B UD-Q3_K_M of the same repository | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q3_K_M.gguf mmproj-BF16.gguf` | |
+| `27b` | Qwen3.8 27B GSQ-RCO (with MTP head) | `powershell -File scripts\get-models.ps1 27b` | 12.1 GB |
+| `9b` | Qwen3.5 9B (with MTP head) | `powershell -File scripts\get-models.ps1 9b` | 6.1 GB |
+| `4b` | Qwen3.5 4B (with MTP head) | `powershell -File scripts\get-models.ps1 4b` | 3.0 GB |
+| `g12` | Gemma 4 12B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder | `powershell -File scripts\get-models.ps1 g12` | 7.0 + 0.2 + 0.3 GB |
+| `g31` | Gemma 4 31B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder. On a 32 GB laptop part of its weights go into host memory (see USAGE.md) | `powershell -File scripts\get-models.ps1 g31` | 17.7 + 1.2 + 0.3 GB |
+| `e4b` | Gemma 4 E4B QAT (Google, Q4_0); drafter from Unsloth, copied into the model's snapshot folder | `powershell -File scripts\get-models.ps1 e4b` (images, audio) | 5.2 + 0.1 GB |
+| `g26` | Gemma 4 26B-A4B QAT (Google, Q4_0) + image projector; drafter `mtp-gemma-4-26B-A4B-it.gguf` from Unsloth's Gemma 4 26B-A4B QAT GGUF repository, copied next to the model (optional: ~25 tok/s with it) | `powershell -File scripts\hf-get.ps1 google/gemma-4-26B-A4B-it-qat-q4_0-gguf gemma-4-26B_q4_0-it.gguf gemma-4-26B-it-mmproj.gguf` | 14.4 + 1.2 GB |
+| `35b` | Qwen3.6 35B-A3B UD-IQ4_XS (Unsloth's MTP repository: MTP block + image projector) | `powershell -File scripts\get-models.ps1 35b` | 18.2 GB + projector |
+| `35b-mtp` | Qwen3.6 35B-A3B UD-Q3_K_M of the same repository | `powershell -File scripts\hf-get.ps1 unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q3_K_M.gguf mmproj-BF16.gguf` | |
 | (`35b`) | Qwen3.6 35B-A3B, 2-bit GSQ, no MTP (what `setup.cmd -Models 35b` downloads) | see step 7 (download 12.6 GB, then convert) | 11.7 GB |
-| `flash` | Qwen3.8 Flash Next (inferzero only); images: an image projector copied into the model's folder (the server looks only next to the model; with a package: next to the package) | `hf download ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF --include "IQ3_S/*"`; projector `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf` | 54.8 + 28.8 GB + 0.9 GB |
-| | DFlash2 drafters (optional, see `--dflash` below) | `hf download z-lab/Qwen3.8-27B-DFlash2` / `hf download incoai/Qwen3.6-35B-A3B-DFlash2` | 3.85 / 1.05 GB |
-| | Speech to text (optional, `zero-server start -Whisper auto`): Whisper large-v3, and Qwen3-ASR 1.7B (the default speech model; its mmproj next to it) | `hf download Systran/faster-whisper-large-v3` and `hf download unslothai/Qwen3-ASR-1.7B-GGUF --include "*Q8_0*" "*mmproj*"` | 2.9 + 2.4 GB |
+| `flash` | Qwen3.8 Flash Next (inferzero only); images: an image projector copied into the model's folder (the server looks only next to the model; with a package: next to the package) | `powershell -File scripts\get-models.ps1 flash`; projector `powershell -File scripts\hf-get.ps1 bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf` | 54.8 + 28.8 GB + 0.9 GB |
+| | DFlash2 drafters (optional, see `--dflash` below) | `powershell -File scripts\hf-get.ps1 z-lab/Qwen3.8-27B-DFlash2 config.json model.safetensors` / `powershell -File scripts\hf-get.ps1 incoai/Qwen3.6-35B-A3B-DFlash2 config.json model.safetensors` | 3.85 / 1.05 GB |
+| | Speech to text (optional, `zero-server start -Whisper auto`): Whisper large-v3, and Qwen3-ASR 1.7B (the default speech model; its mmproj next to it) | `powershell -File scripts\get-models.ps1 whisper asr` | 2.9 + 2.4 GB |
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).
@@ -240,16 +235,18 @@ downloaded (with several, the first found keeps the shortcut); `35b-s` is Unslot
 
 ISTA-DASLab publishes this model only as a safetensors checkpoint (compressed-tensors: 2-bit routed experts
 `{-2,-1,0,1} x bf16 scale per 128`, int8 attention / DeltaNet / shared experts / lm_head). Convert it once
-(about 2.5 minutes; it needs `numpy`, and the tokenizer metadata comes from any GGUF with the same vocabulary, e.g.
-the 4B from step 6):
+(`setup.cmd -Models 35b-gsq` does all of this; by hand, with `bin\convert_gsq.exe` of the package, or built with
+`.\build.ps1 tools\convert_gsq.cpp`; no Python). The tokenizer metadata comes from any GGUF with the same
+vocabulary, e.g. the 4B from step 6:
 
 ```powershell
-python -m pip install -U numpy
-hf download ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ
-$snap = (Get-ChildItem "$env:USERPROFILE\.cache\huggingface\hub\models--ISTA-DASLab--Qwen3.6-35B-A3B-2Bit-GSQ\snapshots" | Select-Object -First 1).FullName
+. .\scripts\hf-get.ps1
+$repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"
+$files = @(Invoke-RestMethod "https://huggingface.co/api/models/$repo/tree/main?recursive=1" | ForEach-Object { $_ } | Where-Object { $_.type -eq "file" } | ForEach-Object { $_.path })
+$snap = Get-HfFiles $repo $files
 $vocab = (Get-ChildItem "$env:USERPROFILE\.cache\huggingface\hub" -Recurse -Filter "Qwen3.5-4B-UD-Q4_K_XL.gguf" | Select-Object -First 1).FullName
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.inferzero\models" | Out-Null
-python tools\convert_gsq.py $snap "$env:USERPROFILE\.inferzero\models\Qwen3.6-35B-A3B-GSQ2-arc.gguf" --vocab-from $vocab
+bin\convert_gsq.exe $snap "$env:USERPROFILE\.inferzero\models\Qwen3.6-35B-A3B-GSQ2-arc.gguf" --vocab-from $vocab
 ```
 
 The int8 matrices become Q8_0 with the same int8 values (f16 scales), the experts keep their exact 2-bit codes in
@@ -328,7 +325,7 @@ test uses port 8091 and needs the GPU memory.
 | `cannot load OpenCL.dll` / `no OpenCL GPU found` | Install or update the Intel graphics driver (step 2) and restart. |
 | `build failed` right away / `No Visual Studio C++ compiler found` | Visual Studio's C++ workload is missing (step 3); to use a particular installation, set `$env:ARC_VCVARS` to its `vcvars64.bat`. `setup.cmd` checks this. The compiler output of `setup.cmd` is in `%USERPROFILE%\.inferzero\build.log`. |
 | `running scripts is disabled on this system` | Run the script through `powershell -ExecutionPolicy Bypass -File ...` (see the top of this section). |
-| `Model file ... not found` | Download it with `hf download` (step 6); `zero-server` searches `%USERPROFILE%\.inferzero\models` and the Hugging Face cache (models on another drive: [USAGE.md, section 8](../USAGE.md#8-troubleshooting)). |
+| `Model file ... not found` | Download it with `scripts\get-models.ps1` or `scripts\hf-get.ps1` (step 6); `zero-server` searches `%USERPROFILE%\.inferzero\models` and the Hugging Face cache (models on another drive: [USAGE.md, section 8](../USAGE.md#8-troubleshooting)). |
 | The first start of a model takes minutes | The driver compiles the kernels once; later starts use `%USERPROFILE%\.inferzero\kernels`. |
 | Gemma does not use its drafter | `mtp-gemma-4-*-it.gguf` must be in the same folder as the model GGUF (download it from the same repository). |
 | Later problems (the server stops while loading, Windows gets slow, Pi's `web_search`, slow first sessions, models on another drive) | [USAGE.md, section 8](../USAGE.md#8-troubleshooting). |

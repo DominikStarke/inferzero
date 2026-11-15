@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-15: no Python in the release packages: the 35b-gsq conversion and the AutoRound import in C++
+
+The packages hold no `.py` file any more, and no step of setup, the launchers, the downloads or the tests a user
+runs needs Python, on Windows as on Linux.
+- **`bin\convert_gsq.exe`** (`tools/convert_gsq.cpp`) replaces `tools/convert_gsq.py` for `setup -Models 35b-gsq`;
+  setup downloads the checkpoint with `scripts\hf-get.ps1` (curl) instead of `huggingface_hub`. On fake GSQ
+  checkpoints, one with the real 4B vocabulary (109.5 MB out), it writes the same GGUF as the Python script, byte for
+  byte, and refuses the same bad inputs with the same messages. `A = -exp(A_log)` follows NumPy's float32 `exp`
+  kernel (AVX2 + FMA), checked against NumPy over all 2^32 float32 inputs: 0 differences.
+- **`bin\import_autoround_experts.exe`** (`tools/import_autoround_experts.cpp`) replaces
+  `tools/import_autoround_experts.py` for `setup -Models flash-ar4`: byte-identical expert files on fake checkpoints
+  (3 layers x 64 experts, 535 MB out; 2 x 4), the same checks (SHA-256 of every shard, the pinned revision, every
+  code and scale decoded again) and refusals; about 1-3 s against ~10 s for the Python on the same data (the
+  shards hashed ahead on two threads, the experts converted on every core). A failed run removes its partial file.
+- **`bench\report.ps1`** replaces `bench\report.py` (`bench\run_all.ps1`'s tables, the same output byte for byte on
+  `bench\results\results.jsonl`); **`tests\test_tools.ps1`** replaces `tests\test_tools.py` (the server API check of
+  `tests\run_tests.ps1`: tool call, then prefix reuse; checked against serverz with the 4B).
+- **The packages** (`scripts/make-package.ps1`, `scripts/make-package-linux.sh`) copy every tracked file but the
+  `.py` ones; the Windows package adds the two converters to `bin\`. The developers' Python scripts (the Jinja2
+  template checks, simulators, table generators) stay in the repository; `run_tests.ps1` skips the two Jinja2 checks
+  where they are absent.
+- Docs: `docs/install.md` (the download table with `get-models.ps1` / `hf-get.ps1`, the GSQ conversion by hand),
+  `docs/autoround.md`, setup's help, the catalog's texts. CI builds the converters.
+- The engine and the kernels are unchanged: the same logits on every GPU.
 ## 2026-11-15: no Python on Linux either: the launcher, its downloads, tests and the benchmarks in bash
 
 inferzero is a standalone engine: nothing a user runs to install or use it needs Python (the README's promise for
@@ -22,7 +46,8 @@ Windows). The Linux launcher and the benchmark ports of the last two days broke 
   file into a scratch cache (SHA-256 checked; a second run finds both there); the 4B started from the cache, `/health`,
   the web UI, a chat answer, a busy port refused, SIGTERM ending the server; `decode_try.sh` against the real `runz`,
   every row parsed.
-- Still Python, and optional on Windows: the `35b-gsq` conversion and the `flash-ar4` AutoRound import (NumPy).
+- Still Python, and optional on Windows: the `35b-gsq` conversion and the `flash-ar4` AutoRound import (NumPy);
+  both C++ since the entry above.
 
 ## 2026-11-15: a self audit and a DeepSeek audit of the day's changes; `website_bench` and `ref_forward` on Linux
 
