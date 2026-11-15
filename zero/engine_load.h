@@ -165,8 +165,16 @@
   // ARC_W8_PARTIAL_GB=auto: the layer matrices decoded just in time get a resident W8 copy, in load order, while the
   // GPU share less driver_slack(), what is allocated, the server's state snapshots, the room kept for encoders and
   // 0.5 GiB more leaves room. The copy is made by the same decode_w8 as the just-in-time one: bit-identical.
+  // Discrete cards only: on an iGPU the GPU's memory is the RAM Windows runs in, and a large resident copy costs more
+  // than it saves (a Core Ultra 9 285H, Arc 140T, 64 GB: the 27B kept 26.2 GiB resident, 39.5 GiB in all, and its 4K
+  // prompt fell from 340-357 to 176 tok/s; PascalSoftwares, issue #5, 2026-11-15). A number still works there.
   void w8_part_auto() {
     if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe) return;
+    if (zrt::integrated()) {
+      zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "
+                    "(a number of GB, e.g. ARC_W8_PARTIAL_GB=4, still keeps that much resident)\n");
+      return;
+    }
     const double GiB = 1073741824.0;
     double room = (double)device_mem() - driver_slack() - (double)gpu_bytes - 0.5 * GiB -
                   (double)snapshot_bytes() * std::max(opt.slots, 1) - (double)opt.stream_reserve;

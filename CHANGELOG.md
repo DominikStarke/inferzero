@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-15: `ARC_W8_PARTIAL_GB=auto` for discrete cards only
+
+- On an Arc 140T (a Core Ultra 9 285H with 64 GB, PascalSoftwares, issue #5) `auto` kept 26.2 GiB of the 27B's
+  decoded weights resident, 39.5 GiB on the GPU in all, and the 4K prompt fell from 340-357 to 176 tok/s: there the
+  GPU's memory is the RAM Windows runs in. On iGPUs `auto` is now ignored, with a line saying so; a number of GB
+  (`ARC_W8_PARTIAL_GB=4`) still works there. Discrete cards are unchanged.
+- The same run's generation sweep (`decode_try.ps1`): no GEMV switch gains on the 140T (plain 6.05 tok/s; the read
+  is 84 % of the measured 79 GB/s, ~74 % of the DDR5-5600's 89.6 GB/s). The website's 140T prompt bar is that run's
+  357 tok/s (release 2026.11.15.11).
 ## 2026-11-15: `ARC_W8_PARTIAL_GB=auto`: resident decoded weights in the room the context leaves (opt-in)
 
 - **Why:** a Pro B70 runs the 27B with its weights decoded again for every prompt (`W8 just-in-time`: raw + W8 are
