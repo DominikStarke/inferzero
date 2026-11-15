@@ -425,6 +425,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     npu_setup();  // (ARC_NPU=1 only)
     if (opt.slots > 1) add_slots(opt.slots);  // (before the expert cache takes what is left)
+    w8_part_auto();  // (ARC_W8_PARTIAL_GB=auto: resident W8 in the room the context left, engine_load.h)
     if (xc_) size_expert_cache();
     // (--ctx auto: room for an expert cache of 90 % of the experts, as far as what the weights and buffers leave
     //  allows with 128K tokens of context (32K until 18 Oct), or at least 3/4 of it. The context took the memory

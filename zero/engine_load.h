@@ -141,18 +141,50 @@
   // decoded just in time (raw + W8 above --budget), the layer matrices loaded first, up to x GB of decoded W8, keep
   // that copy resident, so a prompt chunk decodes only the rest. The same values as decoded just in time (one decoder),
   // so the logits are the same bit for bit. Not with a split model or MoE (their own plans); the head stays raw.
+  // ARC_W8_PARTIAL_GB=auto (2026-11-15, opt-in until a discrete card measures it): the same, sized by what is left once
+  // the model, its buffers and its context are on the GPU (w8_part_auto, after alloc_buffers): a Pro B70's 27B kept
+  // 13.3 GiB of its 32 GB busy at a 4K context, and 16 GB of resident W8 took its 4K prompt 2,217 -> 2,358 tok/s
+  // (joshdev-de, issue #27). A dry load (--ctx auto's sizing) takes none, so the context is what it was.
   double w8_part_left_ = -1, w8_part_bytes_ = 0;
   int w8_part_n_ = 0;
+  static bool w8_part_auto_env() {
+    static const bool v = getenv("ARC_W8_PARTIAL_GB") && std::string(getenv("ARC_W8_PARTIAL_GB")) == "auto";
+    return v;
+  }
   bool w8_part_take(int role, size_t bytes) {
     if (w8_part_left_ < 0) {
       const char* e = getenv("ARC_W8_PARTIAL_GB");
-      w8_part_left_ = e && !tp_on() && !hp.moe ? std::max(0.0, atof(e)) * 1073741824.0 : 0.0;
+      w8_part_left_ = e && !w8_part_auto_env() && !tp_on() && !hp.moe ? std::max(0.0, atof(e)) * 1073741824.0 : 0.0;
     }
     if (role >= kRoles - 1 || (double)bytes > w8_part_left_) return false;
     w8_part_left_ -= (double)bytes;
     w8_part_bytes_ += (double)bytes;
     ++w8_part_n_;
     return true;
+  }
+  // ARC_W8_PARTIAL_GB=auto: the layer matrices decoded just in time get a resident W8 copy, in load order, while the
+  // GPU share less driver_slack(), what is allocated, the server's state snapshots, the room kept for encoders and
+  // 0.5 GiB more leaves room. The copy is made by the same decode_w8 as the just-in-time one: bit-identical.
+  void w8_part_auto() {
+    if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe) return;
+    const double GiB = 1073741824.0;
+    double room = (double)device_mem() - driver_slack() - (double)gpu_bytes - 0.5 * GiB -
+                  (double)snapshot_bytes() * std::max(opt.slots, 1) - (double)opt.stream_reserve;
+    const double room0 = room;
+    for (Layer& L : layers_)
+      for (GpuWeight* w : {&L.qkv, &L.z, &L.ssm_out, &L.ab, &L.wq, &L.wk, &L.wv, &L.wo, &L.gate, &L.up, &L.down}) {
+        if (!w->raw || w->wq || w->type == GGML_Q8_0 || !is_w8_type(w->type) || w->role >= kRoles - 1) continue;
+        const size_t qb = w8_bytes_q(w->N, w->K), hb = w8_bytes_h(w->N, w->K);
+        if ((double)(qb + hb) > room) continue;
+        w->wq = buf(qb);
+        w->wh = buf(hb);
+        decode_w8(*w, w->wq, w->wh);
+        room -= (double)(qb + hb);
+        w8_part_bytes_ += (double)(qb + hb);
+        ++w8_part_n_;
+      }
+    if (w8_part_n_ == 0)
+      zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto: no room for resident W8 (%.2f GiB left after the context)\n", room0 / GiB);
   }
   GpuWeight make_weight(uint32_t type, const uint8_t* data, size_t nbytes, int N, int K, int role = kRoles - 1,
                         const cl_mem* view = nullptr) {

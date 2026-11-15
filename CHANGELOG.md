@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-15: `ARC_W8_PARTIAL_GB=auto`: resident decoded weights in the room the context leaves (opt-in)
+
+- **Why:** a Pro B70 runs the 27B with its weights decoded again for every prompt (`W8 just-in-time`: raw + W8 are
+  ~39 GB, more than its 32 GB) while only 13.3 GiB of the card is in use at a 4K context; `h8_decode` is 159 ms of
+  its 4K prompt. By hand, 16 GB of resident W8 (`ARC_W8_PARTIAL_GB=16`) took that prompt 2,217 -> 2,358 tok/s
+  (joshdev-de, issue #27).
+- **What:** `ARC_W8_PARTIAL_GB=auto` (`w8_part_auto`, `zero/engine_load.h`) gives the layer matrices a resident W8
+  copy, in load order, once the model, its buffers and its context are on the GPU, while the GPU share less the
+  driver's reserve, the server's snapshots, the encoders' room and 0.5 GiB more leaves room. The automatic context
+  (`--ctx auto`) is sized as before: its dry load takes none. A number (`ARC_W8_PARTIAL_GB=16`) works as before.
+- **Laptop** (4B with `--budget 0`, 1,798-token prompt): first token 3,119 ms just in time, 2,140 ms with `auto`
+  (176 matrices, 3.57 GiB), 2,096 ms fully resident. Logits identical in all three, and with a partial 1.5 GB; serverz
+  with `--ctx auto` keeps its 262,144 tokens.
+- Opt-in until a B70 and a B60 measure it.
 ## 2026-11-15: 4 MTP drafts a step by default for the 27B on discrete cards
 
 - **Why:** joshdev-de measured the 27B's MTP drafts on a Pro B70 (issue #27, release 2026.11.15.09): through
