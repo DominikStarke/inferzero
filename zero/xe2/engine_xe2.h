@@ -261,6 +261,131 @@
     return ok && built;
   }
 
+  // ---- attn_fx (issue #27, 2026-11-15; zero/kernels/attn_fx.cl): the plain causal prompt attention as flash attention
+  // on XMX for discrete Xe2 / Xe3 cards: 8 query tokens per sub-group (full 8-row int8 DPAS; attn_q8: 1 token x <= 4
+  // heads), the same int8 K / V cache and output, P quantized per 32 keys instead of 16 (not bit-identical: checked at
+  // start against attn_q8 on random data within a tolerance; KL in docs/before-after.md). A Pro B70's 27B: attention
+  // 4K 118 -> 45 ms, 16K 1,709 -> 618 ms, 64K 26.96 -> 9.64 s (prompt 1,284 -> 1,944 tok/s). Windows, non-causal
+  // spans and the sparse masks stay on attn_q8. On by default on discrete cards (16-lane XMX); ARC_ATTN_FX=0: attn_q8,
+  // =1 forces it, =2 without the check (the kernel's timing ablations); ARC_ATTN_FX_WG="NT,NH": token groups of 8 x q
+  // heads per work-group; ARC_ATTN_FX_PF=0: no L1 prefetch; ARC_ATTN_FX_DEFS: further -D options (tests)
+  std::string attnfx_src_;
+  cl_kernel k_attn_fx_ = nullptr;
+  int fx_nt_ = 0, fx_nh_ = 0;
+  bool attnfx_wanted() const {
+    static const int e = getenv("ARC_ATTN_FX") ? (atoi(getenv("ARC_ATTN_FX")) != 0 ? 1 : 0) : -1;
+    const bool on = e < 0 ? !zrt::integrated() : e == 1;  // (on by default on discrete cards; iGPUs not measured)
+    const int hd = hp.qwen3 ? hp.head_dim : 256;
+    return on && cl_.xmx && !cl_.sg8 && !hp.gemma && !hp.swa_rings && hd % 32 == 0 && hd <= 256 && !attn_q8_defs_.empty();
+  }
+  std::string attnfx_defs() const {
+    const int hd = hp.qwen3 ? hp.head_dim : 256, hpg = hp.n_head / hp.n_head_kv;
+    static const bool pf = !getenv("ARC_ATTN_FX_PF") || atoi(getenv("ARC_ATTN_FX_PF")) != 0;
+    // (ARC_ATTN_FX_DEFS: further -D options for the kernel's variants, tests)
+    static const std::string extra = getenv("ARC_ATTN_FX_DEFS") ? std::string(" ") + getenv("ARC_ATTN_FX_DEFS") : "";
+    return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
+           " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + (pf ? " -DFX_PF" : "") + extra;
+  }
+  void attnfx_init() {
+    if (!attnfx_wanted()) return;
+    const int hpg = hp.n_head / hp.n_head_kv;
+    // (32 sub-groups, every thread slot of an Xe-core with 256 registers; two q heads where the GQA ratio is even: a
+    //  B70's 27B 16K prompt, attention 965 ms at 4 x 6, 772 at 5 x 6, 707 at 16 x 2, 710 at 32 x 1)
+    int nh = hpg % 2 == 0 ? 2 : 1, nt = 32 / nh;
+    if (const char* e = getenv("ARC_ATTN_FX_WG")) sscanf(e, "%d,%d", &nt, &nh);
+    if (nh < 1 || hpg % nh) nh = hpg;
+    while (nh > 1 && nt * nh > 32) {  // (at most 32 sub-groups: the largest divisor of the GQA ratio that fits)
+      int d = nh - 1;
+      while (hpg % d) --d;
+      nh = d;
+    }
+    if (nt < 1 || nt * nh > 32) nt = std::max(1, 32 / nh);
+    fx_nt_ = nt, fx_nh_ = nh;
+    static std::mutex mu;
+    static std::map<std::string, double> known;  // (-1: failed)
+    const std::string key = cl_.device_id + "|" + attnfx_defs();
+    std::lock_guard<std::mutex> g(mu);
+    auto it = known.find(key);
+    if (it == known.end()) {
+      // (ARC_ATTN_FX=2: no check, for the kernel's timing ablations, whose results are wrong on purpose)
+      const bool nocheck = getenv("ARC_ATTN_FX") && atoi(getenv("ARC_ATTN_FX")) == 2;
+      const double d = nocheck ? 0.0 : attnfx_check();
+      it = known.emplace(key, d).first;
+      if (d >= 0)
+        zlog::eprintf("inferzero: prompt attention as flash attention on XMX (attn_fx, %d x 8 tokens x %d heads a work-group; "
+                      "against attn_q8: max difference %.1e of the output range)\n", nt, nh, d);
+    }
+    if (it->second >= 0) k_attn_fx_ = kernel("attnfx", attnfx_defs(), "attn_fx");
+  }
+  // gws / lws of attn_fx for T tokens and nkv KV heads
+  void attnfx_grid(int T, int nkv, size_t gws[2], size_t lws[2]) const {
+    const int hpg = hp.n_head / hp.n_head_kv, tq = 8 * fx_nt_, lsz = 16 * fx_nt_ * fx_nh_;
+    gws[0] = (size_t)(T + tq - 1) / tq * lsz, gws[1] = (size_t)nkv * (hpg / fx_nh_);
+    lws[0] = (size_t)lsz, lws[1] = 1;
+  }
+  // attn_fx against the current attn_q8 (attn_x or the DP4a form: bit-identical to each other) on random data: one KV
+  // head and its q heads, two cases (40 tokens at 0 over a 48-slot cache; 45 tokens at 27 over 80 slots: a partial span,
+  // the causal edge inside a span, earlier keys). Returns the largest difference over the largest output value, or -1
+  double attnfx_check() {
+    const int hpg = hp.n_head / hp.n_head_kv, hd = hp.qwen3 ? hp.head_dim : 256, nh = hpg, tpw = attn_tpw();
+    const double tol = 2e-2;
+    uint32_t seed = 4247;
+    auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
+    std::vector<cl_mem> bufs;
+    auto mk = [&](const void* p, size_t bytes) { cl_mem m = buf(bytes, p); bufs.push_back(m); return m; };
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
+    cl_.soft_fail = true;
+    double worst = 0;
+    try {
+      const struct { int M, p0, cap; } cases[2] = {{40, 0, 48}, {45, 27, 80}};
+      for (const auto& c : cases) {
+        const int nbc = c.cap / 16, blk_u = 4 * hd;
+        std::vector<uint32_t> qi((size_t)c.M * nh * hd / 4), kq((size_t)nbc * blk_u), vq((size_t)nbc * blk_u);
+        for (auto& v : qi) v = rnd();
+        for (auto& v : kq) v = rnd();
+        for (auto& v : vq) v = rnd();
+        std::vector<float> qsc((size_t)c.M * nh), ksc((size_t)nbc * 16), vsc((size_t)nbc * 16), out((size_t)c.M * nh * hd);
+        for (auto& v : qsc) v = 1e-5f * (1 + rnd() % 100);
+        for (auto& v : ksc) v = 1e-3f * (1 + rnd() % 100);
+        for (auto& v : vsc) v = 1e-3f * (1 + rnd() % 100);
+        const cl_mem bq = mk(qi.data(), qi.size() * 4), bqs = mk(qsc.data(), qsc.size() * 4), bk = mk(kq.data(), kq.size() * 4),
+                     bks = mk(ksc.data(), ksc.size() * 4), bv = mk(vq.data(), vq.size() * 4), bvs = mk(vsc.data(), vsc.size() * 4);
+        std::vector<float> res[2];
+        for (int x = 0; x < 2; ++x) {
+          const cl_mem bo = mk(out.data(), out.size() * 4);
+          cl_kernel k = x == 0 ? k_attn_q8_ : kernel("attnfx", attnfx_defs(), "attn_fx");
+          int cx = c.cap, nn = nh, p0 = c.p0, mm = c.M, win = 0, nlo = -1, nhi = -1;
+          set_args(k, 0, bq, bqs, bk, bks, bv, bvs, cx, nn, p0, mm, bo, win, nlo, nhi);
+          size_t gws[2] = {(size_t)(c.M + tpw - 1) / tpw * 512, 1}, lws[2] = {512, 1};
+          if (x == 1) attnfx_grid(c.M, 1, gws, lws);
+          run("attnfx_check", k, 2, gws, lws);
+          res[x].resize(out.size());
+          CL_CHECK(clEnqueueReadBuffer(cl_.queue, bo, CL_TRUE, 0, res[x].size() * 4, res[x].data(), 0, nullptr, nullptr));
+        }
+        double mref = 0, mdiff = 0;
+        for (size_t i = 0; i < out.size(); ++i) {
+          mref = std::max(mref, (double)std::fabs(res[0][i]));
+          const double d = std::fabs((double)res[0][i] - res[1][i]);
+          mdiff = std::isfinite(d) ? std::max(mdiff, d) : 1e30;
+        }
+        worst = std::max(worst, mref > 0 ? mdiff / mref : 1e30);
+      }
+      if (worst > tol) {
+        zlog::eprintf("inferzero: attn_fx differs from attn_q8 by %.2e of the output range (more than %.0e): attn_q8 "
+                      "(please report)\n", worst, tol);
+        worst = -1;
+      }
+    } catch (const zrt::GpuWaitError&) {
+      for (cl_mem& m : bufs) free_buf(m);
+      throw;
+    } catch (const std::exception& e) {
+      zlog::eprintf("inferzero: attn_fx does not build here (%s): attn_q8\n", e.what());
+      worst = -1;
+    }
+    for (cl_mem& m : bufs) free_buf(m);
+    return worst;
+  }
+
   // ---- the chunked DeltaNet on XMX (QUEUE F33.1, ARC_GDN_CHUNK=3; zero/kernels/gdn_x.cl): gdn_chunk_x where DPAS
   // takes 16-lane sub-groups (discrete Xe2 / Xe3), gdn_chunk_x8 where it takes 8 (the Arc 140T); without XMX
   // (or when the check fails) layer_gdn runs gdn_recur. ARC_GDN_XEMU=1 / 8 / 16: DPAS emulated on any GPU, in its own / the 8- / 16-lane form

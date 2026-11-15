@@ -391,6 +391,14 @@
       set_args(kp, 0, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, cx, nn, p0, TT, o_, w);
       size_t gws[2] = {(size_t)(T + c.tpw - 1) / c.tpw * lsz, (size_t)nkv}, lws[2] = {(size_t)lsz, 1};
       run("attention", kp, 2, gws, lws);
+    } else if (opt.attn_int8 && k_attn_fx_) {
+      // (plain causal prompts as flash attention on XMX, ARC_ATTN_FX=1: zero/xe2/engine_xe2.h)
+      int p0 = pos, cx = ctx;
+      int win = 0, nlo = -1, nhi = -1;
+      set_args(k_attn_fx_, 0, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, cx, nh, p0, T, o_, win, nlo, nhi);
+      size_t gws[2], lws[2];
+      attnfx_grid(T, nkv, gws, lws);
+      run("attention", k_attn_fx_, 2, gws, lws);
     } else if (opt.attn_int8) {
       int p0 = pos, cx = ctx;
       int win = 0, nlo = -1, nhi = -1;

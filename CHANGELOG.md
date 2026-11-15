@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-15: the prompt attention as flash attention on XMX on discrete cards (64K prompts +51 % on a B70)
+
+- **`attn_fx`** (`zero/kernels/attn_fx.cl`, `zero/xe2/engine_xe2.h`), on by default on discrete cards with 16-lane
+  XMX: the plain causal prompt attention laid out as FlashAttention-2 (vLLM's Xe2 chunk-prefill kernel: 8 query tokens
+  per sub-group, 32-key tiles), with attn_q8's int8 q / K / V and its online softmax. Each int8 DPAS now has its 8 rows
+  (attn_q8: one token x 3 heads in a 4-row DPAS); K and V are read straight from the int8 cache (their layouts are the
+  DPAS B operand's) with the next span prefetched into L1; 32 sub-groups a work-group (16 token groups x 2 q heads for
+  the 27B).
+- A Pro B70's 27B IQ3_S (issue #27): attention at 4K / 16K / 64K 117 ms / 1.71 s / 26.94 s -> 45 ms / 625 ms / 9.63 s;
+  prompt 2,310 -> 2,406, 2,123 -> 2,477, 1,284 -> 1,943 tok/s. vLLM 0.33's kernel on the same card and shape: 10.89 s
+  (fp16 KV), 20.45 s (fp8 KV).
+- Not bit-identical (P quantized per 32 keys instead of 16): checked at start against attn_q8 on random data within
+  2e-2 of the output range (1.1e-2 measured); KL against the plain path 0.00152 -> 0.00146 (512-token chunks), 0.00141
+  -> 0.00138 (one 16K chunk). Windows, images (non-causal spans), Flash Next's sparse masks, Gemma and iGPUs keep
+  attn_q8. `ARC_ATTN_FX=0` turns it off; `ARC_ATTN_FX_WG`, `ARC_ATTN_FX_PF`, `ARC_ATTN_FX_DEFS` for tests.
+- IGC 2.41 crashed on two forms of the kernel ("Floating point exception": ushort block reads of q; a branch on the
+  running max next to the row reduction); both avoided, noted in the kernel.
+
 ## 2026-11-15: a split model's sum waits count from the last expert read from the SSD
 
 - **Why:** manoreken2's DeepSeek-V4.1-Flash over 4 Pro B60s (issue #4, release 2026.11.15.02) stopped in the cold
