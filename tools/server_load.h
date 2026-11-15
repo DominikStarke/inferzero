@@ -204,10 +204,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (have_ctx && used_ctx.dev > 0 && used_ctx.weights > 0) {
       const double g = 1073741824.0;
       const bool one = eng.slot_count() <= 1 && so.gpus <= 1;
+      // (the resident W8 of ARC_W8_PARTIAL_GB, made after the context in the room it left: a term of its own, taken
+      //  from "left"; joshdev-de, issue #27: the line said 7.33 GiB left with 7.43 GiB of it in use)
+      const double w8p = eng.w8_partial_bytes();
       const double left = used_ctx.dev - used_ctx.keep - used_ctx.snap - used_ctx.reserve - used_ctx.weights -
-                          used_ctx.mtp - used_ctx.buffers - used_ctx.context;
-      char tail[64] = "";
-      if (one) snprintf(tail, sizeof tail, " + left %.2f", left / g);
+                          used_ctx.mtp - used_ctx.buffers - used_ctx.context - w8p;
+      char tail[96] = "";
+      if (one && w8p > 0) snprintf(tail, sizeof tail, " + resident W8 %.2f + left %.2f", w8p / g, left / g);
+      else if (one) snprintf(tail, sizeof tail, " + left %.2f", left / g);
       LOG_INF("memory (--ctx auto): device %.2f GiB = kept free %.2f + snapshots %.2f + encoders / speech %.2f + "
               "weights %.2f + MTP / drafter %.2f + buffers %.2f + context %.2f%s (%.1f MiB per 1K tokens)%s\n",
               used_ctx.dev / g, used_ctx.keep / g, used_ctx.snap / g, used_ctx.reserve / g, used_ctx.weights / g,

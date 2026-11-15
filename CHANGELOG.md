@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-16: resident decoded weights in the room the context leaves, on by default on discrete cards
+
+- **Why:** joshdev-de measured `ARC_W8_PARTIAL_GB=auto` on a Pro B70 (issue #27, 27B IQ3_S): the 4K prompt 2,490 ->
+  2,694 tok/s at runz's 4K context (+8.1 %, 15.7 GiB resident, `h8_decode` 159 -> 64 ms) and 2,477 -> 2,578 at the
+  server's 262K context (+4.1 %, 7.4 GiB); the logits bit-identical, `--ctx auto` the same 262,144 tokens.
+- **What:** on discrete cards a model whose decoded weights don't all fit keeps as many layer matrices' W8 resident
+  as the room after the model, its buffers and its context allows, without the switch (`zero/engine_load.h`).
+  `ARC_W8_PARTIAL_GB=0` turns it off, a number keeps that many GB as before; iGPUs keep their weights just in time
+  (a 140T was half as fast with it) unless a number is given; split models and MoE models as before.
+- **The server's memory line** (`memory (--ctx auto)`) has a `resident W8` term now, taken from `left`: it said
+  7.33 GiB left with 7.43 GiB of it in use by the resident copy (joshdev-de).
 ## 2026-11-15: `ARC_W8_PARTIAL_GB=auto` for discrete cards only
 
 - On an Arc 140T (a Core Ultra 9 285H with 64 GB, PascalSoftwares, issue #5) `auto` kept 26.2 GiB of the 27B's

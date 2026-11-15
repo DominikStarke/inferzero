@@ -44,6 +44,7 @@
     return m;
   }
   size_t loaded_bytes() const { return mem_load_; }
+  double w8_partial_bytes() const { return w8_part_bytes_; }  // (layer matrices' resident W8 of a just-in-time model)
   bool tight() const { return tight_; }                  // (plan_tight: weights over 85 % of an iGPU's share)
   size_t host_weight_bytes() const { return host_bytes_; }  // (weights in host memory: plan_tight)
   size_t ctx_bytes(int c) const {

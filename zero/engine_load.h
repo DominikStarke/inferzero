@@ -147,8 +147,12 @@
   // (joshdev-de, issue #27). A dry load (--ctx auto's sizing) takes none, so the context is what it was.
   double w8_part_left_ = -1, w8_part_bytes_ = 0;
   int w8_part_n_ = 0;
+  // (on by default on discrete cards since 2026-11-15: a Pro B70's 27B 4K prompt 2,490 -> 2,694 tok/s at runz's
+  //  4K context, 15.7 GiB resident, and 2,477 -> 2,578 at the server's 262K, 7.4 GiB; h8_decode 159 -> 64 / 116 ms;
+  //  logits bit-identical, the same --ctx auto context (joshdev-de, issue #27, e431da2). ARC_W8_PARTIAL_GB=0: off;
+  //  a number: that many GB, as before; iGPUs: off unless a number is given)
   static bool w8_part_auto_env() {
-    static const bool v = getenv("ARC_W8_PARTIAL_GB") && std::string(getenv("ARC_W8_PARTIAL_GB")) == "auto";
+    static const bool v = !getenv("ARC_W8_PARTIAL_GB") || std::string(getenv("ARC_W8_PARTIAL_GB")) == "auto";
     return v;
   }
   bool w8_part_take(int role, size_t bytes) {
@@ -171,8 +175,9 @@
   void w8_part_auto() {
     if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe) return;
     if (zrt::integrated()) {
-      zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "
-                    "(a number of GB, e.g. ARC_W8_PARTIAL_GB=4, still keeps that much resident)\n");
+      if (getenv("ARC_W8_PARTIAL_GB"))  // (asked for: say why not; the default is quiet)
+        zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "
+                      "(a number of GB, e.g. ARC_W8_PARTIAL_GB=4, still keeps that much resident)\n");
       return;
     }
     const double GiB = 1073741824.0;
