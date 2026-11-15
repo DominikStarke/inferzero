@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds inferzero's Linux programs into bin/ with g++ (docs/linux-port.md): the CLI (runz), the headless server
 # (serverz), the multi-GPU link probe (mgpu_probe), the f32 CPU reference the KL checks compare with (ref_forward:
-# bench/website_bench.py, runz --kl-ref) and the GPU's peak rates (gpu_bench). The Windows build is build.ps1; the
+# bench/website_bench.sh, runz --kl-ref) and the GPU's peak rates (gpu_bench). The Windows build is build.ps1; the
 # kernels are compiled at run time by Intel's driver, as on Windows.
 #   ./build.sh                 every program
 #   ./build.sh runz serverz    only these

@@ -8,7 +8,7 @@
 #   scripts/make-package-linux.sh --release 2026.11.14.13   the release's number in the name (yyyy.MM.dd.NN)
 # Built on Ubuntu 24.04 (glibc 2.39), it runs there and on newer systems. It needs the system's libstdc++ and GCC's
 # OpenMP runtime (libgomp1: present on desktops, maybe not on a minimal install; ./zero-launcher.sh --check says) and
-# Python 3 for the launcher. The GPU runtime is the user's: Intel's compute runtime and Level Zero loader.
+# curl for the launcher's downloads (no Python). The GPU runtime is the user's: Intel's compute runtime and Level Zero loader.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 build=1; release=""

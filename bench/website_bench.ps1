@@ -1,4 +1,4 @@
-# bench/website_bench.py is the same script in Python, the one to use on Linux (and on Windows too); the two must stay the same.
+# bench/website_bench.sh is the same script for Linux (bash); the two must stay the same: change both together.
 # Benchmarks for the website: per model, prompt processing and generation from short prompts to 131K tokens, the
 # generation modes (plain, MTP, DFlash2), and the KL against an f32 CPU reference. Writes one JSON object per
 # measurement to <Out>\results.jsonl and the tables to <Out>\summary.md.

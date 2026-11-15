@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-15: no Python on Linux either: the launcher, its downloads, tests and the benchmarks in bash
+
+inferzero is a standalone engine: nothing a user runs to install or use it needs Python (the README's promise for
+Windows). The Linux launcher and the benchmark ports of the last two days broke that; they are bash now.
+- **`zero-launcher.sh`** is the whole launcher (bash and the system's tools: curl, sha256sum, coreutils), with every
+  feature and fix of the Python one it replaces (`scripts/zero_launcher.py`, deleted): `--check`, `--list`,
+  `--download`, `--model`, the port check, the readiness wait, `--install-service` with `--service-name` /
+  `--replace-service` (an existing unit never overwritten, refused before any download, a file system without hard
+  links handled, `$` kept in `Environment=`).
+- **Downloads with curl** into the Hugging Face cache layout (`snapshots/<commit>/<file>`, `refs/main`), resumed from
+  `.part`, each file's size and, for LFS files, its SHA-256 taken from the repository's own headers (`X-Repo-Commit`,
+  `X-Linked-Size`, `X-Linked-Etag`: no JSON to parse), the free space checked first, `HF_TOKEN` for gated
+  repositories. `scripts/hf-download.py` (unused now) is deleted.
+- **The benchmarks:** `bench/website_bench.sh`, `bench/b60_sweep.sh`, `bench/decode_try.sh`, the Linux twins of the
+  `.ps1` files (the same runs, records and printed output); the Python ports `bench/*.py` of 2026-11-15 are deleted.
+- **Tests:** `tests/test_zero_launcher.sh` (13 cases, as the Python tests) and `tests/check_catalog_sync.sh` (the
+  launcher's catalog against `scripts/model-catalog.ps1`) in CI's `linux-package` job, which also syntax-checks the
+  four bash scripts.
+- Checked in WSL2 (Ubuntu 24.04): the launcher's tests 13 / 13, the catalog 8 / 8; a download of a plain and an LFS
+  file into a scratch cache (SHA-256 checked; a second run finds both there); the 4B started from the cache, `/health`,
+  the web UI, a chat answer, a busy port refused, SIGTERM ending the server; `decode_try.sh` against the real `runz`,
+  every row parsed.
+- Still Python, and optional on Windows: the `35b-gsq` conversion and the `flash-ar4` AutoRound import (NumPy).
+
 ## 2026-11-15: a self audit and a DeepSeek audit of the day's changes; `website_bench` and `ref_forward` on Linux
 
 Changes since release 2026.11.14.13 reviewed twice, separately, by DeepSeek-V4.1 through Pi and by a Claude reviewer.

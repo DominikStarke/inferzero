@@ -38,7 +38,7 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
 2.39+; users run CachyOS too). The steps:
 
 1. **Intel's GPU runtime.** Ubuntu's own packages: `sudo apt install intel-opencl-icd libze-intel-gpu1 libze1
-   ocl-icd-libopencl1 libgomp1 python3`. Battlemage cards (B580, Pro B60 / B70) and Arrow Lake H need a newer
+   ocl-icd-libopencl1 libgomp1 curl`. Battlemage cards (B580, Pro B60 / B70) and Arrow Lake H need a newer
    compute runtime than Ubuntu 24.04 ships: Intel's packages (the `kobuk-team/intel-graphics` PPA their GPU pages
    point to), see [linux-port.md](linux-port.md).
 2. **Access to the GPU.** `sudo usermod -aG render $USER`, then log in again.
@@ -51,7 +51,7 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    ./zero-launcher.sh
    ```
    `--check` lists what the system has and lacks. The menu offers the catalog's models (the ones that suit the RAM),
-   downloads one with `scripts/hf-download.py` (resumes, checks SHA-256) into the Hugging Face cache, starts
+   downloads one with curl (resumes, checks SHA-256) into the Hugging Face cache, starts
    `bin/serverz` and opens the web UI at `http://127.0.0.1:8090/` when it is ready. Ctrl+C stops it.
 4. **Without the menu:** `./zero-launcher.sh --model 4b` (a catalog key, see `--list`, or a path to a `.gguf`),
    `--download 4b`, `--port N`, `--host H`, `--gpus N`, `--no-browser`, and `-- <serverz options>`.
@@ -65,8 +65,8 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    replacement swaps the unit file itself rather than writing through a symlink.
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
-reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks run on both systems: `python3 bench/website_bench.py`,
-`bench/b60_sweep.py`, `bench/decode_try.py`.
+reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks have Linux versions in bash: `bench/website_bench.sh`,
+`bench/b60_sweep.sh`, `bench/decode_try.sh` (the `.ps1` files on Windows). Nothing on Linux needs Python.
 `scripts/make-package-linux.sh` makes the package (into `dist/`). Not on Linux yet: the window launcher, speech
 recording, the NPU (built, not run), `web_view` (Edge); audio formats other than WAV and scanned-PDF pages need
 `ffmpeg` / `pdftoppm` if installed ([linux-port.md](linux-port.md)).

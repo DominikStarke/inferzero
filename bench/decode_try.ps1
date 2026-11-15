@@ -1,4 +1,4 @@
-# bench/decode_try.py is the same script in Python, the one to use on Linux (and on Windows too); the two must stay the same.
+# bench/decode_try.sh is the same script for Linux (bash); the two must stay the same (change both together).
 # Token generation settings on this GPU (made for GPUs with memory of their own, e.g. Arc Pro B60): the same greedy
 # answer to one coding question plain, with the model's MTP block, with a DFlash2 drafter, and with the GEMV's
 # tuning switches, each the best of 2 runs. Paste the whole output into the GitHub issue.

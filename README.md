@@ -56,7 +56,7 @@ over several of them (`--gpus N`). See [Discrete GPUs](#discrete-arc-gpus-experi
 
 **Linux** (Ubuntu 24.04 or newer): download `inferzero-<version>-linux-x64.tar.gz` from the same release, unpack it,
 and run `./zero-launcher.sh` (a terminal menu that downloads a model and starts the headless server). It needs Intel's
-GPU runtime and Python 3: [docs/install.md](docs/install.md#linux).
+GPU runtime and nothing else (bash, curl): [docs/install.md](docs/install.md#linux).
 
 On Windows:
 
