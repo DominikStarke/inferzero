@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-16: `xw_peak --probe`, where the Arc 140T's prompt GEMM loses its time
+
+- The 140T's best prompt GEMM (packed 32 x 16 tiles) runs at ~33 % of its 76.8 int8 TOPS, and larger tiles were
+  slower although they need fewer loads per DPAS. `bin\xw_peak.exe --probe` times the GEMM's packed loop on data that
+  stays in the first-level cache, for 32 x 16, 32 x 32, 16 x 32 and 16 x 16, three ways: loads and DPAS, loads only
+  (bytes a clock per Xe-core), DPAS only. It says whether the loop is short of load bandwidth (then ~50 % is the most
+  this kind of kernel gives) or waits on latency (then software pipelining is next). docs/xe2-tuning.md section 12.
+- Laptop (125H, DPAS emulated): builds and runs; the loads alone reach ~84 B/clk per Xe-core there. A bench tool
+  only: the engine is unchanged.
+
 ## 2026-11-16: `ref_forward REF_CMP`: the block-by-block comparison of the engine's dump, without a script
 
 - `REF_CMP=engine.bin` next to `REF_DUMP=ref.bin` makes `tools/ref_forward` compare its residual streams with the

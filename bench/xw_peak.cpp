@@ -74,6 +74,71 @@ __kernel void prec(__global float* out, int reps) {
 #endif
 )CLC";
 
+// --probe (2026-11-14): is the 140T's GEMM short of load bandwidth, or of something else? The main loop of gemm_xw8's
+// packed form (XW_PACKA + XW_PACKW) on data that stays in the first-level cache (every sub-group reads the same 16
+// chunks), in three modes: 0 = the loads and the DPAS, 1 = the loads only, 2 = the DPAS only (operands loaded once).
+// Appended to gemm_xw8.cl's text, so it shares the DPAS macro and the emulation.
+static const char* kLdProbe = R"CLC(
+__attribute__((intel_reqd_sub_group_size(8)))
+__kernel void ldprobe(__global const uint* ap, __global const uint* wp, int nch, __global int* out) {
+  int8 acc[XW_TG][XW_NH];
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t)
+#pragma unroll
+    for (int h = 0; h < XW_NH; ++h) acc[t][h] = (int8)(0);
+  int8 a0[XW_TG], a1[XW_TG], lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t) {
+    a0[t] = as_int8(intel_sub_group_block_read8(ap + t * 128));
+    a1[t] = as_int8(intel_sub_group_block_read8(ap + t * 128 + 64));
+  }
+#pragma unroll
+  for (int c = 0; c < XW_NC; ++c) {
+    lo0[c] = as_int8(intel_sub_group_block_read8(wp + c * 256));
+    lo1[c] = as_int8(intel_sub_group_block_read8(wp + c * 256 + 64));
+    hi0[c] = as_int8(intel_sub_group_block_read8(wp + c * 256 + 128));
+    hi1[c] = as_int8(intel_sub_group_block_read8(wp + c * 256 + 192));
+  }
+  for (int ch = 0; ch < nch; ++ch) {
+    const int cc = ch & 15;
+#if PROBE_MODE != 2
+#pragma unroll
+    for (int c = 0; c < XW_NC; ++c) {
+      __global const uint* dp = wp + (c * 16 + cc) * 256;
+      lo0[c] = as_int8(intel_sub_group_block_read8(dp));
+      lo1[c] = as_int8(intel_sub_group_block_read8(dp + 64));
+      hi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
+      hi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
+    }
+#endif
+#pragma unroll
+    for (int t = 0; t < XW_TG; ++t) {
+#if PROBE_MODE != 2
+      __global const uint* tp = ap + (t * 16 + cc) * 128;
+      a0[t] = as_int8(intel_sub_group_block_read8(tp));
+      a1[t] = as_int8(intel_sub_group_block_read8(tp + 64));
+#endif
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+#if PROBE_MODE == 1
+        acc[t][2 * c] ^= a0[t] ^ a1[t] ^ lo0[c] ^ hi0[c];
+        acc[t][2 * c + 1] ^= lo1[c] ^ hi1[c];
+#else
+        acc[t][2 * c] = xw8_mad(a1[t], hi0[c], xw8_mad(a0[t], lo0[c], acc[t][2 * c]));
+        acc[t][2 * c + 1] = xw8_mad(a1[t], hi1[c], xw8_mad(a0[t], lo1[c], acc[t][2 * c + 1]));
+#endif
+      }
+    }
+  }
+  int s = 0;
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t)
+#pragma unroll
+    for (int h = 0; h < XW_NH; ++h) s += acc[t][h].s0 ^ acc[t][h].s1 ^ acc[t][h].s2 ^ acc[t][h].s3 ^ acc[t][h].s4 ^ acc[t][h].s5 ^ acc[t][h].s6 ^ acc[t][h].s7;
+  out[get_group_id(0) * 8 + get_sub_group_local_id()] = s;
+}
+)CLC";
+
 using clk = std::chrono::steady_clock;
 
 struct Shape { int N, K, a; const char* name; };
@@ -84,7 +149,7 @@ static uint32_t rnd() { g_seed = g_seed * 1664525u + 1013904223u; return g_seed;
 
 int main(int argc, char** argv) {
   int M = 4096, iters = 10;
-  bool force_emu = false;
+  bool force_emu = false, probe = false;
   std::string only, kdir = "zero/kernels";
   std::vector<Shape> shapes;
   for (int i = 1; i < argc; ++i) {
@@ -95,7 +160,7 @@ int main(int argc, char** argv) {
     else if (a == "--kernels" && i + 1 < argc) kdir = argv[++i];
     else if (a == "--emu") force_emu = true;
     else if (a == "--help" || a == "-h") {
-      printf("usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--kernels DIR]\n"
+      printf("usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--probe] [--kernels DIR]\n"
              "The 8-lane XMX prompt GEMM (gemm_xw8.cl) alone at a model's shapes, in TOPS and as a share of the matrix\n"
              "engines' peak, each variant compared bit for bit with the default; also what the f16 DPAS keeps inside.\n"
              "Run from the package folder. Needs 8-lane sub-groups (Xe-LPG); without XMX (the 125H) the DPAS is emulated.\n"
@@ -106,15 +171,18 @@ int main(int argc, char** argv) {
              "                  up 17408x5120:2, down 5120x17408)\n"
              "  --only NAME     one variant besides the default, e.g. \"packAW 32x32\"\n"
              "  --emu           DPAS emulated on any GPU (correctness only, the times mean nothing)\n"
+             "  --probe         the packed loop on data in the first-level cache: loads and DPAS, loads only,\n"
+             "                  DPAS only (is the GEMM short of load bandwidth or of something else)\n"
              "  --kernels DIR   the kernel sources (default zero/kernels)\n");
       return 0;
-    } else if (a == "--shape" && i + 1 < argc) {
+    } else if (a == "--probe") probe = true;
+    else if (a == "--shape" && i + 1 < argc) {
       int n = 0, k = 0, ac = 0;
       const std::string s = argv[++i];
       if (sscanf(s.c_str(), "%dx%d:%d", &n, &k, &ac) < 2) { fprintf(stderr, "--shape NxK[:a]\n"); return 2; }
       shapes.push_back({n, k, ac, "custom"});
     } else {
-      fprintf(stderr, "usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--kernels DIR]\n");
+      fprintf(stderr, "usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--probe] [--kernels DIR]\n");
       return 2;
     }
   }
@@ -194,6 +262,48 @@ int main(int argc, char** argv) {
   }
 
   const std::string src = read_file(kdir + "/gemm_xw8.cl");
+  if (probe) {
+    // ---- where the loop's time goes: loads against DPAS, on cache-resident data (see kLdProbe)
+    const int groups = (int)(eus * 16), nch = 64;
+    const double cores = eus / 16.0;
+    std::vector<uint32_t> pd(16384);
+    for (auto& x : pd) x = rnd();
+    cl_mem bap = cl.buffer(CL_MEM_READ_ONLY, pd.size() * 4, pd.data()), bwp = cl.buffer(CL_MEM_READ_ONLY, pd.size() * 4, pd.data());
+    cl_mem bo = cl.buffer(CL_MEM_READ_WRITE, (size_t)groups * 8 * 4);
+    printf("\nloop probe: %d sub-groups x %d chunks of 64 values, data in the first-level cache; B/clk is per Xe-core"
+           " (%.0f cores at %u MHz)\n", groups, nch, cores, mhz);
+    printf("%-10s %-12s %9s %9s %9s %9s %9s\n", "tile", "mode", "ms", "DPAS T", "% peak", "GB/s", "B/clk/core");
+    const int tiles[][2] = {{32, 1}, {32, 2}, {16, 2}, {16, 1}};
+    const char* modes[] = {"loads+DPAS", "loads only", "DPAS only"};
+    for (const auto& tile : tiles)
+      for (int mode = 0; mode < 3; ++mode) {
+        try {
+          const std::string opts = std::string("-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread -DXW_TM=") + std::to_string(tile[0]) +
+                                   " -DXW_NC=" + std::to_string(tile[1]) + " -DPROBE_MODE=" + std::to_string(mode) + (emu ? " -DXW_EMU" : "");
+          cl_kernel k = cl.kernel(cl.build(src + kLdProbe, opts), "ldprobe");
+          int n = nch;
+          set_args(k, 0, bap, bwp, n, bo);
+          size_t g[1] = {(size_t)groups * 8}, l[1] = {8};
+          std::vector<double> ms;
+          for (int it = 0; it < 7; ++it) {
+            const auto t0 = clk::now();
+            CL_CHECK(clEnqueueNDRangeKernel(cl.queue, k, 1, nullptr, g, l, 0, nullptr, nullptr));
+            zrt::sync();
+            ms.push_back(std::chrono::duration<double, std::milli>(clk::now() - t0).count());
+          }
+          std::sort(ms.begin(), ms.end());
+          const double t = ms[ms.size() / 2] / 1e3, tg = tile[0] / 8, nh = 2 * tile[1];
+          const double dpas = (double)groups * nch * tg * nh * 2, ops = dpas * 2.0 * 8 * 8 * 32;
+          const double bytes = (double)groups * nch * (tg * 512 + tile[1] * 1024);
+          printf("%2dx%-7d %-12s %9.2f ", tile[0], 16 * tile[1], modes[mode], t * 1e3);
+          if (mode == 1) printf("%9s %9s ", "-", "-"); else printf("%9.1f %8.0f%% ", ops / t / 1e12, peak > 0 ? 100 * ops / t / 1e12 / peak : 0.0);
+          if (mode == 2) printf("%9s %9s\n", "-", "-"); else printf("%9.0f %9.1f\n", bytes / t / 1e9, bytes / t / (mhz * 1e6) / cores);
+        } catch (const std::exception& e) {
+          printf("%2dx%-7d %-12s does not build (%s)\n", tile[0], 16 * tile[1], modes[mode], e.what());
+        }
+      }
+    return 0;
+  }
   const std::vector<Variant> all = {
       {"default 32x16", "", 32, 1, false, false},  {"packA 32x16", "-DXW_PACKA", 32, 1, true, false},
       {"packW 32x16", "-DXW_PACKW", 32, 1, false, true}, {"packAW 32x16", "-DXW_PACKA -DXW_PACKW", 32, 1, true, true},

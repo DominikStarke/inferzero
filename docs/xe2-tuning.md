@@ -858,6 +858,26 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   win on a 140T go in with the H8 activation kernel and the weight decode writing the packed layouts. The bench also
   prints what the f16 DPAS keeps (products, the 16-term sum, the accumulator), to choose the DeltaNet fix: f32 adds
   of DPAS results from zero if only the accumulator rounds, int8 DPAS on 3-part values if the products do.
+- **What the owner's `xw_peak` run showed (PascalSoftwares, 2026-11-13, issue #5).** The f16 DPAS is exact (the
+  DeltaNet miss is not precision). The kernels' order, 4K tokens, share of the 76.76 TOPS peak: default 32 x 16 31 %,
+  packAW 32 x 16 **33 %** (best), packAW 32 x 32 28 %, 16 x 32 28 %, the 16 x 64 / 64 x 16 / 32 x 64 / 64 x 32 ones
+  10-20 %. So fewer instructions and loads per DPAS (4.1 and ~1.0 at 32 x 32) did **not** make it faster: the loop is
+  not limited by instruction count.
+- **A hypothesis that fits all of it: the first-level cache's read bandwidth.** If a Xe-core takes 64 bytes a clock
+  from its L1 into the registers (an assumption, from the Xe-HPG generation's figures, not measured on a 140T), a DPAS
+  (8 x 8 x 32, 4,096 operations) of a tile that loads `b` bytes per DPAS can run at most every `b / 64` clocks. Bytes
+  per DPAS: 32 x 16 192 (cap 33 % of peak), 32 x 32 128 (50 %), 32 x 64 96 (67 %, spills), 64 x 64 64 (100 %, needs
+  2x the registers). The measured 31-35 % at 32 x 16 is the cap. Larger tiles lose to something else (at 256 registers
+  a 32 x 32 tile holds 128 of them as accumulators and 128 as operands: no room to load the next chunk while the DPAS
+  run, and 4 threads an EU to hide the latency). Local memory would not lift the cap (it reads at the same rate); only
+  a larger register tile would, and 256 registers hold at most about 32 x 40. Reaching 80 % would then need another
+  operand path, not a better version of this loop.
+- **`bin\xw_peak.exe --probe` (2026-11-14) tests that.** The packed loop of 32 x 16, 32 x 32, 16 x 32 and 16 x 16 on
+  data that stays in the L1 (every sub-group reads the same 16 chunks), in three modes: the loads and the DPAS; the
+  loads only (GB/s and **bytes a clock per Xe-core**); the DPAS only (% of peak with this register footprint). If the
+  loads-only figure is ~64 B/clk and the loads+DPAS rows are near it, the cap is the L1 and 50 % is the most this
+  loop family can give; if the loads reach far more than 64 B/clk, the limit is latency (software pipelining, the
+  next step). Run on the laptop (DPAS emulated) it builds and runs; the numbers there mean nothing.
 
 ## 14. The GEMVs' rows per sub-group from the GPU's thread count (2026-11-16, joshdev-de, issue #27)
 
