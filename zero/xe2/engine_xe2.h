@@ -100,10 +100,13 @@
   // 83.88). MoE models too again since 2026-11-12: on package fffaf1a (the small work-groups off again, the code of
   // today) the 35B 88.91 with it, 79.93 without (+11 %; the 27B 23.72 with, 22.46 without), issue #4.
   // iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
-  // ARC_GEMV_DB=1 (any GPU, opt-in, 2026-11-15): gemv's window reads one window ahead instead (decode.cl -DGEMV_DB),
-  // in place of the prefetch; bit-identical. Not with ARC_GV_PROBE
+  // ARC_GEMV_DB=1 (2026-11-15): gemv's window reads one window ahead instead (decode.cl -DGEMV_DB), in place of the
+  // prefetch; bit-identical. Not with ARC_GV_PROBE. On by default where the prefetch was (discrete cards) since
+  // 2026-11-15: a Pro B70's 27B 31.88 / 31.90 / 31.84 -> 32.25 / 32.32 / 32.32 tok/s in three alternated rounds (+1.4 %;
+  // median step 31.2 -> 30.8 ms), logits identical (joshdev-de, issue #27, 6466672). Dense models only: the MoE models' gains of the prefetch (the 35B +11 % on a B60) are not measured with it. ARC_GEMV_DB=0: the prefetch
   std::string xe2_gemv_pf() const {
-    static const bool db = getenv("ARC_GEMV_DB") && atoi(getenv("ARC_GEMV_DB")) != 0 && !getenv("ARC_GV_PROBE");
+    static const int dbe = getenv("ARC_GEMV_DB") ? (atoi(getenv("ARC_GEMV_DB")) != 0 ? 1 : 0) : -1;
+    const bool db = !getenv("ARC_GV_PROBE") && (dbe < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && hp.n_expert == 0 && !getenv("ARC_GEMV_PF")) : dbe == 1);
     if (db) return std::string(" -DGEMV_DB");
     static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
     const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;

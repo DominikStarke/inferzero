@@ -121,13 +121,16 @@
   bool xw_pack_w(const GpuWeight& w, int Mp) const {
     return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && w.N % (16 * xw_nc()) == 0 && w.K % 256 == 0;
   }
-  // ARC_GEMM_XW_WGX=2 / 4 / 8 (16 lanes, 2026-11-15, opt-in until a B-series card measures it): column sub-groups per
-  // work-group next to the WGY token ones, as urakozz's pf_gemm_i8 (256 tokens x 128 columns, 32 sub-groups), so the
-  // activations of a chunk are shared in L1 by the work-group's column blocks; ARC_GEMM_XW_LOCK=1: the work-group in
-  // step around each 64-value chunk (a split barrier). Both the same results bit for bit (checked at start)
+  // ARC_GEMM_XW_WGX=1 / 2 / 4 / 8 (16 lanes, 2026-11-15): column sub-groups per work-group next to the WGY token ones,
+  // as urakozz's pf_gemm_i8 (256 tokens x 128 columns, 32 sub-groups), so the activations of a chunk are shared in L1
+  // by the work-group's column blocks; ARC_GEMM_XW_LOCK=1: the work-group in step around each 64-value chunk (a split
+  // barrier). Both the same results bit for bit (checked at start). 4 by default on discrete cards since 2026-11-15: a
+  // Pro B70's 27B 4K prompt 2,311 -> 2,396 tok/s in two rounds (+3.7 %; gemm_down 215 -> 191 ms; 2: +2.6 %, 8 with
+  // LOCK: -1.7 %, LOCK alone +0.2 %), logits identical (joshdev-de, issue #27, 6466672). iGPUs: 1
   int xw_wgx() const {
     static const int v = [] {
-      const int e = getenv("ARC_GEMM_XW_WGX") ? atoi(getenv("ARC_GEMM_XW_WGX")) : 1;
+      if (!getenv("ARC_GEMM_XW_WGX")) return zrt::integrated() ? 1 : 4;
+      const int e = atoi(getenv("ARC_GEMM_XW_WGX"));
       return e == 2 || e == 4 || e == 8 ? e : 1;
     }();
     return xw_lanes() == 16 ? v : 1;

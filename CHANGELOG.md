@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-15: the H8 GEMM's wider work-groups and the GEMV's read-ahead on by default on discrete cards
+
+- **Why:** joshdev-de measured both opt-in switches of 2026-11-15 on a Pro B70 (issue #27, `6466672`, 27B IQ3_S,
+  312 W), each in alternated rounds, with a bit check of every setting.
+- **`ARC_GEMM_XW_WGX=4`** (the H8 GEMM in work-groups of 4 column sub-groups): the 4K prompt 2,311 -> 2,396 tok/s
+  (+3.7 % in both rounds; `gemm_down` 215 -> 191 ms). `2` gave +2.6 %; `LOCK=1` nothing alone and less with `WGX`;
+  `8` -1.7 %. The default on discrete cards now (`zero/xe2/engine_xw.h`); `ARC_GEMM_XW_WGX=1` is the old one.
+- **`ARC_GEMV_DB=1`** (the single-token GEMV one window ahead instead of the prefetch): generation 31.9 -> 32.3 tok/s
+  (+1.4 % in all three rounds). The default for dense models on discrete cards now (`zero/xe2/engine_xe2.h`); MoE
+  models keep the prefetch, whose +11 % on a B60's 35B was not measured against it. `ARC_GEMV_DB=0` is the old one.
+- Logits identical on the B70 for every setting; iGPUs unchanged (the laptop's 4B bit for bit).
 ## 2026-11-15: a split model's sum waits count from the last expert read from the SSD
 
 - **Why:** manoreken2's DeepSeek-V4.1-Flash over 4 Pro B60s (issue #4, release 2026.11.15.02) stopped in the cold
