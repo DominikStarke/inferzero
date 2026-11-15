@@ -187,7 +187,7 @@ builds or against `tools\gemma4v_ref` (the Gemma 4 encoder in f32 on the CPU); a
 the same against `tools\gemma4a_ref` (its audio conformer in f32; `ARC_AUDIO_EMB` runs the model on those rows). `runz --bench-batch N --prof-gen`
 shows each kernel's GPU time of a decoding step alone and batched; `ARC_KLIST=1` prints the cache file and build
 options of every kernel, to read the driver's own assembly with Intel's `ocloc disasm`
-([docs/kernel-audit-2026-10-27.md](kernel-audit-2026-10-27.md)). The source builds warning-free at
+(docs/kernel-audit-2026-10-27.md). The source builds warning-free at
 `/W4 /permissive-`; `.github/workflows/ci.yml` builds every exe and runs the model-free unit tests on each push.
 
 ## 6. Download models

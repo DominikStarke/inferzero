@@ -352,7 +352,7 @@ static int run_main(int argc, char** argv) {
             "  right / wrong DP4a variant in the XMX slot, the check must pass / fail),\n"
             "  ARC_NO_SG8=1 the 16-lane kernels, ARC_G4_Q2MM=1 Gemma E4B on two passes, ARC_FN_Q2=1 Flash Next's dense\n"
             "  matmuls on two passes, ARC_ZE_KPROPS=1 register spills per kernel (ARC_NO_KCACHE=1: build them again),\n"
-            "  ARC_KLIST=1 each kernel's cache file and build options (for ocloc disasm, docs/kernel-audit-2026-10-27.md),\n"
+            "  ARC_KLIST=1 each kernel's cache file and build options (for ocloc disasm),\n"
             "  ARC_VIT_Q2=0 / 1 the Qwen vision encoder's int8 matmuls off / on, A/B switches of the 2026-10-27 kernel\n"
             "  changes: ARC_MOE_TM_SMALL=0 (MoE tiles of 16 for 2-8 rows), ARC_MOE_GR_DN_S=1, ARC_RG_IMUL=1; of the stacked\n"
             "  float matrices (BF16 models, 2026-10-31): ARC_NO_QZ_FLT=1, ARC_NO_GU_FLT=1, ARC_NO_QKV_FLT=1, ARC_NO_QZAB16=1\n");

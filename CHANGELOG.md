@@ -372,7 +372,7 @@ findings:
 
 Six parts reviewed twice by reviewers that did not see each other's results: the engine since the morning's audit, the
 tools and scripts, the contributor pull requests, the Linux port, the web UI and the multi-GPU failsafes.
-[docs/audit-2026-11-14-pair.md](docs/audit-2026-11-14-pair.md) lists every finding, who found it, the verdict and the
+docs/audit-2026-11-14-pair.md lists every finding, who found it, the verdict and the
 fix. The logits stay bit-identical; nothing found changes a model's results.
 
 - **Multi-GPU failsafes:**
@@ -1429,7 +1429,7 @@ Every finding of the audit fixed (numbers as in the audit):
 - **Measured on a B60 (issue #4):** `ARC_WIDE_ROWS` +2.3 % on the 27B's generation (swiglu_quant -72 %),
   `ARC_GEMV_SMALL_WG` no gain (kept, bit-identical); docs/before-after.md.
 
-## 2026-11-10 (evening): self audit after the transcription crash ([docs/self-audit-2026-11-10b.md](docs/self-audit-2026-11-10b.md))
+## 2026-11-10 (evening): self audit after the transcription crash (docs/self-audit-2026-11-10b.md)
 
 - **A live recording's draft is kept** when its accurate pass is stopped or a part of it fails: before, the partial
   text was written over the whole meeting's draft. Checked through the API: a 5-minute live recording's 70-segment
@@ -1523,7 +1523,7 @@ Every finding of the audit fixed (numbers as in the audit):
 - Also: three stale git worktrees from the old folder pruned; `.gitignore`'s comment names the data folder
   `%USERPROFILE%\.inferzero`.
 
-## 2026-11-10: self audit of the website, logo and renames ([docs/self-audit-2026-11-10.md](docs/self-audit-2026-11-10.md))
+## 2026-11-10: self audit of the website, logo and renames (docs/self-audit-2026-11-10.md)
 
 - **The package's key filter** (`zero/gguf_pack.h`) is `arcinferzero.` again: the rename had made it `inferzero.`,
   so a re-pack doubled the package keys and a GSQ model's `expert_format` was copied into new packages.
@@ -2150,7 +2150,7 @@ Both are off by default and bit-identical; they wait for a Pro B60's numbers (is
 
 ## 2026-11-07: self audit of remote access, speech, the web UI and H8
 
-Full list: [docs/self-audit-2026-11-07.md](docs/self-audit-2026-11-07.md). The ones that matter most:
+Full list: docs/self-audit-2026-11-07.md. The ones that matter most:
 
 - **Security:** with `--host`, a peer on the network could set the remote password through `/v1/remote/config`: it is from
   this computer only now. A sign-in being checked can no longer outlive a new password or "sign everyone out". Bodies
@@ -2863,7 +2863,7 @@ b3da0bf by default; f16 fallback equal to f32; the server's wait fault, OOM fall
 
 ## 2026-10-31 (late night): self audit fixes, the README as a landing page
 
-- **Gemma ring snapshots, after an audit** ([docs/self-audit-2026-10-31.md](docs/self-audit-2026-10-31.md)):
+- **Gemma ring snapshots, after an audit** (docs/self-audit-2026-10-31.md):
   - after a restore no rewind reaches below the restored window (it could read an abandoned conversation's keys);
   - the rings' copy is taken only when the rings are about to overwrite it, not at every snapshot: a turn that never
     goes ~4K positions past its start costs nothing (a copy: E4B 30 MB, 12B 480 MB of RAM, 12B 233 ms);
@@ -2957,7 +2957,7 @@ b3da0bf by default; f16 fallback equal to f32; the server's wait fault, OOM fall
 - **PDFs for OCR models**: the first PDF of a new chat could fail with "An item cannot be found at the specified
   path". The chat's folder is renamed when the chat is first saved, which came while the PDF was being opened. The
   PDF is now read into memory once and rendered from there (`tools/pdf_render.h`).
-- **Self audit** of the OCR mode ([docs/self-audit-2026-10-31.md](docs/self-audit-2026-10-31.md), evening):
+- **Self audit** of the OCR mode (docs/self-audit-2026-10-31.md, evening):
   - a page the model could not read stops the pages (`[OCR: stopped at page P: why]`), so the web UI no longer
     sends "lanjut" into the same error to the PDF's end;
   - PDF answers carry the pages' `timings` (the statistics line said "stopped");
@@ -3295,7 +3295,7 @@ A further static audit (23 findings) was checked finding by finding in the code;
 ## 2026-10-28: an audit of every source and document
 
 Six reviews (server, file tools, speech, web UI, the GPU engine's host code, scripts and docs); what they found is
-fixed ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md), "All sources"):
+fixed (docs/self-audit-2026-10-28.md, "All sources"):
 
 - **Other local pages are kept out**: a page of another server on this computer (another port: a dev server, a
   folder served by Python) could call the terminal tool, the slots, chats, files and transcripts. It now reaches
@@ -3490,7 +3490,7 @@ fixed ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md), "All sour
 
 ## 2026-10-28: Transcripts and Meetings in the web UI
 
-- **A self audit of all of it, and its fixes** ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md)):
+- **A self audit of all of it, and its fixes** (docs/self-audit-2026-10-28.md):
   among them a 32-byte MP4 that hung the server, an open in the Transcripts tab that was slow or failed (Delete
   then deleted another transcript), recordings past 4 GB that lost their end, a recorder killed or a power cut
   (the recording is now picked up at the server's next start), a headset plugged in mid-meeting (now followed),
@@ -3677,7 +3677,7 @@ fixed ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md), "All sour
   1.33x -> 1.44x / 1.99x -> 2.19x together, bit-identical.
 - `runz --bench-batch N --prof-gen`: the GPU time per kernel of a step alone and batched.
 - Prompt MoE on the 35B 2 % faster (an emulated integer multiply in the expert kernel done in float, same results);
-  found by reading the kernels' GPU assembly with ocloc ([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)).
+  found by reading the kernels' GPU assembly with ocloc (docs/kernel-audit-2026-10-27.md).
 - Prompt attention of the 27B 9 % faster (two independent sums per head in the score loop, same results).
 - The small kernels that quantize activations between the matrix products read their inputs as vectors: about 1 ms
   less per generated token on the 35B (~2 %), the 27B's prompt normalization a third faster; same results.
