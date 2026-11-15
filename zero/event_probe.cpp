@@ -54,6 +54,17 @@ static const uint64_t kWait = 5000000000ull;  // (5 s: a wait that does not fini
 
 int main(int argc, char** argv) {
   int sums = 1000, sim = 0;
+  for (int i = 1; i < argc; ++i)
+    if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+      printf("usage: event_probe [--sums N] [--sim G]\n"
+             "Whether a split model's sums can run without the CPU in the middle: a Level Zero event pool for several\n"
+             "GPUs, a 20 KB part sent between every pair through it, microseconds per sum today (host wait, CPU\n"
+             "barrier) against GPU events, the host releasing a GPU that waits on an event nobody signals, and the\n"
+             "driver's GPU memory waits. For 2..N GPUs.\n"
+             "  --sums N    sums per timing (default 1000, at least 50)\n"
+             "  --sim G     G command lists on GPU 0 in place of G GPUs (a test of the tool on one GPU; at least 2)\n");
+      return 0;
+    }
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--sums") && i + 1 < argc) sums = std::max(50, atoi(argv[++i]));
     else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim = std::max(2, atoi(argv[++i]));

@@ -5,12 +5,23 @@
 // usage: import_autoround_pack SOURCE.gguf OUTPUT.gguf EXPERTS_BASENAME SOURCE_REVISION
 // (SOURCE_REVISION: the AutoRound checkpoint's revision, kept as inferzero.autoround.revision)
 #include "../zero/gguf_pack.h"
+#include <cstring>
 
 int main(int argc, char** argv) {
+  const char* usage = "usage: import_autoround_pack SOURCE.gguf OUTPUT.gguf EXPERTS_BASENAME SOURCE_REVISION";
+  if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
+    printf("%s\n"
+           "Writes the AutoRound hybrid package's GGUF: every tensor of SOURCE.gguf (the Flash Next UD-Q4_K_XL GGUF)\n"
+           "but the routed experts, byte for byte; the experts are named as AR4_128 tensors of the expert file\n"
+           "EXPERTS_BASENAME (a file name without a folder, next to OUTPUT.gguf), which import_autoround_experts\n"
+           "writes. SOURCE_REVISION: the AutoRound checkpoint's revision, kept in the package. OUTPUT.gguf must not\n"
+           "exist yet. scripts\\autoround.ps1 runs both.\n",
+           usage);
+    return 0;
+  }
   std::string created;  // (the .tmp once it exists: removed when a step after that fails)
   try {
-    if (argc != 5)
-      throw std::runtime_error("usage: import_autoround_pack SOURCE.gguf OUTPUT.gguf EXPERTS_BASENAME REVISION");
+    if (argc != 5) throw std::runtime_error(usage);
     namespace fs = std::filesystem;
     if (fs::exists(argv[2])) throw std::runtime_error("refusing to overwrite an existing model");
     const std::string expert_name = argv[3];

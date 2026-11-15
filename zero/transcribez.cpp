@@ -1,4 +1,5 @@
-// zero-transcribe: Whisper on the Arc iGPU (zero/whisper_engine.h) or the f32 CPU reference, from the command line.
+// zero-transcribe: Whisper on the Arc GPU (zero/whisper_engine.h), its encoder on the NPU with --device npu, from the
+// command line (the f32 CPU reference is tools/ref_whisper).
 //
 //   transcribez <file | folder | wildcard> ... [options]       (docs/whisper-native.md, "Command line")
 //
@@ -69,10 +70,11 @@ void usage() {
   fprintf(stderr,
           "usage: transcribez <file | folder | wildcard> ... [options]\n"
           "  --model <folder>            a faster-whisper model folder (default: large-v3 from the HF cache, else turbo)\n"
-          "  --device gpu|npu            the Arc iGPU (default), or the encoder on the NPU and the decoder on the iGPU\n"
-          "  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or a list for speech that\n"
-          "                              mixes them (each utterance's language; ~3x slower)\n"
-          "  --beam 1|5                  greedy or beam search (default 5)\n"
+          "  --device gpu|npu            the Arc GPU (default), or the encoder on the NPU and the decoder on the GPU\n"
+          "  --lang auto|id|en|id,en     language (--language too): detected per 30-s window (auto, the default), one\n"
+          "                              code, or a list for speech that mixes them (each utterance's language; ~3x slower)\n"
+          "  --beam N                    1: greedy, 2..5: beam search of N (default 5)\n"
+          "  --no-fallback               no retries at higher temperatures when a window's text fails the checks\n"
           "  --words / --no-words        word timestamps (default on)\n"
           "  --terms \"<list>\"            a glossary kept before every window (\"GPU, kernel, deploy\"; ~150 tokens\n"
           "                              at most); --terms-file <file>\n"
@@ -80,13 +82,13 @@ void usage() {
           "  --dual-language P           auto: a window whose likeliest language is below P (default 0.8) is split by\n"
           "                              language (as id,en does for every window); 0: off, also for a list\n"
           "  --translate                 to English instead of transcribing\n"
-          "  --previous-text             each window with the text before it as its prompt (openai's default; off: it\n"
-          "                              carried errors over and dropped whole windows in the tests)\n"
-          "  --from <s> --to <s>         only part of the file\n"
+          "  --previous-text             each window with the text before it as its prompt (openai's default; off here,\n"
+          "                              --no-previous-text: it carried errors over and dropped whole windows in the tests)\n"
+          "  --from <s> --to <s>         only part of the file (seconds)\n"
           "  --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv,\n"
           "                              tsv (default json,srt,txt)\n"
           "  --max-chars N --max-lines N --max-cue-s S   subtitle cues (42, 2, 7); --word-cues: one word per cue\n"
-          "  --out <folder | file>       default %%USERPROFILE%%\\.inferzero\\transcripts\n"
+          "  --out <folder | file>       default %%USERPROFILE%%\\.inferzero\\transcripts (a file name: one input, one format)\n"
           "  --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)\n"
           "  --dump-encoder <f> --dump-logits <f>   the first window's encoder output / greedy logits (checks)\n");
 }

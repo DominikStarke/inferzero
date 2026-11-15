@@ -1,11 +1,13 @@
-// CPU reference forward for Qwen3.5 (f32 activations, dequantized weights), mirroring llama.cpp's graph.
+// CPU reference forward for Qwen3.5 (f32 activations, dequantized weights), mirroring llama.cpp's graph; also
+// Qwen3 dense, Gemma 4, Flash Next (qwen4exp) and DeepSeek-V4.1 below.
 // Used to measure how close inferzero and llama.cpp are to the unquantized-activation result.
-// usage: ref_forward model.gguf 1,2,3|@ids_file [inferzero_top_logits_file]
+// usage: ref_forward model.gguf 1,2,3|@ids_file [out_logprobs_file|-] [compare_logprobs_file]
 #include "../src/gguf.h"
 #include "../src/autoround_revision.h"
 #include "../src/quants.h"
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -1483,7 +1485,22 @@ static void softcap(std::vector<float>& l) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) { zlog::eprintf("usage: ref_forward model.gguf ids\n"); return 1; }
+  const char* usage = "usage: ref_forward model.gguf IDS [OUT.logprobs|-] [REF.logprobs]\n";
+  if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
+    printf("%s"
+           "The f32 CPU reference forward pass (dequantized weights, f32 activations) for runz's KL checks; Qwen3 /\n"
+           "Qwen3.5 / Qwen3.6 (dense and MoE), Gemma 4, Flash Next and DeepSeek-V4.1 GGUFs and inferzero packages.\n"
+           "Prints the next token's top 10.\n"
+           "  IDS            the prompt's token ids, \"1,2,3\", or @FILE holding them\n"
+           "  OUT.logprobs   writes the next token's log-probs (f32 x vocab); - for none\n"
+           "  REF.logprobs   prints KL(REF || this) against such a file\n"
+           "Environment: REF_ALL=1 writes the log-probs of every position (T x vocab), REF_ALL_FROM=N of positions\n"
+           "N..T-1 only; REF_PPL=1 prints the negative log-likelihood of the prompt's second half instead. The other\n"
+           "REF_* switches (debugging, simulated roundings) are described in tools/ref_forward.cpp.\n",
+           usage);
+    return 0;
+  }
+  if (argc < 3) { zlog::eprintf("%s", usage); return 1; }
   GgufFile f(argv[1]);
   F = &f;
   A = f.get_str("general.architecture");

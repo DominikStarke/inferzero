@@ -1,11 +1,17 @@
 // Prints GGUF metadata (arrays truncated) and the tensor list with types and shapes.
-// usage: gguf_dump model.gguf [max_layer_to_show]
+// usage: gguf_dump model.gguf [max_layer]   (tensors of layers past max_layer not listed; default 4)
 #include "../src/gguf.h"
 #include <cstdio>
+#include <cstring>
 #include <map>
 
 static int dump(int argc, char** argv) {
-  if (argc < 2) { zlog::eprintf("usage: gguf_dump model.gguf [max_layer]\n"); return 1; }
+  const char* usage =
+      "usage: gguf_dump model.gguf [max_layer]\n"
+      "Prints the metadata (arrays cut short), the tensors with their types and shapes (those of layers past max_layer\n"
+      "left out; default 4) and the size per type. A split model is read from its first part.\n";
+  if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) { printf("%s", usage); return 0; }
+  if (argc < 2) { zlog::eprintf("%s", usage); return 1; }
   int max_layer = argc > 2 ? atoi(argv[2]) : 4;
   GgufFile f(argv[1]);
   for (auto& key : f.kv_order) {

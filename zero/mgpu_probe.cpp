@@ -69,8 +69,20 @@ static double via_host_us(ze_command_list_handle_t a, ze_command_list_handle_t b
 int main(int argc, char** argv) {
   int reps = 200;
   for (int i = 1; i < argc; ++i)
+    if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+      printf("usage: mgpu_probe [--reps N]\n"
+             "Measures what moving data between GPUs costs here: peer access for every pair of GPUs, 20 KB and 40 MB\n"
+             "copies GPU to GPU (directly and through host memory, compute and copy-engine queues), host memory to and\n"
+             "from each GPU, and every GPU at once. With one GPU: GPU 0 to itself (a check of the tool).\n"
+             "  --reps N    repetitions for the latencies (default 200, at least 10)\n");
+      return 0;
+    }
+  for (int i = 1; i < argc; ++i)
     if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::max(10, atoi(argv[++i]));
-  if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
+  if (!ze_load()) {
+    zlog::eprintf("cannot load Level Zero (ze_loader.dll / libze_loader.so.1, part of the Intel graphics driver)\n");
+    return 1;
+  }
   void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
   zeDeviceCanAccessPeer_ = zl ? (PFN_canAccessPeer)plat::dl_sym(zl, "zeDeviceCanAccessPeer") : nullptr;
   ZE_CHECK(zeInit(1));

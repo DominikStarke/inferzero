@@ -4,7 +4,8 @@
 // Also: what the f16 DPAS keeps inside (products, the 16-term sum, the accumulator), for the chunked DeltaNet on XMX,
 // which missed its start-up check on the 140T by f16's precision (QUEUE row 4).
 //
-// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME]
+// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu]
+//   [--kernels DIR] (default zero/kernels)
 //   default shapes: the Qwen3.8 27B's FFN, gate 17408x5120, up 17408x5120 with the fused SwiGLU (:2), down 5120x17408
 //   (split-K in 4 pieces, as the engine runs it). --emu: DPAS emulated (any GPU; correctness only, no speed meaning).
 //   Without XMX (the 125H) the DPAS is emulated by itself.
@@ -93,7 +94,21 @@ int main(int argc, char** argv) {
     else if (a == "--only" && i + 1 < argc) only = argv[++i];
     else if (a == "--kernels" && i + 1 < argc) kdir = argv[++i];
     else if (a == "--emu") force_emu = true;
-    else if (a == "--shape" && i + 1 < argc) {
+    else if (a == "--help" || a == "-h") {
+      printf("usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--kernels DIR]\n"
+             "The 8-lane XMX prompt GEMM (gemm_xw8.cl) alone at a model's shapes, in TOPS and as a share of the matrix\n"
+             "engines' peak, each variant compared bit for bit with the default; also what the f16 DPAS keeps inside.\n"
+             "Run from the package folder. Needs 8-lane sub-groups (Xe-LPG); without XMX (the 125H) the DPAS is emulated.\n"
+             "  --m M           tokens (default 4096, a multiple of 32)\n"
+             "  --iters N       timed runs per variant and shape, the median counts (default 10)\n"
+             "  --shape NxK[:a] a weight of N outputs and K inputs (N a multiple of 32, K of 256); :2 with the fused\n"
+             "                  SwiGLU; repeat for several (default: the Qwen3.8 27B's FFN: gate 17408x5120,\n"
+             "                  up 17408x5120:2, down 5120x17408)\n"
+             "  --only NAME     one variant besides the default, e.g. \"packAW 32x32\"\n"
+             "  --emu           DPAS emulated on any GPU (correctness only, the times mean nothing)\n"
+             "  --kernels DIR   the kernel sources (default zero/kernels)\n");
+      return 0;
+    } else if (a == "--shape" && i + 1 < argc) {
       int n = 0, k = 0, ac = 0;
       const std::string s = argv[++i];
       if (sscanf(s.c_str(), "%dx%d:%d", &n, &k, &ac) < 2) { fprintf(stderr, "--shape NxK[:a]\n"); return 2; }

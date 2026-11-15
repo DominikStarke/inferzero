@@ -408,17 +408,22 @@ BOOL WINAPI on_ctrl(DWORD type) {
   return TRUE;
 }
 
-int usage() {
-  fprintf(stderr,
+int usage(int code = 1) {
+  fprintf(code ? stderr : stdout,
           "usage: zero-recorder start [--app <name.exe | pid>] [--no-mic] [--title \"...\"] [--seconds N]\n"
           "       zero-recorder stop | status\n"
-          "  --app       the meeting app whose sound is the \"Others\" track (Zoom.exe, Teams.exe, chrome.exe, ...);\n"
-          "              without it, everything the speakers play\n"
+          "  (zero-recorder is bin\\zero_recorder.exe)\n"
+          "  start       records until \"zero-recorder stop\" from another console, or Ctrl+C in this one\n"
+          "  stop        ends the recording that runs\n"
+          "  status      the recording that runs, or \"not recording\"\n"
+          "  --app       the meeting app whose sound is the \"Others\" track (Zoom.exe, Teams.exe, chrome.exe, ...),\n"
+          "              by name or process id; without it, everything the speakers play\n"
           "  --no-mic    no microphone track (the meeting's sound only)\n"
-          "  --seconds   stop by itself after N seconds\n"
-          "Writes %%USERPROFILE%%\\.inferzero\\recordings\\<date> <title>.wav; when it stops, the server transcribes it\n"
-          "(the Meetings tab), now or at its next start.\n");
-  return 1;
+          "  --title     the recording's name in the file name (default \"meeting\")\n"
+          "  --seconds   stop by itself after N seconds (default: no limit)\n"
+          "Writes %%USERPROFILE%%\\.inferzero\\recordings\\<date> <title>.wav (ARC_DATA_DIR\\recordings when set);\n"
+          "when it stops, the server transcribes it (the Meetings tab), now or at its next start.\n");
+  return code;
 }
 
 }  // namespace
@@ -426,6 +431,7 @@ int usage() {
 int main(int argc, char** argv) {
   if (argc < 2) return usage();
   const std::string cmd = argv[1];
+  if (cmd == "--help" || cmd == "-h" || cmd == "help") return usage(0);
   if (cmd == "stop") {
     HANDLE e = open_stop(EVENT_MODIFY_STATE);
     if (!e) { zlog::eprintf("zero-recorder: no recording runs\n"); return 1; }
@@ -454,6 +460,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-mic") mic = false;
     else if (a == "--title") title = next();
     else if (a == "--seconds") limit = atof(next().c_str());
+    else if (a == "--help" || a == "-h") return usage(0);
     else return usage();
   }
   if (HANDLE old = OpenEventW(SYNCHRONIZE, FALSE, kStopEventOld)) {  // (an older recorder records)

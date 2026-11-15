@@ -1,6 +1,7 @@
 // Converts the ISTA-DASLab GSQ checkpoint of Qwen3.6-35B-A3B (compressed-tensors "pack-quantized": 2-bit routed
 // experts, int8 attention / DeltaNet / shared experts / lm_head) into a GGUF for inferzero (arch "qwen35moe").
-// The C++ port of tools/convert_gsq.py: the same GGUF byte for byte, with no Python (setup -Models 35b-gsq).
+// The C++ port of tools/convert_gsq.py (removed since): the same GGUF byte for byte, with no Python
+// (setup -Models 35b-gsq).
 //
 //   int8 matrices (group 128, or per channel for lm_head) -> Q8_0: the same int8 values, the scale per 32 as f16
 //   2-bit experts (q in {-2,-1,0,1} x bf16 scale per 128 inputs) -> the layout of kernels/moe.cl:

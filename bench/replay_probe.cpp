@@ -7,6 +7,7 @@
 #include "../zero/clrt.h"
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,16 @@ static double median(std::vector<double> v) {
 
 int main(int argc, char** argv) {
   int nk = 700, nf = 65536, reps = 30;
+  for (int i = 1; i < argc; ++i)
+    if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+      printf("usage: replay_probe [--kernels 700] [--floats 65536] [--reps 30]\n"
+             "Times a chain of small dependent kernels launched one by one, as the engine does, against the same chain\n"
+             "recorded once in a command list and replayed: the GPU's idle time between kernels that a replay saves.\n"
+             "  --kernels N   kernels per chain (default 700, about one token of the 35B-A3B; 930 for the 27B)\n"
+             "  --floats N    floats each kernel reads and writes (default 65536)\n"
+             "  --reps N      chains timed per way, the median counts (default 30)\n");
+      return 0;
+    }
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i];
     if (a == "--kernels") nk = atoi(argv[i + 1]);

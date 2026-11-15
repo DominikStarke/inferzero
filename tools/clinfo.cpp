@@ -1,5 +1,6 @@
 // Prints the OpenCL GPU properties that matter for kernel design.
 #include "../src/cl_min.h"
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -18,7 +19,14 @@ template <typename T> static T dev_val(cl_device_id d, cl_device_info p) {
   return v;
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
+    printf("usage: clinfo\n"
+           "Prints each OpenCL platform and its GPUs: name, OpenCL and driver version, EUs, clock, memory, local\n"
+           "memory, L3, work-group and sub-group sizes, and which of the extensions that matter for the kernels it has.\n"
+           "No options.\n");
+    return 0;
+  }
   if (!cl_load()) { zlog::eprintf("cannot load OpenCL.dll\n"); return 1; }
   cl_uint np = 0;
   CL_CHECK(clGetPlatformIDs(0, nullptr, &np));

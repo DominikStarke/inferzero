@@ -290,7 +290,17 @@ int main(int argc, char** argv) {
     else if (a == "--out" && i + 1 < argc) out = argv[++i];
     else if (a == "--no-html") html = false;
     else if (a == "--page") page_only = true;
-    else { fprintf(stderr, "usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"); return 2; }
+    else if (a == "--help" || a == "-h") {
+      printf("usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"
+             "Measures the GPU's matrix engines (XMX int8 / f16 / bf16), vector engines (FP32, FP16, DP4a) and memory\n"
+             "read bandwidth, next to what its kind of GPU should do on paper.\n"
+             "  --seconds S   how long each test repeats, the best launch counts (default 1.5)\n"
+             "  --out DIR     where <gpu>.json and gpu-benchmark.html go (default: %s)\n"
+             "  --no-html     the .json only, no page\n"
+             "  --page        no test: only the page again, from the .json files in DIR (other machines' too)\n",
+             out.c_str());
+      return 0;
+    } else { fprintf(stderr, "usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"); return 2; }
   }
   std::error_code ec;
   fs::create_directories(out, ec);

@@ -2,7 +2,7 @@
 // token, so it runs at the speed memory is read. xenolith (a Gemma engine for Xe-LP laptops) decodes on the CPU
 // because there the CPU reads RAM faster than the iGPU; this says whether that holds here, and whether the CPU and
 // the GPU reading together get more than either alone (then a matrix's rows could be split between them).
-//   bin\membw_probe.exe [--gib 1] [--seconds 3] [--threads 1,2,4,8,all]
+//   bin\membw_probe.exe [--gib 1] [--seconds 3] [--threads 1,2,4,8,all] [--unroll 8] [--groups 2048]
 // Each test reads its buffers over and over for --seconds and counts the bytes; the buffers (--gib each, CPU and GPU
 // apart) are larger than every cache. On an iGPU both are the same RAM; on a discrete card the GPU's is its VRAM.
 #include "../zero/clrt.h"
@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,6 +56,18 @@ int main(int argc, char** argv) {
   double gib = 1.0, seconds = 3.0;
   int unroll = 8, groups_arg = 0;  // (125H: unroll 8 72-73 GB/s at 512-8192 groups; 1-4 swung 36-71)
   std::string tlist = "1,2,4,8,all";
+  for (int i = 1; i < argc; ++i)
+    if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+      printf("usage: membw_probe [--gib 1] [--seconds 3] [--threads 1,2,4,8,all] [--unroll 8] [--groups 2048]\n"
+             "Memory read bandwidth of the CPU (each thread count), the GPU, and both at once.\n"
+             "  --gib G        size of each buffer, CPU and GPU apart, in GiB (default 1)\n"
+             "  --seconds S    how long each test reads (default 3)\n"
+             "  --threads L    CPU thread counts to test, comma-separated; all: every logical core (default\n"
+             "                 1,2,4,8,all; counts above the cores are left out)\n"
+             "  --unroll N     GPU loads in flight per work-item (default 8)\n"
+             "  --groups N     GPU work-groups of 256 (default 2048)\n");
+      return 0;
+    }
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i];
     if (a == "--gib") gib = atof(argv[i + 1]);
