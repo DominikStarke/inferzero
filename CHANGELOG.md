@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-15: 4 MTP drafts a step by default for the 27B on discrete cards
+
+- **Why:** joshdev-de measured the 27B's MTP drafts on a Pro B70 (issue #27, release 2026.11.15.09): through
+  `serverz --mtp`, greedy, three 400-token answers, 4 drafts gave code 64.9, prose 53.4 and json 79.1 tok/s against
+  57.9 / 49.6 / 79.1 with the default 7 (mean +6 %, code +12 %). Each draft past 3 adds ~6-7 ms of verification a
+  pass on that card, and the later drafts are accepted less (`runz`: 73 / 60 / 92 % at 4, 61 / 53 / 86 % at 7).
+- **What:** the default is 4 where it was 7 (the 27B) on discrete cards (`xe2_mtp_drafts`, `zero/xe2/engine_xe2.h`).
+  iGPUs keep 7 (the laptop: 3 -> 7 drafts 12.6 -> 14.7 tok/s), other models keep theirs, DFlash2 keeps its 7, and
+  `--mtp-drafts N` overrides it. The text is the same: speculative decoding keeps the main model's tokens.
+- Also measured there: `ARC_GDN_CHUNK=3` (the chunked DeltaNet on XMX) is slower than `gdn_recur` on the B70 (295
+  against 244 ms, the 4K prompt -3 %), so it stays off (docs/xe2-tuning.md).
 ## 2026-11-15: the prompt attention as flash attention on XMX on discrete cards (`attn_fx`, PR #29)
 
 - **Why:** at long context the attention is most of a discrete card's prompt time: a Pro B70's 27B at 64K spent

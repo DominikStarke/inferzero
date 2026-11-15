@@ -293,7 +293,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       if (opt.mtp) zlog::eprintf("inferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
       opt.mtp_block = true;
     }
-    if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dflash.empty() ? 7 : mtp_block_drafts();
+    if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dflash.empty() ? 7 : xe2_mtp_drafts(mtp_block_drafts());
     auto t0 = std::chrono::steady_clock::now();
     plan_weights();
     stream_ = hp.moe_std && opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM");

@@ -135,6 +135,12 @@
   // Where the driver lacks cl_intel_subgroup_buffer_prefetch the kernel ignores it. iGPUs: 0 (unchanged).
   // ARC_GDN_L1PF=0 (or 1: the kernel loads one token ahead anyway) turns it off, =D (2-64) sets the distance; with
   // ARC_GDN_PF >= 2 it does nothing (the register-prefetch loop has no L1 prefetch)
+  // The default MTP drafts per step on discrete cards: 4 where the laptop's choice is 7 (the 27B). A Pro B70's 27B,
+  // serverz --mtp, greedy, three 400-token answers (code / prose / json): 7 drafts 57.9 / 49.6 / 79.1 tok/s, 4 drafts
+  // 64.9 / 53.4 / 79.1 (mean 62.2 -> 65.8, +6 %); each draft past 3 adds ~6-7 ms of verification a pass there, and the
+  // later drafts are accepted less (joshdev-de, issue #27, a51686e). The iGPU keeps 7 (laptop: 3 -> 7 drafts 12.6 ->
+  // 14.7 tok/s). --mtp-drafts N overrides either; DFlash2 keeps its 7.
+  int xe2_mtp_drafts(int d) const { return d == 7 && !zrt::integrated() && cl_.xmx && !cl_.sg8 ? 4 : d; }
   int xe2_gdn_l1pf() const {
     static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
     return e >= 0 ? e : (zrt::integrated() ? 0 : 2);
