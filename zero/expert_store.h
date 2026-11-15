@@ -13,6 +13,7 @@
 #include "../src/autoround_revision.h"
 #include "../src/load_progress.h"
 #include "../src/quants.h"
+#include "io_beat.h"
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -365,6 +366,7 @@ struct ExpertStore {
         slots[s].busy = false;
         --busy;
         ++done;
+        g_expert_reads_done.fetch_add(1, std::memory_order_relaxed);  // (a sign of life for a split model's waits)
         if (next < reqs.size()) issue(s);
       }
     } catch (...) {

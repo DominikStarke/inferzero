@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-15: a split model's sum waits count from the last expert read from the SSD
+
+- **Why:** manoreken2's DeepSeek-V4.1-Flash over 4 Pro B60s (issue #4, release 2026.11.15.02) stopped in the cold
+  first prompt of `runz --gpus 4 --bench-pp 512`: "GPU 1 did not bring a piece of its sums within 120 s (a GPU
+  hangs?)". Nothing hung: every shard was reading its experts from the SSD at once (one B60 alone takes 47.7 s for
+  that first run), and the failsafe counted from the start of the wait.
+- **What:** `ExpertStore::read_ssd` counts every finished expert read in a process-wide counter
+  (`g_expert_reads_done`, `zero/io_beat.h`), and the split model's waits (`TpComm::barrier`, `wait_all`) start their
+  120-s limit (`ARC_TP_TIMEOUT`) again whenever it moved. A GPU that really hangs is still caught once the reads stop.
+- Logits bit-identical (laptop, the 4B over 2 shards with `ARC_TP_SIM=1`, `--dump-logits` before and after).
 ## 2026-11-15: the single-token GEMV reads one window ahead, opt-in (after a look at urakozz's decode GEMV)
 
 - **Why:** on a Pro B70 urakozz's plain 27B decode streams ~88 % of his measured bandwidth (int4 g64 weights,

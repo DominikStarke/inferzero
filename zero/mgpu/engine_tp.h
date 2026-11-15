@@ -25,6 +25,7 @@
 #include <immintrin.h>
 #include <mutex>
 #include <thread>
+#include "../io_beat.h"
 
 // a shard left its barrier because another one failed (its own error is the one to report)
 // (a barrier's own timeout is one too: the shards are out of step after either)
@@ -56,6 +57,8 @@ struct TpComm {
   std::vector<long> reduces;        // per shard: how many
   // Failsafe against a GPU that hangs: a shard waiting longer than this at a barrier (ARC_TP_TIMEOUT seconds,
   // default 120: far beyond one layer of a prompt chunk) stops every shard and names the GPUs that did not come.
+  // The limit counts from the last expert read from the SSD that finished (g_expert_reads_done): a shard reading its
+  // experts is slow, not hung (DeepSeek-V4.1's cold first prompt over 4 B60s, issue #4).
   // Each GPU's own waits give up after it too (zrt::Dev::sync_timeout_ns), or once another shard failed.
   double timeout_s = 120;
   std::unique_ptr<std::atomic<int>[]> reached;  // (per shard: 1 + the barrier generation it last reached)
@@ -65,6 +68,7 @@ struct TpComm {
   std::unique_ptr<std::atomic<long>[]> put_n, res_n;
   void wait_all(std::atomic<long>* cnt, long target, int r, const char* what) {
     std::chrono::steady_clock::time_point t0{};
+    unsigned long long beat = 0;
     for (long long spins = 0;; ++spins) {
       bool all = true;
       for (int k = 0; k < n && all; ++k) all = cnt[k].load(std::memory_order_acquire) >= target;
@@ -77,7 +81,8 @@ struct TpComm {
       std::this_thread::yield();
       if (spins % 1024) continue;
       const auto now = std::chrono::steady_clock::now();
-      if (t0 == std::chrono::steady_clock::time_point{}) t0 = now;
+      const unsigned long long b = g_expert_reads_done.load(std::memory_order_relaxed);
+      if (t0 == std::chrono::steady_clock::time_point{} || b != beat) t0 = now, beat = b;
       if (std::chrono::duration<double>(now - t0).count() < timeout_s) continue;
       std::string late;
       for (int k = 0; k < n; ++k)
@@ -99,6 +104,7 @@ struct TpComm {
       return;
     }
     std::chrono::steady_clock::time_point t0{};
+    unsigned long long beat = 0;
     for (long long spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) {  // (64-bit: an hour of yields, MG5)
       if (failed.load(std::memory_order_relaxed)) throw TpAbort();
       if (spins < 4096) {
@@ -108,7 +114,8 @@ struct TpComm {
       std::this_thread::yield();  // (a prompt chunk's GEMMs take milliseconds: let the core go)
       if (spins % 1024) continue;
       const auto now = std::chrono::steady_clock::now();
-      if (t0 == std::chrono::steady_clock::time_point{}) t0 = now;
+      const unsigned long long b = g_expert_reads_done.load(std::memory_order_relaxed);
+      if (t0 == std::chrono::steady_clock::time_point{} || b != beat) t0 = now, beat = b;
       if (std::chrono::duration<double>(now - t0).count() < timeout_s) continue;
       std::string late;
       for (int k = 0; k < n; ++k)
