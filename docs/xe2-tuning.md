@@ -858,3 +858,114 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   win on a 140T go in with the H8 activation kernel and the weight decode writing the packed layouts. The bench also
   prints what the f16 DPAS keeps (products, the 16-term sum, the accumulator), to choose the DeltaNet fix: f32 adds
   of DPAS results from zero if only the accumulator rounds, int8 DPAS on 3-part values if the products do.
+
+## 14. The single-token GEMV's rows per sub-group by the GPU's thread count (2026-11-15, issue #27)
+
+**What a Pro B70 showed.** Its 27B IQ3_S generation profile (`--prof-gen`, 128 tokens), split by the matrices'
+types, against each type's bytes (the GSQ-RCO quant mixes ten types; IQ3_S 3.6 GB a token, IQ4_XS 3.0, IQ3_XXS 2.1,
+Q4_K 0.9):
+
+| Type (kernel, rows by the old rule) | GB/s before | the main shapes |
+|---|---|---|
+| Q4_K (`gemv`, 2 / 4) | 497-530 (the head 597) | |
+| IQ4_XS (`gemv_v`, 2) | 446 | down 406, gate 478, up 509 |
+| IQ3_S (`gemv`, 4 / 2) | 405-417 | up 424, down 423, gate 394 |
+| IQ3_XXS (`gemv_v`, 4) | 381 | gate 360, up 388, down 439 |
+| IQ2_S / IQ2_XS / IQ2_XXS (`gemv_v`, 4) | 338-355 | |
+
+In `gemv_bench` (a matrix type over every layer that has it, 300 rounds back to back) IQ4_XS gate ran at 518 GB/s,
+and 551 with its table lookups left out (the output wrong): its decode costs ~5 %, not the 15-20 % the model lost.
+Instead, the speed per row count was not monotonic: `ffn_down` (5,120 rows) IQ4_XS 431 / 517 / 515 GB/s at 2 / 1 / 4
+rows, IQ3_S 434 / 463 / 487; `ffn_up` IQ3_S (17,408 rows) 425 / 453 / 362 at 4 / 2 / 8. A B70 runs 2,048 sub-groups at
+once (256 EUs x 8 threads): 5,120 rows at 2 a sub-group are 1.25 rounds, the second a quarter full; at 4 they fit one
+round. 17,408 rows at 4 are 2.1 rounds; at 1, 8.5, and the part-filled last round costs little.
+
+**In the model** (generation GPU ms over 128 tokens, rows forced for every GEMV but the head):
+
+| | old rule | 1 row | 2 rows | 4 rows |
+|---|---|---|---|---|
+| total | 3,482 | 3,222 | 3,471 | 3,487 |
+| `gemm_down` IQ4_XS (5,120) | 313 | 265 | 313 | **254** |
+| `gemm_down` IQ3_S (5,120) | 255 | 228 | 255 | **225** |
+| `gemm_up` IQ3_S (17,408) | 289 | **248** | 266 | 289 |
+| `gemm_gate` IQ3_XXS (17,408) | 255 | **231** | 237 | 255 |
+
+4 rows won on every matrix of 5,120-6,144 rows, 1 row on nearly every one of 10,240 rows or more (12,288-row `q`
+within 1 % either way). The rule, T the GPU's threads: N <= T as before; T < N <= 4T 4 rows;
+N > 4T 1 row; heads above 65,536 rows as before. Picking the best count per matrix and type would have given
+3,422 ms; the rule gives ~3,430.
+
+**Measured:** 27B IQ3_S 32.3 -> 35.2 tok/s, Q4_K_M 26.0 -> 27.75, bit-identical. MTP 4 drafts 65.8 -> 66.0: its
+verification passes run `gemv_mt` with 5 tokens, where 4 rows for every matrix beat 1, 2 and 8 for every matrix
+(2,021 ms of GEMV against 2,786-2,960 in the same run); the same idea per matrix height did help there (section 15).
+`ARC_GEMV_WAVE=0` is the old rule.
+
+**For a B60** (1,280 threads): 4 rows at 5,120 rows (as the codebook types had, IQ4_XS and `gemv` had 2), 1 at 6,144
+and more. Worth an A/B there (`ARC_GEMV_WAVE=0` against the default, `decode_try`), and for the MoE models, whose
+expert GEMVs are not touched but whose attention and shared matrices are.
+
+**Left:** the drafter's output head is read once per draft (27B, MTP 4 drafts: 203 reads of 715 MB, 9.4 % of the
+GPU time, already at ~597 GB/s); a fixed draft vocabulary was tried and dropped in October
+(docs/lessons-intel-arc-igpu.md: Indonesian lies beyond its ids).
+
+## 15. The multi-token GEMV's rows per sub-group by the GPU's thread count (2026-11-15, issue #27)
+
+**Where it came from.** vLLM's INT4 layers on Intel GPUs (`vllm-xpu-kernels`, `int4_gemm_w4a16`) are oneDNN's
+matmul; its kernel selector (gemmstone, `selector/kernel_evaluator.cpp`) prices each catalog kernel with a model that
+splits the threads into full rounds of the GPU (EUs x threads per EU) and a part-filled last one. Its Xe2 kernels for
+up to 8 tokens take 16 rows a thread and split K 4-16 ways inside the work-group; ours take 1-5 rows a sub-group and
+the whole of K. Section 14 counted the rounds for one token; the MTP verification passes (`gemv_mt` / `gemv_mt_v`, 2-8
+tokens) still took their rows by type: 4 or 2 below 6 tokens, 2 or 4 from 6.
+
+**Measured per matrix height** (a Pro B70, 27B IQ3_S, code prompt, 200 tokens, `--prof-gen`, the GEMV ms of the
+profiled generation; every height at one count in a run, the heights apart; the 5-token column from several runs):
+
+| Rows (sub-groups at 4 rows) | 3 tokens: rule by type / 3 / 4 / 5 | 5 tokens | 8 tokens |
+|---|---|---|---|
+| 5,120 (down, `ssm_out`, `o`; 1,280) | 731 / 716 / **702** / 705 | 664 / 707 / **639** / 795 | 740 / **602** / 667 / 749 |
+| 6,144 (`z`; 1,536) | 134 / **122** / 123 / 138 | 116 / 112 / **106** / 134 | 123 / **98** / 103 / 123 |
+| 10,240 (`qkv`; 2,560) | 254 / 216 / 259 / **187** | 203 / 178 / 217 / **156** | 193 / 173 / 201 / **148** |
+| 12,288 (`q`; 3,072) | 96 / **87** / 102 / 112 | 93 / **84** / 92 / 116 | 97 / **88** / 97 / 113 |
+| 17,408 (gate / up; 4,352) | 1,084 / **930** / 1,093 / 948 | 895 / **780** / 899 / 836 | 879 / **774** / 895 / 815 |
+
+6 rows or more were slower at every height (17,408 at 9 rows: 2,237 ms; registers), and 3-5 rows on the 1,024-row
+`k` / `v` much slower than their 1-2. The best count is the one that fills the last round: 10,240 rows at 5 are 2,048
+sub-groups (one full round of a B70's 2,048 threads), 12,288 at 3 are 4,096 (two), 17,408 at 3 are 5,803 (2.83
+rounds, against 2.1 at 4 and 1.7 at 5). Below one round (5,120 / 6,144 at 4 rows) 4 rows up to 5 tokens, 3 at 8.
+
+**The rule** (`zero/xe2/engine_xe2.h` `xe2_gemv_mt_rows`, T the GPU's threads): N <= T, the heads, Q6_K and the fused
+two-pass GEMV as before; N <= 4T 4 rows below 6 tokens, 3 from 6; above that 3, 4 or 5 rows, whichever fills the
+last round best (sub-groups / (rounds x T)). Bit-identical: `--dump-logits` with 2, 4 and 7 drafts gives the same
+file with it, with `ARC_GEMV_WAVE_MT=0` and with `ARC_GEMV_WAVE=0`.
+
+**Speed** (runz, speedbench's three prompts, 400 tokens, two alternated rounds, tok/s code / prose / json):
+
+| | rule by type | by thread count |
+|---|---|---|
+| MTP 2 drafts | 60.3 / 53.0 / 66.8 (mean 60.0) | 64.8 / 57.3 / 71.9 (**64.7**, +7.7 %) |
+| MTP 4 drafts | 65.1 / 53.7 / 77.8 (65.5) | 69.0 / 57.3 / 82.1 (**69.5**, +6.0 %) |
+| MTP default (7) | 58.0 / 49.7 / 76.9 (61.5) | 64.4 / 54.1 / 85.3 (**67.9**, +10.4 %) |
+
+serverz + speedbench (vLLM's method, 3 repeats): MTP 4 drafts 66.0 -> 70.6 tok/s, the default 62.5 -> 69.5; plain
+generation (35.2), the prompt and KL (0.00146) unchanged.
+
+**For a B60** (1,280 threads) the same rule picks other counts (10,240 rows: 4, 2,560 sub-groups = two rounds); not
+measured there. `ARC_GEMV_WAVE_MT=0` turns off this part only.
+
+**Tried and dropped: oneDNN's split of K inside the work-group.** `gemv_mt_v` with k consecutive sub-groups of a
+work-group on the same rows, sub-group j taking the superblock pairs j, j + k, ... (or one stretch of them each), the
+k sums added in local memory in a fixed order. Same B70, 27B, MTP, GEMV ms per launch against the rule above:
+
+| Height | 5 tokens: rule / split 2 ways (rows) | 3 tokens | 8 tokens |
+|---|---|---|---|
+| 5,120 | 80.4 / **74.0** (5) | 70.0 / **62.8** (5) | 87.8 / 88.4 (5) |
+| 6,144 | 39.5 / 40.8 (3) | | |
+| 10,240 | 55.7 / 60.4 (5) | | |
+| 12,288 | 73.4 / 77.6 (4) | | |
+| 17,408 | 99.1 / 111.2 (3) | | |
+
+4 and 8 ways were slower still, one stretch per sub-group slower than every k-th pair (5,120 rows: 80.8). Only the
+5,120-row matrices gained (5 rows x 2 = 2,048 sub-groups, one full round), and only below 6 tokens: ~2 % of the GPU
+time with 3-5 tokens, nothing at the default 7 drafts. The split changes the summation order, so the verification
+passes would no longer match plain decoding bit for bit (logits 0.5-1.3 % of a row's range apart after the int8
+re-quantization of the next layer's activations; same top token until a near-tie): not worth that, not kept.

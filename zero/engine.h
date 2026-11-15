@@ -1118,10 +1118,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   //  B60, whose 27B GEMV reads ~55 % of its bandwidth)
   // (Qwen3-ASR's Q8_0 matrices, 2026-10-28: 1 / 2 / 4 / 8 rows for the stacked gate + up (12,288 rows), qkv
   //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
-  static int gemv1_rows(const GpuWeight& w, bool& vk) {
+  int gemv1_rows(const GpuWeight& w, bool& vk) const {
     static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
     vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S);
-    return vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2;
+    // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
+    return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
   // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
@@ -1198,6 +1199,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
       // (two-pass mode, 2-4 tokens: gemv_mt_v with the residuals as TB further slots, -DQ2F, both passes in one launch)
       const bool fuse = q2_fuse_ && vk && a <= 1;
+      gr = xe2_gemv_mt_rows(w, cur_T_, gr, fuse);  // (discrete cards: by the GPU's thread count, zero/xe2/engine_xe2.h)
       cl_kernel k = kernel("decode", xe2_gemv_mt_grf() + "-DQT=" +
                                          std::to_string(w.type) + " -DGROWS=" + std::to_string(gr) + " -DTB=" +
                                          std::to_string(fuse ? 2 * tb : tb) + head_defs(w) +

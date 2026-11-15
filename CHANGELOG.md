@@ -11,6 +11,47 @@
   (a 140T was half as fast with it) unless a number is given; split models and MoE models as before.
 - **The server's memory line** (`memory (--ctx auto)`) has a `resident W8` term now, taken from `left`: it said
   7.33 GiB left with 7.43 GiB of it in use by the resident copy (joshdev-de).
+
+## 2026-11-15: the multi-token GEMV's rows per sub-group by the GPU's thread count on discrete cards (MTP)
+
+- **Why:** the MTP verification passes (`gemv_mt` / `gemv_mt_v`, 2-8 tokens) still took their rows per sub-group by
+  type (4 or 2 below 6 tokens, 2 or 4 from 6), leaving the GPU's last round of sub-groups part empty: on a Pro B70
+  (2,048 threads) the 27B's `qkv` (10,240 rows) at 4 rows ran 1.25 rounds, gate / up (17,408) 2.1. The idea came from
+  vLLM's INT4 kernel on Intel GPUs: oneDNN's kernel selector prices the full rounds and the part-filled last one
+  (docs/xe2-tuning.md section 15).
+- **What:** on discrete cards a matrix of more than T rows (T the GPU's threads) takes 3, 4 or 5 rows a sub-group,
+  whichever fills the last round best; where 4 rows fit in one round, 4 below 6 tokens and 3 from 6
+  (`zero/xe2/engine_xe2.h` `xe2_gemv_mt_rows`). On the 27B: `qkv` 5 rows (2,048 sub-groups, one full round), `q` 3,
+  gate / up 3. N <= T, the heads, Q6_K and the fused two-pass GEMV as before. Chosen from a per-height sweep of 3, 5
+  and 8 tokens; 6 rows and more were slower everywhere.
+- **Speed (the B70, 312 W, 27B IQ3_S):** serverz + speedbench (vLLM's method), MTP 4 drafts 66.0 -> 70.6 tok/s
+  (+7 %), the default 7 drafts 62.5 -> 69.5 (+11 %); runz, two alternated rounds: 2 drafts 60.0 -> 64.7, 4 drafts
+  65.5 -> 69.5, 7 drafts 61.5 -> 67.9. Plain generation (35.2) and the prompt unchanged.
+- **Accuracy:** bit-identical (a row's sums do not depend on its sub-group): `--dump-logits` with 2, 4 and 7 drafts
+  the same file with it, with `ARC_GEMV_WAVE_MT=0` and with `ARC_GEMV_WAVE=0`; KL 0.00146 either way.
+- `ARC_GEMV_WAVE_MT=0` turns this part off; `ARC_GEMV_WAVE=0` both parts. iGPUs unchanged. A B60 (1,280 threads)
+  gets other counts (`qkv` 4 rows: two full rounds there); not measured there yet.
+
+## 2026-11-15: the single-token GEMV's rows per sub-group by the GPU's thread count on discrete cards
+
+- **Why:** a Pro B70's 27B IQ3_S generation profile (joshdev-de, issue #27), split by matrix type: Q4_K's GEMVs read
+  ~530 GB/s, the codebook types' 340-450 (IQ3_XXS 381, IQ3_S ~410, IQ4_XS 446). Part of that gap was not the decode:
+  the rows per sub-group, chosen per type, left the GPU's last round of sub-groups mostly empty. A B70 runs 2,048
+  sub-groups at once (256 EUs x 8 threads). The 5,120-row matrices (down, `ssm_out`, `o`) took 2 rows on `gemv` and on
+  IQ4_XS: 2,560 sub-groups, 1.25 rounds. The 17,408-row gate / up took 4 on `gemv` and on the codebook types: 4,352
+  sub-groups, 2.1 rounds.
+- **What:** on discrete cards the one-token GEMV (`gemv` and `gemv_v`) takes its rows from the GPU's thread count T
+  (`zrt::hw_threads`, from Level Zero): a matrix of T < N <= 4T rows 4 rows a sub-group (one round), N > 4T one row
+  (many rounds, the last one's waste small); N <= T and the output heads (N > 65,536) as before
+  (`zero/xe2/engine_xe2.h` `xe2_gemv_rows`). The multi-token GEMVs (MTP verification): the entry above.
+- **Speed (the B70, 312 W):** 27B IQ3_S generation 32.3 -> 35.2 tok/s (+9 %, median step 30.8 -> 28.2 ms; serverz
+  plain 32.3 -> 35.2); Q4_K_M 26.0 -> 27.75 (+6.6 %). MTP with 4 drafts 65.8 -> 66.0 (the verification passes are
+  unchanged). The prompt is unchanged.
+- **Accuracy:** bit-identical (a row's sums do not depend on which sub-group computes it): `--dump-logits` the same
+  with and without, both models; KL 0.00146 either way.
+- `ARC_GEMV_WAVE=0` turns it off, `=1` turns it on on any GPU. iGPUs unchanged. A B60 (1,280 threads) gets 4 rows
+  for its 5,120-row matrices and 1 for every larger one: not measured there yet.
+
 ## 2026-11-15: `ARC_W8_PARTIAL_GB=auto` for discrete cards only
 
 - On an Arc 140T (a Core Ultra 9 285H with 64 GB, PascalSoftwares, issue #5) `auto` kept 26.2 GiB of the 27B's

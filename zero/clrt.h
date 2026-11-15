@@ -416,6 +416,13 @@ inline bool integrated() {
   dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
   return zeDeviceGetProperties(D().dev, &dp) == 0 && (dp.flags & 1u);
 }
+// this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
+inline uint32_t hw_threads() {
+  ze_device_properties_t dp{};
+  dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+  if (zeDeviceGetProperties(D().dev, &dp) != 0) return 0;
+  return dp.numSlices * dp.numSubslicesPerSlice * dp.numEUsPerSubslice * dp.numThreadsPerEU;
+}
 // kernel timestamps for profiling (engine.profile: clEnqueueNDRangeKernel asked for an event): events come from pools
 // of 4096 host-visible timestamp events and go back to a free list on clReleaseEvent
 inline ze_event_handle_t ev_get() {
