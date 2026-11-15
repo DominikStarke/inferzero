@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-15: the prompt attention as flash attention on XMX on discrete cards (`attn_fx`, PR #29)
+
+- **Why:** at long context the attention is most of a discrete card's prompt time: a Pro B70's 27B at 64K spent
+  ~27 s of ~51 s in `attn_q8` (joshdev-de, issue #27).
+- **What:** a new kernel, `zero/kernels/attn_fx.cl`, from joshdev-de's PR #29 (written by Claude Code, run on his
+  B70). Each sub-group takes 8 query tokens, so every int8 DPAS has all 8 rows (`attn_q8`: one token x up to 4
+  heads); the keys come in spans of 32, read straight from the int8 K / V cache with the next span prefetched into
+  L1; 32 sub-groups a work-group. The same operands, online softmax, cache and output as `attn_q8`.
+- **Where:** on by default on discrete cards with 16-lane XMX, for the plain causal prompt attention only. Sliding
+  windows, images, Flash Next's sparse masks, Gemma and iGPUs keep `attn_q8`. Checked at start against `attn_q8` on
+  random data; over 2e-2 of the output range, or a build failure, and `attn_q8` is used. `ARC_ATTN_FX=0` turns it
+  off.
+- **Speed (the B70, 27B IQ3_S):** attention 117 ms -> 45 ms at 4K, 1,706 -> 625 ms at 16K, 26.9 -> 9.6 s at 64K; the
+  prompt +4 % / +17 % / +51 % (1,284 -> 1,943 tok/s at 64K).
+- **Accuracy:** not bit-identical (P is quantized per 32 keys instead of 16). KL against the plain path 0.00152 ->
+  0.00146 (4 chunks of 512), 0.00141 -> 0.00138 (one 16K chunk); greedy text the same, with and without MTP.
+- Measured on one B70 with the 27B only; B60s and other head dims to confirm. The laptop's iGPU path is bit-identical.
 ## 2026-11-15: the H8 GEMM's wider work-groups and the GEMV's read-ahead on by default on discrete cards
 
 - **Why:** joshdev-de measured both opt-in switches of 2026-11-15 on a Pro B70 (issue #27, `6466672`, 27B IQ3_S,

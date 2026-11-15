@@ -346,6 +346,10 @@
       gdnx_src_ = read_file(opt.kernel_dir + "/gdn_x.cl");
       if (gdnx_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gdn_x.cl");
     }
+    if (which == "attnfx" && attnfx_src_.empty()) {  // (the prompt attention as flash attention on XMX, engine_xe2.h)
+      attnfx_src_ = read_file(opt.kernel_dir + "/attn_fx.cl");
+      if (attnfx_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/attn_fx.cl");
+    }
     if (which == "attnx" && attnx_src_.empty()) {  // (attn_q8 on XMX: attn_x.cl in front of the ops parts, engine_xe2.h)
       const std::string ax = read_file(opt.kernel_dir + "/attn_x.cl");
       if (ax.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/attn_x.cl");
@@ -353,7 +357,7 @@
     }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
                              : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
-                             : which == "gdnx" ? gdnx_src_ : which == "attnx" ? attnx_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
+                             : which == "gdnx" ? gdnx_src_ : which == "attnx" ? attnx_src_ : which == "attnfx" ? attnfx_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
                              : ops_.for_kernel(name);
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" || which == "attnx" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
