@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-11-16: the GEMVs' rows per sub-group from the GPU's thread count on discrete cards (joshdev-de)
+
+- **Why:** on a Pro B70 the 27B's codebook GEMVs read 340-450 GB/s where Q4_K's read ~530. Part of the gap was the
+  rows per sub-group, chosen by weight type: they left the GPU's last round of sub-groups mostly empty. A B70 runs
+  2,048 sub-groups at once; its 5,120-row matrices at 2 rows made 2,560 sub-groups (1.25 rounds), its 17,408-row gate /
+  up at 4 rows 4,352 (2.1 rounds). Found and written by joshdev-de (issue #27, branch `b70-gemv-wave`, with Claude
+  Code), after oneDNN's kernel selector, which prices the full rounds and the part-filled last one.
+- **What** (`zero/xe2/engine_xe2.h`; the thread count T from Level Zero, `zrt::hw_threads` in `zero/clrt.h`):
+  - one token (`gemv`, `gemv_v`): T < N <= 4T rows take 4 rows a sub-group (one round), N > 4T one row (many rounds,
+    the last one's waste small); N <= T and the output heads as before (`xe2_gemv_rows`);
+  - 2-8 tokens (MTP verification, `gemv_mt`, `gemv_mt_v`): N > T rows take 3, 4 or 5 rows, whichever fills the last
+    round best; where 4 rows fit one round, 4 below 6 tokens and 3 from 6 (`xe2_gemv_mt_rows`). On the 27B: `qkv` 5
+    rows (2,048 sub-groups, one full round), `q` and gate / up 3. N <= T, the heads, Q6_K and the fused two-pass GEMV
+    as before. 6 rows or more were slower everywhere.
+- **Speed (the B70, 312 W, 27B IQ3_S):** plain generation 32.3 -> 35.2 tok/s (+9 %, median step 30.8 -> 28.2 ms);
+  Q4_K_M 26.0 -> 27.8; MTP with 4 drafts (the default) 66.0 -> 70.6 through serverz (+7 %). The prompt is unchanged.
+- **Accuracy:** bit-identical: a row's sums don't depend on which sub-group computes it (`--dump-logits` the same,
+  plain and with 2, 4 and 7 drafts; KL 0.00146 either way).
+- On discrete cards only; iGPUs unchanged (the laptop bit for bit). `ARC_GEMV_WAVE=0` turns both off,
+  `ARC_GEMV_WAVE_MT=0` the 2-8-token part. A B60 (1,280 threads) gets other counts: not measured there yet.
+- Tried and dropped: splitting K inside the work-group (oneDNN's few-token kernels). Only the 5,120-row matrices
+  gained, below 6 tokens (~2 % of the GPU time), and the sums' order changes, so verification would no longer match
+  plain decoding bit for bit.
 ## 2026-11-16: resident decoded weights in the room the context leaves, on by default on discrete cards
 
 - **Why:** joshdev-de measured `ARC_W8_PARTIAL_GB=auto` on a Pro B70 (issue #27, 27B IQ3_S): the 4K prompt 2,490 ->

@@ -858,3 +858,25 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   win on a 140T go in with the H8 activation kernel and the weight decode writing the packed layouts. The bench also
   prints what the f16 DPAS keeps (products, the 16-term sum, the accumulator), to choose the DeltaNet fix: f32 adds
   of DPAS results from zero if only the accumulator rounds, int8 DPAS on 3-part values if the products do.
+
+## 14. The GEMVs' rows per sub-group from the GPU's thread count (2026-11-16, joshdev-de, issue #27)
+
+- **The problem:** the GEMVs chose their rows per sub-group by weight type, so a matrix's sub-groups filled a whole
+  number of the GPU's rounds only by chance. A Pro B70 runs T = 2,048 sub-groups at once (256 EUs x 8 threads, from
+  Level Zero: `zrt::hw_threads`). The 27B's 5,120-row matrices at 2 rows were 1.25 rounds, its 17,408-row gate / up
+  at 4 rows 2.1: the last round mostly empty. In `gemv_bench` the codebook lookups cost only ~5 %, so the decode was
+  not the main loss.
+- **One token** (`xe2_gemv_rows`): T < N <= 4T rows take 4 rows a sub-group (one round), N > 4T one row (many rounds,
+  so the part-filled last one costs little); N <= T and the output heads keep the rule by type. The B70's 27B: 32.3
+  -> 35.2 tok/s.
+- **2-8 tokens** (`xe2_gemv_mt_rows`, the MTP verification passes): measured per matrix height with every height at
+  one count, the best count is the one that fills the last round: `qkv` (10,240 rows) at 5 is exactly 2,048
+  sub-groups, `q` (12,288) at 3 is 4,096, gate / up (17,408) at 3 is 2.83 rounds (2.1 at 4, 1.7 at 5). 6 rows or more
+  were slower everywhere (registers); on the 1,024-row `k` / `v` 3-5 rows were much slower, so N <= T keeps its
+  rule. Where 4 rows fit one round: 4 below 6 tokens, 3 from 6. MTP with 4 drafts 66.0 -> 70.6 tok/s.
+- **Not kept:** K split inside the work-group (oneDNN's few-token Xe2 kernels: 16 rows a thread, K in 4-16 parts).
+  Only the 5,120-row matrices gained (70.0 -> 62.8 us a launch at 3 tokens, 80.4 -> 74.0 at 5, none at 8), larger
+  ones were 3-12 % slower, 4- and 8-way splits slower still: ~2 % of the GPU time, and a changed summation order.
+- **To measure:** a B60 (T = 1,280: 5,120 rows at 4 rows, larger at 1; MTP `qkv` 4 rows, two full rounds there) and
+  MoE models' attention and shared matrices (their expert GEMVs are untouched). `ARC_GEMV_WAVE=0` / `ARC_GEMV_WAVE_MT=0`
+  for the A/B.

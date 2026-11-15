@@ -112,6 +112,56 @@
     const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
     return on ? std::string(" -DGEMV_PF") : std::string();
   }
+  // ARC_GEMV_WAVE (2026-11-15): the single-token GEMV's rows per sub-group (gemv and gemv_v) by the GPU's thread
+  // count T (EUs x threads per EU: a Pro B70 2,048, a B60 1,280) instead of by type: a matrix of T < N <= 4T rows takes
+  // 4 rows a sub-group (its N / 4 sub-groups in one round of the GPU's threads), N > 4T one row (many rounds, so the
+  // last, part-filled one costs little); N <= T and the output heads (N > 65,536) as before. The rule by type gave a
+  // 27B's 5,120-row matrices (down, ssm_out, o) 2 rows on gemv and on IQ4_XS (2,560 sub-groups: 1.25 rounds on a B70,
+  // the second a quarter full) and its 17,408-row gate / up 4 on gemv's types and the codebook types (2.1 rounds).
+  // A Pro B70 (joshdev-de, issue #27), 27B IQ3_S generation 32.3 -> 35.2 tok/s, Q4_K_M 26.0 -> 27.8. Bit-identical: a
+  // row's sums do not depend on which sub-group computes it. Discrete cards only (iGPUs unchanged); with several GPUs
+  // the count of the first one asked. ARC_GEMV_WAVE=0: off; =1: on on any GPU. ARC_GVROWS (one count for gemv_v's
+  // types, a test) turns it off
+  mutable int gemv_threads_ = -1;
+  int xe2_gemv_threads() const {  // (the GPU's thread count where ARC_GEMV_WAVE is on, else 0)
+    if (gemv_threads_ < 0) {
+      static const int e = getenv("ARC_GEMV_WAVE") ? (atoi(getenv("ARC_GEMV_WAVE")) != 0 ? 1 : 0) : -1;
+      const bool on = e < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : e == 1;
+      gemv_threads_ = on ? (int)zrt::hw_threads() : 0;
+    }
+    return gemv_threads_;
+  }
+  int xe2_gemv_rows(const GpuWeight& w, int rows) const {
+    static const bool fixed = getenv("ARC_GVROWS") != nullptr;
+    const int t = fixed ? 0 : xe2_gemv_threads();
+    if (t <= 0 || w.N <= t || w.N > 65536) return rows;
+    return w.N <= 4 * t ? 4 : 1;
+  }
+  // ARC_GEMV_WAVE for 2-8 tokens (gemv_mt / gemv_mt_v: MTP verification, 2026-11-15): rows per sub-group 3, 4 or 5,
+  // whichever fills the last round of the GPU's T threads best (sub-groups ceil(N / rows), filled share = sub-groups /
+  // (rounds x T)); where 4 rows take one round or less (N <= 4T), 4 up to 5 tokens and 3 from 6 (8 tokens' sums need
+  // more registers a row). 27B on a Pro B70 (T = 2,048): qkv 10,240 rows 5 (2,048 sub-groups, one full round; 2 or 4
+  // gave 1.25 / 2.5), q 12,288 rows 3 (4,096: two full rounds), gate / up 17,408 rows 3 (5,803: 2.83 rounds, against
+  // 2.1 at 4 and 1.7 at 5), 5,120 / 6,144 rows 4 or 3; the rule by type gave 2 or 4. Measured per matrix height in the
+  // GPU profile with every height at one count (3, 5 and 8 tokens): 6 rows and more were slower everywhere (registers).
+  // MTP with 4 drafts 58.9 -> 61.7 tok/s (code prompt, 200 tokens). Bit-identical (a row's sums do not depend on its
+  // sub-group). Not for N <= T (k / v, 1,024 rows: 3-5 rows were much slower there), the heads, Q6_K (1 row, untested)
+  // or the fused two-pass GEMV (twice the tokens' registers, untested). ARC_GEMV_WAVE_MT=0: off (the single-token
+  // part stays); ARC_GEMV_WAVE=0 turns off both
+  int xe2_gemv_mt_rows(const GpuWeight& w, int ntok, int rows, bool fused) const {
+    static const bool off = getenv("ARC_GEMV_WAVE_MT") && atoi(getenv("ARC_GEMV_WAVE_MT")) == 0;
+    const int t = off ? 0 : xe2_gemv_threads();
+    if (t <= 0 || fused || w.type == GGML_Q6_K || w.N <= t || w.N > 65536) return rows;
+    if ((w.N + 3) / 4 <= t) return ntok >= 6 ? 3 : 4;
+    int best = rows;
+    double bf = -1;
+    for (int r = 3; r <= 5; ++r) {
+      const long sg = (w.N + r - 1) / r, rounds = (sg + t - 1) / t;
+      const double f = (double)sg / ((double)rounds * t);
+      if (f > bf + 1e-9) bf = f, best = r;
+    }
+    return best;
+  }
   // ARC_GEMV_SMALL_WG: the single-token GEMV (gemv) of a matrix with few rows, at most 512 sub-groups (DeltaNet's
   // alpha / beta projection, 96 rows; MoE routers, 256-512 rows), in work-groups of 4 sub-groups instead of 16, so
   // they spread over more Xe cores: a Pro B60's 27B ran gemm_ab's 96 rows in 6 work-groups at 60 GB/s, 14 % of its
