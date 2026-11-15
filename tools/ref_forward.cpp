@@ -19,6 +19,39 @@
 static GgufFile* F;
 static std::string A;
 
+// REF_CMP=engine.bin (with REF_DUMP): after the pass, the two dumps compared block by block, the engine's written by
+// runz ARC_DUMP_ROWS (the same layout): per block the relative L2 distance and the largest difference, so finding
+// the first block where the engine leaves the reference needs no script (2026-11-16, issue #23; no Python)
+static void ref_cmp_dumps(const char* ref_path, const char* eng_path, size_t width, int per_layer) {
+  auto rd = [](const char* p) {
+    std::vector<float> v;
+    FILE* f = p ? fopen(p, "rb") : nullptr;
+    if (!f) return v;
+    float buf[4096];
+    size_t n;
+    while ((n = fread(buf, 4, 4096, f)) > 0) v.insert(v.end(), buf, buf + n);
+    fclose(f);
+    return v;
+  };
+  const std::vector<float> r = rd(ref_path), e = rd(eng_path);
+  if (r.empty() || e.empty()) { printf("REF_CMP: cannot read %s\n", r.empty() ? ref_path : eng_path); return; }
+  const size_t nr = r.size() / width, ne = e.size() / width;
+  printf("REF_CMP: %zu blocks in the reference's dump, %zu in the engine's (%zu floats a block)%s\n", nr, ne, width,
+         nr != ne || r.size() % width || e.size() % width ? ": the counts differ, please report the file sizes" : "");
+  for (size_t b = 0; b < std::min(nr, ne); ++b) {
+    double d2 = 0, s2 = 0, mx = 0;
+    for (size_t i = 0; i < width; ++i) {
+      const double a = e[b * width + i], c = r[b * width + i], d = a - c;
+      d2 += d * d, s2 += c * c, mx = std::max(mx, std::fabs(d));
+    }
+    const double rel = s2 > 0 ? 100.0 * std::sqrt(d2 / s2) : 0;
+    if (per_layer == 2)
+      printf("  layer %2zu %s  rel L2 %8.3f %%   max |diff| %.4g%s\n", b / 2, b % 2 ? "ffn " : "attn", rel, mx,
+             std::isfinite(d2) ? "" : "  (not finite)");
+    else
+      printf("  layer %2zu       rel L2 %8.3f %%   max |diff| %.4g%s\n", b, rel, mx, std::isfinite(d2) ? "" : "  (not finite)");
+  }
+}
 // An inferzero package (zero/gguf_pack.h) holds its routed experts in the expert file next to it, in the GPU raw
 // form of zero/expert_store.h (per expert one record: gate, up, down; each superblock as src/quants.h gpu_raw_sb
 // writes it, rows of small-block types padded to a multiple of 256). The matrices of one layer are turned back into
@@ -1050,6 +1083,7 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
     zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   if (fdump) fclose(fdump);
+  if (fdump && getenv("REF_CMP")) ref_cmp_dumps(getenv("REF_DUMP"), getenv("REF_CMP"), (size_t)HD, 1);
   // the final mixer is the output norm
   hc_mix("output_hc", mixed, nullptr);
   if (getenv("REF_DEBUG_LAST")) {  // (debug: non-finite values of the last row's streams / mixer output)
@@ -1474,6 +1508,7 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
     zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   if (fdump) fclose(fdump);
+  if (fdump && getenv("REF_CMP")) ref_cmp_dumps(getenv("REF_DUMP"), getenv("REF_CMP"), (size_t)HCD, 2);
   hc_pre(X, pre_in, x);
 }
 

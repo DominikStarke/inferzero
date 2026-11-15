@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-16: `ref_forward REF_CMP`: the block-by-block comparison of the engine's dump, without a script
+
+- `REF_CMP=engine.bin` next to `REF_DUMP=ref.bin` makes `tools/ref_forward` compare its residual streams with the
+  engine's (`runz ARC_DUMP_ROWS=engine.bin`, the same layout) after the pass: per half-layer (DeepSeek-V4.1) or per
+  layer, the relative L2 distance and the largest difference, so the first block where the engine leaves the
+  reference shows at once. Before, the comparison was a Python snippet in an issue comment; nothing a user runs needs
+  Python. Checked on the tiny synthetic DeepSeek-V4.1 (`make_tiny_deepseek41.py`): 20 half-layers, 0.4 % -> 2.7 %.
+- The help of every packaged program is up to date (commit `2233bd6`): every option with its real default, `--help` /
+  `-h` in the 11 tools that had none, Linux paths in the Linux build.
+- The audit reports (`docs/*audit-2026*.md`, 15 files) are removed; this changelog keeps their findings.
 ## 2026-11-16: the GEMVs' rows per sub-group from the GPU's thread count on discrete cards (joshdev-de)
 
 - **Why:** on a Pro B70 the 27B's codebook GEMVs read 340-450 GB/s where Q4_K's read ~530. Part of the gap was the
