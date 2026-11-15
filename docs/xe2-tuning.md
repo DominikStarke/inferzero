@@ -721,6 +721,44 @@ work-groups cost ~5.5 ms a token on the MoE model only (its profile: 10.3 ms of 
 known yet. Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
 each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.
 
+### Against urakozz's decode GEMV (2026-11-15)
+
+His plain 27B decode on a B70 reads 15.54 GB a token at 33.6 tok/s, ~522 GB/s, 88 % of his measured 590 GB/s. That
+figure includes a bf16 output head of 2.5 GB at ~97 %; his linears run at 89-97 % alone. Ours: 11.3 GB a token in
+30.8 ms, 365 GB/s, 67 % of 547; the FFN GEMVs at ~62 % (issues #12, #27). His `src/kernels/gemv.cl` does it this way:
+
+| | urakozz `gemv` | ours `gemv` (IQ3_S, K-quants, Q8_0) / `gemv_v` (IQ3_XXS, IQ4_XS, IQ2, Q6_K) |
+|---|---|---|
+| Weights | int4, one f16 scale per 64: a mask (or a shift) and a subtract per weight | codebooks: grid lookups in local memory, sign masks, scales per 32 |
+| Lane owns | one output column for the whole K range: no reduction across lanes | one 32-value block of two superblocks: a sub-group reduction per row at the end (once per row, cheap) |
+| Loads | 16 adjacent columns per word: `block_read8` (512 bytes) or one 2D block read per 64 values, no barriers | `gemv`: the window block-read, stored to local memory, two sub-group barriers per row; `gemv_v`: per-lane vector loads, no barriers |
+| Few rows | split-K (S = 4 at N = 5,120: 1,280 sub-groups); partials summed by the next kernel | one sub-group per 1-4 rows: N = 5,120 gives 1,280-2,560 sub-groups (a B70 has 2,048 threads) |
+
+Per 27B shape (K x N), sub-groups on a B70 at today's rules: `attn_output` / `ssm_out` 6,144 x 5,120 and
+`ffn_down` 17,408 x 5,120: `gemv` 2,560, `gemv_v` 1,280 (4 rows), IQ4_XS 2,560. His S = 4 there was worth 2x at
+that shape, where at S = 1 he had only 320. qkv + z 5,120 x 16,384 and gate / up 5,120 x 17,408: 4,096-4,352. So our
+lane-per-block layout already gives the few-row matrices more sub-groups than his split-K did. Split-K would not be
+bit-identical either (it was tried on the laptop before: 512-row matrices 10-15 % faster, no gain overall).
+
+**What the laptop shows** (`ARC_GV_PROBE`, `--prof-gen`, Qwen3.5 4B Q4_K_XL over 128 tokens and the 27B over 32):
+- The 4B's GEMVs (Q4_K / Q5_K / Q8_0 on `gemv`) are bound by memory. Without any decode (probe 1), `gemm_gate`
+  takes 900 ms against 877. Gate / up stream at ~64 GB/s, this GPU's peak; `lm_head` (Q6_K, `gemv_v`) too.
+- The 27B's `gemv` layers (IQ3_S and the K-quants: about a quarter of gate / up, a third of down) are close to
+  bound by their decoding. Decoding alone from cache (probe 2) gives `gemm_gate` 1,226 ms against 1,273 and
+  `gemm_down` 1,215 against 1,309: decoding costs nearly what streaming does. The laptop's FFN GEMVs still reach
+  ~60-64 GB/s.
+- A B70 has about 8x this GPU's bandwidth (590 against ~73 GB/s) but only ~4.6-5.8x its vector lanes x clock
+  (4,096 lanes against 896, at equal or 2.8 / 2.2 GHz clocks: worked out, not measured). A decode about 1.1x as fast
+  as the stream here then holds the GEMV to roughly 60-80 % of the card's bandwidth, around the ~62 % measured. So the gap to urakozz on
+  the B-series is mostly the formats' decode cost, not the access pattern. His int4 g64 costs a few operations a
+  weight; IQ3_S costs a grid lookup per 4 weights plus signs and scales.
+- `ARC_GEMV_DB=1` (`gemv` reads one window ahead, bit-identical, opt-in) is neutral on the laptop. It helps only
+  where loads, not the decode, are what waits; a B60 / B70 can tell (`decode_try.ps1` with `ARC_GEMV_DB=1` against
+  the default prefetch).
+- Next levers, by this reading: cheaper codebook decoding on Xe2 (more weights per lookup, fewer local-memory reads)
+  and, where the GGUF allows, formats with a cheap decode for the hot matrices. Not measured yet: probe 2 for
+  `gemv_v`'s types (IQ3_XXS, IQ4_XS), which carry most of the 27B's FFN bytes.
+
 ## 11. The H8 GEMMs with wider XMX tiles (QUEUE 33.4, 2026-11-11): `ARC_GEMM_XW=1`, `bench\xw_sweep.ps1`
 
 **A Pro B60, 2026-11-12 (issue #4, package fffaf1a), 27B, tok/s at 512 / 4K / 16K tokens:** default 674.3 / 992.9 /

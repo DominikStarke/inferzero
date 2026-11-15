@@ -80,6 +80,19 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-15, the single-token GEMV's window reads one window ahead, opt-in** (`ARC_GEMV_DB=1`, decode.cl
+  `-DGEMV_DB`, zero/xe2/engine_xe2.h; after urakozz's GEMV, whose loads stay in flight across its dequantization).
+  `gemv` (IQ3_S, Q4_K, Q5_K, Q8_0, ...) loads the next row's or the next step's window into registers before it
+  decodes the current one; in place of `ARC_GEMV_PF`. Laptop, `runz --bench-pp 512`, off and on alternated: Qwen3.5 4B
+  Q4_K_XL `--n 128` 17.49 / 19.66 / 19.94 / 20.23 -> 18.63 / 19.88 / 19.95 / 20.30 tok/s (within noise; `gemm_gate`
+  876.8 -> 875.8 ms over 128 tokens); 27B IQ3_S `--n 32` 4.77 / 4.70 -> 4.84 / 4.65. **No gain on the laptop**, and
+  none was expected there: the probes (`ARC_GV_PROBE`, now for every type on the `gemv` path) show the 4B's GEMVs
+  bound by memory (no decode at all: `gemm_gate` 877 -> 900 ms, not faster; gate / up already ~64 GB/s) and the
+  27B's IQ3_S layers by their decoding (decode only, no streaming: `gemm_gate` 1,273 -> 1,226 ms, `gemm_down` 1,309
+  -> 1,215, though only a quarter to a third of the layers take the `gemv` path). Speed on B-series cards: not
+  measured. Logits bit-identical (`--dump-logits`, a 21-token prompt: 4B + 64 generated tokens, 27B + 24); the
+  default build's code is unchanged. ocloc `bmg` and `mtl-h`: IQ3_S (2 rows), Q4_K (4), Q5_K and Q8_0 (1) build, no
+  spills in `gemv`.
 - **2026-11-14, an AutoRound package checks its expert file's checkpoint** (src/autoround_revision.h; pull request #25
   by chumbleyjl). No speed or numbers change: a metadata check at load. Measured by its author on a B70: the matching
   package's logits bit-identical before and after (two prompts, their last rows); a synthetic package with the same

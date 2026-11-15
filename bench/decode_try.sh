@@ -17,6 +17,8 @@
 #   GEMV_PF=0      plain, without the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=0;
 #                  on by default on discrete cards: dense models since 2026-11-08, MoE models since 2026-11-12, a
 #                  B60's 35B 79.9 without it, 88.9 with)
+#   GEMV_DB=1      plain, the single-token GEMV reading one window ahead instead of the prefetch (ARC_GEMV_DB=1,
+#                  2026-11-15; bit-identical); tokens checked against plain
 #   GV_IQ3S=1      plain, IQ3_S weights through gemv_v (straight into registers) instead of gemv's local window
 #                  (ARC_GV_IQ3S=1); also with GVROWS=2 / 4 (ARC_GVROWS: its rows per sub-group)
 #   BATCH=16/32/128  plain, kernels recorded into command lists of up to n kernels, each appended to the immediate
@@ -52,7 +54,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNZ="$ROOT/bin/runz"
 PROBE="$ROOT/bin/mgpu_probe"
-VARS=(ARC_GEMV_GRF ARC_GVROWS ARC_GEMV_MT_GRF ARC_GEMV_PF ARC_GV_IQ3S ARC_MOE_GR_GU ARC_MOE_GR_DN ARC_BATCH ARC_XALL
+VARS=(ARC_GEMV_GRF ARC_GEMV_DB ARC_GVROWS ARC_GEMV_MT_GRF ARC_GEMV_PF ARC_GV_IQ3S ARC_MOE_GR_GU ARC_MOE_GR_DN ARC_BATCH ARC_XALL
       ARC_WIDE_ROWS ARC_GEMV_SMALL_WG ARC_GEMV_GU ARC_GV4 ARC_MOE_GR_DN_S ARC_MOE_GRF ARC_ATTN_DEC_GRF
       ARC_ATTN_DEC_SG ARC_ATTN_DEC_SMAX)
 
@@ -214,6 +216,7 @@ for model in "${MODELS[@]}"; do
   run_line "mtp MT_GRF=128" "ARC_GEMV_MT_GRF=128" "$model" --mtp
   # (the prefetch is on by default on discrete cards, dense and MoE models: the row without it)
   run_line "GEMV_PF=0" "ARC_GEMV_PF=0" "$model"
+  run_same "GEMV_DB=1" "ARC_GEMV_DB=1" "$model"
   run_line "GV_IQ3S=1" "ARC_GV_IQ3S=1" "$model"
   for g in 1 2 4 8; do run_line "GV_IQ3S=1 GVROWS=$g" "ARC_GV_IQ3S=1 ARC_GVROWS=$g" "$model"; done
   for b in 16 32 128; do run_same "BATCH=$b" "ARC_BATCH=$b" "$model"; done

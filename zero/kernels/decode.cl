@@ -909,6 +909,15 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
 #endif
 #define WIN_U (2 * BBP / 4)          // uints per two-superblock window
 #define WIN_CALLS ((WIN_U + 15) / 16)
+// -DGEMV_DB (ARC_GEMV_DB=1, zero/xe2/engine_xe2.h; 2026-11-15, from urakozz's GEMV, whose loads stay in flight across
+// its decode): the window reads one window ahead. The (step, row) windows a sub-group reads, in order, are loaded
+// into registers one window early, so the next row's (or the next step's first row's) bytes are on their way while
+// this row is decoded; without it each row's reads are issued and waited for before its decode. The same bytes in
+// the same local-memory window, the same arithmetic in the same order: bit-identical. WIN_CALLS registers more.
+// Not with -DGEMV_PF (the reads of a whole step issued at once) or GV_PROBE.
+#if defined(GEMV_DB) && (defined(GEMV_PF) || defined(GV_PROBE))
+#error "gemv: GEMV_DB with GEMV_PF or GV_PROBE"
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* aq,
                    __global const float* asc, __global const ushort* absum, int M, __global float* C, int c_off,
@@ -945,6 +954,14 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 #pragma unroll
   for (int r = 0; r < GROWS; ++r) acc2[r] = 0.0f;
 #endif
+#ifdef GEMV_DB
+  uint nxt[WIN_CALLS];  // (the next window's words: step 0, row 0 first)
+  {
+    __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0, N - 1) * nsb) * BBP);
+#pragma unroll
+    for (int c = 0; c < WIN_CALLS; ++c) nxt[c] = intel_sub_group_block_read(src + c * 16);
+  }
+#endif
   for (int sp = 0; sp < nsb; sp += 2) {
     const int b = sp * 8 + lane;  // this lane's 32-block within the row
     const bool has = sp + lane / 8 < nsb;
@@ -967,19 +984,40 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
     uint pre[GROWS][WIN_CALLS];
 #pragma unroll
     for (int r = 0; r < GROWS; ++r) {
+#if GV_PROBE == 2
+      __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + r, N - 1) * nsb) * BBP);
+#else
       __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + r, N - 1) * nsb + sp) * BBP);
+#endif
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) pre[r][c] = intel_sub_group_block_read(src + c * 16);
     }
 #endif
 #pragma unroll
     for (int r = 0; r < GROWS; ++r) {
-#ifdef GEMV_PF
+#if defined(GEMV_PF)
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = pre[r][c];
+#elif defined(GEMV_DB)
+#pragma unroll
+      for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = nxt[c];
+      {
+        // the window after this one: row r + 1 of this step, or row 0 of the next step (none after the last)
+        const int nr = r + 1 < GROWS ? r + 1 : 0, nsp = r + 1 < GROWS ? sp : sp + 2;
+        if (nsp < nsb) {
+          __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + nr, N - 1) * nsb + nsp) * BBP);
+#pragma unroll
+          for (int c = 0; c < WIN_CALLS; ++c) nxt[c] = intel_sub_group_block_read(src + c * 16);
+        }
+      }
 #else
       const int n = min(r0 + r, N - 1);
+#if GV_PROBE == 2
+      // probe 2 (decode only): always the row's first two superblocks (they stay in cache), full decode
+      __global const uint* src = (__global const uint*)(raw + ((size_t)n * nsb) * BBP);
+#else
       __global const uint* src = (__global const uint*)(raw + ((size_t)n * nsb + sp) * BBP);
+#endif
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
 #endif
@@ -987,7 +1025,13 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
       uint w[8];
       int sc0, sc1, mn0, mn1;
       float d, dmin;
+#if GV_PROBE == 1
+      // probe 1 (reads only): the window's words as the weights, no codebook, no bit work
+      for (int i = 0; i < 8; ++i) w[i] = win[(lane * 8 + i) % WIN_U];
+      sc0 = sc1 = 1; mn0 = mn1 = 0; d = 1.0f; dmin = 0.0f;
+#else
       decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+#endif
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
       int lo = dot_4x8packed_ss_int(a8.s0, w[0]);
       lo += dot_4x8packed_ss_int(a8.s1, w[1]);

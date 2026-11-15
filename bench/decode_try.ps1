@@ -15,6 +15,8 @@
 #   GEMV_PF=0      plain, without the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=0;
 #                  on by default on discrete cards: dense models since 2026-11-08, MoE models since 2026-11-12, a
 #                  B60's 35B 79.9 without it, 88.9 with)
+#   GEMV_DB=1      plain, the single-token GEMV reading one window ahead instead of the prefetch (ARC_GEMV_DB=1,
+#                  2026-11-15; bit-identical); tokens checked against plain
 #   GV_IQ3S=1      plain, IQ3_S weights through gemv_v (straight into registers) instead of gemv's local window
 #                  (ARC_GV_IQ3S=1); also with GVROWS=2 / 4 (ARC_GVROWS: its rows per sub-group)
 #   BATCH=16/32/128  plain, kernels recorded into command lists of up to n kernels, each appended to the immediate
@@ -53,7 +55,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
-$vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL",
+$vars = @("ARC_GEMV_GRF", "ARC_GEMV_DB", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL",
           "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG", "ARC_GEMV_GU", "ARC_GV4", "ARC_MOE_GR_DN_S", "ARC_MOE_GRF", "ARC_ATTN_DEC_GRF",
           "ARC_ATTN_DEC_SG", "ARC_ATTN_DEC_SMAX")
 # (Qwen chat format, thinking off: the answer starts right away)
@@ -136,6 +138,7 @@ foreach ($model in $Models) {
   Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
   # (the prefetch is on by default on discrete cards, dense and MoE models: the row without it)
   Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" })
+  Same "GEMV_DB=1" (Invoke-Run $model @() @{ ARC_GEMV_DB = "1" }) $plain
   Line "GV_IQ3S=1" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1" })
   foreach ($g in 1, 2, 4, 8) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }
   foreach ($b in 16, 32, 128) { Same "BATCH=$b" (Invoke-Run $model @() @{ ARC_BATCH = "$b" }) $plain }

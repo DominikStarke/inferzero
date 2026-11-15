@@ -1154,7 +1154,14 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
-      cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) +
+      // (ARC_GV_PROBE=1 / 2: a measurement, not for use, the output is wrong. 1: gemv reads the weights and skips the
+      //  decode (bandwidth of the access pattern); 2: it decodes the row's first superblocks again and again, no
+      //  streaming (the decode's own speed). Compare the `gemm_gate / up / down` rows of --prof-gen. Every type on the
+      //  gemv path, not the output head; gemv_v's types (IQ3_XXS, IQ4_XS, IQ2, Q6_K) run as usual. Probe 1's
+      //  stand-in reads (stride 8 words across lanes) cost local-memory bank conflicts of their own: an upper bound)
+      static const int gv_probe = getenv("ARC_GV_PROBE") ? atoi(getenv("ARC_GV_PROBE")) : 0;
+      const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
+      cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) + probe_def +
                                          (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) + (vk ? std::string() : xe2_gemv_pf()),
                            vk ? "gemv_v" : "gemv");
       q2_fused_ = q2_fuse_;

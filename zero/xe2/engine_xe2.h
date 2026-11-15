@@ -100,7 +100,11 @@
   // 83.88). MoE models too again since 2026-11-12: on package fffaf1a (the small work-groups off again, the code of
   // today) the 35B 88.91 with it, 79.93 without (+11 %; the 27B 23.72 with, 22.46 without), issue #4.
   // iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
+  // ARC_GEMV_DB=1 (any GPU, opt-in, 2026-11-15): gemv's window reads one window ahead instead (decode.cl -DGEMV_DB),
+  // in place of the prefetch; bit-identical. Not with ARC_GV_PROBE
   std::string xe2_gemv_pf() const {
+    static const bool db = getenv("ARC_GEMV_DB") && atoi(getenv("ARC_GEMV_DB")) != 0 && !getenv("ARC_GV_PROBE");
+    if (db) return std::string(" -DGEMV_DB");
     static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
     const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
     return on ? std::string(" -DGEMV_PF") : std::string();

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-15: the single-token GEMV reads one window ahead, opt-in (after a look at urakozz's decode GEMV)
+
+- **Why:** on a Pro B70 urakozz's plain 27B decode streams ~88 % of his measured bandwidth (int4 g64 weights,
+  lane per output column, split-K for the 5,120-row matrices). Ours is at ~67 %, its FFN GEMVs at ~62 % (issues #12,
+  #27). His loads stay in flight while he dequantizes. Ours, in `gemv`, issues each row's window reads and waits for
+  them before decoding.
+- **What:** `ARC_GEMV_DB=1` (any GPU): `gemv` (IQ3_S, Q4_K, Q5_K, Q8_0, ...) loads the next window (the next row's,
+  or the next step's first row) into registers before it decodes the current one, in place of `ARC_GEMV_PF`. The
+  same bytes, the same arithmetic: bit-identical. Off by default until a B-series card measures it.
+- **Also:** the `ARC_GV_PROBE=1 / 2` measurement now covers every type on the `gemv` path, not only IQ3_S.
+- **Checked** (laptop): logits bit-identical (the 4B and the 27B, prompt and generated tokens). The speed is the
+  same within noise (4B 17.5-20.2 -> 18.6-20.3 tok/s, four alternated runs; 27B 4.70-4.77 -> 4.65-4.84). The probes
+  say why: the laptop's Q4_K GEMVs are memory-bound (skipping the decode is no faster), and its IQ3_S ones are close
+  to decode-bound (the decode alone, from cache, is nearly as slow as the streamed GEMV). By that ratio, on a B70
+  (about 8x the bandwidth for ~4.6-5.8x the vector compute, worked out) the codebook decode, not the access
+  pattern, would cap those GEMVs at roughly 60-80 % of bandwidth, around the ~62 % measured. Builds for Battlemage (ocloc `bmg`) without spills. Comparison:
+  docs/xe2-tuning.md section 10.
+
 ## 2026-11-15: the wide-tile H8 GEMM in larger work-groups, opt-in (after a comparison with urakozz's engine)
 
 - **Why:** on a Pro B70 our prompt GEMMs run at ~62 % of the XMX int8 peak, urakozz's at 72-81 %
