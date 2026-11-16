@@ -286,7 +286,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li>
     </ul>
     <div class="right">
-      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.16.06</a>
+      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.16.07</a>
       <a class="btn p sm" href="https://github.com/rizagp/inferzero/releases/latest">Download</a>
     </div>
   </div>
@@ -358,7 +358,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       </div>
     </div>
     <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
-    <div class="src">Qwen3.8 27B GSQ-RCO IQ3_S; the laptop's prompt is 8K, the others 4K. Each bar is one user's run, with its release. The B70's prompt is a Pro B70 on native Linux (<a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a>, release 2026.11.16.06, with the flash attention of PR #29 and the decoded weights kept resident: 2,105 tok/s on another B70 under Windows before the weight prefetch, <a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>); its generation bar is the same Linux B70 with the GEMV rows of joshdev-de's branch (the MTP figure through serverz, 4 drafts). The several-B60 bars (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>) are from before the weight prefetch that took one B60 from 1,322 to 1,522 tok/s, and newer runs are coming.
+    <div class="src">Qwen3.8 27B GSQ-RCO IQ3_S; the laptop's prompt is 8K, the others 4K. Each bar is one user's run, with its release. The B70's prompt is a Pro B70 on native Linux (<a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a>, release 2026.11.16.07, with the flash attention of PR #29 and the decoded weights kept resident: 2,105 tok/s on another B70 under Windows before the weight prefetch, <a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>); its generation bar is the same Linux B70 with the GEMV rows of joshdev-de's branch (the MTP figure through serverz, 4 drafts). The several-B60 bars (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>) are from before the weight prefetch that took one B60 from 1,322 to 1,522 tok/s, and newer runs are coming.
       <ul>
         <li>One B60 with MTP: the 27B generates 51.6 tok/s, the 35B 82.4 and 111.9 (release 2026.11.13.11). The 35B's 4K prompt: 3,536 tok/s (2026.11.14.09).</li>
         <li>On Windows the B60s have no peer access, so several cards add their sums through host memory. On Linux two B60s (<a href="https://github.com/rizagp/inferzero/issues/17">issue #17</a>, PCIe 4.0 x8 each) sum straight from GPU to GPU: a 4K prompt at 1,630 tok/s against 1,442 through host memory, generation 37.8 against 36.1, the same logits.</li>
@@ -633,7 +633,7 @@ zero-server start -Model 27b -Slots 2</pre>
       <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>9 MB</kbd></a>
       <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
       <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>7 MB</kbd></a>
-      <span class="mono">release 2026.11.16.06</span>
+      <span class="mono">release 2026.11.16.07</span>
     </div>
   </div>
 </section>

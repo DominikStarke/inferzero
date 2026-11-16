@@ -711,7 +711,7 @@ switch ($Action) {
       # (the expert file the engine wrote for this model before, in the same folder, moves into the package instead of
       #  being written again: then only the rest is new. One such file only; with several it cannot tell which)
       $made = @(Get-ChildItem -LiteralPath $pkgDir -File -Filter "*.experts" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $pkgExp })
-      $need = if ($made.Count -eq 1) { [Math]::Max(0, $bytes - $made[0].Length) } else { $bytes }
+      $need = if ($made.Count -eq 1) { [Math]::Max([double]0, [double]$bytes - $made[0].Length) } else { $bytes }  # (doubles: bytes past 2^31, issue #31)
       $drive = Get-PSDrive ((Split-Path $stateDir -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
       if ($drive -and $drive.Free -lt $need + 2GB) {
         throw ("pack: {0:N1} GB free on {1}:, the package needs about {2:N1} GB" -f ($drive.Free / 1GB), $drive.Name, (($need + 2GB) / 1GB))

@@ -130,7 +130,7 @@ function Show-GetModels([bool]$first) {
       foreach ($dir in $state.dirs) {
         if (Test-Path $dir) { $now += (Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
       }
-      $bar.Value = [int][math]::Min(100, [math]::Max(0, 100 * ($now - $state.start) / [math]::Max(1, $state.total)))
+      $bar.Value = [int][math]::Min([double]100, [math]::Max([double]0, 100 * ([double]$now - $state.start) / [math]::Max([double]1, [double]$state.total)))  # (doubles: bytes past 2^31, issue #31)
       $lines = @(Get-Content $state.out -ErrorAction SilentlyContinue)
       $cur = ($lines | Where-Object { $_ -like "START *" } | Select-Object -Last 1) -replace '^START ', ''
       $info.Text = "Downloading $cur ... {0:N1} of {1:N1} GB (a cut connection is fine: Download again goes on where it stopped)" -f (($now - $state.start) / 1e9), ($state.total / 1e9)

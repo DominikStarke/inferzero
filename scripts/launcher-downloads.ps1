@@ -183,10 +183,10 @@ function Show-Downloads {
         $now = Bytes-Now
         if ($now -gt $st.last + 1MB) { $st.retries = 0 }  # (data again: the next cut waits 5 s again)
         $sec = ([DateTime]::Now - $st.lastT).TotalSeconds
-        $rateNow = if ($sec -gt 0.2) { [math]::Max(0, ($now - $st.last) / $sec) } else { 0 }
+        $rateNow = if ($sec -gt 0.2) { [math]::Max([double]0, ([double]$now - $st.last) / $sec) } else { 0 }  # (doubles: bytes past 2^31, issue #31)
         $st.last = $now; $st.lastT = [DateTime]::Now
-        $got = [math]::Max(0, $now - $st.base)
-        $bar.Value = [int][math]::Min(100, [math]::Max(0, 100 * $got / [math]::Max(1, $st.total)))
+        $got = [math]::Max([double]0, [double]$now - $st.base)
+        $bar.Value = [int][math]::Min([double]100, [math]::Max([double]0, 100 * $got / [math]::Max([double]1, [double]$st.total)))
         $lines = @(Get-Content $st.out -ErrorAction SilentlyContinue)
         $cur = ($lines | Where-Object { $_ -like "START *" } | Select-Object -Last 1) -replace '^START ', ''
         $info.Text = "Downloading {0} ... {1:N2} of {2:N2} GB, {3:N1} MB/s" -f $cur, ($got / 1e9), ($st.total / 1e9), ($rateNow / 1MB)

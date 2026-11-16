@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-16: the Windows launcher with more than 2^31 bytes in a number (132 GB of RAM, issue #31)
+
+- **Why:** with 132 GB of RAM the launcher stopped at its status update: "Cannot convert argument "val2", with value:
+  "122933022720", for "Max" to type "System.Int32"" (gee456, issue #31). Windows PowerShell picks `[math]::Max` /
+  `Min`'s Int32 overload for an integer literal next to a large number, and the GPU's memory share in bytes (half of
+  132 GB) does not fit.
+- **What:** those calls take doubles now: the GPU memory bar of `scripts/zero-launcher.ps1`, the download progress
+  of `scripts/launcher-downloads.ps1` and `launcher-firstrun.ps1` (downloads past 2 GiB), and the free-space need of
+  `scripts/zero-server.ps1`. Checked in Windows PowerShell 5.1 with the reported value: the old line fails as
+  reported, the new one gives 50 %.
 ## 2026-11-16: a split model keeps no experts in RAM by default (DeepSeek-V4.1 over 4 GPUs)
 
 - **Why:** DeepSeek-V4.1-Flash UD-Q8_K_XL over manoreken2's 4 Pro B60s (1 TB of RAM, issue #4) ran out of GPU memory

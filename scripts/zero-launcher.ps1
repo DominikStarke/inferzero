@@ -738,7 +738,7 @@ function Update-Status {
     $L.Add(("context  {0:N0} tokens, {1:N0} filled   chunk {2}" -f $p.n_ctx, $p.stats.position, $p.chunk))
     $L.Add(("MTP      {0}   images {1}   audio {2}" -f $(if ($p.mtp) { "yes ($($p.mtp_drafts) drafts)" } else { "no" }), $(if ($p.vision) { "yes" } else { "no" }), $(if ($p.audio) { "yes" } else { "no" })))
     if ($mem) {
-      $pct = [math]::Min(100, [math]::Round(100 * $mem.total / [math]::Max(1, $mem.device)))
+      $pct = [math]::Min([double]100, [math]::Round(100 * [double]$mem.total / [math]::Max([double]1, [double]$mem.device)))  # (doubles: bytes past 2^31 failed the Int32 overload, issue #31)
       $memBar.Value = [int]$pct; $memBar.Visible = $memLbl.Visible = $true
       $memLbl.Text = "GPU memory: {0} of {1} ({2} %)" -f (GiB $mem.total), (GiB $mem.device), $pct
       $L.Add("")
