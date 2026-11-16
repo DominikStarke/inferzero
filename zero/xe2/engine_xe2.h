@@ -69,11 +69,12 @@
   }
   // ARC_MOE_GRF=128: the same for the MoE expert GEMMs (256 until measured on a B-series card: their 128 build is the
   // one that spilled on the iGPU)
+  // (128 by default on discrete cards with 16-lane XMX since 2026-11-16: a Pro B70's 35B 8K prompt 5,377 / 5,338 ->
+  //  5,612 tok/s, +4.4-5.1 % (joshdev-de, issue #27, release 2026.11.16.12); the same source, another register file.
+  //  iGPUs keep 256 (the 128 build spilled there). ARC_MOE_GRF=256: as before)
   std::string xe2_moe_grf() const {
-    static const bool grf128 = [] {
-      const char* e = getenv("ARC_MOE_GRF");
-      return e != nullptr && std::string(e) == "128";
-    }();
+    const char* e = getenv("ARC_MOE_GRF");
+    const bool grf128 = e ? std::string(e) == "128" : (!zrt::integrated() && cl_.xmx && !cl_.sg8);
     return xe2_ && grf128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   // ARC_GEMM_CG=2 / 4: 16-column groups per work-group of the prompt GEMM (a matrix whose column groups it does not

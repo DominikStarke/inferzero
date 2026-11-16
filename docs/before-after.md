@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, `ARC_MOE_GRF=128` on discrete cards and `ARC_GEMM_XW_PF=1` in the 140T preset, by default** (users'
+  runs on release 2026.11.16.12, best of 3 at 8,192 tokens): Pro B70 35B-A3B 5,377.3 / 5,338.2 -> 5,612.5 tok/s
+  (joshdev-de, issue #27); Arc 140T 27B 359.0 / 359.3 -> 366.4 / 366.9 (PascalSoftwares, issue #5). Laptop: neither
+  taken, the 27B's logits the same SHA-256; the 140T preset emulated (`ARC_XMX_TRY=2 ARC_140T=1`) with the prefetch
+  now default: the same SHA-256 as off.
+
 - **2026-11-16, XMX prompt attention by default on iGPUs with 16-lane XMX** (`ARC_ATTN_XMX`, measured by gee456's
   Arc B390, issue #31, f33_sweep on 2026.11.16.07, best of 3): 65K prompt default -> attn XMX: 4B 950.1 -> 1,079.3,
   27B 205.7 -> 215.4, 35B 794.9 -> 903.9, Flash Next 315.3 -> 313.4 tok/s; 4K 2,101 -> 2,133, 309.3 -> 309.1,

@@ -90,9 +90,11 @@
   }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
   int xw_pf_eff() const {
-    // (8 lanes, gemm_xw8: only when ARC_GEMM_XW_PF is set, a test for the 140T since 2026-11-16; its weights' part
-    //  everywhere, the activations' with the packed layout (XW_PACKA) only; the default build there is unchanged)
-    if (xw_lanes() != 16) return getenv("ARC_GEMM_XW_PF") ? xw_pf() : 0;
+    // (8 lanes, gemm_xw8: the weights' part by default in the 140T preset (p140_, also Alchemist cards) since
+    //  2026-11-16: a 140T's 27B 8K prompt 359.0 / 359.3 -> 366.4 / 366.9 tok/s, +2 % (PascalSoftwares, issue #5,
+    //  release 2026.11.16.12; 2 and 3 slower: 341.9 / 338.5); a prefetch reads no value into the sums. Otherwise
+    //  only when ARC_GEMM_XW_PF is set; the activations' part with the packed layout (XW_PACKA) only)
+    if (xw_lanes() != 16) return (getenv("ARC_GEMM_XW_PF") || p140_) ? xw_pf() : 0;
     return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf();
   }
   std::string xw_pf_defs() const {

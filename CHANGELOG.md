@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-16: two defaults from users' runs: the MoE GEMMs' register file on discrete cards, the 140T's prefetch
+
+- **`ARC_MOE_GRF=128` by default on discrete cards with 16-lane XMX:** a Pro B70's Qwen3.6 35B-A3B 8K prompt 5,377.3 /
+  5,338.2 -> 5,612.5 tok/s, +4.4-5.1 % (joshdev-de, issue #27, release 2026.11.16.12; the only switch of his sweep
+  past 3 %). The same kernel source with more threads per Xe-core; iGPUs keep 256 registers (the 128 build spilled
+  there). `ARC_MOE_GRF=256`: as before.
+- **`ARC_GEMM_XW_PF=1` by default in the Arc 140T preset** (also Alchemist cards): a 140T's 27B 8K prompt 359.0 /
+  359.3 -> 366.4 / 366.9 tok/s, +2 % (PascalSoftwares, issue #5, release .12); `2` and `3` were slower (341.9 /
+  338.5), two chunks ahead the same as one (366.8). `ARC_GEMM_XW_PF=0`: off.
+- **Checked:** the laptop takes neither (the 27B's logits the same SHA-256); the 140T preset with DPAS emulated, now
+  with the prefetch by default, the same SHA-256 as without it.
+- The same B70 sweep found nothing on the 27B (2,727 tok/s at 8K; every tile and group switch slower), and its 35B
+  profile shows where the MoE prompt goes next: the expert GEMMs 39 % (`moe_gateup` + `moe_down`), `gdn_recur` 18.5 %,
+  and `decode_w8` 11.6 % at 4K, the experts' per-chunk decode (QUEUE: experts kept in their decoded form).
 ## 2026-11-16: XMX prompt attention on iGPUs with 16-lane XMX too (Panther Lake's Arc B390, Lunar Lake)
 
 - **Why:** gee456's Arc B390 ran `bench\f33_sweep.ps1` and the website benchmark on release 2026.11.16.07 (issue
