@@ -487,7 +487,9 @@ While the server is running:
     Talk).
 - **Web UI: web search.** Turn on **Web search** in the settings and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
-  on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and
+  on with what it found. The server does the requests itself: it asks Brave Search, Bing, DuckDuckGo and Wikipedia
+  at once and merges their results as SearXNG does (a page several engines rank high comes first; when one engine
+  refuses, a rate limit or a bot check, the others still answer), and it
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
   network). The model can also follow links and open files: a GitHub issue comes with all its comments and a list of
   the files attached to it; a PDF, Word, Excel or PowerPoint file (up to 20 MB) is read and saved in the chat's files;

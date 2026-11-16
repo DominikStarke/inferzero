@@ -65,6 +65,51 @@ int main(int argc, char** argv) {
           r.empty() ? "" : r[0].url + " | " + r[0].title + " | " + r[0].snippet);
     check("bing direct", r.size() == 2 && r[1].url == "https://direct.example/");
   }
+  {
+    const std::string ddg =
+        "<div class=\"result results_links results_links_deep result--ad \"><h2 class=\"result__title\"><a class=\"result__a\" "
+        "href=\"https://ad.example/\">Ad</a></h2></div>"
+        "<div class=\"result results_links results_links_deep web-result \"><h2 class=\"result__title\"><a rel=\"nofollow\" "
+        "class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fintel%2Fcompute%2Druntime%3Fa%3D1&amp;rut=ab\">"
+        "GitHub - <b>intel</b>/compute-runtime</a></h2><a class=\"result__snippet\" href=\"x\">The <b>Intel</b> runtime &amp; more</a></div>"
+        "<div class=\"result results_links results_links_deep web-result \"><a class=\"result__a\" href=\"https://direct.example/\">D</a></div>";
+    const auto r = parse_duckduckgo(ddg, 10);
+    check("duckduckgo count (the ad skipped)", r.size() == 2, std::to_string(r.size()));
+    check("duckduckgo first", r.size() == 2 && r[0].url == "https://github.com/intel/compute-runtime?a=1" &&
+          r[0].title == "GitHub - intel/compute-runtime" && r[0].snippet == "The Intel runtime & more",
+          r.empty() ? "" : r[0].url + " | " + r[0].title + " | " + r[0].snippet);
+    check("duckduckgo direct", r.size() == 2 && r[1].url == "https://direct.example/");
+  }
+  {
+    const std::string wiki =
+        "{\"batchcomplete\":\"\",\"query\":{\"searchinfo\":{\"totalhits\":2},\"search\":[{\"ns\":0,\"title\":\"Intel Arc\","
+        "\"pageid\":1,\"snippet\":\"<span class=\\\"searchmatch\\\">Intel<\\/span> Arc \\u00e9 &quot;GPU&quot; \\ud83d\\ude00\","
+        "\"timestamp\":\"x\"},{\"ns\":0,\"title\":\"Xe \\\"HPG\\\"\",\"pageid\":2,\"timestamp\":\"y\"},"
+        "{\"ns\":0,\"title\":\"Third\",\"snippet\":\"three\"}]}}";
+    const auto r = parse_wikipedia(wiki, 2);
+    check("wikipedia count", r.size() == 2, std::to_string(r.size()));
+    check("wikipedia first", r.size() == 2 && r[0].title == "Intel Arc" && r[0].url == "https://en.wikipedia.org/wiki/Intel_Arc" &&
+          r[0].snippet == "Intel Arc \xc3\xa9 \"GPU\" \xf0\x9f\x98\x80",
+          r.empty() ? "" : r[0].url + " | " + r[0].title + " | " + r[0].snippet);
+    check("wikipedia second (no snippet: not the next record's)", r.size() == 2 && r[1].title == "Xe \"HPG\"" && r[1].snippet.empty(),
+          r.size() < 2 ? "" : r[1].title + " | " + r[1].snippet);
+  }
+  check("url_key", url_key("https://WWW.Example.com/a/#x") == "example.com/a" && url_key("http://example.com/a") == "example.com/a",
+        url_key("https://WWW.Example.com/a/#x"));
+  {
+    auto R = [](const char* u, const char* sn = "") { Result r; r.url = u; r.title = u; r.snippet = sn; return r; };
+    // a: 1st on one engine only (1.0); b: 2nd and 3rd on two (2 x (1/2 + 1/3) = 1.67); c: 1st on the other (1.0, seen later)
+    const std::vector<std::pair<double, std::vector<Result>>> lists = {
+        {1.0, {R("https://a.example/"), R("https://b.example/", "short")}},
+        {1.0, {R("https://c.example/"), R("https://d.example/"), R("https://www.b.example", "the longer snippet")}},
+        {0.5, {R("https://w.example/")}}};
+    const auto m = merge_results(lists, 10);
+    std::string order;
+    for (auto& x : m) order += x.url.substr(8, 1);
+    check("merge order", order == "bacdw", order);
+    check("merge keeps the fuller snippet", !m.empty() && m[0].snippet == "the longer snippet", m.empty() ? "" : m[0].snippet);
+    check("merge cut to n", merge_results(lists, 2).size() == 2);
+  }
   check("public 8.8.8.8", addr_public("8.8.8.8"));
   check("public 2606:4700::1111", addr_public("2606:4700::1111"));
   for (const char* ip : {"127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1",
@@ -151,6 +196,11 @@ int main(int argc, char** argv) {
     for (auto& x : r) printf("  %s\n    %s\n    %.100s\n", x.title.c_str(), x.url.c_str(), x.snippet.c_str());
     const auto b = search("intel arc level zero", 5, "bing", &used, &err);
     printf("bing: %zu results %s\n", b.size(), err.c_str());
+    for (const char* e : {"brave", "duckduckgo", "wikipedia"}) {
+      const auto x = search("intel arc level zero", 5, e, &used, &err);
+      printf("%s: %zu results %s\n", e, x.size(), err.c_str());
+      fails += x.empty() && std::string(e) != "brave";  // (Brave may answer with a captcha; the others should not)
+    }
     const Page p = get("https://en.wikipedia.org/wiki/Intel_Arc");
     std::string title;
     const std::string t = html_to_text(p.body, &title);

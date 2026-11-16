@@ -1,6 +1,6 @@
 // Web search and page fetch for the web UI's tools (server endpoints /v1/tools/web_search and /v1/tools/web_fetch):
-// HTTP requests (WinHTTP on Windows, libcurl loaded at run time on Linux: src/curl_min.h), result parsing for Brave
-// Search (Bing when Brave gives nothing) and HTML to plain text. Only public http(s) addresses are fetched: every
+// HTTP requests (WinHTTP on Windows, libcurl loaded at run time on Linux: src/curl_min.h), a search of Brave, Bing,
+// DuckDuckGo and Wikipedia at once with their results merged and ranked as SearXNG does, and HTML to plain text. Only public http(s) addresses are fetched: every
 // host, redirects included, is resolved first and loopback, private, link-local, multicast and reserved addresses are
 // refused, and the address the connection goes to is checked again (WinHTTP: the one it connected to, before anything
 // is read; libcurl: each address before it connects), so a model cannot reach the machine or the local network.
@@ -21,9 +21,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <stdexcept>
+#include <system_error>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 #ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
@@ -972,28 +975,234 @@ inline std::vector<Result> parse_bing(const std::string& html, size_t n) {
   return rs;
 }
 
-// Search the web: Brave Search, then Bing when Brave answers with nothing usable (rate limit, captcha). engine:
-// "auto", "brave" or "bing". *error: why an engine was skipped (with no results: why every one failed).
-inline std::vector<Result> search(const std::string& query, size_t n, const std::string& engine, std::string* used, std::string* error) {
+// %XX escapes and '+' as a space (a query string's value)
+inline std::string url_decode(const std::string& s) {
+  std::string o;
+  o.reserve(s.size());
+  auto hex = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size() && hex(s[i + 1]) >= 0 && hex(s[i + 2]) >= 0) o += (char)(hex(s[i + 1]) * 16 + hex(s[i + 2])), i += 2;
+    else o += s[i] == '+' ? ' ' : s[i];
+  }
+  return o;
+}
+
+// DuckDuckGo's HTML page (html.duckduckgo.com/html): its links go through //duckduckgo.com/l/?uddg=<the target>&rut=...
+inline std::vector<Result> parse_duckduckgo(const std::string& html, size_t n) {
   std::vector<Result> rs;
-  std::string err;
-  if (engine != "bing") {
-    const std::string u = "https://search.brave.com/search?q=" + url_encode(query) + "&source=web";
-    Page pg = get(u, 4u << 20, 12000);
-    if (pg.status == 429) std::this_thread::sleep_for(std::chrono::milliseconds(1500)), pg = get(u, 4u << 20, 12000);  // (a short burst limit)
-    if (pg.error.empty() && pg.status == 200) rs = parse_brave(pg.body, n);
-    else err = "brave: " + (pg.error.empty() ? "HTTP " + std::to_string(pg.status) : pg.error);
-    if (!rs.empty()) { *used = "brave"; return rs; }
-    if (err.empty()) err = "brave: no results" + std::string(pg.body.find("captcha") != std::string::npos ? " (captcha)" : "");
+  const std::string mark = "class=\"result results_links";
+  size_t p = html.find(mark);
+  while (p != std::string::npos && rs.size() < n) {
+    const size_t q = html.find(mark, p + mark.size());
+    const std::string seg = html.substr(p, (q == std::string::npos ? html.size() : q) - p);
+    p = q;
+    if (seg.substr(0, seg.find('"', mark.size())).find("result--ad") != std::string::npos) continue;  // (an ad)
+    const size_t a = seg.find("class=\"result__a\"");
+    if (a == std::string::npos) continue;
+    const size_t h = seg.find("href=\"", a);
+    if (h == std::string::npos) continue;
+    std::string href = decode_entities(seg.substr(h + 6, seg.find('"', h + 6) - h - 6));
+    const size_t u = href.find("uddg=");
+    if (u != std::string::npos) href = url_decode(href.substr(u + 5, href.find('&', u + 5) - u - 5));
+    Result r;
+    r.url = href;
+    r.title = inner_text(seg, h, "</a>");
+    const size_t s = seg.find("class=\"result__snippet\"");
+    if (s != std::string::npos) r.snippet = inner_text(seg, s, "</a>");
+    if (r.url.rfind("http", 0) == 0 && !r.title.empty()) rs.push_back(r);
   }
-  if (engine != "brave") {
-    const Page pg = get("https://www.bing.com/search?q=" + url_encode(query), 4u << 20, 12000);
-    if (pg.error.empty() && pg.status == 200) rs = parse_bing(pg.body, n);
-    if (!rs.empty()) { *used = "bing"; *error = err; return rs; }
-    err += std::string(err.empty() ? "" : "; ") + "bing: " + (!pg.error.empty() ? pg.error : pg.status != 200 ? "HTTP " + std::to_string(pg.status) : "no results");
-  }
-  *error = err;
   return rs;
+}
+
+// a JSON string's value after `"key":` from `from` on (the escapes \" \\ \/ \n \t \uXXXX with surrogate pairs);
+// *next: just after it. Enough for the Wikipedia API's flat records; empty when the key is not there
+inline std::string json_str(const std::string& s, const std::string& key, size_t from, size_t* next) {
+  const std::string k = "\"" + key + "\":\"";
+  size_t i = s.find(k, from);
+  if (i == std::string::npos) { *next = std::string::npos; return {}; }
+  i += k.size();
+  std::string o;
+  auto hex4 = [&](size_t at) -> int {
+    if (at + 4 > s.size()) return -1;
+    int v = 0;
+    for (size_t j = at; j < at + 4; ++j) {
+      const char c = s[j];
+      const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (d < 0) return -1;
+      v = v * 16 + d;
+    }
+    return v;
+  };
+  for (; i < s.size() && s[i] != '"'; ++i) {
+    if (s[i] != '\\' || i + 1 >= s.size()) { o += s[i]; continue; }
+    const char e = s[++i];
+    if (e == 'n') o += '\n';
+    else if (e == 't') o += '\t';
+    else if (e == 'r' || e == 'b' || e == 'f') {}
+    else if (e == 'u') {
+      int c = hex4(i + 1);
+      if (c < 0) break;
+      i += 4;
+      if (c >= 0xd800 && c < 0xdc00 && i + 6 < s.size() && s[i + 1] == '\\' && s[i + 2] == 'u') {
+        const int lo = hex4(i + 3);
+        if (lo >= 0xdc00 && lo < 0xe000) c = 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00), i += 6;
+      }
+      put_utf8(o, (uint32_t)c);
+    } else o += e;  // (\" \\ \/)
+  }
+  *next = i < s.size() ? i + 1 : std::string::npos;
+  return o;
+}
+
+// The Wikipedia API's full-text search (list=search): titles and snippets (the matches wrapped in <span>)
+inline std::vector<Result> parse_wikipedia(const std::string& json, size_t n, const std::string& lang = "en") {
+  std::vector<Result> rs;
+  const size_t list = json.find("\"search\":[");
+  size_t p = list;
+  while (p != std::string::npos && rs.size() < n) {
+    size_t nx = std::string::npos;
+    Result r;
+    r.title = json_str(json, "title", p, &nx);
+    if (nx == std::string::npos || r.title.empty()) break;
+    p = nx;
+    const size_t rec_end = json.find('}', p);  // (the record's end: its fields have no objects inside)
+    size_t sn = std::string::npos;
+    const std::string snip = json_str(json, "snippet", p, &sn);
+    if (sn != std::string::npos && sn <= rec_end + 1) r.snippet = tidy(decode_entities(strip_tags(snip))), p = sn;
+    std::string path = r.title;
+    std::replace(path.begin(), path.end(), ' ', '_');
+    r.url = "https://" + lang + ".wikipedia.org/wiki/" + url_encode(path);
+    rs.push_back(r);
+  }
+  return rs;
+}
+
+// A URL as the same page for the merge: no scheme, no "www.", no fragment, no trailing '/', the host in lower case
+inline std::string url_key(const std::string& url) {
+  std::string u = url;
+  const size_t f = u.find('#');
+  if (f != std::string::npos) u.resize(f);
+  const size_t s = u.find("://");
+  if (s != std::string::npos) u = u.substr(s + 3);
+  const size_t slash = u.find('/');
+  std::string host = lower(u.substr(0, slash)), rest = slash == std::string::npos ? "" : u.substr(slash);
+  if (host.rfind("www.", 0) == 0) host = host.substr(4);
+  while (!rest.empty() && rest.back() == '/') rest.pop_back();
+  return host + rest;
+}
+
+// The engines' lists as one, as SearXNG ranks them: a page (url_key) found by k engines at positions p1..pk scores
+// k * sum(weight / p); the fuller snippet is kept; ties keep the order pages were first seen in (the first engine's)
+inline std::vector<Result> merge_results(const std::vector<std::pair<double, std::vector<Result>>>& lists, size_t n) {
+  struct Hit {
+    Result r;
+    double sum = 0;
+    int engines = 0;
+    size_t first = 0;
+  };
+  std::vector<Hit> hits;
+  std::vector<std::pair<std::string, size_t>> index;  // (url_key -> hits slot; a few dozen pages, a linear search)
+  for (const auto& [weight, rs] : lists)
+    for (size_t i = 0; i < rs.size(); ++i) {
+      const Result& r = rs[i];
+      const std::string k = url_key(r.url);
+      auto it = std::find_if(index.begin(), index.end(), [&](const auto& x) { return x.first == k; });
+      size_t slot;
+      if (it == index.end()) {
+        slot = hits.size();
+        index.push_back({k, slot});
+        hits.push_back({r, 0, 0, slot});
+      } else slot = it->second;
+      Hit& h = hits[slot];
+      h.sum += weight / (double)(i + 1), h.engines += 1;
+      if (r.snippet.size() > h.r.snippet.size()) h.r.snippet = r.snippet;
+    }
+  std::stable_sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
+    const double sa = a.sum * a.engines, sb = b.sum * b.engines;
+    return sa != sb ? sa > sb : a.first < b.first;
+  });
+  std::vector<Result> out;
+  for (size_t i = 0; i < hits.size() && out.size() < n; ++i) out.push_back(hits[i].r);
+  return out;
+}
+
+// Search the web as SearXNG does, natively: Brave Search, Bing, DuckDuckGo and Wikipedia asked at the same time (a
+// thread each, 12 s at most), their results merged by page (url_key) and ranked by SearXNG's score: the number of
+// engines that found a page times the sum of weight / position over them, so a page several engines put high comes
+// first (Wikipedia weighs 0.5: its full-text search often matches off-topic articles). engine: "auto" (all four),
+// one name ("brave", "bing", "duckduckgo", "wikipedia") or several joined by ',' or '+'. *used: the engines that
+// gave results ('+'-joined); *error: why the others gave none. Until 2026-11-16: Brave, then Bing when Brave gave
+// nothing (a captcha or a rate limit left one engine's results, or none)
+inline std::vector<Result> search(const std::string& query, size_t n, const std::string& engine, std::string* used, std::string* error) {
+  struct Eng {
+    const char* name;
+    double weight;
+    std::vector<Result> rs;
+    std::string err;
+  };
+  std::vector<Eng> es;
+  std::string want = "," + lower(engine) + ",";
+  std::replace(want.begin(), want.end(), '+', ',');
+  std::replace(want.begin(), want.end(), ' ', ',');
+  auto asked = [&](const char* nm) {
+    return engine.empty() || want == ",auto," || want.find(std::string(",") + nm + ",") != std::string::npos;
+  };
+  for (const auto& [nm, wt] : {std::pair<const char*, double>{"brave", 1.0}, {"bing", 1.0}, {"duckduckgo", 1.0}, {"wikipedia", 0.5}})
+    if (asked(nm)) es.push_back({nm, wt, {}, {}});
+  if (es.empty()) {
+    *error = "unknown engine '" + engine + "' (auto, brave, bing, duckduckgo, wikipedia)";
+    return {};
+  }
+  const std::string q = url_encode(query);
+  auto run = [&](Eng& e) {
+    const std::string nm = e.name;
+    Page pg;
+    if (nm == "brave") {
+      const std::string u = "https://search.brave.com/search?q=" + q + "&source=web";
+      pg = get(u, 4u << 20, 12000);
+      if (pg.status == 429) std::this_thread::sleep_for(std::chrono::milliseconds(1500)), pg = get(u, 4u << 20, 10000);  // (a short burst limit)
+      if (pg.error.empty() && pg.status == 200) e.rs = parse_brave(pg.body, n);
+    } else if (nm == "bing") {
+      // (a market set: without one Bing answered from some hosts with Office and Microsoft 365 pages whatever the query)
+      pg = get("https://www.bing.com/search?q=" + q + "&setlang=en-US&cc=US&mkt=en-US", 4u << 20, 12000);
+      if (pg.error.empty() && pg.status == 200) e.rs = parse_bing(pg.body, n);
+    } else if (nm == "duckduckgo") {
+      pg = get("https://html.duckduckgo.com/html/?q=" + q, 4u << 20, 12000);
+      if (pg.error.empty() && pg.status == 200) e.rs = parse_duckduckgo(pg.body, n);
+    } else {
+      pg = get("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&utf8=1&srlimit=" +
+                   std::to_string(std::min<size_t>(n, 5)) + "&srsearch=" + q,
+               1u << 20, 12000, "en-US,en;q=0.9", "application/json");
+      if (pg.error.empty() && pg.status == 200) e.rs = parse_wikipedia(pg.body, std::min<size_t>(n, 5));
+    }
+    if (e.rs.empty())
+      e.err = nm + ": " + (!pg.error.empty() ? pg.error
+                           : pg.status == 429 ? "HTTP 429 (too many searches: a rate limit)"
+                           : pg.status == 202 && nm == "duckduckgo" ? "HTTP 202 (its bot check)"
+                           : pg.status != 200 ? "HTTP " + std::to_string(pg.status)
+                           : pg.body.find("captcha") != std::string::npos ? "no results (captcha)" : "no results");
+  };
+  if (es.size() == 1) run(es[0]);
+  else {
+    std::vector<std::thread> ts;
+    for (Eng& e : es) {
+      auto one = [&run, &e] {
+        try { run(e); } catch (const std::exception& x) { e.err = std::string(e.name) + ": " + x.what(); }
+      };
+      try { ts.emplace_back(one); } catch (const std::system_error&) { one(); }  // (no thread to be had: here)
+    }
+    for (auto& t : ts) t.join();
+  }
+  std::vector<std::pair<double, std::vector<Result>>> lists;
+  std::string u, err;
+  for (Eng& e : es) {
+    if (e.rs.empty()) { err += (err.empty() ? "" : "; ") + e.err; continue; }
+    u += (u.empty() ? "" : "+") + std::string(e.name);
+    lists.push_back({e.weight, std::move(e.rs)});
+  }
+  *used = u;
+  *error = err;
+  return merge_results(lists, n);
 }
 
 }  // namespace webt

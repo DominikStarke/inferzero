@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-16: web search over four engines at once, merged as SearXNG does
+
+- **Why:** the web UI's search asked Brave Search and, only when Brave gave nothing, Bing. A captcha or a rate limit
+  left one engine's results or none. SearXNG (a Python program) gets better results by asking many engines and
+  merging them; this does the same inside the server, with no new library and nothing to install.
+- **What:** `web_search` asks Brave Search, Bing, DuckDuckGo (its HTML page) and Wikipedia (its API) at the same time,
+  12 s at most each, and merges the results by page (the same address without `www.`, a trailing `/` or a fragment
+  counts once). The ranking is SearXNG's: a page found by k engines at positions p1..pk scores k x sum(weight / p),
+  Wikipedia at half weight (its full-text search often matches off-topic articles); the longer snippet is kept.
+  `"engine"` still takes `brave` or `bing` alone, and now `duckduckgo`, `wikipedia` or a list (`bing,wikipedia`).
+- **Bing:** its address now sets the market (`setlang=en-US&cc=US&mkt=en-US`). Without it Bing answered from some
+  hosts with Office and Microsoft 365 pages whatever the query, which the old fallback passed on too.
+- Not added: Mojeek (refuses automated queries with HTTP 403).
+- Checked: the parsers and the merge on fixed pages (`tests/test_web_tools.cpp`); live on Windows (all four engines
+  answered) and on Linux (Bing and Wikipedia; Brave and DuckDuckGo had started refusing this machine after the test
+  runs, HTTP 429 and their bot check, and the merged search still answered from the other two). Not measured: the
+  server's endpoint end to end (a user's server was running on the GPU).
+
 ## 2026-11-16: the Windows launcher with more than 2^31 bytes in a number (132 GB of RAM, issue #31)
 
 - **Why:** with 132 GB of RAM the launcher stopped at its status update: "Cannot convert argument "val2", with value:

@@ -24,8 +24,10 @@
   `GET /v1/models` (every model of `--list-models`, the loaded one first; the served context as `context_length`,
   llama-server's `meta.n_ctx` and `max_model_len`), plus `GET /health`, `GET /props`, `POST /tokenize`, `GET` /
   `DELETE /sessions` (session cache size / clear).
-- Web tools (the web UI's, usable by any client): `POST /v1/tools/web_search` `{"query": ...}` (Brave Search, Bing
-  when Brave gives nothing) and `POST /v1/tools/web_fetch` `{"url": ..., "offset": 0, "links": false, "chat_id": ...}`
+- Web tools (the web UI's, usable by any client): `POST /v1/tools/web_search` `{"query": ..., "max_results": 8,
+  "engine": "auto"}` (Brave Search, Bing, DuckDuckGo and Wikipedia asked at once, their results merged and ranked as
+  SearXNG does: a page several engines put high comes first; `engine` one of them or several joined by `,`; the
+  answer's `engine` names those that gave results) and `POST /v1/tools/web_fetch` `{"url": ..., "offset": 0, "links": false, "chat_id": ...}`
   (in windows of 12K characters, at most what the model's context takes in one read); public http(s) addresses only
   (every host and redirect is resolved first: nothing on this machine or the local network). `--no-web-tools` turns
   them off. What a URL gives:
