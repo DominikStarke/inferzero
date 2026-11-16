@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-16: a split model keeps no experts in RAM by default (DeepSeek-V4.1 over 4 GPUs)
+
+- **Why:** DeepSeek-V4.1-Flash UD-Q8_K_XL over manoreken2's 4 Pro B60s (1 TB of RAM, issue #4) ran out of GPU memory
+  at its first prompt in every run: `runz --gpus 4` and serverz, with the expert cache at its default, 9 GB or 4 GB,
+  and `--ctx auto`, while each card had only 13.5-20.8 of its 23 GiB in use. Each GPU's RAM tier (the experts read
+  from the SSD kept in pinned host memory, a quarter of the free RAM each, ~240 GiB) was what grew at the first
+  prompt. With `ARC_XRAM_GB=0` serverz answered: a 2,560-token prompt at 20.9 tok/s.
+- **What:** a model split over several GPUs keeps no RAM tier unless `ARC_XRAM_GB=N` gives it N GiB per GPU, with a
+  line saying so (`zero/engine_stream.h`). One GPU is unchanged. The values are the same: the experts come from the
+  SSD instead of RAM. The size a split model can keep safely is still to be measured.
 ## 2026-11-16: `xw_peak --probe`, where the Arc 140T's prompt GEMM loses its time
 
 - The 140T's best prompt GEMM (packed 32 x 16 tiles) runs at ~33 % of its 76.8 int8 TOPS, and larger tiles were

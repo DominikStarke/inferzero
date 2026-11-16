@@ -22,6 +22,14 @@
     uint64_t ram = 0;
     if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
+    } else if (ram_gb < 0 && !zrt::integrated() && tp_on()) {
+      // (a split model: off unless ARC_XRAM_GB gives a size. DeepSeek-V4.1-Flash Q8_K_XL over 4 Pro B60s with 1 TB of
+      //  RAM ran out of GPU memory at its first prompt with every expert cache size tried, while each GPU had 13.5-20.5
+      //  of 23 GiB in use; with ARC_XRAM_GB=0 it answered (manoreken2, issue #4, 2026-11-16). The pinned host memory of
+      //  the one context the shards share is what ran out, not the cards'. One GPU keeps the tier)
+      static std::once_flag said;
+      if (opt.tp_rank == 0)
+        std::call_once(said, [] { zlog::eprintf("inferzero: a split model keeps no experts in RAM (ARC_XRAM_GB=N: N GiB per GPU)\n"); });
     } else if (ram_gb < 0 && !zrt::integrated()) {
       const uint64_t keep = 16ull << 30, avail = plat::ram_available();
       ram = avail > keep ? (avail - keep) / std::max(1, opt.tp_size) : 0;
