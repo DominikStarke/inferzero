@@ -403,7 +403,7 @@ While the server is running:
   button. Files and recordings of up to 6 hours are transcribed.
 - **Web UI: other chats and recordings.** With **Files** on, the model can look into your other chats with it
   ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and
-  into the recordings and meetings of the Transcripts / Meetings tabs. `@` in the message box lists them next to
+  into the recordings and meetings of the Transcripts menu. `@` in the message box lists them next to
   the saved files: picking one attaches it like a document (a long one as its outline, read in parts).
 - **OCR models** (Xiaomi-OCR-0 and others whose name says "OCR"; convert one to GGUF with model + mmproj, and put
   both files directly in `%USERPROFILE%\.inferzero\models`, not in a subfolder of it, so the launcher and the
@@ -476,11 +476,11 @@ While the server is running:
     Zoom web / Teams web, or the screen) as "Others"; use headphones, so the microphone does not hear the others
     too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
     questions with their minute, in the meeting's language) and **Minutes DOCX / PDF** (also in the Files panel).
-    A recording made elsewhere can be dropped in the Meetings list too. For a meeting in a desktop app (Zoom,
+    A recording made elsewhere can be dropped in the Transcripts list too. For a meeting in a desktop app (Zoom,
     Teams) or a long one: `zero-server record -App Zoom.exe -Title "weekly"` records your microphone and that app's
     sound in the background (without `-App`: everything the speakers play; `-NoMic`: the meeting's sound only),
     whatever the browser or the server do meanwhile; `zero-server record-stop` ends it, and it appears in the
-    Meetings tab, transcribed as Me / Others.
+    Transcripts list, transcribed as Me / Others.
   - **Audio in a chat**: an attached audio file or a voice message reaches every model as text written by
     Qwen3-ASR (Whisper when Qwen3-ASR is off; long recordings as a document the model reads by parts). Settings >
     Voice > **Speech**: written by the speech model (every model), or "The model hears it" (Gemma 4 E4B / 12B get the sound itself; ~0.2 s quicker in

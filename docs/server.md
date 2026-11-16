@@ -17,7 +17,7 @@
   `POST /v1/audio/transcriptions`. A chat model loads later, when a chat asks for one.
 - Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
   voice messages and **Talk**, web search, documents the model reads and writes, a terminal, and with `--whisper` the
-  **Transcripts** and **Meetings** tabs: [USAGE.md, section 4](../USAGE.md#4-web-ui-and-other-apps).
+  **Transcripts** menu (files, recordings and meetings in one list): [USAGE.md, section 4](../USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
   generated, string arguments and array / object arguments alike (Pi's `edit` puts its whole change in an array),
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),

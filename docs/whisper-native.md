@@ -265,12 +265,12 @@ library's files take up to 6 hours, or this when it is more); `zero-server -Whis
 - **Audio in a chat**: `/v1/chat/completions` (and the APIs routed through it) writes a request's audio as text
   (Qwen3-ASR, Whisper when Qwen3-ASR is off) when the loaded model does not hear audio, or with `"speech": "whisper"`; `"speech": "model"` keeps
   it as audio for Gemma 4 E4B / 12B. A long transcript (12,000+ characters) goes in as a text file (a document).
-- **Live recordings** (the Transcripts tab's Live, the Meetings tab): `POST /v1/live` `{name, language, terms,
+- **Live recordings** (the Transcripts menu's Record): `POST /v1/live` `{name, language, terms,
   beam_size, tracks: 1 | 2, channels: 1 | 2 (one track in stereo), rate, speakers, kind, mp3_kbps, keep: "mp3" |
   "m4a"}` -> a transcript record with status `live`;
   `POST /v1/live/<id>/audio?since=N` 16-bit PCM, the tracks interleaved -> `{segments, partial, count, heard_s,
   pending}`; `POST /v1/live/<id>/mark` `{t}`; `POST /v1/live/<id>/stop` (the accurate pass is queued, then the
-  recording becomes MP3). `kind: "meeting"` puts a transcript in the Meetings tab; `PUT /v1/transcripts/<id>`
+  recording becomes MP3). `kind: "meeting"` marks a two-source recording (Me / Others) as a meeting; `PUT /v1/transcripts/<id>`
   `{summary}` keeps a meeting's summary (`summary.md`).
 - **Safety**: the upload is held in memory within the HTTP body limit (256 MB) and decoded from memory by Media
   Foundation (WAV directly); no path or file name from the client is used; decoding stops past the length limit; one
@@ -368,5 +368,5 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
   - its Mono / Stereo choice: Stereo keeps left and right of one source (a tab's music or video; a stereo
     microphone, asked for without the browser's echo and noise suppression), and the transcript is made from its mono
     mix;
-  - the Meetings tab keeps one mono track per source. 192 kbps needs MPEG-1 Layer III (32 / 44.1 / 48 kHz; 16 kHz stops at 160 kbps): the recording keeps the
+  - a meeting (two sources) keeps one mono track per source. 192 kbps needs MPEG-1 Layer III (32 / 44.1 / 48 kHz; 16 kHz stops at 160 kbps): the recording keeps the
   device's own rate (48 kHz), Whisper resamples it to 16 kHz.
