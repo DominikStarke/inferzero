@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, the resident W8 default leaves room for speech to text and the third snapshot** (zero/engine_load.h
+  `w8_part_auto`, audit): skipped for an engine that asks for no resident W8 (the server's Qwen3-ASR, `runz --budget
+  0`), and the third server snapshot counted. Memory only: on the 27B ~150 MiB fewer resident weights, not measured
+  on a card (a prompt speed change below the noise expected: 16 GiB resident gave +8 % over 0). Laptop: not reached
+  on an iGPU; the 4B's logits bit-identical (`--dump-logits`, prompt + 24 tokens, the same SHA-256 as before).
+
 - **2026-11-16, the Arc 140T preset on Alchemist cards by default** (discrete cards with 8-lane DPAS: A770, A750,
   A580; zero/xe2/engine_xe2.h `p140_wanted`, zero/engine_load.h; `ARC_140T=0`: off). Such a card took the plain
   `gemm_x8` or DP4a, whichever won the start-time speed check (on a 140T `gemm_x8` was 1.6x slower than DP4a, issue

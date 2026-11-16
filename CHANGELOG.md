@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-16: the resident W8 default on discrete cards leaves room for speech to text and the third snapshot
+
+- **Why (an audit of the last two days' engine changes):** `ARC_W8_PARTIAL_GB=auto` keeps decoded weights resident
+  in the room an engine sees left. Two things it did not see:
+  - a Qwen3-ASR engine loaded in the server next to the chat model asks for no resident W8 (`w8_budget_gb = 0`), but
+    auto W8 still ran for it, counting only its own memory: with a large chat model on a B60 / B70 and an ASR GGUF
+    other than Q8_0, its load could run out of GPU memory (the shipped Q8_0 file has nothing to decode);
+  - the server keeps 3 recurrent-state snapshots, the room counted 2: the third, made at the first chat, took ~150
+    MiB of the 27B's 0.5 GiB margin.
+- **What:** auto W8 is skipped for an engine with `w8_budget_gb <= 0` (the ASR engine, `runz --budget 0`), and its
+  room counts the third snapshot (`zero/engine_load.h`). `snapshot_bytes()` itself, which the `--ctx auto` plans and
+  the expert cache use, is unchanged, so contexts stay as they were. On the 27B about 150 MiB fewer resident weights.
+  The values are the same: a resident copy and a just-in-time one are made by the same `decode_w8`.
+- Not changed: with resident W8 at 262K, loading Whisper / ASR while the chat model is loaded is refused by the
+  free-memory check, as it should be; loading it first, then the model, leaves it room.
 ## 2026-11-16: the Arc 140T preset on Alchemist cards (A770, A750, A580) by default
 
 - **Why:** the Alchemist A-series has the 140T's 8-lane XMX (the 140T's Xe-LPG Plus cores are Alchemist's with XMX),

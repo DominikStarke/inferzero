@@ -175,7 +175,10 @@
   void w8_part_auto() {
     // (p140_: the 140T preset takes only weights decoded just in time, p140_take; on a discrete A-series card, where it is
     //  the default, they stay so, as measured on the 140T)
-    if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe || p140_) return;
+    // (w8_budget_gb <= 0: an engine that asked for no resident W8, as the server's Qwen3-ASR (server_whisper_asr.h),
+    //  loaded next to the chat model, whose memory gpu_bytes here does not see; runz --budget 0 likewise. Audit
+    //  2026-11-16)
+    if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe || p140_ || opt.w8_budget_gb <= 0) return;
     if (zrt::integrated()) {
       if (getenv("ARC_W8_PARTIAL_GB"))  // (asked for: say why not; the default is quiet)
         zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "
@@ -183,8 +186,11 @@
       return;
     }
     const double GiB = 1073741824.0;
+    // (the server keeps 3 state snapshots (kSnaps, tools/server.cpp), snapshot_bytes() counts 2: the third, allocated
+    //  at the first chat, is counted here too, not in snapshot_bytes(), which the --ctx auto plans and the expert cache
+    //  use as before. Audit 2026-11-16: ~150 MiB of the 27B's 0.5 GiB margin)
     double room = (double)device_mem() - driver_slack() - (double)gpu_bytes - 0.5 * GiB -
-                  (double)snapshot_bytes() * std::max(opt.slots, 1) - (double)opt.stream_reserve;
+                  (double)snapshot_bytes() * 1.5 * std::max(opt.slots, 1) - (double)opt.stream_reserve;
     const double room0 = room;
     for (Layer& L : layers_)
       for (GpuWeight* w : {&L.qkv, &L.z, &L.ssm_out, &L.ab, &L.wq, &L.wk, &L.wv, &L.wo, &L.gate, &L.up, &L.down}) {
