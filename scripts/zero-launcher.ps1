@@ -1536,8 +1536,11 @@ $form.Add_FormClosing({
     $timer.Stop(); $script:sync.quit = $true  # (a running server and a start in progress keep going)
     $tray.Visible = $false; $tray.Dispose()
   })
-# (the splash closed before ShowDialog, not in Shown: ShowDialog takes the active window, the splash, as its owner,
-#  and closing an owner closes the window it owns: the launcher ended at once)
+# (the splash closed first, not in Shown: a ShowDialog took the active window, the splash, as its owner, and closing
+#  an owner closes the window it owns: the launcher ended at once)
+# (Application.Run, not ShowDialog: hiding a form shown with ShowDialog ends its modal loop, so minimizing to the tray
+#  (the Resize handler's Hide) ended the launcher and took the tray icon with it (PascalSoftwares, issue #33,
+#  2026-11-16; Windows PowerShell 5.1: the loop returned 0.02 s after the hide, and keeps running with Run))
 Close-Splash
-[void]$form.ShowDialog()
+[System.Windows.Forms.Application]::Run($form)
 try { $pollPs.Dispose(); $pollRs.Dispose() } catch {}

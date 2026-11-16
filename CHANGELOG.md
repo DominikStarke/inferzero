@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-16: the Windows launcher stays in the tray when minimized (issue #33)
+
+- **Why:** minimizing the launcher closed it, and the tray icon disappeared with it (PascalSoftwares, release
+  2026.11.16.12). The window was shown with `ShowDialog`, and hiding a form shown that way ends its message loop: the
+  Resize handler's `Hide` (minimize to the tray) made `ShowDialog` return, and the script ended. Windows PowerShell 5.1,
+  a test form: the loop returned 0.02 s after the hide.
+- **What:** `scripts/zero-launcher.ps1` runs its window with `Application.Run`, whose loop goes on while the window is
+  hidden: minimized, it waits in the tray, and the tray's Show the window brings it back. The server was not affected
+  (a process of its own). Checked: the test form stays 3 s after the hide; the launcher's `-SelfTest` opens, lists the
+  models and closes as before.
 ## 2026-11-16: two defaults from users' runs: the MoE GEMMs' register file on discrete cards, the 140T's prefetch
 
 - **`ARC_MOE_GRF=128` by default on discrete cards with 16-lane XMX:** a Pro B70's Qwen3.6 35B-A3B 8K prompt 5,377.3 /
