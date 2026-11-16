@@ -17,6 +17,11 @@
 - **The launcher and `--list-models`:** the model list's memory now has `host_weights` (bytes), and the launcher's
   fit line says how much of the weights is in RAM and that generation is slower for it.
 - Models that fit are unchanged: the plan only acts when the weights would leave less than 2.5 GiB free.
+- **Found in an audit the same evening, fixed before release:** the server's `--ctx auto` cache (`m26`) would have
+  kept a "does not fit" from before for that very model; the room kept now also holds the encoders' and speech to
+  text's reserve and any context or slot count past one 32K slot (estimated from the model's shape), where before
+  speech to text left a B580 no context and `--ctx 65536` ran out of the card's memory; the MTP block's layer counts
+  only when it is loaded; and the model list shows the 1,024-token chunk such a model takes.
 
 ## 2026-11-16: H8 does not fit Gemma 4 12B (measured, not built)
 

@@ -590,7 +590,8 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.tp_size > 1 ? "|tp" + std::to_string(eo.tp_size) + (getenv("ARC_TP_SIM") ? "sim" : "") : std::string()) +  // (a split model: shard 0's memory)
          "|kf" + std::string(getenv("ARC_G4_KF16") ? getenv("ARC_G4_KF16") : "") + "/" +
          std::string(getenv("ARC_Q3_KF32") ? getenv("ARC_Q3_KF32") : "") +  // (the float K rows' size)
-         "|m25";  // engine memory layout version (m25: Gemma 4's K rows in f16, 2026-11-11; m24: 0 when nothing fits, not raised to 4096) (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
+         "|m26";  // engine memory layout version (m26: a dense model larger than a discrete card keeps weights in RAM,
+                  // 2026-11-16: a cached 0 from before must not keep it refused; m25: Gemma 4's K rows in f16, 2026-11-11; m24: 0 when nothing fits, not raised to 4096) (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
                  // for 27B, m6: MoE prompt GEMM staging, m7: MoE buffers shared, m8: MoE MTP 1 draft, Q3_K experts, m9: memory parts in the cache,
                  // m12: streamed MoE reserves 128K of context before the expert cache, m13: streamed MoE chunk 8192, m14: slot_bytes with every
                  // slot buffer, f16 K / V with --attn-f32, m15: --q2 Gemma MoE chunk 2048, m16: Gemma 4 always two-pass, m17: shared-KV Gemma
@@ -875,7 +876,8 @@ static int list_models(size_t speech = 0, int gpus = 1) {
         }
       }
       // (the engine's default: streamed experts 8192, Flash Next 2048, resident decoded weights 512)
-      int chunk = m.arch == "qwen4exp" || (gemma && moe) ? 2048 : moe ? 8192 : a.resident ? 512 : 4096;  // (as the engine)
+      // (as the engine; a dense model with weights in host memory, Engine::plan_tight, takes 1024: audit 2026-11-16)
+      int chunk = m.arch == "qwen4exp" || (gemma && moe) ? 2048 : moe ? 8192 : a.host_gb > 0 ? 1024 : a.resident ? 512 : 4096;
       if (gemma && m.vision) chunk = std::max(chunk, 2048);  // (an image is one chunk)
       d.set("chunk", chunk);
       d.set("mtp_drafts", !m.mtp ? 0 : !eo.dflash.empty() ? 7 : gemma ? (moe ? 3 : 2) : moe ? 5 : n_embd >= 5120 ? 7 : n_embd <= 2560 ? 3 : 2);

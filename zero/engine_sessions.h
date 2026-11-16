@@ -521,8 +521,13 @@
     if (opt.tp_size > 1 || hp.moe || stream_) return;
     double total = 0;
     const bool tied = !f_.find("output.weight");
+    // (the MTP block's layer only when it is loaded, engine_load.h: opt.mtp && opt.mtp_block; audit 2026-11-16)
+    const std::string mtp_pre = "blk." + std::to_string(hp.n_layer) + ".";
+    const bool mtp_on = opt.mtp && opt.mtp_block;
     for (const GgufTensor& t : f_.tensors)
-      if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight") total += (double)t.nbytes;
+      if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight" &&
+          (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0))
+        total += (double)t.nbytes;
     const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
     // (a discrete card, 2026-11-16, an Arc B580 (12 GB) for Qwen3.8 27B: the weights that leave less than keep_gb of
     //  its memory for the working buffers and the context go to host memory, read over PCIe: once per prompt chunk
@@ -531,10 +536,26 @@
     //  now less 4 GiB. ARC_HOST_KEEP_GB: the room kept, default 2.5 GiB (the buffers at 1,024-token chunks and a
     //  32K context of the 27B))
     const bool disc = !zrt::integrated();
+    // (the room also holds what the server reserves for the encoders and speech to text (opt.stream_reserve), and a
+    //  context or slot count past the 32K one slot the 2.5 GiB is sized for: the KV caches estimated from hp here,
+    //  the layers not loaded yet (f32 K and f16 V at most, a sliding layer's ring at its window + 2,048). Audit
+    //  2026-11-16: without them speech to text or an image encoder left a B580 no context, and --ctx 65536 ran out
+    //  of the card's memory instead of keeping more weights in RAM)
+    auto kv_est = [&](double c) {
+      double n = 0;
+      for (int il = 0; il < hp.n_layer; ++il) {
+        if (hp.recurrent(il)) continue;
+        const bool sw = hp.swa_rings && il < (int)hp.swa.size() && hp.swa[il];
+        const int nkv = il < (int)hp.kv_heads.size() && hp.kv_heads[il] > 0 ? hp.kv_heads[il] : hp.n_head_kv;
+        const int hd = hp.swa_rings ? (sw ? hp.hd_swa : hp.hd_full) : hp.head_dim;
+        n += (sw ? std::min(c, (double)hp.n_swa + 2048) : c) * nkv * hd * 6.0;
+      }
+      return n;
+    };
     const double keep = [] {
       const char* e = getenv("ARC_HOST_KEEP_GB");
       return (e ? std::max(0.5, atof(e)) : 2.5) * 1073741824.0;
-    }();
+    }() + (disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0);
     tight_ = disc ? total > budget - keep : total > 0.85 * budget;
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_ && disc) {
