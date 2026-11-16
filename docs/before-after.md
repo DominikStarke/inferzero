@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, XMX prompt attention by default on iGPUs with 16-lane XMX** (`ARC_ATTN_XMX`, measured by gee456's
+  Arc B390, issue #31, f33_sweep on 2026.11.16.07, best of 3): 65K prompt default -> attn XMX: 4B 950.1 -> 1,079.3,
+  27B 205.7 -> 215.4, 35B 794.9 -> 903.9, Flash Next 315.3 -> 313.4 tok/s; 4K 2,101 -> 2,133, 309.3 -> 309.1,
+  1,369.8 -> 1,367.8, 394.8 -> 412.4; logits bit-identical (its own check). Laptop: not taken (no XMX), the 27B's
+  logits the same SHA-256.
+
 - **2026-11-16, `gemm_xw8` prefetches its next chunk, opt-in** (`ARC_GEMM_XW_PF=1/2/3` on 8 lanes; the 140T preset):
   laptop, DPAS emulated (`ARC_XMX_TRY=2 ARC_140T=1`), 27B, 1,753-token prompt + 8 tokens: logits the same SHA-256 off /
   1 / 3; prompt 78.8 / 93.2 / 65.7 tok/s (emulated DPAS: shows the loop waiting on loads, not the 140T's numbers).

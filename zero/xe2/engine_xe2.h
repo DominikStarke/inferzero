@@ -242,8 +242,10 @@
   // emulated on any GPU (tests). Checked once per device and shape at start against attn_q8 bit for bit on random data;
   // any difference keeps attn_q8 and says so. On by default on discrete cards since 2026-11-10: a Pro B60's prompts,
   // 64K tokens, 4B 2,017 -> 2,253, 9B 1,871 -> 2,028, 27B 605 -> 618, 35B 1,814 -> 2,000 tok/s, 4K +0.2-1 %, logits
-  // bit-identical (issue #4, package bb8952f, bench\f33_sweep.ps1). iGPUs with 16-lane XMX keep it off (not
-  // measured on one). ARC_ATTN_XMX=0 / 1
+  // bit-identical (issue #4, package bb8952f, bench\f33_sweep.ps1). On iGPUs with 16-lane XMX too since 2026-11-16:
+  // an Arc B390 (Panther Lake, gee456, issue #31, release 2026.11.16.07, f33_sweep) at 65K tokens 4B 950 -> 1,079, 27B
+  // 206 -> 215, 35B 795 -> 904 tok/s, 4K within 1 %, logits bit-identical. The 125H (no XMX) and the 140T (8 lanes)
+  // never take it. ARC_ATTN_XMX=0 / 1
   std::string attnx_src_, attn_q8_defs_;
   static bool attn_xemu() {
     static const bool e = getenv("ARC_ATTN_XEMU") && atoi(getenv("ARC_ATTN_XEMU")) != 0;
@@ -251,7 +253,7 @@
   }
   bool attnx_wanted() const {
     static const int e = getenv("ARC_ATTN_XMX") ? (atoi(getenv("ARC_ATTN_XMX")) != 0 ? 1 : 0) : -1;
-    const bool on = e < 0 ? !zrt::integrated() : e == 1;
+    const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8)) : e == 1;
     return on && ((cl_.xmx && !cl_.sg8) || attn_xemu()) && !hp.gemma && !hp.swa_rings && attn_hs() <= 4 &&
            !attn_q8_defs_.empty();
   }

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-16: XMX prompt attention on iGPUs with 16-lane XMX too (Panther Lake's Arc B390, Lunar Lake)
+
+- **Why:** gee456's Arc B390 ran `bench\f33_sweep.ps1` and the website benchmark on release 2026.11.16.07 (issue
+  #31). The prompt attention on XMX (`ARC_ATTN_XMX`, on by default on discrete cards since 2026-11-10, off on iGPUs
+  until one measured it) at 65K tokens: Qwen3.5 4B 950 -> 1,079 tok/s, Qwen3.8 27B 206 -> 215, Qwen3.6 35B 795 ->
+  904; at 512-16K within about 1 % either way; logits bit-identical.
+- **What:** on by default on iGPUs with 16-lane XMX as well (`zero/xe2/engine_xe2.h attnx_wanted`); `ARC_ATTN_XMX=0`
+  turns it off. The 125H (no XMX) and the Arc 140T (8 lanes) never take it: their logits unchanged (the 27B's, the
+  same SHA-256 on the laptop).
+- The same sweep: the chunked DeltaNet forms (`ARC_GDN_CHUNK=1/2/3`) were slower on the B390 at every length; they
+  stay off.
 ## 2026-11-16: the Arc 140T's wide-tile GEMM can prefetch its next chunk (opt-in, `ARC_GEMM_XW_PF`)
 
 - **Why:** the 140T's `xw_peak --probe` (PascalSoftwares, issue #5) shows its XMX loop reaching 85 % of the int8 peak
