@@ -35,8 +35,8 @@
 - **Why:** on a Pro B70 the 27B's codebook GEMVs read 340-450 GB/s where Q4_K's read ~530. Part of the gap was the
   rows per sub-group, chosen by weight type: they left the GPU's last round of sub-groups mostly empty. A B70 runs
   2,048 sub-groups at once; its 5,120-row matrices at 2 rows made 2,560 sub-groups (1.25 rounds), its 17,408-row gate /
-  up at 4 rows 4,352 (2.1 rounds). Found and written by joshdev-de (issue #27, branch `b70-gemv-wave`, with Claude
-  Code), after oneDNN's kernel selector, which prices the full rounds and the part-filled last one.
+  up at 4 rows 4,352 (2.1 rounds). Found and written by joshdev-de (issue #27, branch `b70-gemv-wave`), after
+  oneDNN's kernel selector, which prices the full rounds and the part-filled last one.
 - **What** (`zero/xe2/engine_xe2.h`; the thread count T from Level Zero, `zrt::hw_threads` in `zero/clrt.h`):
   - one token (`gemv`, `gemv_v`): T < N <= 4T rows take 4 rows a sub-group (one round), N > 4T one row (many rounds,
     the last one's waste small); N <= T and the output heads as before (`xe2_gemv_rows`);
@@ -102,8 +102,7 @@
 
 - **Why:** at long context the attention is most of a discrete card's prompt time: a Pro B70's 27B at 64K spent
   ~27 s of ~51 s in `attn_q8` (joshdev-de, issue #27).
-- **What:** a new kernel, `zero/kernels/attn_fx.cl`, from joshdev-de's PR #29 (written by Claude Code, run on his
-  B70). Each sub-group takes 8 query tokens, so every int8 DPAS has all 8 rows (`attn_q8`: one token x up to 4
+- **What:** a new kernel, `zero/kernels/attn_fx.cl`, from joshdev-de's PR #29 (run on his B70). Each sub-group takes 8 query tokens, so every int8 DPAS has all 8 rows (`attn_q8`: one token x up to 4
   heads); the keys come in spans of 32, read straight from the int8 K / V cache with the next span prefetched into
   L1; 32 sub-groups a work-group. The same operands, online softmax, cache and output as `attn_q8`.
 - **Where:** on by default on discrete cards with 16-lane XMX, for the plain causal prompt attention only. Sliding
@@ -228,7 +227,7 @@ Windows). The Linux launcher and the benchmark ports of the last two days broke 
 
 ## 2026-11-15: a self audit and a DeepSeek audit of the day's changes; `website_bench` and `ref_forward` on Linux
 
-Changes since release 2026.11.14.13 reviewed twice, separately, by DeepSeek-V4.1 through Pi and by a Claude reviewer.
+Changes since release 2026.11.14.13 reviewed twice, separately, by DeepSeek-V4.1 through Pi and by a second reviewer.
 Both found the `gdn_recur` prefetch paths bit-identical, in bounds, and the iGPU path unchanged. Fixed from their
 findings:
 - **`bench/b60_sweep.py` / `.ps1`:** the H8 baseline's split-K was still 17 after the default became 34, so the sweep
@@ -323,7 +322,7 @@ findings:
   user unit). Not offered there: Flash Next's AutoRound import and the speech models.
 - **CI**: a `linux-package` job builds the package on Ubuntu 24.04 and runs what needs no GPU.
 - **The website and the README** say what runs on Linux.
-- **Reviewed before release** by DeepSeek-V4.1 through Pi and by a Claude reviewer, separately; fixed from their
+- **Reviewed before release** by DeepSeek-V4.1 through Pi and by a second reviewer, separately; fixed from their
   findings:
   - the wrapper changed folder, so a relative `--model` path, and a symlinked launcher, broke;
   - "downloaded" looked only at `refs/main`'s snapshot, so a model could be fetched again;
@@ -398,7 +397,7 @@ findings:
   control's 0.00340 / 0.00343. Not checked here: Flash Next itself (the 640-wide rows; its file is not on the
   laptop): its KL against f32 is the next step, on a machine that has it.
 
-## 2026-11-14: a pair audit (DeepSeek-V4.1 through Pi and Claude) and its fixes
+## 2026-11-14: a pair audit (DeepSeek-V4.1 through Pi and a second reviewer) and its fixes
 
 Six parts reviewed twice by reviewers that did not see each other's results: the engine since the morning's audit, the
 tools and scripts, the contributor pull requests, the Linux port, the web UI and the multi-GPU failsafes.
@@ -3487,7 +3486,7 @@ fixed (docs/self-audit-2026-10-28.md, "All sources"):
   was there only while the user had opened the chat's terminal, so a model that had to make a `.venv` could not.
   Now it is offered in every chat unless Settings > Terminal is "Model never"; a call in a closed terminal waits for
   Run / Don't run, and the terminal opens once allowed. The first command of every terminal session asks, with
-  "Run without asking" too (like Claude Code's approval), so nothing runs on the computer unasked.
+  "Run without asking" too (like a coding agent's approval), so nothing runs on the computer unasked.
 - **The tools' texts are shorter, each rule and parameter kept**: what the system text and a tool's description both
   said is said once, the wording is tighter. Measured with the server's tokenizer: all tools 2,320 -> 1,884 tokens
   (-19 %), Files alone with the time 1,732 -> 1,421. The rest is mostly the parameters' JSON (create_document: 20).

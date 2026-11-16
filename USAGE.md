@@ -375,7 +375,7 @@ While the server is running:
       asks to merge old notes. `forget` removes at most 3 notes at a time; remove more in Settings.
     - Settings > Memory > Use memory turns it off. Chats from before memory existed keep their prompt without it.
     - Memory and projects work in the web UI on this computer only, not from another device (`--host 0.0.0.0`).
-  - **Projects** (the project menu over the chat list), like Claude's Projects: a project is a folder of yours.
+  - **Projects** (the project menu over the chat list): a project is a folder of yours.
     - New project… opens a folder picker on this computer. A Google Drive folder works too, through Google Drive for
       desktop (`G:\My Drive\…`), though Google Docs' own files there are only links.
     - A project's chats see only that project (the server refuses another project's files). A folder that holds

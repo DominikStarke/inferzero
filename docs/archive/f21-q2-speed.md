@@ -127,7 +127,7 @@ GEMV and after a GPU measurement; do not change the tiling defaults until measur
 - then reduce KV memory: int8 KV only for the drafter layers, K f32 for the main model, V f16;
 - update `ctx_bytes`/`slot_bytes` and `--ctx auto` before enabling by default.
 
-## Measurements Claude should add here
+## Measurements to add here
 
 For 26B, 12B, E4B at 4K and 8K prompt, 128–200 generated tokens:
 

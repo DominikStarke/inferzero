@@ -1,4 +1,4 @@
-// The web UI's projects (QUEUE F32.3 / F32.4), as Claude's Projects: a folder of the user's own (a Google Drive
+// The web UI's projects (QUEUE F32.3 / F32.4): a folder of the user's own (a Google Drive
 // folder through Drive for desktop works too) that a project's chats work in, with the project's instructions (its
 // AGENTS.md, or CLAUDE.md) and its memory (tools/server_memory.h: projects\<id>\MEMORY.md in the data folder).
 //   projects.json in the data folder   [{id, name, folder, created}]: the folders the user picked, and only those

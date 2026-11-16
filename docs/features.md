@@ -117,7 +117,7 @@ chat's folder (each command allowed by the user), chats search.
 
 - **Memory:** "remember that …" saves a dated note in `MEMORY.md` in the data folder. Every new chat starts with
   the notes, whatever the model. You can see and edit them in Settings > Memory.
-- **Projects**, like Claude's Projects: a project is a folder of yours (a Google Drive folder through Drive for desktop
+- **Projects**: a project is a folder of yours (a Google Drive folder through Drive for desktop
   too). Its chats read the folder's files, follow its `AGENTS.md`, keep a memory of their own and open the terminal
   there. Paths outside the folder are refused, links and junctions included. ([USAGE.md](../USAGE.md), section 4)
 

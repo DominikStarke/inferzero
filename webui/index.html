@@ -2331,7 +2331,7 @@ async function runTermTool(args, card, signal, job) {
     card.status.textContent = "· terminal is off";
     return "error: the terminal is off to the model (Settings > Terminal: off)";
   }
-  // (a closed terminal: the model opens it, after the user's Run on this first command; like Claude Code's own
+  // (a closed terminal: the model opens it, after the user's Run on this first command; like a coding agent's own
   //  terminal, every session starts with one approval, so a command never runs on this computer unasked)
   const t = termOf(chat);
   // (a round's calls run at once: while one waits for Run, the others wait for its answer instead of asking too)

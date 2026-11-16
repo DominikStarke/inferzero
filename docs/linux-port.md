@@ -48,7 +48,7 @@ release package and a terminal launcher of its own (step 4, Progress; how to use
   opened once `/health` answers, `--install-service` (a systemd user unit). CI's `linux-package` job builds the
   package on Ubuntu 24.04 and runs what needs no GPU. Checked in WSL2 (Ubuntu 24.04, g++ 13.3): the package builds
   (6.3 MB), its programs start, and the launcher starts the 4B and serves the web UI and a chat request. Reviewed
-  by DeepSeek-V4.1 through Pi and by a Claude reviewer before release; their findings fixed (CHANGELOG). Not done:
+  by DeepSeek-V4.1 through Pi and by a second reviewer before release; their findings fixed (CHANGELOG). Not done:
   CMake, packages for distributions (.deb), a window.
 
 - **2026-11-14: the kernels' compiler is the OpenCL of Intel's driver, for Level Zero's GPU 0** (`zero/clrt.h`): a
