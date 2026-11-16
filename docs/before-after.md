@@ -80,6 +80,18 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, a dense model larger than a discrete card: part of its weights in RAM** (zero/engine_sessions.h
+  `plan_tight`): the weights past what leaves 2.5 GiB of the card free go to pinned host memory, read over PCIe.
+  Laptop (not reached on an iGPU by default; checked by forcing it, `ARC_HOST_WEIGHTS_GB=3`): Qwen3.8 27B IQ3_S with
+  3 GiB of its weights in host memory, `--dump-logits` prompt + 24 tokens bit-identical to all on the GPU (the same
+  SHA-256); generation 5.06 -> 4.47 tok/s here (the same DRAM, so not what a card sees over PCIe). Speed on a card:
+  not measured (asked of the B580 owner).
+
+- **2026-11-16, H8 on Gemma 4 12B, measured and dropped** (not kept): KL against f32 (480 tokens of USAGE.md) two
+  int8 passes 0.00001 (4K prompt 140.7 / 142.8 tok/s), one pass 0.064 (228.3 / 232.6), one H8 pass from the f32 rows
+  0.155 (183.8 / 203.4); `ref_forward REF_HAD=1024` 0.549, with `REF_HAD_ACTB=256` 0.267. One int8 rounding of the
+  12B's activations is too coarse whatever the scales; H8 would need two passes there.
+
 - **2026-11-16, the resident W8 default leaves room for speech to text and the third snapshot** (zero/engine_load.h
   `w8_part_auto`, audit): skipped for an engine that asks for no resident W8 (the server's Qwen3-ASR, `runz --budget
   0`), and the third server snapshot counted. Memory only: on the 27B ~150 MiB fewer resident weights, not measured

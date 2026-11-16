@@ -529,9 +529,12 @@ function Update-Fit {
   $speech = if ($wh -notin "", "off") { 8GB } elseif ($script:over.ContainsKey("asr") -and $as -notin "", "off") { 3.7GB } else { 0 }
   $ctx = Get-Field "ctx"
   $slots = [math]::Max(1, [int](Get-Field "slots"))
+  # (weights kept in RAM, serverz --list-models memory.host_weights: a model larger than a discrete card's memory, or a
+  #  tight iGPU share; generation reads them over PCIe on a card, so it is slower)
+  $hostTxt = if ($mm.host_weights -and [double]$mm.host_weights -gt 0) { "; {0:N1} GiB of the weights in RAM (slower generation)" -f ([double]$mm.host_weights / 1GB) } else { "" }
   if ($ctx -eq "auto" -or -not $script:over.ContainsKey("ctx")) {
     $need = $fixed + $mm.context / $gp
-    $fitLbl.Text = "{0:N1} of {1:N1} GiB at the auto context{2}" -f ($need / 1GB), ($free / 1GB), $(if ($speech) { " (smaller with speech on)" } else { "" })
+    $fitLbl.Text = "{0:N1} of {1:N1} GiB at the auto context{2}{3}" -f ($need / 1GB), ($free / 1GB), $(if ($speech) { " (smaller with speech on)" } else { "" }), $hostTxt
     $fitLbl.ForeColor = $Pal.sub
     return
   }
@@ -539,7 +542,7 @@ function Update-Fit {
   $kv = [double]$ctx / 1000 * $mm.context_per_1k * $slots / $gp
   $need = $fixed + $kv + $speech
   if ($need -le $free) {
-    $fitLbl.Text = "fits: about {0:N1} of {1:N1} GiB (context {2:N1}{3})" -f ($need / 1GB), ($free / 1GB), ($kv / 1GB), $(if ($speech) { ", speech {0:N1}" -f ($speech / 1GB) } else { "" })
+    $fitLbl.Text = "fits: about {0:N1} of {1:N1} GiB (context {2:N1}{3}){4}" -f ($need / 1GB), ($free / 1GB), ($kv / 1GB), $(if ($speech) { ", speech {0:N1}" -f ($speech / 1GB) } else { "" }), $hostTxt
     $fitLbl.ForeColor = $Pal.ok
   } else {
     $fitLbl.Text = "may not fit: about {0:N1} of {1:N1} GiB. A smaller context, Images off, or auto" -f ($need / 1GB), ($free / 1GB)

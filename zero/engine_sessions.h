@@ -524,9 +524,22 @@
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight") total += (double)t.nbytes;
     const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
-    tight_ = zrt::integrated() && total > 0.85 * budget;
+    // (a discrete card, 2026-11-16, an Arc B580 (12 GB) for Qwen3.8 27B: the weights that leave less than keep_gb of
+    //  its memory for the working buffers and the context go to host memory, read over PCIe: once per prompt chunk
+    //  by the just-in-time decode, and on every token by the GEMVs, so generation slows with the share kept there
+    //  (PCIe 4.0 x8 ~13 GB/s against the card's 456). The RAM is the card's own here, not the GPU's: only the RAM free
+    //  now less 4 GiB. ARC_HOST_KEEP_GB: the room kept, default 2.5 GiB (the buffers at 1,024-token chunks and a
+    //  32K context of the 27B))
+    const bool disc = !zrt::integrated();
+    const double keep = [] {
+      const char* e = getenv("ARC_HOST_KEEP_GB");
+      return (e ? std::max(0.5, atof(e)) : 2.5) * 1073741824.0;
+    }();
+    tight_ = disc ? total > budget - keep : total > 0.85 * budget;
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
-    if (opt.host_weights_gb < 0 && tight_) {
+    if (opt.host_weights_gb < 0 && tight_ && disc) {
+      want = std::max(0.0, std::min(total - (budget - keep), (double)plat::ram_available() - 4.0 * GiB));
+    } else if (opt.host_weights_gb < 0 && tight_) {
       // (what leaves 45 % of the share for the rest, but no more than the RAM free now beyond the share, less 4 GiB:
       //  host memory is RAM all the same. Gemma 4 31B, 24.8 GB free: 5.3 GiB in host memory and a share filled with
       //  context left 2.1 GB free, and generation fell from 3.1 to 1.2 tok/s (paging))

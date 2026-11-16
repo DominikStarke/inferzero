@@ -899,6 +899,9 @@ static int list_models(size_t speech = 0, int gpus = 1) {
       mem.set("context", a.context);
       mem.set("context_per_1k", a.per_1k);
       mem.set("resident", a.resident);
+      // (bytes of the weights kept in host memory, Engine::plan_tight: an iGPU's tight share, or a discrete card the
+      //  model does not fit, read over PCIe; not in "weights", which is GPU memory)
+      mem.set("host_weights", a.host_gb * 1073741824.0);
       j.set("memory", mem);
     }
     out.push(j);

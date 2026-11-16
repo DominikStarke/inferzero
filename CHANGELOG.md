@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-11-16: a dense model larger than a discrete card keeps part of its weights in RAM (an Arc B580 for the 27B)
+
+- **Why:** a B580 owner wants Qwen3.8 27B, whose weights (about 11.7 GB for IQ3_S) do not fit a 12 GB card with any
+  context. The engine already kept part of a dense model's weights in host memory on an iGPU whose share it nearly
+  fills (Gemma 4 31B), but only on iGPUs.
+- **What:** on a discrete card, the weights that would leave less than 2.5 GiB of the card's memory for the working
+  buffers and the context go to host memory (pinned, read by the card over PCIe), at most the RAM free at the start
+  less 4 GiB (`Engine::plan_tight`, `zero/engine_sessions.h`; `ARC_HOST_KEEP_GB` sets the room kept,
+  `ARC_HOST_WEIGHTS_GB=N` the amount, 0 none). Prompt chunks are 1,024 tokens, as on a tight iGPU. The same kernels
+  read the same bytes: the logits are bit-identical (checked on the laptop with weights forced into host memory).
+- **Speed:** the prompt reads each host-resident matrix once per chunk, so it loses little; generation reads them
+  on every token over PCIe (a B580 is PCIe 4.0 x8, ~13 GB/s, against 456 GB/s for its own memory), so it slows with
+  the share kept there. MTP drafts help: a verification reads the weights once for several tokens. Not measured on a
+  card yet.
+- **The launcher and `--list-models`:** the model list's memory now has `host_weights` (bytes), and the launcher's
+  fit line says how much of the weights is in RAM and that generation is slower for it.
+- Models that fit are unchanged: the plan only acts when the weights would leave less than 2.5 GiB free.
+
+## 2026-11-16: H8 does not fit Gemma 4 12B (measured, not built)
+
+- One H8 pass instead of Gemma's two int8 passes would have taken the 12B's 4K prompt from ~142 tok/s toward the
+  one-pass ~230, but its activations do not survive one int8 rounding, rotated or not: KL against f32 on 480 tokens
+  of USAGE.md, two passes 0.00001; one pass 0.064; one H8 pass from the f32 rows 0.155 (engine); the f32 reference
+  with H8's rounding simulated (`REF_HAD`) 0.549 with one scale per token row, 0.267 per 256 values. The engine change
+  that tried it was not kept. Left to try: H8 in two passes (the rotated rows and their residual), which would let
+  discrete cards run Gemma's two passes on the wide-tile XMX GEMM.
 ## 2026-11-16: the resident W8 default on discrete cards leaves room for speech to text and the third snapshot
 
 - **Why (an audit of the last two days' engine changes):** `ARC_W8_PARTIAL_GB=auto` keeps decoded weights resident
