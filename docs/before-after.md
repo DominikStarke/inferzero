@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, the Arc 140T preset on Alchemist cards by default** (discrete cards with 8-lane DPAS: A770, A750,
+  A580; zero/xe2/engine_xe2.h `p140_wanted`, zero/engine_load.h; `ARC_140T=0`: off). Such a card took the plain
+  `gemm_x8` or DP4a, whichever won the start-time speed check (on a 140T `gemm_x8` was 1.6x slower than DP4a, issue
+  #5); now it takes the 140T's H8 on `gemm_xw8`, its weights decoded just in time. Speed: not measured, no one has
+  an A-series card here yet. Laptop: the 4B's logits bit-identical before and after (Qwen3.5 4B UD-Q4_K_XL,
+  `--dump-logits`, prompt + 24 tokens, the same SHA-256).
 - **2026-11-15, the single-token GEMV's window reads one window ahead, opt-in** (`ARC_GEMV_DB=1`, decode.cl
   `-DGEMV_DB`, zero/xe2/engine_xe2.h; after urakozz's GEMV, whose loads stay in flight across its dequantization).
   `gemv` (IQ3_S, Q4_K, Q5_K, Q8_0, ...) loads the next row's or the next step's window into registers before it

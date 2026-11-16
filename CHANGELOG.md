@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-16: the Arc 140T preset on Alchemist cards (A770, A750, A580) by default
+
+- **Why:** the Alchemist A-series has the 140T's 8-lane XMX (the 140T's Xe-LPG Plus cores are Alchemist's with XMX),
+  but the 140T preset (H8 on `gemm_xw8`, 357 tok/s on the 27B's 4K prompt) was for iGPUs only, and the discrete
+  cards' path needs 16-lane XMX. So an A770 took the plain 8-lane `gemm_x8` or DP4a, whichever won a start-time
+  speed check, never H8 on the wide-tile GEMM (on a 140T `gemm_x8` was 1.6x slower than DP4a, issue #5, and the
+  preset 1.2x faster than DP4a).
+- **What:** discrete cards with 8-lane DPAS take the preset by default, for the models it covers on the 140T (Qwen
+  dense), with the weights decoded just in time as there (`ARC_W8_PARTIAL_GB=auto` skips them;
+  `zero/xe2/engine_xe2.h`, `zero/engine_load.h`). `ARC_140T=0`: the path before. The start-time checks still turn it
+  off if its kernels differ or do not build. Unlike on the 140T, the H8 GEMM's split-K keeps the discrete cards' 34
+  superblocks a piece (KL measured with both).
+- **Not measured:** no one has run inferzero on an A-series card yet; A770 / A750 / A580 owners, a run with and
+  without `ARC_140T=0` is welcome. iGPUs and the B-series are unchanged: the 125H's logits bit-identical before and
+  after (Qwen3.5 4B, `--dump-logits`, prompt + 24 tokens).
 ## 2026-11-16: web search over four engines at once, merged as SearXNG does
 
 - **Why:** the web UI's search asked Brave Search and, only when Brave gave nothing, Bing. A captcha or a rate limit

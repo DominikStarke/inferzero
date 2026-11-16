@@ -173,7 +173,9 @@
   // than it saves (a Core Ultra 9 285H, Arc 140T, 64 GB: the 27B kept 26.2 GiB resident, 39.5 GiB in all, and its 4K
   // prompt fell from 340-357 to 176 tok/s; PascalSoftwares, issue #5, 2026-11-15). A number still works there.
   void w8_part_auto() {
-    if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe) return;
+    // (p140_: the 140T preset takes only weights decoded just in time, p140_take; on a discrete A-series card, where it is
+    //  the default, they stay so, as measured on the 140T)
+    if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe || p140_) return;
     if (zrt::integrated()) {
       if (getenv("ARC_W8_PARTIAL_GB"))  // (asked for: say why not; the default is quiet)
         zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "

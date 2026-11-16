@@ -37,10 +37,15 @@
     const char* e = getenv("ARC_140T");
     if (e && atoi(e) == 0) return false;
     const bool test = e && atoi(e) == 1 && getenv("ARC_XMX_TRY");
+    // (also discrete cards with 8-lane DPAS, the Alchemist A-series (A770, A750, A580), by default since 2026-11-16:
+    //  the same XMX as the 140T, whose Xe-LPG Plus cores are Alchemist's with XMX. Before, such a card took the plain
+    //  gemm_x8 or DP4a, whichever won the start-time speed check (engine_setup.h; on a 140T gemm_x8 was 1.6x slower
+    //  than DP4a, issue #5), never H8 on gemm_xw8. Not yet measured on an A-series card. Two things differ from the
+    //  140T: the speed check is skipped (as there), and h8_splits keeps the discrete cards' 34 superblocks a piece.
+    //  The start-time checks still turn it off if its kernels differ or do not build)
     // (the models it was measured on: Qwen dense, as h8_auto_; not MoE, Gemma, Flash Next or Qwen3 dense, and not with
     //  ARC_H8_SB=1, whose staged form it does not track. Self audit 2026-11-08)
-    return (cl_.xmx || test) && cl_.sg8 && zrt::integrated() && !w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 &&
-           h8_row();
+    return (cl_.xmx || test) && cl_.sg8 && !w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 && h8_row();
   }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
