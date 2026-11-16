@@ -47,6 +47,18 @@
 #define XW_TG (XW_TM / 8)   // DPAS row groups of 8 tokens
 #define XW_NH (2 * XW_NC)   // DPAS column blocks of 8
 #define BCAST(x, i) intel_sub_group_shuffle((x), (i))
+// -DXW_PF=1 / 2 / 3 (2026-11-16, opt-in, ARC_GEMM_XW_PF): the chunk XW_PFD ahead prefetched with the portable
+// prefetch() built-in while this one's DPAS run: its weights (1; a column group's chunk is 1 KB in one place, 128
+// bytes a lane) and, with XW_PACKA, its activations (2; a token group's chunk is 512 bytes). The 140T's xw_peak
+// --probe (issue #5, 2026-11-16) reached 85 % of the XMX peak at 32 x 32 with its data in L1 and loads at ~128 B/clk
+// per Xe-core, against ~33 % in the engine: the operands are not in L1 when the loop wants them. A prefetch reads no
+// value into the sums: bit for bit the same results
+#ifndef XW_PF
+#define XW_PF 0
+#endif
+#ifndef XW_PFD
+#define XW_PFD 1
+#endif
 
 #ifdef XW_EMU
 inline int xw8_row(uint a, int8 b, int acc) {
@@ -96,6 +108,21 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
       const int ch = s * 4 + j;
+#if XW_PF
+      {
+        const int qn = ch + XW_PFD, lane = (int)get_sub_group_local_id();
+        if (qn < s_end * 4) {
+#if XW_PF & 1
+#pragma unroll
+          for (int c = 0; c < XW_NC; ++c) prefetch(wq + ((size_t)(g0 + c) * nsb * 4 + qn) * (16 * LS) + lane * 32, 32);
+#endif
+#if (XW_PF & 2) && defined(XW_PACKA)
+#pragma unroll
+          for (int t = 0; t < XW_TG; ++t) prefetch(apk + ((size_t)t * nch + qn) * 128 + lane * 16, 16);
+#endif
+        }
+      }
+#endif
 #ifndef XW_PACKA
       int8 al[XW_TG], ah[XW_TG];
 #pragma unroll
@@ -146,6 +173,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
+#if XW_PF & 1
+      {  // (the weights of the chunk XW_PFD ahead, as above; the activations' rows are not in one place here)
+        const int qn = s * 4 + j + XW_PFD, lane = (int)get_sub_group_local_id();
+        if (qn < s_end * 4)
+#pragma unroll
+          for (int c = 0; c < XW_NC; ++c) prefetch(wq + ((size_t)(g0 + c) * nsb * 4 + qn) * (16 * LS) + lane * 32, 32);
+      }
+#endif
       // ---- the XW_TM tokens' rows of this 64-value chunk: al values 0..31, ah 32..63 (component p = row p's word)
       int8 al[XW_TG], ah[XW_TG];
 #pragma unroll

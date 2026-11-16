@@ -80,6 +80,11 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, `gemm_xw8` prefetches its next chunk, opt-in** (`ARC_GEMM_XW_PF=1/2/3` on 8 lanes; the 140T preset):
+  laptop, DPAS emulated (`ARC_XMX_TRY=2 ARC_140T=1`), 27B, 1,753-token prompt + 8 tokens: logits the same SHA-256 off /
+  1 / 3; prompt 78.8 / 93.2 / 65.7 tok/s (emulated DPAS: shows the loop waiting on loads, not the 140T's numbers).
+  The 140T to measure (issue #5).
+
 - **2026-11-16, a dense model larger than a discrete card: part of its weights in RAM** (zero/engine_sessions.h
   `plan_tight`): the weights past what leaves 2.5 GiB of the card free go to pinned host memory, read over PCIe.
   Laptop (not reached on an iGPU by default; checked by forcing it, `ARC_HOST_WEIGHTS_GB=3`): Qwen3.8 27B IQ3_S with

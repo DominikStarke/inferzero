@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-16: the Arc 140T's wide-tile GEMM can prefetch its next chunk (opt-in, `ARC_GEMM_XW_PF`)
+
+- **Why:** the 140T's `xw_peak --probe` (PascalSoftwares, issue #5) shows its XMX loop reaching 85 % of the int8 peak
+  at 32 x 32 tiles, and the loads alone ~128 bytes a clock per Xe-core, when the data is in the first-level cache;
+  the engine's GEMM runs at ~33 %. So the core can load fast enough: the operands are not in L1 when the loop wants
+  them. The same day's sweep of the engine's other switches on the 140T found nothing beyond 1 % (27B and Flash
+  Next), and `ARC_GEMV_WAVE=1` no gain in generation (6.05 against 5.97 tok/s).
+- **What:** `gemm_xw8` (8 lanes: the 140T, Alchemist cards) takes the B-series cards' `ARC_GEMM_XW_PF`: 1 prefetches
+  the next chunk's weights, 2 its activations (packed layout only), 3 both, with the portable `prefetch()` built-in
+  (`zero/kernels/gemm_xw8.cl`, `zero/xe2/engine_xw.h`). Off on 8 lanes unless set; 16 lanes unchanged.
+- **Checked:** bit-identical (laptop, the 140T preset with DPAS emulated, 27B, `--dump-logits`: off / 1 / 3 the same
+  SHA-256). Speed on a 140T: asked for on issue #5.
 ## 2026-11-16: a dense model larger than a discrete card keeps part of its weights in RAM (an Arc B580 for the 27B)
 
 - **Why:** a B580 owner wants Qwen3.8 27B, whose weights (about 11.7 GB for IQ3_S) do not fit a 12 GB card with any

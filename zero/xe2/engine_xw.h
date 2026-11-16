@@ -90,7 +90,9 @@
   }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
   int xw_pf_eff() const {
-    if (xw_lanes() != 16) return 0;
+    // (8 lanes, gemm_xw8: only when ARC_GEMM_XW_PF is set, a test for the 140T since 2026-11-16; its weights' part
+    //  everywhere, the activations' with the packed layout (XW_PACKA) only; the default build there is unchanged)
+    if (xw_lanes() != 16) return getenv("ARC_GEMM_XW_PF") ? xw_pf() : 0;
     return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf();
   }
   std::string xw_pf_defs() const {
@@ -144,7 +146,7 @@
   cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
-                             (xw_emu_ ? " -DXW_EMU" : "") + (xw_lanes() == 16 ? xw_pf_defs() : std::string()) +
+                             (xw_emu_ ? " -DXW_EMU" : "") + xw_pf_defs() +
                              (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (xw_lanes() == 16 && wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
