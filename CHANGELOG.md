@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-16: a split model keeps experts in RAM again, up to 32 GiB per GPU (DeepSeek-V4.1 over 4 B60s)
+
+- **Why:** since 2026-11-16 (release .05) a model split over several GPUs kept no experts in RAM, after an unbounded
+  tier (a quarter of the free RAM per GPU) ran DeepSeek-V4.1-Flash UD-Q8_K_XL over 4 Pro B60s out of memory.
+  manoreken2's sweep of the tier's size on the same machine (1 TB of RAM, issue #4, release .10), per GPU 0 / 8 / 16 /
+  32 GiB: 512-token prompt 14.4 / 14.5 / 15.9 / 23.9 tok/s, generation 3.55 / 6.69 / 8.51 / 9.25 tok/s (the wait at
+  the sums per token 117 / 46 / 30 / 24 ms), each size without an error.
+- **What:** a split model's RAM tier is at most 32 GiB per GPU and at most half the RAM free beyond 16 GiB shared by
+  the GPUs (`zero/engine_stream.h`). `ARC_XRAM_GB=0` turns it off, `=N` sets N GiB per GPU. One GPU is unchanged.
+  The values are the same: the experts come from RAM instead of the SSD.
+- **Also confirmed today (joshdev-de's B70, issue #27, release .15):** `ARC_MOE_GRF=128` gives the same logits as 256
+  (the same SHA-256), and the 35B's generation is 95-98 tok/s once the kernels are cached (the 3.6 s first step of
+  the earlier run was the kernels being compiled). The B60's sweep (manoreken2) shows `ARC_MOE_GRF=128` neutral there
+  (35B 3,891 against 3,907-3,912 tok/s) and nothing faster than the defaults on the 27B and 35B.
 ## 2026-11-16: the Windows launcher stays in the tray when minimized (issue #33)
 
 - **Why:** minimizing the launcher closed it, and the tray icon disappeared with it (PascalSoftwares, release

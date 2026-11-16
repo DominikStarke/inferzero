@@ -80,6 +80,11 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-16, a split model's RAM tier back, bounded to 32 GiB per GPU** (zero/engine_stream.h): DeepSeek-V4.1-Flash
+  UD-Q8_K_XL over 4 Pro B60s, 1 TB of RAM (manoreken2, issue #4, release .10, `--bench-pp 512 --n 64 --gpus 4`):
+  `ARC_XRAM_GB` 0 / 8 / 16 / 32: prompt 14.4 / 14.5 / 15.9 / 23.9 tok/s, generation 3.55 / 6.69 / 8.51 / 9.25 tok/s.
+  The default now takes 32 there. Laptop: not reached (one iGPU), the 27B's logits the same SHA-256.
+
 - **2026-11-16, `ARC_MOE_GRF=128` on discrete cards and `ARC_GEMM_XW_PF=1` in the 140T preset, by default** (users'
   runs on release 2026.11.16.12, best of 3 at 8,192 tokens): Pro B70 35B-A3B 5,377.3 / 5,338.2 -> 5,612.5 tok/s
   (joshdev-de, issue #27); Arc 140T 27B 359.0 / 359.3 -> 366.4 / 366.9 (PascalSoftwares, issue #5). Laptop: neither
