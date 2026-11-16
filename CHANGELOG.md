@@ -10,6 +10,8 @@
   of `scripts/launcher-downloads.ps1` and `launcher-firstrun.ps1` (downloads past 2 GiB), and the free-space need of
   `scripts/zero-server.ps1`. Checked in Windows PowerShell 5.1 with the reported value: the old line fails as
   reported, the new one gives 50 %.
+- `clinfo --all`: also every extension the device reports, one per line (a new GPU's features: an Arc B390's,
+  Xe3, were asked for on issue #31).
 ## 2026-11-16: a split model keeps no experts in RAM by default (DeepSeek-V4.1 over 4 GPUs)
 
 - **Why:** DeepSeek-V4.1-Flash UD-Q8_K_XL over manoreken2's 4 Pro B60s (1 TB of RAM, issue #4) ran out of GPU memory

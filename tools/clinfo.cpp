@@ -21,12 +21,13 @@ template <typename T> static T dev_val(cl_device_id d, cl_device_info p) {
 
 int main(int argc, char** argv) {
   if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
-    printf("usage: clinfo\n"
+    printf("usage: clinfo [--all]\n"
            "Prints each OpenCL platform and its GPUs: name, OpenCL and driver version, EUs, clock, memory, local\n"
            "memory, L3, work-group and sub-group sizes, and which of the extensions that matter for the kernels it has.\n"
-           "No options.\n");
+           "  --all   also every extension the device reports, one per line (a new GPU's features, e.g. Xe3's)\n");
     return 0;
   }
+  const bool all = argc > 1 && !strcmp(argv[1], "--all");
   if (!cl_load()) { zlog::eprintf("cannot load OpenCL.dll\n"); return 1; }
   cl_uint np = 0;
   CL_CHECK(clGetPlatformIDs(0, nullptr, &np));
@@ -65,6 +66,17 @@ int main(int argc, char** argv) {
                             "cl_intel_split_work_group_barrier", "cl_intel_subgroup_2d_block_io", "cl_khr_subgroup_shuffle",
                             "cl_intel_unified_shared_memory", "cl_intel_bfloat16_conversions", "cl_khr_subgroup_extended_types"};
       for (auto w : want) printf("  %-48s %s\n", w, ext.find(w) != std::string::npos ? "yes" : "-");
+      if (all) {  // (--all: the whole list, as the driver reports it)
+        printf("  all extensions:\n");
+        size_t i = 0;
+        while (i < ext.size()) {
+          const size_t j = ext.find(' ', i);
+          const std::string e = ext.substr(i, j == std::string::npos ? std::string::npos : j - i);
+          if (!e.empty()) printf("    %s\n", e.c_str());
+          if (j == std::string::npos) break;
+          i = j + 1;
+        }
+      }
     }
   }
   return 0;
