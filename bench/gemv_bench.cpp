@@ -14,6 +14,37 @@
 #include <cmath>
 #include <random>
 
+// GB_REPACK=1 (2026-11-17, a prototype for the GEMV of generation, IQ3_S only): the kernel under test reads each
+// matrix in a planar repack of its padded GPU rows (raw_padded_sb_bytes = 112 B a superblock): per row, over its T =
+// nsb / 2 pairs of superblocks, plane by plane: qs (128 B a pair: the 32-block of lane l = (superblock l / 8, block
+// l % 8) as words l and 16 + l), signs (64 B: word l), qh (16 B: byte l), meta (16 B: bytes 0-3 / 4-7 the two
+// superblocks' scales, 8-9 / 10-11 their d). The same row size. GB_CMP's kernel reads the original rows, so the
+// comparison is against today's layout. (A pair needs both superblocks: an odd count is refused.)
+static std::vector<uint8_t> repack_iq3s(const std::vector<uint8_t>& pad, int N, int nsb, size_t bp) {
+  const int T = nsb / 2;
+  std::vector<uint8_t> out(pad.size(), 0);
+  for (int n = 0; n < N; ++n) {
+    const uint8_t* in = &pad[(size_t)n * nsb * bp];
+    uint8_t* o = &out[(size_t)n * nsb * bp];
+    for (int tp = 0; tp < T; ++tp) {
+      for (int l = 0; l < 16; ++l) {
+        const int sb = 2 * tp + l / 8, ib = l % 8;
+        const uint8_t* p = in + (size_t)sb * bp;
+        memcpy(o + tp * 128 + l * 4, p + 8 * ib, 4);
+        memcpy(o + tp * 128 + (16 + l) * 4, p + 8 * ib + 4, 4);
+        memcpy(o + (size_t)T * 128 + tp * 64 + l * 4, p + 72 + 4 * ib, 4);
+        o[(size_t)T * 192 + tp * 16 + l] = p[64 + ib];
+      }
+      for (int h = 0; h < 2; ++h) {
+        const uint8_t* p = in + (size_t)(2 * tp + h) * bp;
+        memcpy(o + (size_t)T * 208 + tp * 16 + 4 * h, p + 104, 4);
+        memcpy(o + (size_t)T * 208 + tp * 16 + 8 + 2 * h, p + 108, 2);
+      }
+    }
+  }
+  return out;
+}
+
 int main(int argc, char** argv) {
   if (argc < 3) { fprintf(stderr, "usage: gemv_bench model.gguf tensor [defines] [kernel] [lanes] [iters] [file]\n"); return 1; }
   const std::string tname = argv[2], defs = argc > 3 ? argv[3] : "", kname = argc > 4 ? argv[4] : "gemv";
@@ -73,6 +104,12 @@ int main(int argc, char** argv) {
     printf("touched the file (%llu)\n", (unsigned long long)sum);
   }
   std::vector<cl_mem> raws, junk;
+  std::vector<cl_mem> rawk;  // (what the kernel under test reads: raws, or with GB_REPACK their repack)
+  const bool repack = getenv("GB_REPACK") && atoi(getenv("GB_REPACK")) != 0;
+  if (repack && (type != GGML_IQ3_S || bp != 112 || nsb % 2)) {
+    fprintf(stderr, "GB_REPACK: IQ3_S rows of an even number of superblocks only\n");
+    return 1;
+  }
   if (const char* e = getenv("BIGALLOC_GB")) {  // simulate the engine's memory footprint (allocated before the weights)
     for (int i = 0; i < atoi(e) * 4; ++i) {
       cl_mem m = cl.buffer(CL_MEM_READ_WRITE, (size_t)256 << 20);
@@ -96,6 +133,12 @@ int main(int argc, char** argv) {
       raws.push_back(m);
     } else {
       raws.push_back(cl.buffer(CL_MEM_READ_ONLY, pad.size(), pad.data()));
+    }
+    if (repack) {
+      const std::vector<uint8_t> rp = repack_iq3s(pad, N, nsb, bp);
+      rawk.push_back(cl.buffer(CL_MEM_READ_ONLY, rp.size(), rp.data()));
+    } else {
+      rawk.push_back(raws.back());
     }
   }
   // activations: int8 per 32 with float scales (asc [K/32][M]), per-16 sums (absum [K/16][M]); token rows 0..T-1
@@ -158,7 +201,7 @@ int main(int argc, char** argv) {
   // correctness on the first matrix against the CPU dequantization
   std::vector<float> c(NC);
   poison();
-  launch(raws[0], nullptr);
+  launch(rawk[0], nullptr);
   CL_CHECK(clEnqueueReadBuffer(cl.queue, d_c, CL_TRUE, 0, NC * 4, c.data(), 0, nullptr, nullptr));
   if (const char* other = getenv("GB_CMP")) {  // GB_CMP=kernel[:defines]: bitwise comparison with another kernel
     std::string on = other, od = defs;
@@ -175,7 +218,7 @@ int main(int argc, char** argv) {
     size_t total = 0;
     for (size_t m = 0; m < raws.size(); ++m) {
       poison();
-      launch(raws[m], nullptr);
+      launch(rawk[m], nullptr);
       CL_CHECK(clEnqueueReadBuffer(cl.queue, d_c, CL_TRUE, 0, NC * 4, c.data(), 0, nullptr, nullptr));
       poison();
       set_k(k2, omt, raws[m]);
@@ -193,7 +236,7 @@ int main(int argc, char** argv) {
     printf("bitwise comparison with %s (%s%s%s) over %zu matrices x %d tokens: %s\n", on.c_str(), od.c_str(),
            cf ? ", file " : "", cf ? cf : "", raws.size(), T, total ? "DIFFERENT" : "identical");
     poison();
-    launch(raws[0], nullptr);
+    launch(rawk[0], nullptr);
     CL_CHECK(clEnqueueReadBuffer(cl.queue, d_c, CL_TRUE, 0, NC * 4, c.data(), 0, nullptr, nullptr));
   }
   std::vector<double> maxerr(T, 0.0), maxref(T, 0.0);
@@ -216,7 +259,7 @@ int main(int argc, char** argv) {
   std::vector<double> per;
   for (int it = 0; it < iters + 1; ++it) {
     double ms = 0;
-    for (auto r : raws) {
+    for (auto r : rawk) {
       cl_event e;
       launch(r, &e);
       ms += ClRt::event_ms(e);
