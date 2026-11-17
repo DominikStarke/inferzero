@@ -17,6 +17,11 @@
 //
 // -DXW_EMU: DPAS emulated with DP4a and shuffles (tests on GPUs without XMX: ARC_GEMM_XW_TRY=1).
 // -DX2D: the activations by 2D block loads, as gemm.cl -DX2D (8 rows x 64 bytes a load).
+// -DXW_2D (with X2D, 2026-11-17, ARC_GEMM_XW_2D=1): fewer messages, the same bytes in the same DPAS operands. A chunk's
+// 32 activation rows in one 2D read (32 rows x 64 bytes) instead of four of 8 (XW_TM 32); a column group's 1 KB of
+// weights as one 2D read of a 64-byte-wide, 16-row surface instead of two 512-byte block reads (lane l gets column l's
+// 16 words, as there); C read and written 8 rows x 16 columns a message instead of a row a message. ocloc bmg / ptl:
+// one message each. The loop's messages a chunk at 32 x 64: 16 -> 9 (with the weight prefetch).
 // Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16 * WGX, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
 // `rgroup` token rows together column block by column block, as gemm.cl, so a weight slice is reused while in L3.
 // WGX (2026-11-15, ARC_GEMM_XW_WGX, as a GEMM of 32 sub-groups over 256 tokens x 128 columns does): the
@@ -154,6 +159,19 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
 #endif
       // ---- this 64-value chunk of the XW_TM tokens' rows: al values 0..31, ah 32..63 of 8 rows each
       short8 al[XW_TG], ah[XW_TG];
+#if defined(XW_2D) && defined(X2D) && XW_TM == 32
+      {  // (one read of the 32 rows: block 0 (values 0..31) rows 0..31 in d[0..31], block 1 (32..63) in d[32..63])
+        ushort d[64];
+        intel_sub_group_2d_block_read_8b_32r32x2c(aq, K, M, K, (int2)(s * 256 + j * 64, m0), d);
+#pragma unroll
+        for (int t = 0; t < XW_TG; ++t) {
+          al[t] = as_short8((ushort8)(d[8 * t], d[8 * t + 1], d[8 * t + 2], d[8 * t + 3], d[8 * t + 4], d[8 * t + 5],
+                                      d[8 * t + 6], d[8 * t + 7]));
+          ah[t] = as_short8((ushort8)(d[32 + 8 * t], d[33 + 8 * t], d[34 + 8 * t], d[35 + 8 * t], d[36 + 8 * t],
+                                      d[37 + 8 * t], d[38 + 8 * t], d[39 + 8 * t]));
+        }
+      }
+#else
 #pragma unroll
       for (int t = 0; t < XW_TG; ++t) {
 #ifdef X2D
@@ -173,11 +191,20 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
         ah[t] = (short8)(tb[0], tb[1], tb[2], tb[3], tb[4], tb[5], tb[6], tb[7]);
 #endif
       }
+#endif
       // ---- each column group's 64 values (lo 0..31, hi 32..63), used by every row group
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
         __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + s * 4 + j) * (16 * SG);
+#if defined(XW_2D) && defined(X2D)
+        // (the 1 KB chunk as 16 rows of 16 words: lane l gets column l, words 0..15, what the two block reads gave)
+        uint wb[16];
+        intel_sub_group_2d_block_read_32b_16r16x1c((__global const void*)dp, 64, 16, 64, (int2)(0, 0), wb);
+        const uint8 lo = (uint8)(wb[0], wb[1], wb[2], wb[3], wb[4], wb[5], wb[6], wb[7]);
+        const uint8 hi = (uint8)(wb[8], wb[9], wb[10], wb[11], wb[12], wb[13], wb[14], wb[15]);
+#else
         const uint8 lo = intel_sub_group_block_read8(dp), hi = intel_sub_group_block_read8(dp + 8 * SG);
+#endif
 #pragma unroll
         for (int t = 0; t < XW_TG; ++t) xacc[t][c] = xw_mad(ah[t], hi, xw_mad(al[t], lo, xacc[t][c]));
       }
@@ -198,6 +225,32 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
     for (int t = 0; t < XW_TG; ++t) {
       const int8 x = xacc[t][c];
       const int is[8] = {x.s0, x.s1, x.s2, x.s3, x.s4, x.s5, x.s6, x.s7};
+#if defined(XW_2D) && defined(X2D)
+      // (the 8 rows x 16 columns of this row group and column group: one 2D read of C where the mode needs it, the same
+      //  expression per value as below, one 2D write. C as a surface of M rows x ldc floats from its start; ldc and
+      //  c_off are multiples of 4 floats (engine.h matmul1))
+      {
+        const int2 at = (int2)(c_off + g * SG, m0 + 8 * t);
+        uint old[8], out[8];
+        if (accumulate != 0)
+          intel_sub_group_2d_block_read_32b_8r16x1c((__global const void*)C, ldc * 4, M, ldc * 4, at, old);
+#pragma unroll
+        for (int r = 0; r < 8; ++r) {
+          const int m = 8 * t + r;
+          const float res = BCAST(av[m / 16], m % 16) * dcol * (float)is[r];
+          float v = res;
+          if (accumulate == 1) {
+            v += as_float(old[r]);
+          } else if (accumulate == 2) {
+            const float gt = as_float(old[r]);
+            v *= gt / (1.0f + exp(-gt));
+          }
+          out[r] = as_uint(v);
+        }
+        intel_sub_group_2d_block_write_32b_8r16x1c((__global void*)C, ldc * 4, M, ldc * 4, at, out);
+      }
+      continue;
+#endif
 #pragma unroll
       for (int r = 0; r < 8; ++r) {
         const int m = 8 * t + r;

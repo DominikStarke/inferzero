@@ -28,6 +28,7 @@
 // that fails leaves the old kernels and says so.
 
   bool xw_ = false, xw_emu_ = false;
+  bool xw_2d_off_ = false;  // (ARC_GEMM_XW_2D's form failed its start check: gemm_xw without it)
   std::string xw_src_, xw8_src_;
   // 8 or 16: which kernel (8: gemm_xw8 on GPUs with 8-lane sub-groups, the 140T and the 125H)
   int xw_lanes() const {
@@ -153,6 +154,13 @@
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;
     return v;
   }
+  // ARC_GEMM_XW_2D=1 (2026-11-17, opt-in, 16 lanes with the 2D block loads): gemm_xw.cl -DXW_2D, the same bytes in the
+  // same DPAS operands in fewer messages (the 32 activation rows in one read, a column group's weights in one, C in
+  // 8-row blocks): 16 -> 9 a chunk in the loop at 32 x 64, the epilogue's 128 -> 16. Checked at start as every shape.
+  bool xw_2d() const {
+    static const bool v = getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0;
+    return v && xw_lanes() == 16 && x2d_ && !xw_emu_ && !xw_2d_off_;
+  }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
   //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group)
   cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1) {
@@ -164,7 +172,9 @@
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
                              (xw_lock() ? " -DXW_LOCK" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
-    return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");
+    // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
+    return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : "") + (xw_2d() && (nc ? nc : xw_nc()) != 6 ? " -DXW_2D" : ""),
+                  "gemm_xw");
   }
   // one piece [s0, s1) of K over N columns from 16-column group g_base (16 lanes; 0 on 8): the grid of gemm_xw.cl's /
   // gemm_xw8.cl's header (a sub-group of 16 or 8 work-items). With ARC_GEMM_XW_WGX the widest column count up to it
@@ -236,16 +246,29 @@
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
                             std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs() +
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
-                            (xw_lock() ? "|lock" : "");
+                            (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "");
     std::lock_guard<std::mutex> g(mu);
+    static std::map<std::string, bool> off2d;  // (per key: the 2D form failed, so the plain one was checked instead)
+    if (off2d.count(key)) xw_2d_off_ = true;
     auto it = known.find(key);
     if (it == known.end()) {
-      const bool ok = xw_check();
+      bool ok = xw_check();
+      if (!ok && xw_2d()) {  // (the 2D form differs or does not build: keep gemm_xw in its plain form, checked again)
+        zlog::eprintf("inferzero: ARC_GEMM_XW_2D=1: gemm_xw's 2D form differs from gemm.cl or does not build: without it "
+                      "(please report)\n");
+        xw_2d_off_ = true;
+        off2d[key] = true;
+        ok = xw_check();
+      }
       it = known.emplace(key, ok).first;
       if (ok) {
         zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s%s\n",
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
                 xw_nc() == 6 ? "; a width's rest after its 96s 64 columns wide" : "");
+        if (xw_2d())
+          zlog::eprintf("inferzero: gemm_xw loads and stores in 2D blocks (ARC_GEMM_XW_2D=1)\n");
+        else if (getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0)
+          zlog::eprintf("inferzero: ARC_GEMM_XW_2D=1 needs 16-lane XMX with 2D block loads: not used\n");
         if (!xw_pf_defs().empty())
           zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
                         xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations", xw_pfd(), xw_pf());

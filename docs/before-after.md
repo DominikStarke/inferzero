@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_GEMM_XW_2D=1`, opt-in (gemm_xw in fewer messages):** ocloc `bmg` / `ptl`, 32 x 64 with 2D
+  activations, the weight prefetch and WGX 4: sends 489 -> 77, instructions 7,957 -> 6,866, no spills (16 x 64: 64
+  sends; with LOCK 89; 32 x 96 spills 2 KB: left without it). Laptop: the emulated 16-lane `gemm_xw` (`ARC_GEMM_XW_TRY=1
+  _LANES=16`) gives the same logits as before (C45938EA..., 3 perplexity chunks), and with `ARC_GEMM_XW_2D=1` says it is
+  not used (no 2D loads). Speed: a B70 / B60 / B390 to measure.
+
 - **2026-11-17, `ARC_H8_GRF=128` and `ARC_MOE_GEMM_PAD=1` the defaults on discrete 16-lane cards; `ARC_MOE_RG_XMX`
   stays off:** a Pro B70 under Linux (joshdev-de, issue #27, release 2026.11.17.03, best of 3), 27B IQ3_S 4K prompt
   2,725.3 -> 2,771.7 tok/s with GRF 128 (`h8_decode` 61.86 -> 43.66 ms, `h8_act` 95.00 -> 88.47), logits the same

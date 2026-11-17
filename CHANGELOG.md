@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-17: the B-series' and Panther Lake's H8 prompt GEMM in fewer messages (opt-in)
+
+- **`ARC_GEMM_XW_2D=1`:** `gemm_xw` (the 32 x 64 H8 GEMM of 16-lane XMX GPUs) moves the same bytes into the same DPAS
+  operands with fewer memory messages: a chunk's 32 activation rows in one 2D read instead of four, a column group's
+  1 KB of weights in one 2D read instead of two block reads, and the output 8 rows x 16 columns a message instead of a
+  row a message. ocloc `bmg` / `ptl`: send instructions 489 -> 77, instructions 7,957 -> 6,866, no spills; the loop's
+  messages a chunk 16 -> 9, the epilogue's 128 -> 16. Bit-identical by construction and checked at start like every
+  shape; a failed check keeps `gemm_xw` without it. Not for the 32 x 96 tiles (they spill with it). The laptop has no
+  2D block loads, so a card has to measure it.
+
 ## 2026-11-17: two B70 results become defaults on discrete cards; one test switch stays off
 
 - **`ARC_H8_GRF=128` by default on discrete cards with 16-lane registers (B-series):** a Pro B70's Qwen3.8 27B 4K
