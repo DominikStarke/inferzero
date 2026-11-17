@@ -434,6 +434,17 @@
     // (more rows than the model's dimension: the padded copy below has room for Np rows only)
     if (N > Np) throw std::runtime_error("unexpected tensor shape: " + name + " has " + std::to_string(N) + " rows, the model " + std::to_string(Np));
     if (K % 256 == 0 && N == Np) return load_w(name);
+    if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {  // (as load_w: requantized to Q8_0, padded
+      const int Kp = padded_k(K);                                            //  with zeros to Np rows of Kp values)
+      std::vector<float> v((size_t)Np * Kp, 0.0f);
+      std::vector<float> row(K);
+      for (int r = 0; r < N; ++r) {
+        dequant_row(t.type, t.data + (size_t)r * (t.nbytes / N), K, row.data());
+        std::copy(row.begin(), row.end(), v.begin() + (size_t)r * Kp);
+      }
+      auto q8 = quantize_rows_q8_0(v.data(), Np, Kp);
+      return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, Kp, weight_role(name));
+    }
     int blk = 0, bytes = 0;
     ggml_block_info(t.type, blk, bytes);
     if (K % 256 && (blk >= 256 || K % blk)) throw std::runtime_error("unsupported row length: " + name);

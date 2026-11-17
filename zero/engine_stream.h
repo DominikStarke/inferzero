@@ -11,6 +11,18 @@
       if (il == hp.n_layer && mtp_ext_) continue;
       if (f_.find(p + "ffn_gate_exps.weight") || f_.find(p + "ffn_gate_up_exps.weight")) pre[il] = p;
     }
+    // (the expert types the kernels take, checked before the expert file is written: a BF16 Flash Next wrote its
+    //  257.7 GB expert file first, then stopped at its first float matrix (manoreken2, issue #4, 2026-11-17))
+    if (hp.moe_std)
+      for (const std::string& p : pre) {
+        if (p.empty()) continue;
+        for (const char* n : {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight", "ffn_gate_up_exps.weight"}) {
+          const GgufTensor* t = f_.find(p + n);
+          if (t && !is_w8_type(t->type))
+            throw std::runtime_error("unsupported expert tensor " + t->name + " (" + ggml_type_name(t->type) +
+                                     "): the experts run in a quantized type only (Q8_0 is close to the unquantized model)");
+        }
+      }
     xc_->st.open_or_build(f_, path_, pre, hp.n_expert);
     // (staging records per half: ARC_XSTAGE, default 64 = 8 verification tokens x 8 experts)
     xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-17: a BF16 MoE model refused before its expert file is written
+
+- **Fixed: a Flash Next GGUF in BF16 wrote its 257.7 GB expert file first, then stopped** with "unsupported weight
+  type BF16" (manoreken2, issue #4). The experts run in quantized types only; their types are now checked before
+  the expert file is written, and the message says so (a Q8_0 GGUF is close to the unquantized model).
+- Flash Next's 640-wide shared expert in F32 / F16 / BF16 is requantized to Q8_0 as every other float matrix is
+  (it was refused).
+
 ## 2026-11-17: the 2D prompt GEMM on drivers where its epilogue differs (a B60 under Windows)
 
 - **Fixed: on a Pro B60 under Windows, release 2026.11.17.06's 2D prompt GEMM failed its start check**, so the card

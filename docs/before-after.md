@@ -80,6 +80,10 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, expert types checked before the expert file; float shared experts requantized:** no speed or
+  logit change. Laptop: Flash Next IQ3_S, 96 generated tokens, the same logits as before (2591150D...); the 35B-A3B
+  loads and generates as before.
+
 - **2026-11-17, `ARC_GEMM_XW_2D`'s fallback (C's 2D form, then the loads):** no speed change where the full form
   passes (the B70; its kernel is the same: ocloc `bmg` / `ptl` 93 sends, 7,048 instructions). The loads-only form:
   ocloc `bmg` / `ptl` 445 sends (the epilogue's row messages back), 8,038 instructions, no spills. Laptop: unchanged
