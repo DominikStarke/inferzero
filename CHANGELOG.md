@@ -2,6 +2,9 @@
 
 ## 2026-11-17: a BF16 MoE model refused before its expert file is written
 
+- **A runz / serverz older than its kernels now says so:** since the H8 rewrite, `h8.cl` needs `rot.cl` in front of
+  it, which only the new engine adds. An older binary with the new kernel files stopped with "use of undeclared
+  identifier 'rot_pack'" (MaineTim, issue #19); now the build error says to rebuild both.
 - **Fixed: a Flash Next GGUF in BF16 wrote its 257.7 GB expert file first, then stopped** with "unsupported weight
   type BF16" (manoreken2, issue #4). The experts run in quantized types only; their types are now checked before
   the expert file is written, and the message says so (a Q8_0 GGUF is close to the unquantized model).

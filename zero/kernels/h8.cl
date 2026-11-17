@@ -6,6 +6,11 @@
 // outliers: plain per-row int8 had a 27B KL of 0.038 against f32, rotated in blocks of 1024 0.00057 (tools/ref_forward
 // REF_HAD, 2026-11-03). Built with -DHB=<256 | 512 | 1024> (a power of two dividing K) and, for the weights,
 // -DSRC=<the layout they were decoded into: 8 = Q8_0 repacked, 100..103 = W8>.
+// (rot.cl's helpers come first, put in front by the engine since 2026-11-17: a runz / serverz older than these kernels
+//  compiles this file alone, which said "use of undeclared identifier 'rot_pack'" (MaineTim, issue #19))
+#ifndef ROT_NV
+#error "h8.cl needs rot.cl in front of it: bin/runz and bin/serverz are older than zero/kernels; rebuild both"
+#endif
 //
 // Layouts (gemm.cl): per 16-column group g and superblock s, value e (0..255) of column l is byte e % 4 of uint
 // ((g * nsb + s) * 64 + e / 4) * 16 + l of wq; the W8 header is HDR uints per lane (word k of lane l at
