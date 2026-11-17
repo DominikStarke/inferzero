@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-17: the B-series' H8 prompt GEMM in 2D messages by default, with a deeper prefetch
+
+- **`ARC_GEMM_XW_2D` on by default on discrete cards** (the B-series), with the prefetch of the weights and the
+  activations 2 chunks ahead when neither `ARC_GEMM_XW_PF` nor `ARC_GEMM_XW_PFD` is set. A Pro B70's Qwen3.8 27B IQ3_S
+  4K prompt: 2,768.1 tok/s as it was, 2,853.2 with the 2D form, 2,896.7 with the deeper prefetch added (+4.6 %; `gemm_up`
+  247.0 -> 218.8 ms, `gemm_down` 190.5 -> 176.5, `gemm_gate` 179.5 -> 169.9). The logits' hashes are equal (joshdev-de,
+  issue #27, main 1a7ac94, best of 3). The same prefetch without the 2D form was slower (2,711.4), so the plain form
+  keeps the weights 1 chunk ahead. ocloc `bmg` / `ptl`: no spills (sends 77 -> 93 with the deeper prefetch).
+  `ARC_GEMM_XW_2D=0` turns it off. iGPUs (Lunar / Panther Lake's B390) keep it opt-in until one measures it.
+- **The Gemma 4 drafter's loader checks its matrices' shapes** as the main model's does (`gemv_weight` through `mat()`):
+  a malformed drafter file is refused instead of read out of bounds (from a review by Gemini).
+
 ## 2026-11-17: the B-series' and Panther Lake's H8 prompt GEMM in fewer messages (opt-in)
 
 - **`ARC_GEMM_XW_2D=1`:** `gemm_xw` (the 32 x 64 H8 GEMM of 16-lane XMX GPUs) moves the same bytes into the same DPAS

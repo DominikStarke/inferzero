@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_GEMM_XW_2D` the default on discrete cards, the prefetch 3 / 2 with it:** a Pro B70 under Linux
+  (joshdev-de, issue #27, main 1a7ac94, 312 W, best of 3), 27B IQ3_S 4K prompt: default 2,771.7 / 2,768.1 tok/s, `2D=1`
+  2,853.2, `2D=1 PF=3 PFD=2` 2,896.7; `PF=3 PFD=2` without 2D 2,711.4; with `LOCK=1` every form slower; `NC=2`
+  (32 x 32) 2,555.2. Logits: the default's and the 2D form's dumps have the same sha256 (8e3b24fa...). Laptop: unchanged
+  (iGPUs keep the old default; the change is in `zero/xe2/engine_xw.h` only). ocloc `bmg` / `ptl` at 256 registers:
+  2D with PF 1 / PFD 1 77 sends, 6,866 instructions; with PF 3 / PFD 2 93 sends, 7,048 instructions; no spills.
+
 - **2026-11-17, `ARC_GEMM_XW_2D=1`, opt-in (gemm_xw in fewer messages):** ocloc `bmg` / `ptl`, 32 x 64 with 2D
   activations, the weight prefetch and WGX 4: sends 489 -> 77, instructions 7,957 -> 6,866, no spills (16 x 64: 64
   sends; with LOCK 89; 32 x 96 spills 2 KB: left without it). Laptop: the emulated 16-lane `gemm_xw` (`ARC_GEMM_XW_TRY=1

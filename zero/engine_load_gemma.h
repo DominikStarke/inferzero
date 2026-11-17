@@ -132,7 +132,7 @@
 
   // GEMV-only matrix (raw rows; single tokens only), requantized to Q8_0 when the GEMV has no kernel for its type
   GpuWeight gemv_weight(const GgufFile& g, const std::string& name) {
-    const GgufTensor& t = g.get(name);
+    const GgufTensor& t = mat(g.get(name));  // (a malformed drafter file rejected like the main model's)
     GpuWeight w;
     w.K = (int)t.dims[0];
     w.N = (int)t.dims[1];
