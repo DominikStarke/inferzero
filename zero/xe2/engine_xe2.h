@@ -53,6 +53,12 @@
     //  ARC_H8_SB=1, whose staged form it does not track. Self audit 2026-11-08)
     return (cl_.xmx || test) && cl_.sg8 && !w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 && h8_row();
   }
+  // (the preset would apply but for the resident weights: the reason the log gives, hansong80's A770, issue #35)
+  bool p140_off_resident() const {
+    const char* e = getenv("ARC_140T");
+    return !(e && atoi(e) == 0) && cl_.xmx && cl_.sg8 && w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 &&
+           h8_row();
+  }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
   bool xe2_grf128() const { return xe2_ && (!cl_.sg8 || getenv("ARC_XMX_TRY")); }

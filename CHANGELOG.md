@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-18: the first Arc A770 runs; resident weights in longer prompt chunks on discrete cards
+
+- **A model whose decoded weights stay resident now runs prompts in 4,096-token chunks on discrete cards of 12 GB or
+  more**, as the others do (512 before, a figure tuned on the laptop's iGPU, which keeps it). With resident weights
+  nothing is decoded per chunk, so a longer chunk only means fewer passes over them: an Arc A770's Qwen3.5 4B 4K
+  prompt 3,211-3,219 -> 3,594-3,598 tok/s (hansong80, issue #35, the first A-series report). On the laptop the 4B's
+  perplexity over 2 x 4,096 tokens is the same with either chunk (KL 0.00000); the buffers take 0.6 GiB more, hence
+  the 12 GB. `--chunk 512` as before.
+- **The log says why the Arc 140T preset is off when the weights stay resident** ("--budget 0 ... turns it on"): on
+  the A770 the 4B kept its decoded weights and so ran DP4a, while the 9B, decoded just in time, took the preset
+  (2,969-3,017 tok/s against 2,082-2,099 without it).
+
 ## 2026-11-17: two Arc 140T results become its preset's defaults
 
 - **The Arc 140T preset's H8 GEMM in work-groups of 2 column sub-groups (`ARC_GEMM_XW_WGX=2`)** and **the norm and the

@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, resident weights: 4,096-token prompt chunks on discrete cards of 12 GB+ (512 before):** an Arc A770
+  16 GB (hansong80, issue #35, release .08), Qwen3.5 4B UD-Q4_K_XL 4K prompt, best of 3: chunk 512 (the default)
+  3,211-3,219 tok/s, `--chunk 4096` 3,594-3,598; 8K prompt 3,098-3,109 at 512. Its 9B (preset on, decoded just in
+  time): 2,969-3,017, `ARC_140T=0` 2,082-2,099, `--chunk 512` 2,606-2,614. Laptop (unchanged, an iGPU): the 4B over
+  `USAGE.md` 2 x 4,096 tokens, chunk 512 against 4096: perplexity 11.3651 both, KL 0.00000, same top token 100 %.
+
 - **2026-11-17, the Arc 140T preset: `ARC_GEMM_XW_WGX=2` and `ARC_H8_NORM=1` by default:** a 140T (PascalSoftwares,
   issue #5, release .07, 27B IQ3_S 4K prompt, best of 3): default 368.3 tok/s, `WGX=2` 390.0, `WGX=4` 383.2, `WGX=4
   LOCK=1` 365.8, `NC=2 WGX=2` 341.5, `NC=2 WGX=4` 327.5, `ARC_H8_NORM=1` 382.1 (`USAGE.md` logits sha256 equal,

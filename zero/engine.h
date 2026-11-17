@@ -313,12 +313,20 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  14K prompt 9.9 / 12.3 / 13.0 tok/s)
     plan_tight();  // (a dense model that nearly fills the GPU share: weights in host memory, smaller chunks and rings)
     // (DeepSeek-V4.1: 1024, its queries are 64 x 512 floats a row)
-    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
+    // (resident weights: 512 on iGPUs, where it was tuned; 4096 on discrete cards of 12 GB or more since 2026-11-18,
+    //  as the weights decoded just in time have: no decode per chunk, so a longer chunk only means fewer passes over
+    //  them. An Arc A770's 4B 4K prompt 3,211-3,219 -> 3,594-3,598 tok/s (hansong80, issue #35); the laptop's 4B over
+    //  2 x 4,096 tokens: the same perplexity, KL 0.00000 against chunk 512; +0.6 GiB of buffers, hence the 12 GB)
+    const bool res_long = !zrt::integrated() && zrt::D().global_mem >= (12ull << 30);
+    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
     //  2026-11-08, ~0.35 GB on the 27B)
     p140_ = p140_wanted();  // (the Arc 140T preset, zero/xe2/engine_xe2.h: it needs H8)
+    if (!p140_ && p140_off_resident() && !opt.dry)  // (why it is off where it would apply: issue #35, an A770's 4B)
+      zlog::eprintf("inferzero: Arc 140T preset off: the decoded weights fit and stay resident (--budget %.0f GB); "
+                    "--budget 0 decodes them just in time and turns it on\n", opt.w8_budget_gb);
     h8_auto_ = !p140_ && h8_auto_wanted();  // (H8 by default on discrete cards: zero/xe2/engine_xe2.h)
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     p140_ = p140_ && h8_;
