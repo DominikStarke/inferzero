@@ -63,6 +63,12 @@ experts' cost (EVICT), predicted-expert prefetch (pre-gating), fused decode ops,
   guess and the reads alone left them the same, so the fault is in how generation took the staged records); the
   prompt's own prefetch through the same staging gives the same logits as none (18.6K tokens in 512-token chunks,
   1FE18855..., 143.7-145.7 tok/s against 101.9-104.9 without it). Not kept; the patch is not in the repository.
+- **N5, the 35B's launches (the laptop, every expert cached, 18.46 tok/s, `--prof-gen` over 64 tokens):** 632
+  launches a token: 8 per MoE layer (router + shared gate / up, route, gate / up, quant, SwiGLU, shared down, down,
+  combine), 5 per DeltaNet layer, 8 per attention layer, 2 norms per layer; GPU time `gemm_qkvz` 23.6 %,
+  `moe_gateup` 14.0 %, `lm_head` 12.2 %. A bit-identical fusion of two launches saves ~40 a token (~1-2 % on a
+  B-series card by the B60's 4.6 us a launch); `ARC_GEMV_GU` (two launches in one) was no faster on the B60 (27B
+  -4 %, 35B +1 %). Parked until a B70 `--prof-gen` of the 35B says where its 10 ms step goes.
 - **A fix on the way (manoreken2's B60 under Windows, release .06):** the 2D prompt GEMM failed its start check in
   the add modes only (a compiler fusing `product + old` differently in the 2D epilogue); a failed check now keeps
   the 2D loads and drops C's 2D form (41f5d51).
