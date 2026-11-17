@@ -110,6 +110,10 @@
   // (host time of streamed MoE, printed by expert_stats: the routing read (waits for the GPU), ensure (expert reads
   //  and copies while the GPU waits), and Flash Next's PLE rows)
   double hst_sync_ms_ = 0, hst_ensure_ms_ = 0, hst_ple_ms_ = 0;
+  // (the same for one-token steps alone, plain decoding, and how many layers waited: per token and per wait,
+  //  2026-11-17, for Flash Next's generation on a B70, ~25 ms a step outside its kernels)
+  double gen_sync_ms_ = 0, gen_ensure_ms_ = 0;
+  uint64_t gen_waits_ = 0;
   int seg_n_ = 0;  // tokens of the layer-major segment being processed (0: none)
   std::vector<int> stream_ids_;  // (stream_layer's expert ids)
   int xall_prev_il_ = 1 << 30;   // (ARC_XALL: the last MoE layer of one token; a lower one starts the next token)
@@ -133,9 +137,12 @@
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, mids_, CL_TRUE, 0, ids.size() * 4, ids.data(), 0, nullptr, nullptr));
     }
     const auto h1 = hclk::now();
-    hst_sync_ms_ += std::chrono::duration<double, std::milli>(h1 - h0).count();
+    const double sync_ms = std::chrono::duration<double, std::milli>(h1 - h0).count();
+    hst_sync_ms_ += sync_ms;
     xc_->ensure(L.il, ids.data(), ids.size(), T > 8, gemm);
-    hst_ensure_ms_ += hms(h1);
+    const double ens_ms = hms(h1);
+    hst_ensure_ms_ += ens_ms;
+    if (T == 1) gen_sync_ms_ += sync_ms, gen_ensure_ms_ += ens_ms, ++gen_waits_;
     static const bool xcheck = getenv("ARC_XCHECK") != nullptr;  // (debug: every tile's expert address is in a pool)
     if (xcheck) {
       const int max_t = T * NU + hp.n_expert + 1;
@@ -192,7 +199,14 @@
     char h[160];
     snprintf(h, sizeof h, "\nhost: routing reads %.0f ms (waiting for the GPU), ensure %.0f ms, PLE rows %.0f ms",
              hst_sync_ms_, hst_ensure_ms_, hst_ple_ms_);
-    return r + h;
+    std::string out = r + h;
+    if (gen_waits_) {  // (one-token steps alone: plain decoding)
+      char g[224];
+      snprintf(g, sizeof g, "\nhost, one-token steps: %llu layer waits, routing reads %.0f ms (%.3f ms a wait), ensure %.0f ms (%.3f ms a wait)",
+               (unsigned long long)gen_waits_, gen_sync_ms_, gen_sync_ms_ / gen_waits_, gen_ensure_ms_, gen_ensure_ms_ / gen_waits_);
+      out += g;
+    }
+    return out;
   }
  private:
   // part offsets of an expert record (gate, up, down)
