@@ -1003,7 +1003,7 @@ int main(int argc, char** argv) {
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"}, {"--driver-reserve-gb", "GiB, 0 to 8, e.g. 0.5"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
       {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
-      {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
+      {"--mtp", ""}, {"--mtp-model", "an MTP head .gguf"}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
       {"--mtp-drafts", "a number, e.g. 3"}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
@@ -1104,6 +1104,9 @@ int main(int argc, char** argv) {
       if (so.eo.npu == -2) throw std::runtime_error("--npu: expected on, off or force (got \"" + v + "\")");
     }
     else if (a == "--mtp") so.eo.mtp = true;
+    // (an MTP head in a file of its own, as runz --mtp-model: Flash Next's from SC117's repository; without it the
+    //  server only looks for an mtp-*.gguf in the model's folder. gee456, issue #31, 2026-11-17)
+    else if (a == "--mtp-model") { so.eo.mtp_model = next(); so.eo.mtp = true; }
     else if (a == "--dflash") { so.eo.dflash = next(); so.eo.mtp = true; }
     else if (a == "--no-dflash") { so.eo.dflash.clear(); so.dflash_auto = false; }
     else if (a == "--draft") {  // (the drafter of the -nodf / -df variants)
@@ -1253,6 +1256,9 @@ int main(int argc, char** argv) {
             "                        Gemma with images at least 2048; Gemma MoE 2048; DeepSeek-V4.1 1024; a dense\n"
             "                        model that nearly fills an iGPU's memory 1024)\n"
             "  --mtp                 speculative decoding with the model's MTP block or Gemma assistant drafter\n"
+            "  --mtp-model FILE      an MTP head or drafter in a .gguf of its own (implies --mtp): Flash Next's\n"
+            "                        mtp-Qwen3.8-Flash-Next-Q4_0 / -Q8_0.gguf; without it, an mtp-*.gguf in the\n"
+            "                        model's folder is taken\n"
             "  --mtp-drafts N        drafts per step, Qwen 2..7 (default: 7 for Qwen 27B-class, 4 on discrete cards; 7 with\n"
             "                        DFlash2; 5 for MoE; 3 for 4B and Flash Next; 2 otherwise); Gemma 4's drafter\n"
             "                        always drafts 3\n"

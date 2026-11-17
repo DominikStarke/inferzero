@@ -158,7 +158,10 @@ int main(int argc, char** argv) {
     check("Word DOCX: paragraphs", d.paras.size() > 10, std::to_string(d.paras.size()));
     check("Word DOCX: headings found", std::count_if(d.paras.begin(), d.paras.end(), [](const rdoc::Para& p) { return p.level > 0; }) >= 3);
     const std::string pdfs = slurp(dir + "doc_sample.pdf");
-    check("Word PDF fixture present", !pdfs.empty());
+    // (the release packages leave the test PDFs out, 2026-11-17: skipped there, checked in the repository)
+    if (pdfs.empty()) {
+      printf("skip  Word PDF checks: tests/data/doc_sample.pdf is not here (not in the release package)\n");
+    } else {
     const rdoc::Doc p = rdoc::read("doc_sample.pdf", pdfs);
     check("Word PDF: pages", p.pages >= 2, std::to_string(p.pages));
     check("Word PDF: paragraphs", p.paras.size() > 10, std::to_string(p.paras.size()));
@@ -172,13 +175,16 @@ int main(int argc, char** argv) {
     const rdoc::Index ix(p);
     check("outline from the headings", ix.by_headings && ix.outline.size() >= 3, std::to_string(ix.outline.size()));
     check("chunks within their size", std::all_of(ix.chunks.begin(), ix.chunks.end(), [](const rdoc::Chunk& c) { return c.text.size() <= 3700; }));
+    }
   }
   // a Word PDF with heading bookmarks (tests/data/doc_bookmarks.pdf: headings 1-3, bold list items, bold lines ending
   // in ':'): the bookmarks are the outline; without them (the catalog's /Outlines renamed) the font rules still keep
   // the list items out
   {
     const std::string pdfs = slurp(dir + "doc_bookmarks.pdf");
-    check("bookmarked PDF fixture present", !pdfs.empty());
+    if (pdfs.empty()) {
+      printf("skip  bookmarked PDF checks: tests/data/doc_bookmarks.pdf is not here (not in the release package)\n");
+    } else {
     const rdoc::pdf::File f(pdfs);
     const auto marks = f.bookmarks(f.pages());
     check("bookmarks: all seven", marks.size() == 7, std::to_string(marks.size()));
@@ -206,6 +212,7 @@ int main(int argc, char** argv) {
           p.text.find("Kunjungan ke perusahaan") != std::string::npos)
         lists = lists && p.level == 0;
     check("no bookmarks: bold list items and lines ending in ':' are not headings", lists);
+    }
   }
   // bookmarks by a named destination (name tree) and by a GoTo action; a title that starts a paragraph is split off
   // from it, one not on its page is put in; PDF text strings

@@ -188,10 +188,19 @@
     // (two passes: every prompt chunk through moe_rg, which runs both; decode + GEMM has one)
     // (Flash Next's gate / up stay per tile: through moe_rg they took 8.6 s of a 4K prompt against 6.3 s, 174 against
     //  189 tok/s, 2026-11-05)
-    const bool use_rg = rg_ok && (q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
+    // (ARC_MOE_RG_XMX, zero/xe2/engine_moe_xw.h, the plan's X1: moe_rg instead of decode + GEMM, whose results it gives
+    //  bit for bit, at every chunk of rg_min tokens or more; its 32-scale types on XMX. Only where decode + GEMM ran:
+    //  Flash Next's gate / up through moe_rg are not the per-tile kernel's results (KL 0.0181 against the default, 2 x
+    //  2,048 tokens, 2026-11-17), so they stay per tile (or ARC_MOE_GEMM_PAD); its down projection, on moe_rg already,
+    //  takes the XMX form as it is)
+    const bool rgx = rg_ok && gemm_ok && rgx_layer(L);
+    const bool use_rg = rg_ok && (rgx || q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
                                   (tp_moe() && tp_rg_gu)),
-               rg_down = rg_ok && (q2g || T < rg_max || !gemm_ok);
+               rg_down = rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
+    // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
+    const bool use_gemm_gu = use_gemm || (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
+                                          !hp.ds41 && tm == 16 && T >= gemm_min);
     const std::string xdef = xc_ ? " -DXCACHE" : "";
     // standard expert types, per tile (zero/kernels/decode.cl moe_gateup_q / moe_down_q): the tiles in `tiles`
     auto gateup_q = [&](cl_mem tiles) {
@@ -300,10 +309,11 @@
         tiles = xt_miss_;
       }
     }
-    if (xc_ && !skip_x) stream_layer(L, T, use_gemm, tl1.empty() ? nullptr : tl1.data());
+    // (decode + GEMM decodes every expert of a group: the layer's experts all resident first)
+    if (xc_ && !skip_x) stream_layer(L, T, use_gemm_gu, tl1.empty() ? nullptr : tl1.data());
     if (use_rg) {
       moe_rg(L, 0, Mp, max_tiles);
-    } else if (use_gemm) {
+    } else if (use_gemm_gu) {
       moe_gemm(L, 0, Mp);
     } else if (hp.moe_std) {
       gateup_q(tiles);
@@ -360,16 +370,33 @@
     }
   }
 
+  static bool moe_gemm_part_ok(const Layer& L, int i) {
+    // (the per-tile GEMM has no min term and no native Q8_0 form)
+    return is_w8_type(L.ex_type[i]) && L.ex_type[i] != GGML_Q8_0 && L.ex_type[i] != GGML_Q4_0 && w8_variant(L.ex_type[i]) < 2;
+  }
   static bool moe_gemm_layer_ok(const Layer& L) {
-    for (int i = 0; i < 3; ++i)
-      if (!is_w8_type(L.ex_type[i]) || L.ex_type[i] == GGML_Q8_0 || L.ex_type[i] == GGML_Q4_0 || w8_variant(L.ex_type[i]) >= 2)
-        return false;  // (the per-tile GEMM has no min term and no native Q8_0 form)
-    return true;
+    return moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1) && moe_gemm_part_ok(L, 2);
+  }
+  // ARC_MOE_GEMM_PAD=1 (2026-11-17, opt-in): decode + GEMM for the gate / up of experts whose width is padded (Flash
+  // Next: F 640 in rows of Fp 768), their down projection staying on moe_rg. A Pro B70's Flash Next 4K / 16K prompt
+  // spent 45 / 42 % of its GPU time in moe_gateup on the per-tile kernel (DP4a, decoding IQ3_S in the GEMM), where the
+  // 35B's experts take decode + the XMX GEMM (joshdev-de, issue #27). Gate / up are N = F rows (a multiple of 16) of K =
+  // n_embd values (a multiple of 256): the GEMM takes them as they are, writing h at the row stride Fp; moe_quant
+  // reads its first F columns (FV) only. Not bit-identical to the per-tile kernel (another summation order): KL-checked
+  bool moe_gemm_pad_on() const {
+    static const bool on = getenv("ARC_MOE_GEMM_PAD") && atoi(getenv("ARC_MOE_GEMM_PAD")) != 0;
+    // (not Gemma 4 26B (704 padded to 768): its experts take GELU, which moe_gemm's fused epilogue lacks, and its two
+    //  passes go to moe_rg anyway; audit 2026-11-17)
+    return on && hp.n_ff_exp_pad != hp.n_ff_exp && !hp.gemma;
+  }
+  bool moe_gemm_gu_layer_ok(const Layer& L) const {
+    return hp.n_ff_exp_pad == hp.n_ff_exp ? moe_gemm_layer_ok(L)
+                                          : moe_gemm_pad_on() && moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1);
   }
   bool moe_gemm_ok() const {
     if (!hp.moe_std) return false;
     for (const Layer& L : layers_)
-      if (!moe_gemm_layer_ok(L)) return false;
+      if (!moe_gemm_gu_layer_ok(L)) return false;
     return true;
   }
   // moe_rg's types: no per-block mins, not requantized by decode_w8 (IQ1_M: its own scale layout)
@@ -391,8 +418,12 @@
     const std::string xd = xc_ ? " -DXCACHE" : "";
     for (int i = part; i < (part == 0 ? 2 : 3); ++i) {
       static const std::string imul = getenv("ARC_RG_IMUL") && atoi(getenv("ARC_RG_IMUL")) != 0 ? " -DRG_IMUL" : "";
-      cl_kernel k = kernel("decode", "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd + imul,
-                           "moe_rg");
+      const std::string rg_opts = "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd + imul;
+      cl_kernel k = kernel("decode", rg_opts, "moe_rg");
+      // (ARC_MOE_RG_XMX, zero/xe2/engine_moe_xw.h: the XMX form for this type; at its first use checked against k)
+      const std::string xdefs = rgx_defs(L, i);
+      cl_kernel kx = xdefs.empty() ? nullptr : rgx_kernel(L.ex_type[i], rg_opts + xdefs);
+      const bool x_check = kx && rgx_state_[L.ex_type[i]] == 0;
       // (Flash Next: h rows of Fp = 768 for F = 640 values; the down projection's rows padded to Fp with zeros)
       const int Fp = hp.n_ff_exp_pad;
       int N = i == 2 ? E : F, K = i == 2 ? Fp : E, M = i == 2 ? slots_ : Mp, ldc = i == 2 ? E : Fp,
@@ -407,14 +438,22 @@
         cl_mem as = i == 2 ? (ps ? from(mhsc_, q2m_sc_) : mhsc_) : (ps ? from(asc_, q2_sc_) : asc_);
         cl_mem c = i == 2 ? my_ : (q2_ && i == 1 ? mh2_ : mh_);
         int ac = q2_ ? ps : acc;
-        if (xc_)
-          set_args(k, 0, xc_->xtab[L.il], N, K, tabs_, a, as, c, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us, kv,
-                   xc_->xtab[L.il], xoff(L, i));
-        else
-          set_args(k, 0, L.ex_q[i], N, K, tabs_, a, as, c, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us, kv);
         const size_t ny = ny_env > 0 ? (size_t)ny_env : max_tiles;
-        size_t gws[2] = {(size_t)N, ny}, lws[2] = {16, 1};
-        run(i == 2 ? "moe_down" : "moe_gateup", k, 2, gws, lws);
+        auto launch = [&](cl_kernel kk, cl_mem cc) {
+          if (xc_)
+            set_args(kk, 0, xc_->xtab[L.il], N, K, tabs_, a, as, cc, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us,
+                     kv, xc_->xtab[L.il], xoff(L, i));
+          else
+            set_args(kk, 0, L.ex_q[i], N, K, tabs_, a, as, cc, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us, kv);
+          size_t gws[2] = {(size_t)N, ny}, lws[2] = {16, 1};
+          run(i == 2 ? "moe_down" : "moe_gateup", kk, 2, gws, lws);
+        };
+        if (x_check && ps == 0) {
+          // (c whole: a row per slot (gate / up mh_ / mh2_, down my_), slots_ x ldc floats, engine_alloc.h)
+          rgx_first_use(L.ex_type[i], c, (size_t)slots_ * ldc * 4, k, kx, launch);
+        } else {
+          launch(kx && rgx_state_[L.ex_type[i]] == 1 ? kx : k, c);
+        }
       }
       if (q2_ && i == 1) {
         cl_kernel g = kernel("moe", "-DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(hp.n_expert_used) + " -DTM=16" +
@@ -431,7 +470,7 @@
   // part 2 = down (routing-weighted into my_). Per group of moe_group_ experts: decode to W8, then one GEMM over
   // the group's slot tiles (tiles per expert from moe_scan's tstart).
   void moe_gemm(Layer& L, int part, int Mp) {
-    const int E = hp.n_embd, F = hp.n_ff_exp, NE = hp.n_expert, G = moe_group_;
+    const int E = hp.n_embd, F = hp.n_ff_exp, NE = hp.n_expert, G = moe_group_, Fp = hp.n_ff_exp_pad;
     for (int i = part; i < (part == 0 ? 2 : 3); ++i) {
       const int N = i == 2 ? E : F, K = i == 2 ? F : E;
       const size_t eb = (size_t)N * (K / 256) * raw_padded_sb_bytes(L.ex_type[i]);  // raw bytes per expert
@@ -459,7 +498,8 @@
           decode_w8_x(L, i, e0, G, N, K);
         else
           decode_w8(L.ex_sub[i][e0 / G], L.ex_type[i], G * N, K, moe_wq_, moe_wh_);
-        int M = i == 2 ? slots_ : Mp, NN = N, KK = K, ldc = N, acc = i == 1 ? 2 : 0, e1 = e0 + G, um = i == 2 ? 0 : 1,
+        // (gate / up: h rows of Fp, as the per-tile kernels and moe_rg write them; Fp = F unless the experts are padded)
+        int M = i == 2 ? slots_ : Mp, NN = N, KK = K, ldc = i == 2 ? N : Fp, acc = i == 1 ? 2 : 0, e1 = e0 + G, um = i == 2 ? 0 : 1,
             us = i == 2 ? 1 : 0;
         set_args(k, 0, moe_wq_, moe_wh_, i == 2 ? mhq_ : aq_, i == 2 ? mhsc_ : asc_, absum_, i == 2 ? my_ : mh_, M, NN,
                  KK, ldc, acc, mtiles_, mtstart_, e0, e1, stok_, um, swt_, us);

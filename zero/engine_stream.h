@@ -304,8 +304,10 @@
         const uint64_t K = t.dims.empty() ? 0 : t.dims[0];  // (the shape tested below before anything else of it)
         if (t.dims.size() != 3 || t.dims[2] != (uint64_t)hp.n_expert || t.nelements() != per_expert * hp.n_expert ||
             K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) ||
-            // (Q4_0 too: rows padded with zero blocks as for Gemma 4 26B's; Flash Next's MTP head file has Q4_0 experts)
-            (K % 256 && !is_small_block_type(t.type) && t.type != GGML_Q4_0))
+            // (every 32-value block type: rows padded with zero blocks as for Gemma 4 26B's (pad_small_block_rows, the
+            //  expert file and pin_mtp_experts alike). Flash Next's MTP head files have Q4_0 or Q8_0 experts; Q8_0 was
+            //  refused here, "unexpected expert tensor blk.48.ffn_down_exps.weight" (gee456, issue #31, 2026-11-17))
+            (K % 256 && !is_per32_type(t.type)))
           throw std::runtime_error("unexpected expert tensor " + t.name);
         if (!is_w8_type(t.type))
           throw std::runtime_error("unsupported expert tensor " + t.name + " (" + ggml_type_name(t.type) + ")");

@@ -37,6 +37,10 @@ rm -rf "$stage"; mkdir -p "$stage/bin"
 git ls-files -z | while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
   case "$f" in *.py) continue ;; esac
+  # (Markdown: only CHANGELOG.md, README.md and USAGE.md, as make-package.ps1: the benchmarks read USAGE.md, the
+  #  tests README.md; the other notes stay on GitHub, 2026-11-17)
+  case "$f" in CHANGELOG.md|README.md|USAGE.md) ;; *.md) continue ;; esac
+  case "$f" in tests/data/*.pdf) continue ;; esac  # (only tests/test_doc_read.cpp reads them, and skips without them)
   mkdir -p "$stage/$(dirname "$f")"
   cp -p "$f" "$stage/$f"
 done

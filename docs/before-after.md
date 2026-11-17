@@ -80,6 +80,19 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_MOE_RG_XMX=1`, opt-in (X1: moe_rg's 32-scale types on DPAS):** laptop, DPAS emulated, Flash Next,
+  a 3,131-token prompt + 8 tokens: logits the same SHA-256 as the default (830C3700...); the first-use checks against
+  DP4a bit for bit for IQ3_XXS, IQ4_NL, Q2_0, IQ3_S, IQ4_XS. Not taken: Flash Next's gate / up through moe_rg (KL
+  0.0181 against the per-tile kernel, 2 x 2,048 tokens). Speed: a B60 / B70 to measure (the emulation's is not one).
+- **2026-11-17, the B390's default prompt path: H8 on `gemm_xw` + `attn_fx`** (gee456, issue #1, release .07, 27B
+  IQ3_S `--bench-pp 4096 --n 0`, runs 0 / 1 / 2): as before 267.9 / 258.2 / 250.0; `ARC_H8=1 ARC_GEMM_XW=1` 315.1 /
+  560.5 / 546.1; + `ARC_GEMM_XW_WGX=4 ARC_ATTN_FX=1` 547.9 / 552.4 / 539.7; + `ARC_W8_PARTIAL_GB=16` 591.6 / 584.2 /
+  583.1. KL (C against A, 2 x 4,096 tokens): 0.00175, max 0.149, same top 98.07 %. Generation with `ARC_GEMV_WAVE=1
+  ARC_GEMV_DB=1`: 5.81 -> 4.40 tok/s (not taken). Laptop: not taken (no XMX), the 27B's logits the same SHA-256.
+- **2026-11-17, `ARC_MOE_GEMM_PAD=1`, opt-in** (Flash Next's gate / up through decode + GEMM): laptop, KL against the
+  default 0.00000 over 2 x 2,048 tokens (bit-identical); 4K prompt 181.4-185.3 -> 160.7-176.2 tok/s (`decode_w8` 454 ->
+  4,768 ms, `moe_gateup` 6,744 -> 3,145 ms; no XMX here). A B70 to measure.
+
 - **2026-11-17, H8 on Flash Next, measured, not taken:** B60 (manoreken2, issue #4, .16) 8K prompt default / H8
   alternated 515.7 / 541.2, 550.8 / 610.2 tok/s; laptop KL against the default (`--perplexity USAGE.md --ppl-ctx 2048
   --ppl-chunks 2 --ppl-kl`) 0.0256, max 1.2232, same top 93.26 %, perplexity 5.2626 -> 5.2096. Over Flash Next's limit

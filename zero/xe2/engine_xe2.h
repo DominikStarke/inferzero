@@ -24,14 +24,20 @@
   // against the default path 0.00154, max 0.064). Not for MoE models (the 35B: H8 -1 %), Gemma or Flash Next (never
   // measured with H8 on a B60), nor two-pass models. Off again if XMX does not pass its check. ARC_H8=0: off
   bool h8_auto_ = false;
+  // (iGPUs with 16-lane XMX too since 2026-11-17, Panther Lake's Arc B390 (gee456, issue #1, release .07): the 27B's 4K
+  //  prompt 258-268 -> 546-560 tok/s with H8 on the wide-tile GEMM (gemm_xw, which follows h8_auto_), KL against the
+  //  plain XMX path 0.00175 (with attn_fx). There the 4-wide work-groups stay 1 (no gain measured), the decoded weights
+  //  just in time (RAM is the GPU's memory), the GEMV rules off (generation 5.81 -> 4.40 tok/s with them). The 125H
+  //  (no XMX) and the 140T (8 lanes, its own preset) never take it)
   bool h8_auto_wanted() const {
     if (getenv("ARC_H8") && atoi(getenv("ARC_H8")) == 0) return false;
-    return cl_.xmx && !cl_.sg8 && !zrt::integrated() && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3;
+    return cl_.xmx && !cl_.sg8 && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3;
   }
-  // the H8 GEMM's column groups: 4 with h8_auto_ (unless ARC_GEMM_CG is set), else xe2_cg_for
+  // the H8 GEMM's column groups: 4 with h8_auto_ on a discrete card (unless ARC_GEMM_CG is set), else xe2_cg_for (the
+  // B390's measured H8 run had 1: iGPUs keep it; audit 2026-11-17)
   int h8_cg_for(int N) const {
     static const bool cg_env = getenv("ARC_GEMM_CG") != nullptr;
-    return h8_auto_ && !cg_env && (N / 16) % 4 == 0 ? 4 : xe2_cg_for(N);
+    return h8_auto_ && !zrt::integrated() && !cg_env && (N / 16) % 4 == 0 ? 4 : xe2_cg_for(N);
   }
   bool p140_wanted() const {  // (w8_resident: the weights resident in W8, a member of Engine)
     const char* e = getenv("ARC_140T");
@@ -254,7 +260,9 @@
   }
   bool attnx_wanted() const {
     static const int e = getenv("ARC_ATTN_XMX") ? (atoi(getenv("ARC_ATTN_XMX")) != 0 ? 1 : 0) : -1;
-    const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8)) : e == 1;
+    // (an iGPU only where XMX passed its start-time checks, speed included (xmx_): one whose check kept DP4a runs the
+    //  GPU's own defaults; audit 2026-11-17)
+    const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8 && xmx_)) : e == 1;
     return on && ((cl_.xmx && !cl_.sg8) || attn_xemu()) && !hp.gemma && !hp.swa_rings && attn_hs() <= 4 &&
            !attn_q8_defs_.empty();
   }
@@ -341,7 +349,11 @@
   int fx_nt_ = 0, fx_nh_ = 0;
   bool attnfx_wanted() const {
     static const int e = getenv("ARC_ATTN_FX") ? (atoi(getenv("ARC_ATTN_FX")) != 0 ? 1 : 0) : -1;
-    const bool on = e < 0 ? !zrt::integrated() : e == 1;  // (on by default on discrete cards; iGPUs not measured)
+    // (on by default on discrete cards, and on iGPUs with 16-lane XMX since 2026-11-17: a B390's 27B 4K prompt attention
+    //  377 -> 160 ms, issue #1; the 140T, 8 lanes, never takes it)
+    // (an iGPU only where XMX passed its start-time checks, speed included (xmx_): one whose check kept DP4a runs the
+    //  GPU's own defaults; audit 2026-11-17)
+    const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8 && xmx_)) : e == 1;
     const int hd = hp.qwen3 ? hp.head_dim : 256;
     return on && cl_.xmx && !cl_.sg8 && !hp.gemma && !hp.swa_rings && hd % 32 == 0 && hd <= 256 && !attn_q8_defs_.empty();
   }

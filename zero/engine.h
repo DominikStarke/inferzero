@@ -82,6 +82,9 @@ struct EngineOptions {
                               // 3 for wide dense Qwen models (27B: code 7.8 -> 9.5 tok/s, text +2.5 %), else 2
   float mtp_min_p = 0.5f;     // draft a second token only if the MTP block gives the first this probability
   std::string mtp_model;      // Gemma 4: assistant drafter GGUF (empty: an mtp-*.gguf next to the model, if any)
+  // (a mtp_model that is not this model's head or drafter: false (runz) an error, true (the server, which may switch to
+  //  another model) a line saying so, and the head or drafter next to the model as without it. Audit 2026-11-17)
+  bool mtp_model_soft = false;
   std::string dflash;         // DFlash2 block drafter (a z-lab DFlash2 folder or its model.safetensors): with mtp, it
                               // drafts instead of the MTP block (Qwen3.8 27B)
   bool mtp_block = true;      // with dflash: false = the MTP block is not loaded, DFlash2 drafts every step (--draft
@@ -381,11 +384,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         h8_ = false;
       }
     }
-    if (p140_ && !xmx_) {  // (its kernels did not build or differ: the plain DP4a path, and H8 only if asked for)
+    // (not in a dry run: there XMX is never checked (xmx_ stays false), and --ctx auto's plan must still count H8's
+    //  buffers the real load will have; audit 2026-11-17, the B390 / Lunar Lake default made it matter on shared memory)
+    if (p140_ && !xmx_ && !opt.dry) {  // (its kernels did not build or differ: the plain DP4a path, and H8 only if asked for)
       p140_ = false;
       if (!h8_env()) h8_ = false;
     }
-    if (h8_auto_ && !xmx_) {  // (the discrete default needs XMX: H8 on DP4a is not what was measured)
+    if (h8_auto_ && !xmx_ && !opt.dry) {  // (the discrete default needs XMX: H8 on DP4a is not what was measured)
       h8_auto_ = false;
       if (!h8_env()) h8_ = false;
     }
@@ -1602,6 +1607,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 
+#include "xe2/engine_moe_xw.h"  // (the expert GEMMs on XMX from the raw rows, ARC_MOE_RG_XMX: the plan's X1)
 #include "engine_moe.h"  // (Mixture-of-experts FFN (qwen35moe, Flash Next, Gemma 4 26B))
 
   // Final norm of rows [r0, r0 + n) of x_ (per-32 layout, as the GEMVs expect; the f32 rows are also written to

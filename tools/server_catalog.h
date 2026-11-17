@@ -586,6 +586,8 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.dflash.empty() ? std::string() : eo.mtp_block ? "|dflash" : "|dflash-only") + 
          (eo.slots > 1 ? "|slots" + std::to_string(eo.slots) + "/" + std::to_string(Engine::kSlotCtxFloor) : std::string()) +
          "|md" + std::to_string(eo.mtp_drafts) + "|" +  // (DFlash2 drafter: its weights and buffers; 4-bit V)
+         // (--mtp-model: its head's experts are pinned on the GPU, a Q8_0 head about twice a Q4_0 one; audit 2026-11-17)
+         (eo.mtp_model.empty() ? std::string() : "mm" + std::filesystem::path(eo.mtp_model).filename().string() + "|") +
          (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (!eo.attn_int8 ? "f32" : precise_model(model) ? "p16" : "i8") + "|" + std::to_string(device_global_mem()) +
          (eo.tp_size > 1 ? "|tp" + std::to_string(eo.tp_size) + (getenv("ARC_TP_SIM") ? "sim" : "") : std::string()) +  // (a split model: shard 0's memory)
          "|kf" + std::string(getenv("ARC_G4_KF16") ? getenv("ARC_G4_KF16") : "") + "/" +

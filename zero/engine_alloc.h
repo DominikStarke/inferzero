@@ -156,6 +156,14 @@
         const size_t G = moe_group_, rows = std::max(F, (size_t)hp.n_embd);
         moe_wq_ = buf(G * F * hp.n_embd);
         moe_wh_ = buf(w8_bytes_h((int)(G * rows), (int)(F * hp.n_embd / rows)));
+        if (moe_gemm_pad_on() && !opt.dry) {
+          static std::once_flag said;
+          std::call_once(said, [] {
+            zlog::eprintf("inferzero: padded experts' gate / up through decode + GEMM for prompt chunks (ARC_MOE_GEMM_PAD=1)\n");
+          });
+        }
+      } else if (moe_gemm_pad_on() && !opt.dry) {
+        zlog::eprintf("inferzero: ARC_MOE_GEMM_PAD=1: this model's expert types do not take decode + GEMM; per tile as before\n");
       }
     }
     if (hp.n_ple) {

@@ -87,6 +87,22 @@
     }
     if (opt.mtp) {
       std::string dpath = opt.mtp_model;
+      // (the server's --mtp-model, given for another model, mtp_model_soft: not this model's drafter -> the one next
+      //  to the model, as without it; runz keeps the drafter loader's own error)
+      if (!dpath.empty() && opt.mtp_model_soft) {
+        bool ok = false;
+        try {
+          GgufFile g(dpath);
+          const std::string a = g.get_str("general.architecture");
+          ok = a == "gemma4-assistant" && g.get_int(a + ".embedding_length_out", -1) == hp.n_embd;
+        } catch (...) {
+        }
+        if (!ok) {
+          zlog::eprintf("inferzero: --mtp-model %s: not a drafter of this model; one next to the model is taken instead, if any\n",
+                        dpath.c_str());
+          dpath.clear();
+        }
+      }
       if (dpath.empty()) dpath = find_gemma_drafter();
       if (!dpath.empty()) {
         const size_t g0 = gpu_bytes;

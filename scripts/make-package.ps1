@@ -32,7 +32,12 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
 # the tracked files, as they are in the working tree, but no .py: nothing a user runs needs Python, and the
 # developers' scripts (Jinja2 template checks, simulators, table generators) stay in the repository (2026-11-15)
-$files = @(git ls-files | Where-Object { $_ -notlike "*.py" })
+# (and of the Markdown files only CHANGELOG.md, README.md and USAGE.md, 2026-11-17: the benchmark scripts and the KL
+#  commands read USAGE.md as their text, the tests and runs README.md; docs/, QUEUE.md, BUGS.md, AGENTS.md and the
+#  other notes stay on GitHub, ~0.85 MB of 1.5 MB of Markdown out of the package)
+$keepMd = @("CHANGELOG.md", "README.md", "USAGE.md")
+# (nor the test PDFs, tests/data/*.pdf (0.55 MB): only tests/test_doc_read.cpp reads them, and skips without them)
+$files = @(git ls-files | Where-Object { $_ -notlike "*.py" -and ($_ -notlike "*.md" -or $keepMd -contains $_) -and $_ -notlike "tests/data/*.pdf" })
 foreach ($f in $files) {
   $src = Join-Path $root $f
   if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }  # (deleted, not yet committed)

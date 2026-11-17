@@ -551,11 +551,14 @@
         return false;
       }
     };
-    if (!opt.mtp_model.empty()) {
-      if (!fits(opt.mtp_model))
-        throw std::runtime_error("--mtp-model " + opt.mtp_model + ": not an MTP head of this model (" + a + ", " +
-                                 std::to_string(nb) + " blocks + 1)");
-    } else {
+    const bool given = !opt.mtp_model.empty() && fits(opt.mtp_model);
+    if (!opt.mtp_model.empty() && !given) {
+      const std::string why = "--mtp-model " + opt.mtp_model + ": not an MTP head of this model (" + a + ", " +
+                              std::to_string(nb) + " blocks + 1)";
+      if (!opt.mtp_model_soft) throw std::runtime_error(why);
+      zlog::eprintf("inferzero: %s; an mtp-*.gguf next to the model is taken instead, if any\n", why.c_str());
+    }
+    if (!given) {
       namespace fs = std::filesystem;
       std::error_code ec;
       const fs::path dir = fs::path(path_).parent_path();

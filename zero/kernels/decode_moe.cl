@@ -478,6 +478,32 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
 #else
 #define XARGS_RG
 #endif
+// -DRG_XMX (the plan's X1, 2026-11-17; zero/xe2/engine_moe_xw.h): the types with one scale per 32 values (RG_SC32:
+// IQ4_XS, IQ3_S, IQ3_XXS, IQ2_XXS and the per-32 float types) take each 64-value chunk's dot products as int8 DPAS
+// instead of DP4a. A lane's 32 decoded values (lo / hi, 8 words of 4) are DPAS's B operand as they are (lane = column);
+// the A operand is 8 of the tile's tokens, lane l holding their values 2l and 2l + 1 (one ushort block read per row).
+// A DPAS gives the 32-value integer sums exactly, as the DP4a loop does, and the float epilogue is the same fma's in the
+// same order: bit for bit the DP4a kernel's results (checked once per type at the first use, engine_moe_xw.h).
+// -DRG_XEMU: DPAS emulated with DP4a (tests on a GPU without XMX).
+#if defined(RG_XMX) && defined(RG_XEMU)
+inline int8 rg_mad(short8 a, int8 b) {
+  const int av[8] = {a.s0, a.s1, a.s2, a.s3, a.s4, a.s5, a.s6, a.s7};
+  const uint bw[8] = {(uint)b.s0, (uint)b.s1, (uint)b.s2, (uint)b.s3, (uint)b.s4, (uint)b.s5, (uint)b.s6, (uint)b.s7};
+  int cr[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+#pragma unroll
+  for (int w = 0; w < 8; ++w)
+#pragma unroll
+    for (int r = 0; r < 8; ++r) {
+      // (values 4w .. 4w + 3 of row r: lanes 2w and 2w + 1, two bytes each)
+      const uint lo = (uint)intel_sub_group_shuffle(av[r], 2 * w) & 0xFFFFu;
+      const uint hi = (uint)intel_sub_group_shuffle(av[r], 2 * w + 1) & 0xFFFFu;
+      cr[r] += dot_4x8packed_ss_int(lo | (hi << 16), bw[w]);
+    }
+  return (int8)(cr[0], cr[1], cr[2], cr[3], cr[4], cr[5], cr[6], cr[7]);
+}
+#elif defined(RG_XMX)
+#define rg_mad(a, b) intel_sub_group_i8_i8_matrix_mad_k32((a), (b), (int8)(0))
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* restrict aq,
                      __global const float* restrict asc, __global float* restrict C, int M, int ldc, int accumulate,
@@ -554,6 +580,35 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
         // the decoded scales as the W8 header holds them (int8)
         a0 = (int)(char)a0; a1 = (int)(char)a1; b0 = (int)(char)b0; b1 = (int)(char)b1;
         const float avl = asc[((size_t)s * 8 + 2 * j) * M + tokl], avh = asc[((size_t)s * 8 + 2 * j + 1) * M + tokl];
+#if defined(RG_XMX) && RG_SC32
+        // (X1: the tile's 16 tokens as two DPAS row groups of 8; per token the same float steps as below)
+        const int8 blo = as_int8((uint8)(lo[0], lo[1], lo[2], lo[3], lo[4], lo[5], lo[6], lo[7]));
+        const int8 bhi = as_int8((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7]));
+#pragma unroll
+        for (int tg = 0; tg < RG_TM / 8; ++tg) {
+          short al[8], ah[8];
+#pragma unroll
+          for (int r = 0; r < 8; ++r) {
+            __global const ushort* ap = (__global const ushort*)(aq + (size_t)RG_B(tokl, tg * 8 + r) * K + s * 256 + j * 64);
+            al[r] = as_short(intel_sub_group_block_read_us(ap));       // values 0 .. 31 of the chunk
+            ah[r] = as_short(intel_sub_group_block_read_us(ap + 16));  // values 32 .. 63
+          }
+          const int8 x0 = rg_mad((short8)(al[0], al[1], al[2], al[3], al[4], al[5], al[6], al[7]), blo);
+          const int8 x1 = rg_mad((short8)(ah[0], ah[1], ah[2], ah[3], ah[4], ah[5], ah[6], ah[7]), bhi);
+          const int cv0[8] = {x0.s0, x0.s1, x0.s2, x0.s3, x0.s4, x0.s5, x0.s6, x0.s7};
+          const int cv1[8] = {x1.s0, x1.s1, x1.s2, x1.s3, x1.s4, x1.s5, x1.s6, x1.s7};
+#pragma unroll
+          for (int r = 0; r < 8; ++r) {
+            const int m = tg * 8 + r;
+#if PER32
+            res[m] = fma(RG_B(avl, m) * dl, (float)cv0[r], fma(RG_B(avh, m) * d, (float)cv1[r], res[m]));
+#else
+            const float plo = (float)cv0[r] * (float)a0, phi = (float)cv1[r] * (float)b0;
+            tq[m] = fma(RG_B(avl, m), plo, fma(RG_B(avh, m), phi, tq[m]));
+#endif
+          }
+        }
+#else
 #pragma unroll
         for (int mg = 0; mg < RG_TM; mg += RG_TP) {
           uint aw[RG_TP];
@@ -608,6 +663,7 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
           }
 #endif
         }
+#endif  // RG_XMX
       }
 #if !PER32
 #pragma unroll

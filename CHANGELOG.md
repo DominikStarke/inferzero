@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-11-17: the B390's fast prompt path by default, Flash Next's Q8_0 MTP head, `--mtp-model` in the server
+
+- **Panther Lake's Arc B390 (and Lunar Lake): H8 on the wide-tile XMX GEMM and flash attention by default.** gee456's
+  runs on release .07 (issue #1), the 27B IQ3_S 4K prompt: as before 258-268 tok/s; H8 on `gemm_xw` 546-560; plus the
+  flash attention 540-552 (attention 377 -> 160 ms); plus 16 GB of decoded weights resident 583-592. KL against the
+  plain XMX path 0.00175 (same top token 98.1 %, two 4,096-token chunks of USAGE.md). iGPUs with 16-lane XMX now take
+  H8 (`h8_auto_wanted`, `gemm_xw` follows it) and `attn_fx` where XMX passed its start-time checks; they keep one
+  column group, 1-wide work-groups, weights decoded just in time (RAM is the GPU's memory), and the GEMV defaults (the
+  discrete cards' GEMV rules made generation slower there: 5.81 -> 4.40 tok/s). `ARC_H8=0` / `ARC_ATTN_FX=0` turn them
+  off. The 125H (no XMX) and the Arc 140T (8 lanes, its own preset) are unchanged: the laptop's 27B logits the same
+  SHA-256.
+- **Flash Next's MTP head in Q8_0:** SC117's `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` stopped the load with "unexpected
+  expert tensor blk.48.ffn_down_exps.weight" (gee456, issue #31): rows of 640 values were allowed for some 32-value
+  block types and Q4_0, not Q8_0. Every 32-value block type is allowed now (`is_per32_type`; the padding with zero
+  blocks was already generic). The Q4_0 head checked again on the laptop: it loads and drafts (74 % accepted).
+- **`serverz --mtp-model FILE`:** as runz's. Without it the server only took an `mtp-*.gguf` next to the model. A head
+  or drafter that is not the loaded model's (after a model switch) is skipped with a line (`mtp_model_soft`; runz keeps
+  the error); the `--ctx auto` cache key includes it (a Q8_0 head pins about twice a Q4_0 one's GPU memory).
+- **`ARC_MOE_GEMM_PAD=1` (opt-in, the plan's X5):** Flash Next's expert gate / up of prompt chunks of 1,152+ tokens
+  through decode + the int8 GEMM (XMX on discrete cards) instead of the per-tile DP4a kernel, its down projection
+  staying on `moe_rg`. Bit-identical to the per-tile kernel (Flash Next, 2 x 2,048 tokens of USAGE.md: KL 0.00000,
+  perplexity the same). On the laptop (no XMX) slower: 4K prompt 181-185 -> 161-176 tok/s, the decode of every expert
+  (`decode_w8` 0.45 -> 4.77 s) costing more than the GEMM saves (`moe_gateup` 6.74 -> 3.14 s); a B70 to measure. Not
+  for Gemma 4 26B (GELU experts).
+- **`ARC_MOE_RG_XMX=1` (opt-in, the plan's X1): the expert GEMMs of prompt chunks on XMX from the raw expert rows.**
+  `moe_rg` (the int8 GEMM that decodes each expert row in registers, no `decode_w8` pass) takes each 64-value chunk's
+  dot products as int8 DPAS for the types with one scale per 32 values (IQ4_XS, IQ3_S, IQ3_XXS, IQ2_XXS and the per-32
+  float types): a lane's decoded row is DPAS's weight operand as it is, the tile's 16 tokens two row groups of 8, the
+  float steps after the integer sums unchanged. It replaces decode + GEMM where that ran (the 35B and other unpadded
+  MoE models, from 320 tokens a chunk instead of 1,152) and gives Flash Next's down projection, on `moe_rg` already,
+  the XMX form; Flash Next's gate / up stay where they were (`moe_rg` there is not the per-tile kernel's results: KL
+  0.0181). Each expert type is checked at its first use: the DP4a kernel writes the output, the XMX one a copy, compared
+  byte for byte; a difference keeps DP4a for that type, with a line (`zero/xe2/engine_moe_xw.h`). Laptop, DPAS
+  emulated (`ARC_MOE_RG_XEMU=1`): IQ3_XXS, IQ4_NL, Q2_0, IQ3_S and IQ4_XS the same as DP4a bit for bit, and Flash
+  Next's logits with the switch the same SHA-256 as without. Speed: a B60 / B70 to measure.
+- **Self audit before committing (fixed):** the server's own head test refused Gemma 4 drafters and was looser than
+  the engine's; a dry run (`--ctx auto`) never counted H8's buffers when H8 came from the default (`h8_auto_` or the
+  140T preset: XMX is not checked in a dry run); the iGPU XMX attention defaults now wait for XMX to pass its checks.
+- **The release packages** leave out the Markdown notes (only CHANGELOG.md, README.md and USAGE.md stay: the
+  benchmarks and the KL commands read USAGE.md, the tests README.md) and the test PDFs (`tests/test_doc_read.cpp`
+  skips their checks without them: 26 ok, 2 skipped; 40 ok in the repository).
 ## 2026-11-17: a split model's RAM tier at most 128 GiB in all; H8 measured on Flash Next, not taken
 
 - **The RAM tier:** manoreken2's 4 Pro B60s (issue #4, release .16): the default 32 GiB per GPU ran as measured
