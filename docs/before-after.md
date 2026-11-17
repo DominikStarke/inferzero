@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, `ARC_GEMM_XW_2D`'s fallback straight to the plain form:** a B60 under Windows (manoreken2, issue #4,
+  release .08), 27B IQ3_S 4K prompt, 2 rounds: the loads alone (the full form failed its check) 1,705.2 / 1,705.6 /
+  1,705.1 / 1,705.3 tok/s, `ARC_GEMM_XW_2D=0` 1,725.9 / 1,726.0 / 1,725.6 / 1,725.8; logits sha256 equal (ABE2A162...).
+  A B60 under Linux (MaineTim, issue #19, main da448e8): the full form passes, 27B UD-Q5_K_XL 4K 1,635.4 / 1,643.9,
+  18.6K 1,556.4 tok/s, logits sha256 equal with and without it (0203f631...). Laptop: unchanged (C45938EA..., the
+  emulated 16-lane `gemm_xw`).
+
 - **2026-11-18, resident weights: 4,096-token prompt chunks on discrete cards of 12 GB+ (512 before):** an Arc A770
   16 GB (hansong80, issue #35, release .08), Qwen3.5 4B UD-Q4_K_XL 4K prompt, best of 3: chunk 512 (the default)
   3,211-3,219 tok/s, `--chunk 4096` 3,594-3,598; 8K prompt 3,098-3,109 at 512. Its 9B (preset on, decoded just in

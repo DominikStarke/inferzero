@@ -168,7 +168,8 @@
   // with the prefetch above 2,896.7, logits identical (joshdev-de, issue #27). iGPUs (the B390) opt-in, unmeasured
   // (the default per engine, set in xw_init on its GPU's thread: one process may hold an iGPU's engine and a card's)
   // =1 (the default on discrete cards): the loads and C's 2D reads / writes (-DXW_2D -DXW_2D_C); =2: the loads only,
-  // C as in the plain form. Its start check falls back from 1 to 2, then to the plain form: a Pro B60 under Windows
+  // C as in the plain form. A failed start check falls back to the plain form (=2's loads alone were slower than it
+  // there, see xw_init). A Pro B60 under Windows
   // (manoreken2, issue #4, release .06) failed the full form's check in the add and split-K modes only, which add C's
   // old value to the product: that driver's compiler fuses `product + old` into a mad differently in the 2D epilogue
   // than in gemm.cl, while the stores, the fused SwiGLU (which 2D-reads C too) and so the loads were right. With C in
@@ -277,14 +278,16 @@
     auto it = known.find(key);
     if (it == known.end()) {
       bool ok = xw_check();
-      // (a 2D part that differs or does not build: C's 2D form dropped first, then the loads', each checked again)
+      // (a 2D form that differs or does not build: the plain form, checked again. The loads alone (=2) only when asked
+      //  for: on the B60 under Windows whose full form failed, they gave 1,705 tok/s against the plain form's 1,726 on
+      //  the 27B's 4K prompt, logits equal (manoreken2, issue #4, release .08))
       while (!ok && xw_2d()) {
         const bool c = xw_2d_c();
-        zlog::eprintf(c ? "inferzero: ARC_GEMM_XW_2D: gemm_xw with C in 2D blocks differs from gemm.cl or does not build: "
-                          "C as before, the loads still in 2D blocks\n"
+        zlog::eprintf(c ? "inferzero: ARC_GEMM_XW_2D: gemm_xw with C in 2D blocks differs from gemm.cl or does not build "
+                          "on this driver: the plain form\n"
                         : "inferzero: ARC_GEMM_XW_2D: gemm_xw's 2D loads differ from gemm.cl or do not build: without them "
                           "(please report)\n");
-        xw_2d_fb_ = c ? 1 : 2;
+        xw_2d_fb_ = 2;
         fb2d[key] = xw_2d_fb_;
         ok = xw_check();
       }

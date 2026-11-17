@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-18: the 2D prompt GEMM's fallback goes to the plain form
+
+- **A failed check of the 2D prompt GEMM now runs the plain form**, not the 2D loads alone: on the B60 under Windows
+  that fails the full form's check (release .07's fix), the loads alone took the 27B's 4K prompt to 1,705 tok/s
+  against the plain form's 1,726, with equal logits (manoreken2, issue #4, release .08). `ARC_GEMM_XW_2D=2` still
+  asks for the loads alone. A B60 under Linux passes the full form (MaineTim, issue #19: 1,635-1,644 tok/s on the
+  27B UD-Q5_K_XL, the same logits with and without it), as the B70 does.
+
 ## 2026-11-18: the first Arc A770 runs; resident weights in longer prompt chunks on discrete cards
 
 - **A model whose decoded weights stay resident now runs prompts in 4,096-token chunks on discrete cards of 12 GB or
