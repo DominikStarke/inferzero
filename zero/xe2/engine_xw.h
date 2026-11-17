@@ -165,12 +165,11 @@
   // 8-row blocks): 16 -> 9 a chunk in the loop at 32 x 64, the epilogue's 128 -> 16. Checked at start as every shape.
   // On by default on discrete cards since 2026-11-17 (=0 off): a Pro B70's 27B 4K prompt 2,768.1 -> 2,853.2 tok/s,
   // with the prefetch above 2,896.7, logits identical (joshdev-de, issue #27). iGPUs (the B390) opt-in, unmeasured
-  static bool xw_2d_env() {
-    static const bool v = getenv("ARC_GEMM_XW_2D") ? atoi(getenv("ARC_GEMM_XW_2D")) != 0 : !zrt::integrated();
-    return v;
-  }
+  // (the default per engine, set in xw_init on its GPU's thread: one process may hold an iGPU's engine and a card's)
+  bool xw_2d_discrete_ = false;
   bool xw_2d() const {
-    const bool v = xw_2d_env();
+    static const char* e = getenv("ARC_GEMM_XW_2D");
+    const bool v = e ? atoi(e) != 0 : xw_2d_discrete_;
     return v && xw_lanes() == 16 && x2d_ && !xw_emu_ && !xw_2d_off_;
   }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
@@ -253,6 +252,7 @@
     // (8 lanes: emulated where the GPU has no XMX at all (the 125H, ARC_XMX_TRY=2); 16 lanes: where it has no 16-lane
     //  XMX, the 140T's 8-lane DPAS included)
     xw_emu_ = xw_lanes() == 8 ? !cl_.xmx : (!xmx_ || cl_.sg8);
+    xw_2d_discrete_ = !zrt::integrated();
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
