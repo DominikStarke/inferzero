@@ -35,11 +35,13 @@ try {
       foreach ($mode in @(@{n = "per row "; r = "1"; d = ""}, @{n = "per pair"; r = "2"; d = " -DIQ3P_TILE"})) {
         $env:GB_REPACK = $mode.r; $env:GB_CMP = "gemv:-DGROWS=$g"; $env:GB_CMP_FILE = "zero\kernels\decode.cl"
         $b = & $bench $Model $t "-DGROWS=$g$($mode.d)" gemv_iq3p 16 20 $kfile 2>&1 | ForEach-Object { "$_" }
-        Remove-Item Env:GB_REPACK, Env:GB_CMP, Env:GB_CMP_FILE
+        Remove-Item Env:GB_REPACK, Env:GB_CMP, Env:GB_CMP_FILE -ErrorAction SilentlyContinue  # (before the next "today" run)
         ($b | Where-Object { $_ -match "bitwise|median|GB_REPACK|error" }) -replace "^median", "  $($mode.n): median" -replace "^bitwise", "  $($mode.n): bitwise"
       }
     }
   }
 } finally {
+  # (not left set in the caller's session, whatever stopped the loop: a later gemv_bench run would compare)
+  foreach ($v in "GB_REPACK", "GB_CMP", "GB_CMP_FILE") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
   Pop-Location
 }
