@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-17: two B70 results become defaults on discrete cards; one test switch stays off
+
+- **`ARC_H8_GRF=128` by default on discrete cards with 16-lane registers (B-series):** a Pro B70's Qwen3.8 27B 4K
+  prompt 2,725 -> 2,772 tok/s (`h8_decode` 61.9 -> 43.7 ms, `h8_act` 95.0 -> 88.5 ms), the same logits (joshdev-de,
+  issue #27, release 2026.11.17.03). The B60 is the same chip. Lunar / Panther Lake keep 256 until a B390 measures it;
+  `ARC_H8_GRF=256` turns it off.
+- **`ARC_MOE_GEMM_PAD=1` by default on discrete cards with 16-lane XMX:** Flash Next's expert gate / up through decode +
+  the XMX GEMM, a Pro B70's 4K prompt 1,182 -> 1,414 tok/s (+20 %; `moe_gateup` 1,504 -> 506 ms). The laptop's KL against
+  the per-tile kernel was 0.00000. iGPUs and 8-lane GPUs keep the per-tile kernel; `ARC_MOE_GEMM_PAD=0` turns it off.
+- **`ARC_MOE_RG_XMX=1` stays off:** the same B70's 35B-A3B was slower with it (4K 5,177 -> 4,371, 16K 5,435 -> 4,465 tok/s),
+  though bit-identical: its expert GEMM from the raw rows is slower on XMX than decode + the tiled GEMM.
+- The laptop's logits are unchanged (both defaults are for discrete cards only).
+
 ## 2026-11-17: safety checks from a review (Gemini, checked against the code)
 
 - **The GEMMs' output alignment:** `matmul1` refuses a row stride or column offset that is not a multiple of 4 floats.

@@ -383,8 +383,13 @@
   // 35B's experts take decode + the XMX GEMM (joshdev-de, issue #27). Gate / up are N = F rows (a multiple of 16) of K =
   // n_embd values (a multiple of 256): the GEMM takes them as they are, writing h at the row stride Fp; moe_quant
   // reads its first F columns (FV) only. Not bit-identical to the per-tile kernel (another summation order): KL-checked
+  // On by default since 2026-11-17 on discrete cards with 16-lane XMX: a Pro B70's Flash Next 4K prompt 1,182 -> 1,414
+  // tok/s (moe_gateup 1,504 -> 506 ms; joshdev-de, issue #27, release 2026.11.17.03); the laptop's KL against the
+  // per-tile kernel 0.00000. iGPUs and 8-lane GPUs keep the per-tile kernel (slower there without 16-lane XMX: the
+  // decode of every expert costs more than the GEMM saves). ARC_MOE_GEMM_PAD=0 / 1 force it
   bool moe_gemm_pad_on() const {
-    static const bool on = getenv("ARC_MOE_GEMM_PAD") && atoi(getenv("ARC_MOE_GEMM_PAD")) != 0;
+    const char* e = getenv("ARC_MOE_GEMM_PAD");
+    const bool on = e ? atoi(e) != 0 : (!zrt::integrated() && xmx_ && !cl_.sg8);
     // (not Gemma 4 26B (704 padded to 768): its experts take GELU, which moe_gemm's fused epilogue lacks, and its two
     //  passes go to moe_rg anyway; audit 2026-11-17)
     return on && hp.n_ff_exp_pad != hp.n_ff_exp && !hp.gemma;

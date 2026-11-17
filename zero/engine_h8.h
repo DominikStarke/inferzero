@@ -110,8 +110,11 @@
   // GPUs whose registers hold 8 floats (Xe-LPG: the 125H, the 140T and 285H, told by their 8-lane sub-groups, cl_.sg8) keep
   // 256: 8-16 KB spilled at 128. The register file changes no arithmetic. ARC_H8_GRF=-128: 128 on any GPU (tests:
   // the 128-register builds' results on a GPU at hand, spills and all).
+  // 128 by default on discrete cards with 16-lane registers since 2026-11-17: a Pro B70's 27B 4K prompt 2,725 ->
+  // 2,772 tok/s (h8_decode 61.9 -> 43.7 ms, h8_act 95.0 -> 88.5), the same logits (joshdev-de, issue #27, release
+  // 2026.11.17.03); the B60 is the same chip. Lunar / Panther Lake keep 256 until a B390 measures it. ARC_H8_GRF=256: 256
   std::string h8_grf() const {
-    static const int e = getenv("ARC_H8_GRF") ? atoi(getenv("ARC_H8_GRF")) : 256;
+    static const int e = getenv("ARC_H8_GRF") ? atoi(getenv("ARC_H8_GRF")) : (zrt::integrated() ? 256 : 128);
     return (e == 128 && !cl_.sg8) || e == -128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   cl_kernel h8r_kernel(int hb, int src, const char* name, const std::string& extra = std::string()) {

@@ -159,10 +159,10 @@
         if (moe_gemm_pad_on() && !opt.dry) {
           static std::once_flag said;
           std::call_once(said, [] {
-            zlog::eprintf("inferzero: padded experts' gate / up through decode + GEMM for prompt chunks (ARC_MOE_GEMM_PAD=1)\n");
+            zlog::eprintf("inferzero: padded experts' gate / up through decode + GEMM for prompt chunks (ARC_MOE_GEMM_PAD=0: per tile)\n");
           });
         }
-      } else if (moe_gemm_pad_on() && !opt.dry) {
+      } else if (moe_gemm_pad_on() && getenv("ARC_MOE_GEMM_PAD") && !opt.dry) {  // (asked for by name: say why not)
         zlog::eprintf("inferzero: ARC_MOE_GEMM_PAD=1: this model's expert types do not take decode + GEMM; per tile as before\n");
       }
     }

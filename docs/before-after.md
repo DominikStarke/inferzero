@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_H8_GRF=128` and `ARC_MOE_GEMM_PAD=1` the defaults on discrete 16-lane cards; `ARC_MOE_RG_XMX`
+  stays off:** a Pro B70 under Linux (joshdev-de, issue #27, release 2026.11.17.03, best of 3), 27B IQ3_S 4K prompt
+  2,725.3 -> 2,771.7 tok/s with GRF 128 (`h8_decode` 61.86 -> 43.66 ms, `h8_act` 95.00 -> 88.47), logits the same
+  SHA-256 (8e3b24fa...); Flash Next 4K 1,182.3 -> 1,414.2 with GEMM_PAD (`moe_gateup` 1,504 -> 506 ms, `decode_w8` 71 ->
+  473); the 35B 4K 5,176.6 -> 4,370.8 and 16K 5,435.4 -> 4,465.2 with RG_XMX (slower). Laptop: default 27B and the
+  emulated 140T preset's logits unchanged (27C8A2B853C5, C45938EA...).
+
 - **2026-11-17, `ARC_GEMM_XW_WGX=2 / 4`, `ARC_GEMM_XW_LOCK=1` on 8 lanes (`gemm_xw8`), opt-in:** laptop, DPAS
   emulated: `xw_peak --emu` every variant with `--wgx 2`, `--wgx 4 --lock` and `--lock` bit-identical to the default;
   `runz --dump-logits` (1,753 tokens, chunks of 512) the 4B and 27B the same SHA-256 as before with the switches off,
