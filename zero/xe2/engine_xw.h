@@ -28,7 +28,6 @@
 // that fails leaves the old kernels and says so.
 
   bool xw_ = false, xw_emu_ = false;
-  bool xw_2d_off_ = false;  // (ARC_GEMM_XW_2D's form failed its start check: gemm_xw without it)
   std::string xw_src_, xw8_src_;
   // 8 or 16: which kernel (8: gemm_xw8 on GPUs with 8-lane sub-groups, the 140T and the 125H)
   int xw_lanes() const {
@@ -166,12 +165,21 @@
   // On by default on discrete cards since 2026-11-17 (=0 off): a Pro B70's 27B 4K prompt 2,768.1 -> 2,853.2 tok/s,
   // with the prefetch above 2,896.7, logits identical (joshdev-de, issue #27). iGPUs (the B390) opt-in, unmeasured
   // (the default per engine, set in xw_init on its GPU's thread: one process may hold an iGPU's engine and a card's)
+  // =1 (the default on discrete cards): the loads and C's 2D reads / writes (-DXW_2D -DXW_2D_C); =2: the loads only,
+  // C as in the plain form. Its start check falls back from 1 to 2, then to the plain form: a Pro B60 under Windows
+  // (manoreken2, issue #4, release .06) failed the full form's check in the add and split-K modes only, which add C's
+  // old value to the product: that driver's compiler fuses `product + old` into a mad differently in the 2D epilogue
+  // than in gemm.cl, while the stores, the fused SwiGLU (which 2D-reads C too) and so the loads were right. With C in
+  // the plain form the epilogue is gemm.cl's code again
   bool xw_2d_discrete_ = false;
-  bool xw_2d() const {
+  int xw_2d_fb_ = 0;  // (the start check's fallback: 0 none, 1 C's 2D form dropped, 2 the 2D form dropped)
+  int xw_2d_level() const {  // (0 off, 1 the loads and C, 2 the loads only, before the fallback)
     static const char* e = getenv("ARC_GEMM_XW_2D");
-    const bool v = e ? atoi(e) != 0 : xw_2d_discrete_;
-    return v && xw_lanes() == 16 && x2d_ && !xw_emu_ && !xw_2d_off_;
+    const int v = e ? std::clamp(atoi(e), 0, 2) : (xw_2d_discrete_ ? 1 : 0);
+    return xw_lanes() == 16 && x2d_ && !xw_emu_ ? v : 0;
   }
+  bool xw_2d() const { return xw_2d_level() != 0 && xw_2d_fb_ < 2; }     // (the loads in 2D blocks)
+  bool xw_2d_c() const { return xw_2d_level() == 1 && xw_2d_fb_ == 0; }  // (and C's reads / writes)
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
   //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group)
   cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1) {
@@ -184,7 +192,9 @@
                              (xw_lock() ? " -DXW_LOCK" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
-    return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : "") + (xw_2d() && (nc ? nc : xw_nc()) != 6 ? " -DXW_2D" : ""),
+    const bool d2 = (nc ? nc : xw_nc()) != 6;
+    return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : "") + (xw_2d() && d2 ? " -DXW_2D" : "") +
+                            (xw_2d_c() && d2 ? " -DXW_2D_C" : ""),
                   "gemm_xw");
   }
   // one piece [s0, s1) of K over N columns from 16-column group g_base (16 lanes; 0 on 8): the grid of gemm_xw.cl's /
@@ -258,18 +268,22 @@
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
                             std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs() +
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
-                            (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "");
+                            (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "");
     std::lock_guard<std::mutex> g(mu);
-    static std::map<std::string, bool> off2d;  // (per key: the 2D form failed, so the plain one was checked instead)
-    if (off2d.count(key)) xw_2d_off_ = true;
+    static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
+    if (fb2d.count(key)) xw_2d_fb_ = fb2d[key];
     auto it = known.find(key);
     if (it == known.end()) {
       bool ok = xw_check();
-      if (!ok && xw_2d()) {  // (the 2D form differs or does not build: keep gemm_xw in its plain form, checked again)
-        zlog::eprintf("inferzero: ARC_GEMM_XW_2D: gemm_xw's 2D form differs from gemm.cl or does not build: without it "
-                      "(please report)\n");
-        xw_2d_off_ = true;
-        off2d[key] = true;
+      // (a 2D part that differs or does not build: C's 2D form dropped first, then the loads', each checked again)
+      while (!ok && xw_2d()) {
+        const bool c = xw_2d_c();
+        zlog::eprintf(c ? "inferzero: ARC_GEMM_XW_2D: gemm_xw with C in 2D blocks differs from gemm.cl or does not build: "
+                          "C as before, the loads still in 2D blocks\n"
+                        : "inferzero: ARC_GEMM_XW_2D: gemm_xw's 2D loads differ from gemm.cl or do not build: without them "
+                          "(please report)\n");
+        xw_2d_fb_ = c ? 1 : 2;
+        fb2d[key] = xw_2d_fb_;
         ok = xw_check();
       }
       it = known.emplace(key, ok).first;
@@ -278,9 +292,10 @@
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
                 xw_nc() == 6 ? "; a width's rest after its 96s 64 columns wide" : "");
         if (xw_2d())
-          zlog::eprintf("inferzero: gemm_xw loads and stores in 2D blocks (ARC_GEMM_XW_2D, =0 off)\n");
-        else if (getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0)
-          zlog::eprintf("inferzero: ARC_GEMM_XW_2D=1 needs 16-lane XMX with 2D block loads: not used\n");
+          zlog::eprintf("inferzero: gemm_xw %s in 2D blocks (ARC_GEMM_XW_2D, =0 off)\n",
+                        xw_2d_c() ? "loads and stores" : "loads");
+        else if (getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0 && xw_2d_fb_ == 0)
+          zlog::eprintf("inferzero: ARC_GEMM_XW_2D needs 16-lane XMX with 2D block loads: not used\n");
         if (!xw_pf_defs().empty())
           zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
                         xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations",

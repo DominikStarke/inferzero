@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_GEMM_XW_2D`'s fallback (C's 2D form, then the loads):** no speed change where the full form
+  passes (the B70; its kernel is the same: ocloc `bmg` / `ptl` 93 sends, 7,048 instructions). The loads-only form:
+  ocloc `bmg` / `ptl` 445 sends (the epilogue's row messages back), 8,038 instructions, no spills. Laptop: unchanged
+  (no 2D loads). A B60 under Windows to measure: release .06 fell back to the plain form there, 1,714-1,724 tok/s on
+  the 27B's 4K prompt (issue #4).
+
 - **2026-11-17, `ARC_GEMM_XW_2D` the default on discrete cards, the prefetch 3 / 2 with it:** a Pro B70 under Linux
   (joshdev-de, issue #27, main 1a7ac94, 312 W, best of 3), 27B IQ3_S 4K prompt: default 2,771.7 / 2,768.1 tok/s, `2D=1`
   2,853.2, `2D=1 PF=3 PFD=2` 2,896.7; `PF=3 PFD=2` without 2D 2,711.4; with `LOCK=1` every form slower; `NC=2`

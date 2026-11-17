@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-17: the 2D prompt GEMM on drivers where its epilogue differs (a B60 under Windows)
+
+- **Fixed: on a Pro B60 under Windows, release 2026.11.17.06's 2D prompt GEMM failed its start check**, so the card
+  ran the plain form (correctly, but without the gain), and the log asked for a report (manoreken2, issue #4). Only
+  the modes that add C's old value to the product differed (the split-K pieces and the add mode): that driver's
+  compiler fuses `product + old` into one multiply-add differently in the 2D epilogue than in the reference kernel.
+  The stores and the fused SwiGLU, which reads C the same way, were right, and so were the 2D loads. Now a failed
+  check drops C's 2D form first and keeps the loads in 2D blocks, where the loop's message savings are (16 -> 9 a
+  64-value chunk); the epilogue is then the reference's code. Only if that differs too does it run the plain form.
+  `ARC_GEMM_XW_2D=2` asks for the loads only. A B70 under Linux, which passed the full form's check, is unchanged.
+- The log no longer says "needs 16-lane XMX with 2D block loads" after such a fallback.
+
 ## 2026-11-17: the B-series' H8 prompt GEMM in 2D messages by default, with a deeper prefetch
 
 - **`ARC_GEMM_XW_2D` on by default on discrete cards** (the B-series), with the prefetch of the weights and the

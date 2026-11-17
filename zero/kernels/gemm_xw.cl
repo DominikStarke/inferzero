@@ -20,7 +20,8 @@
 // -DXW_2D (with X2D, 2026-11-17, ARC_GEMM_XW_2D=1): fewer messages, the same bytes in the same DPAS operands. A chunk's
 // 32 activation rows in one 2D read (32 rows x 64 bytes) instead of four of 8 (XW_TM 32); a column group's 1 KB of
 // weights as one 2D read of a 64-byte-wide, 16-row surface instead of two 512-byte block reads (lane l gets column l's
-// 16 words, as there); C read and written 8 rows x 16 columns a message instead of a row a message. ocloc bmg / ptl:
+// 16 words, as there); with -DXW_2D_C too (ARC_GEMM_XW_2D=1, not =2), C read and written 8 rows x 16 columns a message
+// instead of a row a message (a driver whose start check fails that part keeps the loads alone). ocloc bmg / ptl:
 // one message each. The loop's messages a chunk at 32 x 64: 16 -> 9 (with the weight prefetch).
 // Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16 * WGX, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
 // `rgroup` token rows together column block by column block, as gemm.cl, so a weight slice is reused while in L3.
@@ -225,7 +226,9 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
     for (int t = 0; t < XW_TG; ++t) {
       const int8 x = xacc[t][c];
       const int is[8] = {x.s0, x.s1, x.s2, x.s3, x.s4, x.s5, x.s6, x.s7};
-#if defined(XW_2D) && defined(X2D)
+#if defined(XW_2D_C) && defined(X2D)
+      // (-DXW_2D_C, ARC_GEMM_XW_2D=1: a driver whose compiler fuses `res + old` differently here than in gemm.cl fails
+      //  the start check in the add modes, which then drops this form and keeps the plain epilogue below, gemm.cl's code)
       // (the 8 rows x 16 columns of this row group and column group: one 2D read of C where the mode needs it, the same
       //  expression per value as below, one 2D write. C as a surface of M rows x ldc floats from its start; ldc and
       //  c_off are multiples of 4 floats (engine.h matmul1))
