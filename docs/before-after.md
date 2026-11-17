@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, measured: `ARC_GEMM_XW_2D` on a B60 under Linux** (MaineTim, issue #19, main 1b5bd69), 27B
+  UD-Q5_K_XL 4K prompt, 2 rounds alternating: 2D 1,644.9 / 1,645.7 tok/s, `ARC_GEMM_XW_2D=0` 1,576.4 / 1,580.3 (+4.1 %;
+  the B70 +4.6 %). An Arc A770 (TheUniKian, issue #36, release .08, the 140T preset): 27B IQ3_S 4K 1,140.7, 9B 3,042.1,
+  Gemma 4 12B 671.7 tok/s (DP4a: the XMX check lost, 2.4 vs 4.9 ms); its 27B `gemm_down` 825 ms against `gemm_up`'s
+  550 (2 split-K pieces a layer). Website: the B60 bar 1,522 -> 1,726 (manoreken2, issue #4, .08), an A770 bar.
+
 - **2026-11-18, `ARC_GEMM_XW_2D`'s fallback straight to the plain form:** a B60 under Windows (manoreken2, issue #4,
   release .08), 27B IQ3_S 4K prompt, 2 rounds: the loads alone (the full form failed its check) 1,705.2 / 1,705.6 /
   1,705.1 / 1,705.3 tok/s, `ARC_GEMM_XW_2D=0` 1,725.9 / 1,726.0 / 1,725.6 / 1,725.8; logits sha256 equal (ABE2A162...).
