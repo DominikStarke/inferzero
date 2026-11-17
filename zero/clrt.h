@@ -158,9 +158,10 @@ inline Dev& D() { return cur ? *cur : dev0; }
 // meeting's transcription: Qwen3-ASR's encoder grows its buffers after the server's 1-s warm-up clip)
 inline std::atomic<uint32_t> mem_gen{1};
 inline ze_result_t mem_free(ze_context_handle_t c, void* p) {
-  const ze_result_t r = zeMemFree(c, p);
+  // (counted before the free: after it, another thread could get the same address and set it on a kernel before the
+  //  count moved; a review, 2026-11-17. Counting early is harmless: at worst an argument is set again)
   mem_gen.fetch_add(1, std::memory_order_relaxed);
-  return r;
+  return zeMemFree(c, p);
 }
 // Called when the GPU runs out of memory (the share is shared with every other program: a browser or the desktop
 // taking more makes a launch or allocation fail): frees some memory (the engine shrinks its expert cache) and returns

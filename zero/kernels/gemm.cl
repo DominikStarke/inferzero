@@ -560,8 +560,8 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
     if (accumulate == 1) {
       v += as_float(intel_sub_group_block_read(cp));
     } else if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
-      const float g = as_float(intel_sub_group_block_read(cp));
-      v *= g / (1.0f + exp(-g));
+      const float gate = as_float(intel_sub_group_block_read(cp));  // (not g: the column group's index above)
+      v *= gate / (1.0f + exp(-gate));
     }
     intel_sub_group_block_write(cp, as_uint(v));
   }

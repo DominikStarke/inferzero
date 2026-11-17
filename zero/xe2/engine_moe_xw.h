@@ -66,10 +66,38 @@
   // arguments with the C it is given and launches.
   template <class Run>
   void rgx_first_use(uint32_t type, cl_mem C, size_t cbytes, cl_kernel k_dp4a, cl_kernel k_xmx, const Run& run) {
-    if (rgx_scratch_bytes_ < cbytes) {
-      free_buf(rgx_scratch_);
-      rgx_scratch_ = buf(rgx_scratch_bytes_ = cbytes);
+    // (the copy is outside the memory plan: on a nearly full card its allocation may fail, which ends the process
+    //  unless zrt::oom_throws is set; so it throws here and a failure keeps DP4a for this type, as a failed build
+    //  does; freed on every way out, an exception from a run or a read included. A Gemini review, 2026-11-17)
+    free_buf(rgx_scratch_);
+    rgx_scratch_bytes_ = 0;
+    cl_mem sc = nullptr;
+    {
+      struct Throws { bool was = zrt::oom_throws; Throws() { zrt::oom_throws = true; } ~Throws() { zrt::oom_throws = was; } } t;
+      try {
+        sc = clCreateBuffer(cl_.ctx, CL_MEM_READ_WRITE, cbytes, nullptr, nullptr);
+      } catch (const std::exception&) {
+        sc = nullptr;
+      }
     }
+    if (!sc) {
+      rgx_state_[type] = -1;
+      zlog::eprintf("inferzero: moe_rg on XMX for %s experts: no room for its check's copy (%.0f MiB): DP4a kept\n",
+                    ggml_type_name(type), cbytes / 1048576.0);
+      run(k_dp4a, C);
+      return;
+    }
+    mems_.push_back(sc);
+    gpu_bytes += cbytes;
+    rgx_scratch_ = sc;
+    rgx_scratch_bytes_ = cbytes;
+    struct Free {
+      Engine& e;
+      ~Free() {
+        e.free_buf(e.rgx_scratch_);
+        e.rgx_scratch_bytes_ = 0;
+      }
+    } free_after{*this};
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, C, rgx_scratch_, 0, 0, cbytes, 0, nullptr, nullptr));
     run(k_dp4a, C);
     run(k_xmx, rgx_scratch_);
@@ -79,9 +107,7 @@
     const bool same = a == b;
     rgx_state_[type] = same ? 1 : -1;
     // (the copy only lives for a check: up to slots x max(n_embd, Fp) floats, 128 MiB for the 35B at 2,048-token chunks,
-    //  outside the memory plan; freed at once, audit 2026-11-17)
-    free_buf(rgx_scratch_);
-    rgx_scratch_bytes_ = 0;
+    //  outside the memory plan; freed at once by free_after, audit 2026-11-17)
     static std::once_flag said;
     std::call_once(said, [] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1)\n"); });
     zlog::eprintf("inferzero: moe_rg on XMX for %s experts: %s\n", ggml_type_name(type),

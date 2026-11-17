@@ -64,9 +64,11 @@ struct TpComm {
   std::unique_ptr<std::atomic<int>[]> reached;  // (per shard: 1 + the barrier generation it last reached)
   // The pipelined reduce-scatter (ARC_TP_PIPE, tp_reduce_rs_pipe): per shard, how many pieces of its parts (put_n)
   // and of its sums (res_n) it has in host memory so far, over all sums. The shards make the same sums in the same
-  // pieces, so a shard waits until every other one has as many as it has itself.
-  std::unique_ptr<std::atomic<long>[]> put_n, res_n;
-  void wait_all(std::atomic<long>* cnt, long target, int r, const char* what) {
+  // pieces, so a shard waits until every other one has as many as it has itself. (64-bit: long is 32 on Windows, and
+  //  these grow for the life of a load, 2 to 8 a sum: at 64-row chunks a nonstop server could wrap them in ~4 days,
+  //  then a shard passed a wait early (wrong sums) or never did; a review, 2026-11-17)
+  std::unique_ptr<std::atomic<int64_t>[]> put_n, res_n;
+  void wait_all(std::atomic<int64_t>* cnt, int64_t target, int r, const char* what) {
     std::chrono::steady_clock::time_point t0{};
     unsigned long long beat = 0;
     for (long long spins = 0;; ++spins) {
@@ -500,7 +502,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   }
   // 2. the first pieces of every GPU: the f16 flags are final
   zrt::event_wait(ev_put(0));
-  const long base_put = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+  const int64_t base_put = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
   c.wait_all(c.put_n.get(), base_put, r, "the first piece of its part");
   bool over = false;
   for (int k = 0; k < N; ++k) over = over || ((volatile int*)c.flags)[k] != 0;
@@ -529,7 +531,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   for (int p = 0; p < P; ++p) {
     if (p > 0) {
       zrt::event_wait(ev_put(p));
-      const long t = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+      const int64_t t = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
       c.wait_all(c.put_n.get(), t, r, "a piece of its part");
     }
     size_t p0, p1;
@@ -554,7 +556,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   // 4. piece by piece: once every GPU has put its sums of it, the other blocks' sums added (tp_rs_add_r per block)
   for (int p = 0; p < P; ++p) {
     zrt::event_wait(ev_res(p));
-    const long t = c.res_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+    const int64_t t = c.res_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
     c.wait_all(c.res_n.get(), t, r, "a piece of its sums");
     if (p2p) tp_inbox_fence(c, r, h);
     for (int k = 0; k < N; ++k) {
@@ -974,8 +976,8 @@ class TpEngine {
       throw std::runtime_error("--gpus: a GPU fault earlier left a split model's threads running: restart the server for several GPUs");
     comm_.reached.reset(new std::atomic<int>[n]);
     for (int r = 0; r < n; ++r) comm_.reached[r] = 0;
-    comm_.put_n.reset(new std::atomic<long>[n]);
-    comm_.res_n.reset(new std::atomic<long>[n]);
+    comm_.put_n.reset(new std::atomic<int64_t>[n]);
+    comm_.res_n.reset(new std::atomic<int64_t>[n]);
     for (int r = 0; r < n; ++r) comm_.put_n[r] = comm_.res_n[r] = 0;
     for (int r = 0; r < n; ++r) {  // (GPU 0's waits keep no abort: the server's other users, Whisper, share it)
       zrt::devs[r]->sync_timeout_ns = (uint64_t)(comm_.timeout_s * 1e9);
@@ -1323,11 +1325,11 @@ class TpEngine {
     // (progress: barriers completed, and the pipelined sums' pieces, ARC_TP_PIPE, which meet at no barrier: a long
     //  prompt of such sums is not a hang)
     auto progress = [this] {
-      long v = comm_.gen.load(std::memory_order_acquire);
+      int64_t v = comm_.gen.load(std::memory_order_acquire);
       for (int r = 0; r < n_ && comm_.put_n; ++r) v += comm_.put_n[r].load(std::memory_order_relaxed) + comm_.res_n[r].load(std::memory_order_relaxed);
       return v;
     };
-    long last_gen = progress();
+    int64_t last_gen = progress();
     bool warned = false;
     while (!done_cv_.wait_for(lk, std::chrono::seconds(1), [&] { return pending_ == 0; })) {
       const auto now = std::chrono::steady_clock::now();
@@ -1348,7 +1350,7 @@ class TpEngine {
         broken_ = true;
         return;
       }
-      const long g = progress();
+      const int64_t g = progress();
       if (g != last_gen) last_gen = g, moved = now, warned = false;
       // (a line first, 30 s before giving up: a slow path between two sums can be told from a hang in the log, R9)
       if (watch && !warned && now - moved > std::chrono::duration<double>(comm_.timeout_s)) {

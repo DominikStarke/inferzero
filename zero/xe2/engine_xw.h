@@ -115,30 +115,39 @@
     return v;
   }
   int xw_pack_cfg() const {  // (the forms this engine may use; xw_ itself is decided by the check)
-    // (one column group a sub-group only, the default on 8 lanes: there every H8 weight's N fits the tile, so a packed
-    //  input is never left to a GEMM gemm_xw8 declines; wider tiles were slower on the 140T anyway. Review 2026-11-14)
-    if (xw_lanes() != 8 || !h8_row() || xw_nc() != 1) return 0;
+    // (one column group a sub-group, the default on 8 lanes, or two (32 x 32) with ARC_GEMM_XW_WGX 2 / 4 (2026-11-17:
+    //  32 x 32 packed alone was slower on the 140T, 28 % of the XMX peak against 33 %, issue #5 2026-11-13). Every H8
+    //  weight's N is a multiple of 16, and on 8 lanes a width that is not one of 32 runs one column group a sub-group
+    //  (xw_nc_for): a packed input is never left to a GEMM gemm_xw8 declines; the packed orders do not depend on NC.
+    //  Review 2026-11-14)
+    if (xw_lanes() != 8 || !h8_row() || !(xw_nc() == 1 || (xw_nc() == 2 && xw_wgx() > 1))) return 0;
     const int e = xw_pack_env();
     return e >= 0 ? e : (p140_ ? 3 : 0);
   }
   bool xw_pack_a(int Mp, int K) const { return xw_ && (xw_pack_cfg() & 1) && Mp % xw_tm() == 0 && K % 256 == 0; }
   bool xw_pack_w(const GpuWeight& w, int Mp) const {
-    return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && w.N % (16 * xw_nc()) == 0 && w.K % 256 == 0;
+    return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && xw_takes_n(w.N) && w.K % 256 == 0;
   }
   // ARC_GEMM_XW_WGX=1 / 2 / 4 / 8 (16 lanes, 2026-11-15): column sub-groups per work-group next to the WGY token ones,
   // (a work-group of 256 tokens x 128 columns, 32 sub-groups), so the activations of a chunk are shared in L1
   // by the work-group's column blocks; ARC_GEMM_XW_LOCK=1: the work-group in step around each 64-value chunk (a split
   // barrier). Both the same results bit for bit (checked at start). 4 by default on discrete cards since 2026-11-15: a
   // Pro B70's 27B 4K prompt 2,311 -> 2,396 tok/s in two rounds (+3.7 %; gemm_down 215 -> 191 ms; 2: +2.6 %, 8 with
-  // LOCK: -1.7 %, LOCK alone +0.2 %), logits identical (joshdev-de, issue #27, 6466672). iGPUs: 1
-  // 8 lanes (gemm_xw8: the 140T, Alchemist) since 2026-11-17, opt-in: both only when set, 1 / off by default there
+  // LOCK: -1.7 %, LOCK alone +0.2 %), logits identical (joshdev-de, issue #27, 6466672). iGPUs: 1.
+  // 8 lanes (gemm_xw8, the Arc 140T; 2026-11-17, opt-in): ARC_GEMM_XW_WGX=2 / 4 and ARC_GEMM_XW_LOCK=1 the same way;
+  // 1 and off by default (the 140T's default unchanged). Its xw_peak --probe (issue #5, 2026-11-16) reached 85 % of
+  // the XMX peak at 32 x 32 with the operands in L1, ~33 % in the engine; with WGX packed 32 x 32 is allowed too
   int xw_wgx() const {
     static const int v = [] {
       if (!getenv("ARC_GEMM_XW_WGX")) return zrt::integrated() ? 1 : 4;
       const int e = atoi(getenv("ARC_GEMM_XW_WGX"));
       return e == 2 || e == 4 || e == 8 ? e : 1;
     }();
-    return xw_lanes() == 16 || getenv("ARC_GEMM_XW_WGX") ? v : 1;
+    static const int v8 = [] {
+      const int e = getenv("ARC_GEMM_XW_WGX") ? atoi(getenv("ARC_GEMM_XW_WGX")) : 1;
+      return e == 2 || e == 4 ? e : 1;
+    }();
+    return xw_lanes() == 16 ? v : v8;
   }
   bool xw_lock() const {
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;
@@ -181,11 +190,19 @@
       if ((N - 96 * a) % 64 == 0) return 96 * a;
     return -1;
   }
-  bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc()) == 0; }
+  // (8 lanes: a width that is not a multiple of 16 * NC runs at the widest NC that divides it, down to one column group:
+  //  so packed operands, which ARC_GEMM_XW_NC=2 allows with WGX, always reach gemm_xw8. 2026-11-17)
+  int xw_nc_for(int N) const {
+    int nc = xw_nc();
+    if (xw_lanes() == 8)
+      while (nc > 1 && N % (16 * nc)) nc /= 2;
+    return nc;
+  }
+  bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc_for(N)) == 0; }
   // one piece of K over all N columns: one launch, or with NC 6 the 96-wide part and the rest in 64-wide tiles
   void xw_piece(const char* name, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C, int ldc,
                 int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
-    const int nc = xw_nc();
+    const int nc = xw_nc_for(N);
     if (nc != 6) return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0);
     if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
     const int n96 = xw_cols96(N);
@@ -261,6 +278,8 @@
       if (xw_nc() == 6) shapes = {{3 * tm, 256}, {2 * tm, 224}, {2 * tm, 288}, {2 * tm, 128}};
       // (ARC_GEMM_XW_WGX: a shape of two whole work-groups of column blocks, so the column sub-groups are checked)
       if (xw_wgx() > 1) shapes.push_back({2 * tm, 2 * xw_wgx() * (xw_nc() == 6 ? 64 : cols)});
+      // (8 lanes, NC 2 / 4: a width of three column groups, which runs one a sub-group (xw_nc_for))
+      if (xw_lanes() == 8 && xw_nc() > 1) shapes.push_back({2 * tm, 48});
       for (auto [M, N] : shapes) {
         const int ng = N / 16, ldc = N + 32, coff = 16;
         std::vector<uint32_t> wq((size_t)ng * nsb * 4 * 16 * 16), wh((size_t)ng * 16);

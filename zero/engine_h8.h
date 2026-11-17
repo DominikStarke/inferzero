@@ -358,6 +358,14 @@
   }
   // the GEMM (matmul1's prompt path) in H8: the same grid, split-K and epilogues as the W8 GEMM
   void h8_matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
+    // (H8R: a split's whole dot product is one int32 sum, |sum| <= 127 * 127 * K: past 133,000 values per split it
+    //  could overflow. The models' K is 17-22K today and split-K cuts it further; a refusal, not a wrong answer)
+    if (h8_row()) {
+      const int sp = h8_splits(w.K, a);
+      if ((w.K + sp - 1) / sp > 133000)
+        throw std::runtime_error(std::string("gemm ") + name + ": H8 with K = " + std::to_string(w.K) + " in " + std::to_string(sp) +
+                                 " pieces: over 133,000 values a piece, an int32 sum could overflow (ARC_GEMM_SPLIT: more pieces)");
+    }
     cl_mem wq = nullptr, hh = nullptr;
     // (gemm_xw8's packed operand order where it takes this GEMM, ARC_GEMM_XW_PACK: engine_xw.h)
     const bool pw = xw_pack_w(w, Mp);

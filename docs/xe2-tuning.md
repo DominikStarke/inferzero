@@ -883,6 +883,33 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   loads-only figure is ~64 B/clk and the loads+DPAS rows are near it, the cap is the L1 and 50 % is the most this
   loop family can give; if the loads reach far more than 64 B/clk, the limit is latency (software pipelining, the
   next step). Run on the laptop (DPAS emulated) it builds and runs; the numbers there mean nothing.
+- **L1 column sharing (2026-11-17, opt-in): `ARC_GEMM_XW_WGX=2 / 4`, `ARC_GEMM_XW_LOCK=1` on 8 lanes.** The probe
+  (2026-11-16) put the loop at 85 % of the peak at 32 x 32 with its data in L1, and the engine at ~33 %: the operands
+  are not in L1 when the loop needs them. As in `gemm_xw.cl` (+3.7 % on a B70 with WGX 4), a work-group now holds 2
+  or 4 column sub-groups side by side (`sx = local id / 8`, `NB = N / (16 * NC * WGX)`, `g0 = (cb * WGX + sx) * NC`):
+  they read the same activation chunk, and the second and later reads should come from L1. `XW_LOCK` holds the
+  work-group in step around each chunk (a split barrier: arrive before the loads, wait after the DPAS), so the
+  shared lines are still there. With the activations' prefetch (`XW_PF & 2`, packed) each column sub-group prefetches
+  only every WGX-th token group. Packed 32 x 32 (`ARC_GEMM_XW_NC=2`) is allowed with WGX > 1 only (alone it was
+  slower: 28 % against 33 %); a width that is not a multiple of 32 runs at 32 x 16 then (`xw_nc_for`), so a packed
+  input is never left to a GEMM `gemm_xw8` declines. Each sub-group computes what it did before, in the same order:
+  bit-identical (the laptop with DPAS emulated: `xw_peak --emu` every variant with `--wgx 2`, `--wgx 4 --lock`,
+  `--lock`; the 27B's logits the same SHA-256 in the emulated 140T preset with each combination, the start-time check
+  passing).
+
+  | ocloc `arl-h`, 256 registers | Spill | DPAS | Sends | Barriers |
+  |---|---|---|---|---|
+  | 32 x 16 plain, WGX 1 / 2 | 0 | 64 | 363 | 0 |
+  | 32 x 16 plain, WGX 4 + lock | 0 | 64 | 375 | 8 |
+  | packed 32 x 16, PF 1, WGX 1 / 2 | 0 | 64 | 303 | 0 |
+  | packed 32 x 16, PF 3, WGX 4 + lock | 0 | 64 | 363 | 8 |
+  | packed 32 x 32, PF 1, WGX 2 | 0 | 128 | 533 | 0 |
+  | packed 32 x 32, PF 1, WGX 4 + lock | 0 | 128 | 545 | 8 |
+  | packed 32 x 32, PF 3, WGX 2 + lock | 0 | 128 | 593 | 8 |
+
+  (Per 4-chunk superblock of the loop; a barrier pair is one arrive and one wait.) Asked of the owner (issue #5):
+  `bin\xw_peak.exe --wgx 2`, `--wgx 4`, each with `--lock`, and the 27B `--bench-pp 4096 --n 0` with
+  `ARC_GEMM_XW_WGX=2 / 4` and with `ARC_GEMM_XW_NC=2 ARC_GEMM_XW_WGX=2`.
 
 ## 14. The GEMVs' rows per sub-group from the GPU's thread count (2026-11-16, joshdev-de, issue #27)
 

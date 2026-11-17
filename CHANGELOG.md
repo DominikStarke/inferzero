@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-11-17: safety checks from a review (Gemini, checked against the code)
+
+- **The GEMMs' output alignment:** `matmul1` refuses a row stride or column offset that is not a multiple of 4 floats.
+  The kernels write C 16 floats at a time with block writes, which need 16-byte addresses; a misaligned one would
+  write wrong places without an error. Every model's shapes are multiples of 16 today.
+- **H8's int32 sums:** `h8_matmul` refuses a piece of K over 133,000 values (a split's whole dot product is one int32
+  sum, at most 127 x 127 x K). The models' K is 17-22K and split-K cuts it further.
+- **`ARC_MOE_RG_XMX=1`'s first-use check** (discrete cards, opt-in): the 128 MiB copy it compares with is outside the
+  memory plan, and on a nearly full card its allocation ended the process. Now it keeps DP4a for that type and says
+  so; the copy is freed on every way out.
+- **Multi-GPU prompt sums (`ARC_TP_PIPE`):** the pieces' counters were `long`, 32-bit on Windows, and grow for the
+  life of a load: a server running prompts without a break could wrap them in ~4-33 days, then a shard could pass a
+  wait early (wrong sums) or wait forever. Now 64-bit.
+- **`clrt.h`'s kernel-argument cache:** a free is counted before `zeMemFree`, not after, so no other thread can get
+  the same address and set it on a kernel before the count moves (no case of it is known; a one-line hardening).
+- `gemm.cl`: the SwiGLU gate value is `gate`, not `g` (which also names the column group).
+- Not changed, checked: the epilogue's block reads cannot be widened (rows are `ldc` apart); `native_exp` would move
+  every model's logits for a negligible cost; `moe_scan` at 512 experts, sub-buffer alignment (our `clCreateSubBuffer`
+  is a pointer offset over Level Zero), `asc_transpose` twice and `ARC_GDN_PF` on the 140T (spills) were not issues.
+- Checked: logits identical bit for bit before and after on Qwen3.5 4B, Gemma 4 E4B and Qwen3.8 27B, and the 4B over
+  2 GPUs (`ARC_TP_SIM=1`).
+
+
+## 2026-11-17: L1 column sharing for the Arc 140T's prompt GEMM, its full form (opt-in)
+
+(Release 2026.11.17.02 carried a first form of these two switches on 8 lanes, the section below; this one replaces
+it: the packed 32 x 32 tile with them, the prefetch shared out, the narrower-tile fallback, `xw_peak`'s flags. The
+switches' names and defaults are the same.)
+
+- **`ARC_GEMM_XW_WGX=2 / 4` and `ARC_GEMM_XW_LOCK=1` on 8 lanes (`gemm_xw8`, the Arc 140T):** as the 16-lane kernel's
+  (+3.7 % on a B70), 2 or 4 column sub-groups a work-group read the same activation chunk while it is in L1, and the
+  lock holds the work-group in step around each 64-value chunk (a split barrier). With the activations' prefetch
+  (`ARC_GEMM_XW_PF=2 / 3`) each column sub-group prefetches only its share of the token groups. The 140T's
+  `xw_peak --probe` reached 85 % of the XMX peak with its operands in L1, against ~33 % in the engine; this tests
+  whether sharing brings them there. Off by default: the 140T's default is unchanged.
+- **Packed 32 x 32 tiles with column sharing:** `ARC_GEMM_XW_NC=2` keeps the packed operands (`ARC_GEMM_XW_PACK`,
+  on in the 140T preset) when `ARC_GEMM_XW_WGX` is 2 or 4 (alone it was slower: 28 % of the peak against 33 %). A
+  width that is not a multiple of 32 runs one column group a sub-group, so a packed input always reaches `gemm_xw8`
+  (the packed orders do not depend on the tile width).
+- **`bin\xw_peak.exe --wgx 2|4` and `--lock`:** every variant again with the column sub-groups and / or the lock, in
+  the same run, compared bit for bit with the plain default.
+- Checked on the laptop with DPAS emulated: every `xw_peak` variant with `--wgx 2`, `--wgx 4 --lock` and `--lock`
+  bit-identical; `runz --dump-logits` (1,753 tokens in 512-token chunks) on the 4B and 27B the same SHA-256 as before
+  with the switches off, and on the 27B in the emulated 140T preset (`ARC_140T=1 ARC_XMX_TRY=2`, which runs it on
+  `gemm_xw8`) the same with WGX 2 / 4, the lock, 32 x 32 with WGX and the activations' prefetch with WGX; the
+  start-time check passed in each. ocloc `arl-h`, 256 registers:
+  no spills in any combination (32 x 16 and packed 32 x 32, WGX 1 / 2 / 4, with and without the lock and prefetch).
+
 ## 2026-11-17: H8's rotation rewritten, spill-free; three opt-in switches for the 140T, Alchemist and the Xe2 / Xe3 GPUs
 
 - **The rotation in one file of our own, `zero/kernels/rot.cl`.** The Walsh-Hadamard transform of H8's blocks (its

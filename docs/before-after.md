@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, `ARC_GEMM_XW_WGX=2 / 4`, `ARC_GEMM_XW_LOCK=1` on 8 lanes (`gemm_xw8`), opt-in:** laptop, DPAS
+  emulated: `xw_peak --emu` every variant with `--wgx 2`, `--wgx 4 --lock` and `--lock` bit-identical to the default;
+  `runz --dump-logits` (1,753 tokens, chunks of 512) the 4B and 27B the same SHA-256 as before with the switches off,
+  the 27B in the 140T preset (`ARC_140T=1 ARC_XMX_TRY=2`) the same with WGX 2 / 4, the lock, `ARC_GEMM_XW_NC=2` with
+  WGX, `ARC_GEMM_XW_PF=3` with WGX. Speed: a 140T to measure (issue #5; the emulation's is not one).
+
 - **2026-11-17, H8's rotation in `rot.cl`, the H8R kernels spill-free; `ARC_H8_GRF=128`, `ARC_GEMM_XW_WGX` / `_LOCK` on
   8 lanes, `ARC_H8_NORM` in the 140T preset (all three opt-in):** laptop, 27B, `ARC_H8=1`, `--bench-pp 4096 --n 0
   --prof`, old kernels against new, two rounds each: `h8_weights` 331 / 333 -> 200 / 200 ms, `h8_act` 713 / 738 ->

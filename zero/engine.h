@@ -1218,6 +1218,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       run(name, k, 1, &g1, &l1);
       return;
     }
+    // (the GEMM kernels write C a sub-group's 16 floats at a time with block writes, which need 16-byte aligned
+    //  addresses: a row stride or column offset that is not a multiple of 4 floats would write wrong places without
+    //  an error. Every model's shapes are multiples of 16 today; this keeps a new one from breaking it silently)
+    if (ldc % 4 || c_off % 4)
+      throw std::runtime_error(std::string("gemm ") + name + ": row stride " + std::to_string(ldc) + " / column offset " +
+                               std::to_string(c_off) + " not a multiple of 4 floats (16-byte block writes)");
     // (ARC_H8=1, zero/engine_h8.h; the 140T preset: H8 only where it takes the GEMM, p140_take)
     const bool pt = p140_take(w, Mp);
     if (h8_takes(w, Mp)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);  // (the same test as layer_ffn's, engine_h8.h)

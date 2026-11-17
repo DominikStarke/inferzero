@@ -13,6 +13,9 @@
 // tokens instead of 8); XW_PACKW (weights in the DPAS order: no register shuffles); both; both at 32 x 32 and 16 x 32;
 // since 2026-11-13 the wider ones too, 16 x 64, 64 x 16, 32 x 64 and 64 x 32 (the spill column says which fit).
 // The packed copies are made here on the CPU from the same data, so every variant must give the default's bits.
+// --wgx 2 / 4 and --lock (2026-11-17, gemm_xw8 -DXW_WGX / -DXW_LOCK, the engine's ARC_GEMM_XW_WGX / ARC_GEMM_XW_LOCK):
+// every variant once more with that many column sub-groups a work-group (sharing the activations in L1) and / or the
+// work-group in step each chunk, in the same run; the reference stays the plain default.
 #include "../zero/clrt.h"
 #include <algorithm>
 #include <chrono>
@@ -142,14 +145,14 @@ __kernel void ldprobe(__global const uint* ap, __global const uint* wp, int nch,
 using clk = std::chrono::steady_clock;
 
 struct Shape { int N, K, a; const char* name; };
-struct Variant { const char* name; const char* defs; int tm, nc; bool pa, pw; };
+struct Variant { std::string name; const char* defs; int tm, nc; bool pa, pw; int wgx = 1; bool lock = false; };
 
 static uint32_t g_seed = 12345;
 static uint32_t rnd() { g_seed = g_seed * 1664525u + 1013904223u; return g_seed; }
 
 int main(int argc, char** argv) {
-  int M = 4096, iters = 10;
-  bool force_emu = false, probe = false;
+  int M = 4096, iters = 10, wgx = 1;
+  bool force_emu = false, probe = false, lock = false;
   std::string only, kdir = "zero/kernels";
   std::vector<Shape> shapes;
   for (int i = 1; i < argc; ++i) {
@@ -159,8 +162,14 @@ int main(int argc, char** argv) {
     else if (a == "--only" && i + 1 < argc) only = argv[++i];
     else if (a == "--kernels" && i + 1 < argc) kdir = argv[++i];
     else if (a == "--emu") force_emu = true;
+    else if (a == "--lock") lock = true;
+    else if (a == "--wgx" && i + 1 < argc) {
+      wgx = atoi(argv[++i]);
+      if (wgx != 1 && wgx != 2 && wgx != 4) { fprintf(stderr, "--wgx must be 1, 2 or 4\n"); return 2; }
+    }
     else if (a == "--help" || a == "-h") {
-      printf("usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--probe] [--kernels DIR]\n"
+      printf("usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--wgx 2|4] [--lock] [--emu]\n"
+             "               [--probe] [--kernels DIR]\n"
              "The 8-lane XMX prompt GEMM (gemm_xw8.cl) alone at a model's shapes, in TOPS and as a share of the matrix\n"
              "engines' peak, each variant compared bit for bit with the default; also what the f16 DPAS keeps inside.\n"
              "Run from the package folder. Needs 8-lane sub-groups (Xe-LPG); without XMX (the 125H) the DPAS is emulated.\n"
@@ -169,7 +178,12 @@ int main(int argc, char** argv) {
              "  --shape NxK[:a] a weight of N outputs and K inputs (N a multiple of 32, K of 256); :2 with the fused\n"
              "                  SwiGLU; repeat for several (default: the Qwen3.8 27B's FFN: gate 17408x5120,\n"
              "                  up 17408x5120:2, down 5120x17408)\n"
-             "  --only NAME     one variant besides the default, e.g. \"packAW 32x32\"\n"
+             "  --only NAME     one variant besides the default, e.g. \"packAW 32x32\" (with --wgx / --lock:\n"
+             "                  \"packAW 32x32 w2\", \"packAW 32x32 w2L\", \"default 32x16 L\")\n"
+             "  --wgx N         every variant also with N column sub-groups a work-group (2 or 4), which read the\n"
+             "                  same activations while they are in L1 (the engine's ARC_GEMM_XW_WGX)\n"
+             "  --lock          every variant also with the work-group in step each 64-value chunk (a split\n"
+             "                  barrier; the engine's ARC_GEMM_XW_LOCK=1)\n"
              "  --emu           DPAS emulated on any GPU (correctness only, the times mean nothing)\n"
              "  --probe         the packed loop on data in the first-level cache: loads and DPAS, loads only,\n"
              "                  DPAS only (is the GEMM short of load bandwidth or of something else)\n"
@@ -182,7 +196,8 @@ int main(int argc, char** argv) {
       if (sscanf(s.c_str(), "%dx%d:%d", &n, &k, &ac) < 2) { fprintf(stderr, "--shape NxK[:a]\n"); return 2; }
       shapes.push_back({n, k, ac, "custom"});
     } else {
-      fprintf(stderr, "usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu] [--probe] [--kernels DIR]\n");
+      fprintf(stderr, "usage: xw_peak [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--wgx 2|4] [--lock] [--emu]"
+                      " [--probe] [--kernels DIR]\n");
       return 2;
     }
   }
@@ -315,8 +330,15 @@ int main(int argc, char** argv) {
       {"plain 64x16", "", 64, 1, false, false},  {"packAW 64x16", "-DXW_PACKA -DXW_PACKW", 64, 1, true, true},
       {"plain 32x64", "", 32, 4, false, false},  {"packAW 64x32", "-DXW_PACKA -DXW_PACKW", 64, 2, true, true},
   };
+  std::vector<Variant> cand = all;
+  if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")
+    for (Variant v : all) {
+      v.wgx = wgx, v.lock = lock;
+      v.name += std::string(" ") + (wgx > 1 ? "w" + std::to_string(wgx) : std::string()) + (lock ? "L" : "");
+      cand.push_back(v);
+    }
   std::vector<Variant> vs;
-  for (const Variant& v : all)
+  for (const Variant& v : cand)
     if (vs.empty() || only.empty() || only == v.name) vs.push_back(v);  // (the default always: the reference)
 
   struct Row { double ms = 0, best = 0; bool ok = true, ran = false; size_t diff = 0; size_t spill = 0; };
@@ -325,7 +347,8 @@ int main(int argc, char** argv) {
   for (size_t v = 0; v < vs.size(); ++v) {
     const std::string opts = std::string("-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread -DXW_TM=") +
                              std::to_string(vs[v].tm) + " -DXW_NC=" + std::to_string(vs[v].nc) + " " + vs[v].defs +
-                             (emu ? " -DXW_EMU" : "");
+                             (vs[v].wgx > 1 ? " -DXW_WGX=" + std::to_string(vs[v].wgx) : std::string()) +
+                             (vs[v].lock ? " -DXW_LOCK" : "") + (emu ? " -DXW_EMU" : "");
     try {
       ks[v] = cl.kernel(cl.build(src, opts), "gemm_xw8");
       ze_kernel_properties_t kp{};
@@ -333,7 +356,7 @@ int main(int argc, char** argv) {
       if (zeKernelGetProperties(ks[v]->k, &kp) == ZE_RESULT_SUCCESS)
         for (Row& r : res[v]) r.spill = kp.spillMemSize;
     } catch (const std::exception& e) {
-      printf("%s: does not build (%s)\n", vs[v].name, e.what());
+      printf("%s: does not build (%s)\n", vs[v].name.c_str(), e.what());
     }
   }
 
@@ -370,13 +393,17 @@ int main(int argc, char** argv) {
     std::vector<float> ref, out(c0.size());
     const int splits = sh.a != 2 && K > 8192 ? (nsb + 16) / 17 : 1;  // (h8_splits: pieces of 17 superblocks)
     for (size_t v = 0; v < vs.size(); ++v) {
-      if (!ks[v] || M % vs[v].tm || N % (16 * vs[v].nc)) continue;  // (a shape the tile does not divide: skipped)
+      // (a shape the tile, or the work-group's column sub-groups, do not divide: skipped)
+      if (!ks[v] || M % vs[v].tm || N % (16 * vs[v].nc * vs[v].wgx)) continue;
       const Variant& va = vs[v];
       Row& row = res[v][si];
+      // (the engine's grid, engine_xw.h xw_run: N / (16 * nc) column blocks, wgx of them a work-group; at most 32
+      //  sub-groups a work-group at 256 registers, fewer token sub-groups if more)
       const int tm = va.tm, nb = N / (16 * va.nc);
       int wgy = 1;
       while (wgy < 8 && (M / tm) % (wgy * 2) == 0) wgy *= 2;
-      size_t gws[2] = {(size_t)8 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {8, (size_t)wgy};
+      while (va.wgx * wgy > 32 && wgy > 1) wgy /= 2;
+      size_t gws[2] = {(size_t)8 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)8 * va.wgx, (size_t)wgy};
       cl_kernel k = ks[v];
       auto launch = [&] {
         for (int sp = 0; sp < splits; ++sp) {
@@ -409,7 +436,7 @@ int main(int argc, char** argv) {
         std::sort(ms.begin(), ms.end());
         row.ms = ms[ms.size() / 2], row.best = ms[0], row.ran = true;
       } catch (const std::exception& e) {
-        printf("%s on %s: failed (%s)\n", va.name, sh.name, e.what());
+        printf("%s on %s: failed (%s)\n", va.name.c_str(), sh.name, e.what());
       }
     }
     for (cl_mem m : {bwq, bwp, bwh, baq, bap, bas, bc}) clReleaseMemObject(m);
@@ -417,11 +444,11 @@ int main(int argc, char** argv) {
 
   // ---- the table: per shape and the shapes together
   printf("\n%d tokens; TOPS from the median of %d runs%s\n", M, iters, peak > 0 ? ", % of the measured peak" : "");
-  printf("%-14s %8s", "variant", "spill");
+  printf("%-18s %8s", "variant", "spill");
   for (const Shape& s : shapes) printf(" | %-10s %5dx%-5d", s.name, s.N, s.K);
   printf(" | %-16s | %s\n", "all shapes", "bits vs default");
   for (size_t v = 0; v < vs.size(); ++v) {
-    printf("%-14s %6zu B", vs[v].name, res[v][0].spill);
+    printf("%-18s %6zu B", vs[v].name.c_str(), res[v][0].spill);
     double ops = 0, ms = 0;
     bool all_ran = true;
     size_t diff = 0;
