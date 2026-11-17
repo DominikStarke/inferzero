@@ -31,10 +31,19 @@ __kernel void gemv_iq3p(__global const uchar* raw, int N, int K, __global const 
     for (int r = 0; r < GROWS; ++r) {
       const int n = min(r0 + r, N - 1);
       __global const uchar* row = raw + (size_t)n * nsb * BBP;
+#ifdef IQ3P_TILE
+      // (the planes inside the pair's own 224 bytes, where the pair was: superblock pairs keep their place in the row)
+      __global const uchar* pr = row + tp * 224;
+      const uint2 q = intel_sub_group_block_read2((__global const uint*)pr);
+      const uint s = intel_sub_group_block_read((__global const uint*)(pr + 128));
+      const uint h = intel_sub_group_block_read_uc(pr + 192);
+      const uint mb = intel_sub_group_block_read_uc(pr + 208);
+#else
       const uint2 q = intel_sub_group_block_read2((__global const uint*)(row + tp * 128));
       const uint s = intel_sub_group_block_read((__global const uint*)(row + T * 128 + tp * 64));
       const uint h = intel_sub_group_block_read_uc(row + T * 192 + tp * 16);
       const uint mb = intel_sub_group_block_read_uc(row + T * 208 + tp * 16);
+#endif
       const uint scb = sub_group_shuffle(mb, sbl * 4 + ib / 2);
       const uint dl = sub_group_shuffle(mb, 8 + 2 * sbl), dh = sub_group_shuffle(mb, 9 + 2 * sbl);
       const float d = f16(dl | (dh << 8));

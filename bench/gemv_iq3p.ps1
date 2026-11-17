@@ -31,10 +31,13 @@ try {
       "== $t, $g rows a sub-group"
       $a = & $bench $Model $t "-DGROWS=$g" gemv 16 20 2>&1 | ForEach-Object { "$_" }
       ($a | Where-Object { $_ -match "^blk|median" }) -replace "^median", "  today:    median"
-      $env:GB_REPACK = "1"; $env:GB_CMP = "gemv:-DGROWS=$g"; $env:GB_CMP_FILE = "zero\kernels\decode.cl"
-      $b = & $bench $Model $t "-DGROWS=$g" gemv_iq3p 16 20 $kfile 2>&1 | ForEach-Object { "$_" }
-      Remove-Item Env:GB_REPACK, Env:GB_CMP, Env:GB_CMP_FILE
-      ($b | Where-Object { $_ -match "bitwise|median|GB_REPACK|error" }) -replace "^median", "  repacked: median"
+      # (1: the planes per row; 2: inside each pair of superblocks, which keeps the pairs where they were)
+      foreach ($mode in @(@{n = "per row "; r = "1"; d = ""}, @{n = "per pair"; r = "2"; d = " -DIQ3P_TILE"})) {
+        $env:GB_REPACK = $mode.r; $env:GB_CMP = "gemv:-DGROWS=$g"; $env:GB_CMP_FILE = "zero\kernels\decode.cl"
+        $b = & $bench $Model $t "-DGROWS=$g$($mode.d)" gemv_iq3p 16 20 $kfile 2>&1 | ForEach-Object { "$_" }
+        Remove-Item Env:GB_REPACK, Env:GB_CMP, Env:GB_CMP_FILE
+        ($b | Where-Object { $_ -match "bitwise|median|GB_REPACK|error" }) -replace "^median", "  $($mode.n): median" -replace "^bitwise", "  $($mode.n): bitwise"
+      }
     }
   }
 } finally {

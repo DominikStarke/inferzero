@@ -82,8 +82,37 @@
   // so with an odd superblock count its last row reads up to one superblock + 63 bytes past the data (lanes whose
   // block is past the row contribute 0 x those bytes, which must be finite: zeros). 1024 covers every type.
   static constexpr size_t kRawSlack = 1024;
-  cl_mem upload_padded(uint32_t type, const uint8_t* data, size_t nbytes) {
+  // ARC_IQ3S_TILE=1 (2026-11-17, opt-in): a dense IQ3_S matrix's rows in pairs of superblocks repacked as planes (each
+  // pair's 224 bytes: qs, signs, qh, scales + d; zero/kernels/decode.cl decode32's IQ3T branch), which the one-token
+  // GEMV reads straight into registers (bench\gemv_iq3p.ps1: the laptop's 27B IQ3_S matrices 66-68 -> 70-77 GB/s).
+  // The same bytes, so the same results. Only where every row has an even number of superblocks (tile_ok: K a
+  // multiple of 512), so a pair never crosses a row; never the experts, whose kernels keep the plain layout.
+  static bool iq3t_env() {
+    static const bool on = getenv("ARC_IQ3S_TILE") && atoi(getenv("ARC_IQ3S_TILE")) != 0;
+    return on;
+  }
+  // (one pair of padded IQ3_S superblocks, in place: superblock h's 32-block b is lane L = 8 h + b)
+  static void iq3s_tile_pair(uint8_t* pr) {
+    uint8_t in[224], o[224] = {};
+    memcpy(in, pr, 224);
+    for (int L = 0; L < 16; ++L) {
+      const uint8_t* p = in + (L / 8) * 112;
+      const int ib = L % 8;
+      memcpy(o + 4 * L, p + 8 * ib, 4);
+      memcpy(o + 64 + 4 * L, p + 8 * ib + 4, 4);
+      memcpy(o + 128 + 4 * L, p + 72 + 4 * ib, 4);
+      o[192 + L] = p[64 + ib];
+    }
+    for (int h = 0; h < 2; ++h) {
+      memcpy(o + 208 + 4 * h, in + h * 112 + 104, 4);
+      memcpy(o + 216 + 2 * h, in + h * 112 + 108, 2);
+    }
+    memcpy(pr, o, 224);
+  }
+  cl_mem upload_padded(uint32_t type, const uint8_t* data, size_t nbytes, bool tile_ok = false, bool* tiled = nullptr) {
     const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type), nsb = nbytes / bb;
+    const bool tile = tile_ok && type == GGML_IQ3_S && bp == 112 && nsb % 2 == 0 && iq3t_env();
+    if (tiled) *tiled = tile;
     const size_t total = nsb * bp + kRawSlack;
     // (in host memory while plan_tight's share of the weights lasts: the first matrices loaded; the same bytes and
     //  kernels, so the logits are bit-identical)
@@ -123,6 +152,9 @@
       } else {
         for (size_t i = s0; i < s1; ++i) gpu_raw_sb(type, data + i * bb, dst + i * bp);
       }
+      // (chunks of 4096 superblocks: the pairs stay inside one)
+      if (tile)
+        for (size_t i = s0; i + 1 < s1; i += 2) iq3s_tile_pair(dst + i * bp);
     }
     memset(dst + nsb * bp, 0, kRawSlack);
     if (!host) CL_CHECK(clEnqueueUnmapMemObject(cl_.queue, m, dst, 0, nullptr, nullptr));
@@ -219,7 +251,7 @@
     w.type = type;
     w.N = N;
     w.K = K;
-    w.raw = view ? *view : upload_padded(type, data, nbytes);
+    w.raw = view ? *view : upload_padded(type, data, nbytes, K % 512 == 0, &w.iq3t);  // (a view: its stack's flag, set there)
     // Q8_0 (per-32 float scales) is fastest in its own repacked kernel; everything else goes through W8. The
     // repacked copy is kept only with resident weights of a dense model; otherwise (MoE: ~1.5 GB of Q8_0 matrices
     // stored twice, or just-in-time models) prompt chunks decode the raw rows into the same form (decode_w8, PER32).
@@ -343,7 +375,7 @@
     L.qz.N = C + Di + (L.qz_ab ? nab : 0);
     L.qz.K = E;
     L.qz.role = kRoles - 1;
-    L.qz.raw = upload_padded(type, cat.data(), cat.size());
+    L.qz.raw = upload_padded(type, cat.data(), cat.size(), E % 512 == 0, &L.qz.iq3t);
     has_qz_ = true;
     const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
     auto view = [&](int row0, int N) -> cl_mem {
@@ -359,6 +391,7 @@
     const cl_mem vq = view(0, C), vz = view(C, Di);
     L.qkv = make_weight(type, tq.data, tq.nbytes, C, E, weight_role(p + "attn_qkv.weight"), &vq);
     L.z = make_weight(type, tz.data, tz.nbytes, Di, E, weight_role(p + "attn_gate.weight"), &vz);
+    L.qkv.iq3t = L.z.iq3t = L.qz.iq3t;  // (views of the stack: its layout; rows start at whole pairs)
     if (L.qz_ab) {
       const cl_mem va = view(C + Di, nab);
       L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, kRoles - 1, &va);  // (nab % 64 == 0: not padded)

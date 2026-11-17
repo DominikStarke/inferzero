@@ -20,9 +20,16 @@
 // l % 8) as words l and 16 + l), signs (64 B: word l), qh (16 B: byte l), meta (16 B: bytes 0-3 / 4-7 the two
 // superblocks' scales, 8-9 / 10-11 their d). The same row size. GB_CMP's kernel reads the original rows, so the
 // comparison is against today's layout. (A pair needs both superblocks: an odd count is refused.)
-static std::vector<uint8_t> repack_iq3s(const std::vector<uint8_t>& pad, int N, int nsb, size_t bp) {
+// GB_REPACK=2: the same planes inside each pair's own 224 bytes (qs at 0, signs at 128, qh at 192, meta at 208), so
+// a superblock pair stays where it was in the row; the kernel built with -DIQ3P_TILE.
+static std::vector<uint8_t> repack_iq3s(const std::vector<uint8_t>& pad, int N, int nsb, size_t bp, bool tile) {
   const int T = nsb / 2;
   std::vector<uint8_t> out(pad.size(), 0);
+  // (offsets of pair tp's planes in the row: per row, or inside the pair's 224 bytes)
+  auto oq = [&](int tp) { return tile ? (size_t)tp * 224 : (size_t)tp * 128; };
+  auto os = [&](int tp) { return tile ? (size_t)tp * 224 + 128 : (size_t)T * 128 + tp * 64; };
+  auto oh = [&](int tp) { return tile ? (size_t)tp * 224 + 192 : (size_t)T * 192 + tp * 16; };
+  auto om = [&](int tp) { return tile ? (size_t)tp * 224 + 208 : (size_t)T * 208 + tp * 16; };
   for (int n = 0; n < N; ++n) {
     const uint8_t* in = &pad[(size_t)n * nsb * bp];
     uint8_t* o = &out[(size_t)n * nsb * bp];
@@ -30,15 +37,15 @@ static std::vector<uint8_t> repack_iq3s(const std::vector<uint8_t>& pad, int N, 
       for (int l = 0; l < 16; ++l) {
         const int sb = 2 * tp + l / 8, ib = l % 8;
         const uint8_t* p = in + (size_t)sb * bp;
-        memcpy(o + tp * 128 + l * 4, p + 8 * ib, 4);
-        memcpy(o + tp * 128 + (16 + l) * 4, p + 8 * ib + 4, 4);
-        memcpy(o + (size_t)T * 128 + tp * 64 + l * 4, p + 72 + 4 * ib, 4);
-        o[(size_t)T * 192 + tp * 16 + l] = p[64 + ib];
+        memcpy(o + oq(tp) + l * 4, p + 8 * ib, 4);
+        memcpy(o + oq(tp) + (16 + l) * 4, p + 8 * ib + 4, 4);
+        memcpy(o + os(tp) + l * 4, p + 72 + 4 * ib, 4);
+        o[oh(tp) + l] = p[64 + ib];
       }
       for (int h = 0; h < 2; ++h) {
         const uint8_t* p = in + (size_t)(2 * tp + h) * bp;
-        memcpy(o + (size_t)T * 208 + tp * 16 + 4 * h, p + 104, 4);
-        memcpy(o + (size_t)T * 208 + tp * 16 + 8 + 2 * h, p + 108, 2);
+        memcpy(o + om(tp) + 4 * h, p + 104, 4);
+        memcpy(o + om(tp) + 8 + 2 * h, p + 108, 2);
       }
     }
   }
@@ -135,7 +142,7 @@ int main(int argc, char** argv) {
       raws.push_back(cl.buffer(CL_MEM_READ_ONLY, pad.size(), pad.data()));
     }
     if (repack) {
-      const std::vector<uint8_t> rp = repack_iq3s(pad, N, nsb, bp);
+      const std::vector<uint8_t> rp = repack_iq3s(pad, N, nsb, bp, atoi(getenv("GB_REPACK")) == 2);
       rawk.push_back(cl.buffer(CL_MEM_READ_ONLY, rp.size(), rp.data()));
     } else {
       rawk.push_back(raws.back());
