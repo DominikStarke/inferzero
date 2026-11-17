@@ -56,3 +56,13 @@ experts' cost (EVICT), predicted-expert prefetch (pre-gating), fused decode ops,
   tier, the B-series GEMV rows for 2-8 tokens, the XMX paths, the Q8_0 head): a `--prof-gen` of its verify passes is
   asked (issue #27). The laptop's profile of 35 verify passes: `moe_gateup` 1,164, `moe_down` 934, `lm_head` 885 ms of
   6,590, nothing out of proportion.
+- **N6, the next layer's experts read ahead (`ARC_XPREGATE`, built and dropped):** the next layer's router on this
+  layer's MoE input guessed 43 % of its experts right (54 % of its misses covered), but on the laptop, whose misses
+  come from its SSD, the wrong guesses' reads (+13 GB over 96 tokens) cost what the right ones saved: 5.65 / 5.70
+  against 5.92 / 5.98 tok/s. It also changed the logits from run to run when the guessed records were used (the
+  guess and the reads alone left them the same, so the fault is in how generation took the staged records); the
+  prompt's own prefetch through the same staging gives the same logits as none (18.6K tokens in 512-token chunks,
+  1FE18855..., 143.7-145.7 tok/s against 101.9-104.9 without it). Not kept; the patch is not in the repository.
+- **A fix on the way (manoreken2's B60 under Windows, release .06):** the 2D prompt GEMM failed its start check in
+  the add modes only (a compiler fusing `product + old` differently in the 2D epilogue); a failed check now keeps
+  the 2D loads and drops C's 2D form (41f5d51).
