@@ -179,18 +179,23 @@
     //  loaded next to the chat model, whose memory gpu_bytes here does not see; runz --budget 0 likewise. Audit
     //  2026-11-16)
     if (!w8_part_auto_env() || opt.dry || w8_resident || tp_on() || hp.moe || p140_ || opt.w8_budget_gb <= 0) return;
-    if (zrt::integrated()) {
+    const double GiB = 1073741824.0;
+    // (an iGPU with 16-lane XMX and a GPU share of 64 GiB or more, 2026-11-17: at most 16 GiB resident. Panther Lake's
+    //  B390 with 128 GB of RAM (a 114.5 GiB share), the 27B's 4K prompt 540-552 -> 583-592 tok/s with 16 GB (gee456,
+    //  issue #1). The 140T's 64 GB machine (a ~32 GiB share) stays out, as do iGPUs without XMX)
+    const bool big_igpu = zrt::integrated() && cl_.xmx && !cl_.sg8 && xmx_ && (double)device_mem() >= 64.0 * GiB;
+    if (zrt::integrated() && !big_igpu) {
       if (getenv("ARC_W8_PARTIAL_GB"))  // (asked for: say why not; the default is quiet)
         zlog::eprintf("inferzero: ARC_W8_PARTIAL_GB=auto is for discrete cards: on this iGPU the weights stay just in time "
                       "(a number of GB, e.g. ARC_W8_PARTIAL_GB=4, still keeps that much resident)\n");
       return;
     }
-    const double GiB = 1073741824.0;
     // (the server keeps 3 state snapshots (kSnaps, tools/server.cpp), snapshot_bytes() counts 2: the third, allocated
     //  at the first chat, is counted here too, not in snapshot_bytes(), which the --ctx auto plans and the expert cache
     //  use as before. Audit 2026-11-16: ~150 MiB of the 27B's 0.5 GiB margin)
     double room = (double)device_mem() - driver_slack() - (double)gpu_bytes - 0.5 * GiB -
                   (double)snapshot_bytes() * 1.5 * std::max(opt.slots, 1) - (double)opt.stream_reserve;
+    if (big_igpu) room = std::min(room, 16.0 * GiB);  // (what was measured; the rest stays the system's RAM)
     const double room0 = room;
     for (Layer& L : layers_)
       for (GpuWeight* w : {&L.qkv, &L.z, &L.ssm_out, &L.ab, &L.wq, &L.wk, &L.wv, &L.wo, &L.gate, &L.up, &L.down}) {

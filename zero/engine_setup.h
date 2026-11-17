@@ -359,7 +359,14 @@
                              : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
                              : which == "gdnx" ? gdnx_src_ : which == "attnx" ? attnx_src_ : which == "attnfx" ? attnfx_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
                              : ops_.for_kernel(name);
-    auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" || which == "attnx" ? q2_defs_ : std::string()) +
+    // (the H8 rotation, kernels/rot.cl, in front of the kernels that use it: h8.cl's, decode.cl's h8r_decode and
+    //  ops.cl's rmsnorm_h8r)
+    const bool rot = which == "h8" || defs.find("-DH8RDEC") != std::string::npos || defs.find("-DH8NORM") != std::string::npos;
+    if (rot && rot_src_.empty()) {
+      rot_src_ = read_file(opt.kernel_dir + "/rot.cl");
+      if (rot_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/rot.cl");
+    }
+    auto p = cl_.build(rot ? rot_src_ + "\n" + src : src,"-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" || which == "attnx" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
     return kcache_[key] = cl_.kernel(p, name);

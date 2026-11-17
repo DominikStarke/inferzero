@@ -42,16 +42,6 @@ inline float superblock_amax(__local float* mx, float m, int t) {
   return fmax(fmax(mx[s0], mx[s0 + 1]), fmax(mx[s0 + 2], mx[s0 + 3]));
 }
 
-inline uint pack_q(const float v[4], float inv) {
-  uint w = 0;
-#pragma unroll
-  for (int i = 0; i < 4; ++i) {
-    const int q = clamp((int)rint(v[i] * inv), -127, 127);
-    w |= ((uint)(q & 0xFF)) << (8 * i);
-  }
-  return w;
-}
-
 #ifdef SRC
 // The weights of one column and one rotation block, decoded from the W8 / Q8_0 layout, rotated and written back in
 // place as H8 (each work-group reads only the words it then writes), their superblock scales into hh.
@@ -97,8 +87,8 @@ __kernel void h8_weights(__global uint* restrict wq, __global const uint* restri
 #pragma unroll
   for (int i = 0; i < 4; ++i) m = fmax(m, fabs(v[i] = x[4 * t + i]));
   const float amax = superblock_amax(mx, m, t);
-  *wp = pack_q(v, amax > 0.0f ? 127.0f / amax : 0.0f);
-  if (t % 64 == 0) hh[((size_t)g * nsb + s) * SG + l] = amax / (127.0f * sqrt((float)HB));
+  *wp = rot_pack(v, amax > 0.0f ? 127.0f / amax : 0.0f);
+  if (t % 64 == 0) hh[((size_t)g * nsb + s) * SG + l] = rot_scale(amax);
 }
 #endif
 
@@ -123,89 +113,67 @@ __kernel void h8_act(__global const uint* restrict aq, __global const float* res
 #pragma unroll
   for (int i = 0; i < 4; ++i) mm = fmax(mm, fabs(v[i] = x[4 * t + i]));
   const float amax = superblock_amax(mx, mm, t);
-  aqh[((size_t)m * K + e0) / 4] = pack_q(v, amax > 0.0f ? 127.0f / amax : 0.0f);
-  if (t % 64 == 0) asch[(size_t)(e0 / 256) * M + m] = amax / (127.0f * sqrt((float)HB));
+  aqh[((size_t)m * K + e0) / 4] = rot_pack(v, amax > 0.0f ? 127.0f / amax : 0.0f);
+  if (t % 64 == 0) asch[(size_t)(e0 / 256) * M + m] = rot_scale(amax);
 }
 
-// ---- H8R (gemm.cl QTYPE 111): one scale per column and one per token, the rotation in registers. A sub-group holds a
-// whole rotation block of one column or one token: NV floats x 16 lanes = HB values. The butterflies between registers
-// and between lanes need no barrier, where h8_weights / h8_act above take one per stage through local memory. The
-// order of the stages does not change a Walsh-Hadamard transform, so the two sides below, which hold a block's values
-// differently, compute the same one. The way of working follows urakozz/intel-arc-inference-server (Apache-2.0,
-// src/kernels/prefill/pf_int8.cl): register butterflies, a column's scale computed once, the signs D. -DH8_D: each
-// value's sign flipped by its index in the block first, so a block's mean does not all land on one coefficient.
-#define NV (HB / 16)   // floats per lane
-#define WPL (HB / 64)  // int8x4 words per lane (weights: a lane's values are contiguous)
-#define TP (HB / 4 + 1)  // the words' pitch in local memory, one more than a column's
-
-inline float h8_signed(float v, uint i) {
-#ifdef H8_D
-  uint x = i * 0x9E3779B1u;
-  x ^= x >> 15;
-  x *= 0x85EBCA77u;
-  return as_float(as_uint(v) ^ (x & 0x80000000u));
-#else
-  return v;
-#endif
-}
-
-// register stages over v[0 .. NV), then the stages between the 16 lanes
-inline void h8_fwht_regs(float* v) {
-  const uint l = get_sub_group_local_id();
-#pragma unroll
-  for (uint h = 1; h < NV; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < NV; ++j)
-      if ((j & h) == 0) {
-        const float a = v[j], b = v[j + h];
-        v[j] = a + b;
-        v[j + h] = a - b;
-      }
-#pragma unroll
-  for (uint h = 1; h < 16; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < NV; ++j) {
-      const float o = intel_sub_group_shuffle_xor(v[j], h);
-      v[j] = (l & h) ? (o - v[j]) : (v[j] + o);
-    }
-}
+// ---- H8R (gemm.cl QTYPE 111): one int8 scale per weight column and one per token, the rotation in registers
+// (rot.cl, put in front of this file by the engine). One sub-group rotates one block of HB values of one column or one
+// token, ROT_NV per lane, with no barrier between stages, where h8_weights / h8_act above take one per stage.
+//   weights: a work-group of 16 sub-groups = 16 columns x one block; lane l holds the block's values 4 WPL l ..
+//            4 WPL l + ROT_NV - 1 (contiguous). h8r_colmax finds each column's largest rotated value over all its blocks
+//            once per weight, then h8r_weights (or decode.cl h8r_decode straight from the raw rows) writes the int8
+//            values at that scale, in place.
+//   activations: h8r_act, one sub-group per block of a token's row; lane l holds values 64 r + 4 l + b (b < 4), the
+//            order block reads give. The token's scale is its largest rotated value over all blocks.
+// The two hold a block in different orders; each value keeps its own index, so both compute the same transform.
+#define WPL (HB / 64)    // int8x4 words per lane (weights)
+#define TP (HB / 4 + 1)  // a column's words in local memory, one word apart from the next column's (no bank clash)
 
 #ifdef SRC
-// grid (N / 16 * 256, K / HB), local (256, 1): one group = 16 columns x one rotation block. Sub-group c owns column c,
-// lane l owns the block's values 4 WPL l .. + NV - 1. The words come through local memory once, as block reads could
-// not hold one column in one sub-group
-inline void h8r_load(__global const uint* restrict wq, __global const uint* restrict wh, int K, __local uint* tin,
-                     float* v) {
-  const int lid = get_local_id(0), c = get_sub_group_id(), l = get_sub_group_local_id();
-  const int g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+// The work-group's region of the values: its 16 columns x one block, 4 HB uints from the first (a block starts at a
+// superblock). Word w of the block of column colm is uint 16 w + colm of the region, in the plain order; gemm_xw8's
+// packed order (XW_PACKW_OUT) keeps each 16 words of the 16 columns in their 256 uints, so the same region.
+inline size_t h8r_region(int K) { return (size_t)get_group_id(0) * 4 * K + (size_t)get_group_id(1) * (4 * HB); }
+
+// the region into tw, one column after the other (a sub-group then reads its own column's words). Lane lid of the
+// work-group takes uints lid, lid + 256, ...: words lid / 16 + 16 i of column lid % 16, every load a whole 1 KB row
+inline void h8r_stage(__global const uint* restrict wq, int K, __local uint* tw) {
+  const int lid = get_local_id(0), colm = lid % SG, w0 = lid / SG;
+  __global const uint* restrict wr = wq + h8r_region(K);
 #pragma unroll
-  for (int i = 0; i < WPL; ++i) {
-    const int t = lid + 256 * i, row = t / SG, col = t % SG, e = blk * HB + 4 * row;
-    tin[col * TP + row] = wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * SG + col];
-  }
+  for (int i = 0; i < WPL; ++i) tw[colm * TP + w0 + SG * i] = wr[256 * i + lid];
   barrier(CLK_LOCAL_MEM_FENCE);
-  const int e0 = blk * HB + 4 * WPL * l, s = e0 / 256;
-  const uint i0 = 4 * WPL * l;
+}
+
+// this lane's ROT_NV values of its column as floats (the W8 / Q8_0 header's scales and mins applied, then the signs),
+// rotated
+inline void h8r_column(__global const uint* restrict wh, int K, __local const uint* tw, float* v) {
+  const int c = get_sub_group_id(), l = get_sub_group_local_id();
+  const int g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+  const int e0 = blk * HB + 4 * WPL * l;   // (the lane's first value in the row)
+  const int s = e0 / 256, es = e0 % 256;    // (its superblock, and where in it)
+  const uint i0 = 4 * WPL * l;              // (its index in the block)
 #if SRC == 8
   __global const uint* hp = wh + ((size_t)g * nsb + s) * (8 * SG);
 #else
   __global const uint* hp = wh + ((size_t)g * nsb + s) * (10 * SG);
   const float d = as_float(hp[c]), dmin = as_float(hp[SG + c]);
-  const int b160 = (e0 % 256) / 16;  // (a lane's 16-blocks are in one word of scales and of mins)
-  const uint hs = hp[(2 + b160 / 4) * SG + c];
+  const int b0 = es / 16;                   // (the lane's 16-blocks share one word of scales and one of mins)
+  const uint hs = hp[(2 + b0 / 4) * SG + c];
 #if SRC >= 102
-  const uint hm = hp[(6 + b160 / 4) * SG + c];
+  const uint hm = hp[(6 + b0 / 4) * SG + c];
 #endif
 #endif
 #pragma unroll
   for (int i = 0; i < WPL; ++i) {
-    const uint word = tin[c * TP + WPL * l + i];
+    const uint word = tw[c * TP + WPL * l + i];
 #if SRC == 8
-    const float dq = as_float(hp[((e0 % 256 + 4 * i) / 32) * SG + c]);
+    const float dq = as_float(hp[((es + 4 * i) / 32) * SG + c]), off = 0.0f;
 #else
-    const int b16 = b160 + i / 4;
+    const int b16 = b0 + i / 4;
 #if SRC & 1
-    const int sc = (int)(char)(hs >> ((b16 & 2) ? 16 : 0));
+    const int sc = (int)(char)(hs >> ((b16 & 2) ? 16 : 0));  // (per-32 scales: bytes 0 and 2 of the word)
 #else
     const int sc = (int)(char)(hs >> (8 * (b16 & 3)));
 #endif
@@ -218,123 +186,123 @@ inline void h8r_load(__global const uint* restrict wq, __global const uint* rest
 #endif
 #pragma unroll
     for (int b = 0; b < 4; ++b) {
+      const float q = (float)(char)(word >> (8 * b));
 #if SRC == 8
-      const float x = dq * (float)(char)(word >> (8 * b));
+      const float x = dq * q;
 #else
-      const float x = dq * (float)(char)(word >> (8 * b)) - off;
+      const float x = dq * q - off;
 #endif
-      v[4 * i + b] = h8_signed(x, i0 + 4 * i + b);
+      v[4 * i + b] = rot_sign(x, i0 + 4 * i + b);
     }
   }
-  h8_fwht_regs(v);
+  rot_block(v);
 }
 
-// each column's scale, by the largest rotated value of all its blocks (once per weight; col starts at zero).
+// grid (N / 16 * 256, K / HB), local (256, 1). col: N uints, zero before the first block; the largest scale wins
+// (positive floats order as their bits)
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void h8r_colmax(__global const uint* restrict wq, __global const uint* restrict wh,
                          __global uint* restrict col, int K) {
-  __local uint tin[SG * TP];
-  float v[NV];
-  h8r_load(wq, wh, K, tin, v);
-  float amax = 0.0f;
-#pragma unroll
-  for (int j = 0; j < NV; ++j) amax = fmax(amax, fabs(v[j]));
-  amax = sub_group_reduce_max(amax);
+  __local uint tw[SG * TP];
+  float v[ROT_NV];
+  h8r_stage(wq, K, tw);
+  h8r_column(wh, K, tw, v);
+  const float amax = sub_group_reduce_max(rot_amax(v));
   if (get_sub_group_local_id() == 0)
-    atomic_max((volatile __global uint*)(col + get_group_id(0) * SG + get_sub_group_id()),
-               as_uint(amax / (127.0f * sqrt((float)HB))));
+    atomic_max((volatile __global uint*)(col + get_group_id(0) * SG + get_sub_group_id()), as_uint(rot_scale(amax)));
 }
 
-// the weight rotated at those scales, in place
+// the same grid: the weight rotated and rounded at its column scales, written back over the words it read
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void h8r_weights(__global uint* wq, __global const uint* restrict wh, __global const float* restrict col,
                           int K) {
-  __local uint tin[SG * TP];
-  __local uint tout[SG * TP];
-  float v[NV];
-  h8r_load(wq, wh, K, tin, v);
+  __local uint tw[SG * TP];
+  __local uint tq[SG * TP];
+  float v[ROT_NV];
+  h8r_stage(wq, K, tw);
+  h8r_column(wh, K, tw, v);
   const int c = get_sub_group_id(), l = get_sub_group_local_id();
   const float cs = col[get_group_id(0) * SG + c];
   const float iv = cs > 0.0f ? 1.0f / (cs * sqrt((float)HB)) : 0.0f;
 #pragma unroll
-  for (int i = 0; i < WPL; ++i) {
-    const float q[4] = {v[4 * i], v[4 * i + 1], v[4 * i + 2], v[4 * i + 3]};
-    tout[c * TP + WPL * l + i] = pack_q(q, iv);
-  }
+  for (int i = 0; i < WPL; ++i) tq[c * TP + WPL * l + i] = rot_pack(v + 4 * i, iv);
   barrier(CLK_LOCAL_MEM_FENCE);
-  const int lid = get_local_id(0), g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
-#pragma unroll
-  for (int i = 0; i < WPL; ++i) {
-    const int t = lid + 256 * i, row = t / SG, cl = t % SG, e = blk * HB + 4 * row;
+  // (lane lid writes words lid / 16 + 16 i of column lid % 16, as h8r_stage read them)
+  const int lid = get_local_id(0), colm = lid % SG, w0 = lid / SG;
 #ifdef XW_PACKW_OUT
-    // (gemm_xw8 -DXW_PACKW's order, engine_xw.h ARC_GEMM_XW_PACK: per group and 64-value chunk gc, word j of column cl
-    //  at gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8 instead of gc * 256 + j * 16 + cl. The work-group
-    //  read its whole region into tin before the barrier, and the new places are in the same region)
-    const int ws = (e % 256) / 4, j = ws % 16;
-    const size_t gc = ((size_t)g * nsb + e / 256) * 4 + ws / 16;
-    wq[gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8] = tout[cl * TP + row];
+  // (gemm_xw8 -DXW_PACKW's order, engine_xw.h ARC_GEMM_XW_PACK: in each 64-value chunk's 256 uints, word j (0..15) of
+  //  column colm at ((j / 8) * 2 + colm / 8) * 64 + (j % 8) * 8 + colm % 8 instead of 16 j + colm)
+  const int o = ((w0 / 8) * 2 + colm / 8) * 64 + (w0 % 8) * 8 + colm % 8;
 #else
-    wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * SG + cl] = tout[cl * TP + row];
+  const int o = lid;
 #endif
-  }
+  __global uint* wr = wq + h8r_region(K);
+#pragma unroll
+  for (int i = 0; i < WPL; ++i) wr[256 * i + o] = tq[colm * TP + w0 + SG * i];
 }
 #else
-// A token's blocks, one sub-group each, into int8 with the token's one scale in asch[M]. A lane holds the words at 4 l
-// of each 64 bytes (block reads): its values are index 64 r + 4 l + b of the block, v[4 r + b]. grid (16 * K / HB * M),
-// local (16 * K / HB)
+// A token's row: its blocks, one sub-group each, into int8 at the token's one scale (asch[M]). The source: the f32
+// copy at byte H8F of aq (-DH8F, the values before their first rounding: ops.cl quant_store16), or the int8 rows aq
+// with their scales asc (per 32 values with act32, [K / 32][M], else per 256, [K / 256][M]).
+// grid (16 * K / HB * M), local (16 * K / HB)
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void h8r_act(__global const uint* restrict aq, __global const float* restrict asc, int act32,
                       __global uint* restrict aqh, __global float* restrict asch, int M, int K) {
   __local float red[32];
-  const int nblk = K / HB, m = get_group_id(0), bk = get_sub_group_id();
+  const int m = get_group_id(0), bk = get_sub_group_id();
   const uint l = get_sub_group_local_id();
-  float v[NV];
-#pragma unroll
-  for (int r = 0; r < NV / 4; ++r) {
+  float v[ROT_NV];
 #ifdef H8F
-    // (the values as they were before their first rounding, ops.cl quant_store16)
-    const float4 fv = vload4(0, (__global const float*)((__global const char*)aq + H8F) + (size_t)m * K + bk * HB + 64 * r + 4 * l);
-    v[4 * r + 0] = h8_signed(fv.s0, 64 * r + 4 * l + 0);
-    v[4 * r + 1] = h8_signed(fv.s1, 64 * r + 4 * l + 1);
-    v[4 * r + 2] = h8_signed(fv.s2, 64 * r + 4 * l + 2);
-    v[4 * r + 3] = h8_signed(fv.s3, 64 * r + 4 * l + 3);
+  __global const float* fr = (__global const float*)((__global const char*)aq + H8F) + (size_t)m * K + bk * HB + 4 * l;
 #else
-    const uint word = intel_sub_group_block_read(aq + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG);
-    const int e0 = bk * HB + 64 * r;
+  __global const uint* qr = aq + (size_t)m * (K / 4) + bk * (HB / 4);
+  // (the scales of value e of the row at asc[(e / 32) * M + m] with act32, else [(e / 256) * M + m])
+  __global const float* sr = asc + (size_t)(act32 ? bk * (HB / 32) : bk * (HB / 256)) * M + m;
+#endif
+#pragma unroll
+  for (int r = 0; r < ROT_NV / 4; ++r) {
+    const uint i0 = 64 * r + 4 * l;  // (the lane's 4 values of this 64, in the block)
+#ifdef H8F
+    const float4 fv = vload4(0, fr + 64 * r);
+    v[4 * r + 0] = rot_sign(fv.s0, i0 + 0);
+    v[4 * r + 1] = rot_sign(fv.s1, i0 + 1);
+    v[4 * r + 2] = rot_sign(fv.s2, i0 + 2);
+    v[4 * r + 3] = rot_sign(fv.s3, i0 + 3);
+#else
+    const uint word = intel_sub_group_block_read(qr + r * SG);
+    // (act32: lanes 0-7 hold the first 32 values of the 64, lanes 8-15 the second; each scale one load for the
+    //  sub-group, then the lane's pick: a load per lane cost a 1 KB spill on Xe-LPG)
     float sc;
-    if (act32) {  // (lanes 0-7 are the first 32 values of the 64, lanes 8-15 the second)
-      const float s0 = asc[(size_t)(e0 / 32) * M + m], s1 = asc[(size_t)(e0 / 32 + 1) * M + m];
+    if (act32) {
+      const float s0 = sr[(size_t)(2 * r) * M], s1 = sr[(size_t)(2 * r + 1) * M];
       sc = l < 8 ? s0 : s1;
     } else {
-      sc = asc[(size_t)(e0 / 256) * M + m];
+      sc = sr[(size_t)(r / 4) * M];
     }
 #pragma unroll
-    for (int b = 0; b < 4; ++b)
-      v[4 * r + b] = h8_signed(sc * (float)(char)(word >> (8 * b)), 64 * r + 4 * l + b);
+    for (int b = 0; b < 4; ++b) v[4 * r + b] = rot_sign(sc * (float)(char)(word >> (8 * b)), i0 + b);
 #endif
   }
-  h8_fwht_regs(v);
-  float amax = 0.0f;
-#pragma unroll
-  for (int j = 0; j < NV; ++j) amax = fmax(amax, fabs(v[j]));
-  amax = sub_group_reduce_max(amax);
+  rot_block(v);
+  // (the token's largest value over its blocks, one sub-group each, through local memory: a work_group_reduce_max
+  //  here cost a 1 KB spill on Xe-LPG, ocloc mtl 2026-11-17)
+  float amax = sub_group_reduce_max(rot_amax(v));
   if (l == 0) red[bk] = amax;
   barrier(CLK_LOCAL_MEM_FENCE);
   amax = 0.0f;
-  for (int i = 0; i < nblk; ++i) amax = fmax(amax, red[i]);
-  if (bk == 0 && l == 0) asch[m] = amax / (127.0f * sqrt((float)HB));
+  for (int i = 0; i < K / HB; ++i) amax = fmax(amax, red[i]);
+  if (bk == 0 && l == 0) asch[m] = rot_scale(amax);
   const float iv = amax > 0.0f ? 127.0f / amax : 0.0f;
-#pragma unroll
-  for (int r = 0; r < NV / 4; ++r) {
-    const float q[4] = {v[4 * r], v[4 * r + 1], v[4 * r + 2], v[4 * r + 3]};
 #ifdef XW_PACKA_OUT
-    // (gemm_xw8 -DXW_PACKA's order, engine_xw.h ARC_GEMM_XW_PACK: [M / 8][K / 64][2 halves][8 rows][8 words]; lane l's
-    //  word is word l % 8 of half l / 8 of chunk bk * HB / 64 + r)
-    const int ch = bk * (HB / 64) + r;
-    aqh[((size_t)(m / 8) * (K / 64) + ch) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8)] = pack_q(q, iv);
+  // (gemm_xw8 -DXW_PACKA's order, engine_xw.h ARC_GEMM_XW_PACK: [M / 8][K / 64][2 halves][8 rows][8 words]; lane l's
+  //  word is word l % 8 of half l / 8 of chunk bk * HB / 64 + r, 128 uints a chunk)
+  __global uint* ar = aqh + ((size_t)(m / 8) * (K / 64) + bk * (HB / 64)) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#pragma unroll
+  for (int r = 0; r < ROT_NV / 4; ++r) ar[128 * r] = rot_pack(v + 4 * r, iv);
 #else
-    intel_sub_group_block_write(aqh + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG, pack_q(q, iv));
+  __global uint* ar = aqh + (size_t)m * (K / 4) + bk * (HB / 4);
+#pragma unroll
+  for (int r = 0; r < ROT_NV / 4; ++r) intel_sub_group_block_write(ar + r * SG, rot_pack(v + 4 * r, iv));
 #endif
-  }
 }
 #endif

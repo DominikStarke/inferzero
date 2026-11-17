@@ -16,7 +16,14 @@
 // gemm_x8's (token scale * column scale) * (float)sum with the same accumulate modes: bit for bit gemm.cl's DP4a
 // results (checked at start, engine_xw.h xw_check). -DXW_EMU: DPAS as the DP4a dot products the extension's text
 // gives (tests on a GPU without XMX).
-// Grid: (8 * (N / (16 * XW_NC)) * rows, WGY), local (8, WGY), rows = M / (XW_TM * WGY); the row-group sweep of gemm.cl.
+// Grid: (8 * (N / (16 * XW_NC)) * rows, WGY), local (8 * WGX, WGY), rows = M / (XW_TM * WGY); the row-group sweep of
+// gemm.cl.
+// -DXW_WGX=2 / 4 / 8 (2026-11-17, ARC_GEMM_XW_WGX on 8 lanes, as gemm_xw.cl has it since 2026-11-15): the work-group's
+// sub-groups side by side on the columns too, WGX column blocks of 16 * XW_NC, so the WGY token sub-groups share their
+// weights and the WGX column sub-groups their activations in L1 (the 140T's xw_peak --probe reached 85 % of the XMX
+// peak with the operands in L1, ~33 % in the engine). Each sub-group computes what it did before, in the same order.
+// -DXW_LOCK (ARC_GEMM_XW_LOCK=1): the work-group in step, a split barrier around each 64-value chunk. Neither changes
+// a value: the same results bit for bit.
 //
 // Layouts in the DPAS operands' order (bench\xw_peak.cpp, 2026-11-12; not used by the engine yet). Off, the kernel is
 // the one above, unchanged; on, the same words reach the same DPAS operands (the same sums, bit for bit):
@@ -59,6 +66,22 @@
 #ifndef XW_PFD
 #define XW_PFD 1
 #endif
+#ifndef XW_WGX
+#define XW_WGX 1
+#endif
+#ifdef XW_LOCK
+#pragma OPENCL EXTENSION cl_intel_split_work_group_barrier : enable
+#ifdef XW_EMU
+#define XW_ARRIVE()
+#define XW_WAIT() barrier(CLK_LOCAL_MEM_FENCE)
+#else
+#define XW_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
+#define XW_WAIT() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
+#endif
+#else
+#define XW_ARRIVE()
+#define XW_WAIT()
+#endif
 
 #ifdef XW_EMU
 inline int xw8_row(uint a, int8 b, int acc) {
@@ -86,12 +109,19 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
                        __global const char* restrict aq, __global const float* restrict asc,
                        __global float* restrict C, int M, int N, int K, int ldc, int c_off, int accumulate,
                        int rgroup, int s_begin, int s_end) {
-  const int NB = N / (LS * XW_NC), rows = M / (XW_TM * (int)get_local_size(1));
+  // (wgx column sub-groups a work-group, sx this one's: the host keeps N's column blocks a multiple of wgx)
+  const int wgx = XW_WGX;
+#if XW_WGX > 1
+  const int sx = (int)get_local_id(0) / SG;
+#else
+  const int sx = 0;
+#endif
+  const int NB = N / (LS * XW_NC * wgx), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
-  const int nsb = K / 256, g0 = cb * XW_NC;
+  const int nsb = K / 256, g0 = (cb * wgx + sx) * XW_NC;
   __global const char* ap = aq + (size_t)m0 * K;
 
   int8 xacc[XW_TG][XW_NH];
@@ -108,6 +138,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
       const int ch = s * 4 + j;
+      XW_ARRIVE();
 #if XW_PF
       {
         const int qn = ch + XW_PFD, lane = (int)get_sub_group_local_id();
@@ -167,12 +198,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
           xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
         }
       }
+      XW_WAIT();
     }
   }
 #else
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
+      XW_ARRIVE();
 #if XW_PF & 1
       {  // (the weights of the chunk XW_PFD ahead, as above; the activations' rows are not in one place here)
         const int qn = s * 4 + j + XW_PFD, lane = (int)get_sub_group_local_id();
@@ -208,6 +241,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
           xacc[t][2 * c + 1] = xw8_mad(ah[t], hi1, xw8_mad(al[t], lo1, xacc[t][2 * c + 1]));
         }
       }
+      XW_WAIT();
     }
   }
 #endif

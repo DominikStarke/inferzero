@@ -147,7 +147,6 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
 // memory instead of the H8F copy, and the H8R rotation of the row is made from them as h8r_act makes it from that copy:
 // the same floats, the same transform, the same scale, so h8_aq_ / h8_asc_ are the same bit for bit. Saves the f32
 // copy's write and read and one launch per GEMM input. K / HB rotation blocks, one sub-group each (at most 16).
-#define HN_NV (HB / 16)
 // (its limits, which engine_h8.h rmsnorm_h8 also checks before launching: K / HB rotation blocks, one sub-group each,
 //  in a work-group of 256 = 16 sub-groups, and red[16]; the row in local memory. A wider K fails here, at the build,
 //  instead of leaving blocks unrotated: audit 2026-11-14 I2)
@@ -157,44 +156,6 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
 #if H8N_K * 4 + 64 > 60 * 1024
 #error "rmsnorm_h8r: the row does not fit in local memory"
 #endif
-inline float h8n_signed(float v, uint i) {  // (h8.cl h8_signed)
-#ifdef H8_D
-  uint x = i * 0x9E3779B1u;
-  x ^= x >> 15;
-  x *= 0x85EBCA77u;
-  return as_float(as_uint(v) ^ (x & 0x80000000u));
-#else
-  return v;
-#endif
-}
-inline void h8n_fwht_regs(float* v) {  // (h8.cl h8_fwht_regs)
-  const uint l = get_sub_group_local_id();
-#pragma unroll
-  for (uint h = 1; h < HN_NV; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < HN_NV; ++j)
-      if ((j & h) == 0) {
-        const float a = v[j], b = v[j + h];
-        v[j] = a + b;
-        v[j + h] = a - b;
-      }
-#pragma unroll
-  for (uint h = 1; h < 16; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < HN_NV; ++j) {
-      const float o = intel_sub_group_shuffle_xor(v[j], h);
-      v[j] = (l & h) ? (o - v[j]) : (v[j] + o);
-    }
-}
-inline uint h8n_pack_q(const float v[4], float inv) {  // (h8.cl pack_q)
-  uint w = 0;
-#pragma unroll
-  for (int i = 0; i < 4; ++i) {
-    const int q = clamp((int)rint(v[i] * inv), -127, 127);
-    w |= ((uint)(q & 0xFF)) << (8 * i);
-  }
-  return w;
-}
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const float* w, int K, int M, int M_valid,
                           float eps, __global char* aq, __global float* asc, __global ushort* absum,
@@ -236,31 +197,37 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
   // ---- h8r_act on the row in local memory: sub-group bk rotates block bk, lane l holds values 64 r + 4 l + b
   const int nblk = K / HB, bk = get_sub_group_id();
   const uint l = lane;
-  float hv[HN_NV];
-  float amax = 0.0f;
-  if (bk < nblk) {
+  // (the sub-groups past the row's blocks rotate its last block too and write nothing: no branch around the rotation,
+  //  which with one spilled 1-2 KB on Xe-LPG, ocloc mtl 2026-11-17)
+  const bool mine = bk < nblk;
+  float hv[ROT_NV];
+  {
+    const int b0 = min(bk, nblk - 1) * HB;
 #pragma unroll
-    for (int rr = 0; rr < HN_NV / 4; ++rr)
+    for (int rr = 0; rr < ROT_NV / 4; ++rr)
 #pragma unroll
-      for (int b = 0; b < 4; ++b)
-        hv[4 * rr + b] = h8n_signed(rowv[bk * HB + 64 * rr + 4 * l + b], 64 * rr + 4 * l + b);
-    h8n_fwht_regs(hv);
-#pragma unroll
-    for (int j = 0; j < HN_NV; ++j) amax = fmax(amax, fabs(hv[j]));
-    amax = sub_group_reduce_max(amax);
-    if (l == 0) red[bk] = amax;
+      for (int b = 0; b < 4; ++b) hv[4 * rr + b] = rot_sign(rowv[b0 + 64 * rr + 4 * l + b], 64 * rr + 4 * l + b);
   }
+  rot_block(hv);
+  float amax = sub_group_reduce_max(rot_amax(hv));
+  if (mine && l == 0) red[bk] = amax;
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (bk < nblk) {
+  if (mine) {
     amax = 0.0f;
     for (int i = 0; i < nblk; ++i) amax = fmax(amax, red[i]);
-    if (bk == 0 && l == 0) asch[m] = amax / (127.0f * sqrt((float)HB));
+    if (bk == 0 && l == 0) asch[m] = rot_scale(amax);
     const float iv = amax > 0.0f ? 127.0f / amax : 0.0f;
+#ifdef XW_PACKA_OUT
+    // (gemm_xw8 -DXW_PACKA's order, as h8.cl h8r_act writes it: [M / 8][K / 64][2 halves][8 rows][8 words], 128 uints
+    //  a 64-value chunk; lane l's word of chunk bk * HB / 64 + rr is word l % 8 of half l / 8)
+    __global uint* ar = aqh + ((size_t)(m / 8) * (K / 64) + bk * (HB / 64)) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
 #pragma unroll
-    for (int rr = 0; rr < HN_NV / 4; ++rr) {
-      const float q[4] = {hv[4 * rr], hv[4 * rr + 1], hv[4 * rr + 2], hv[4 * rr + 3]};
-      intel_sub_group_block_write(aqh + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + rr * SG, h8n_pack_q(q, iv));
-    }
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) ar[128 * rr] = rot_pack(hv + 4 * rr, iv);
+#else
+    __global uint* ar = aqh + (size_t)m * (K / 4) + bk * (HB / 4);
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) intel_sub_group_block_write(ar + rr * SG, rot_pack(hv + 4 * rr, iv));
+#endif
   }
 }
 #endif  // H8NORM

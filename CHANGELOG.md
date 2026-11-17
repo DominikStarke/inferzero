@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-11-17: H8's rotation rewritten, spill-free; three opt-in switches for the 140T, Alchemist and the Xe2 / Xe3 GPUs
+
+- **The rotation in one file of our own, `zero/kernels/rot.cl`.** The Walsh-Hadamard transform of H8's blocks (its
+  sign hash, the stages in registers and across lanes, the int8 rounding and the scale) was written three times, in
+  `h8.cl`, `decode.cl` (`h8r_decode`) and `ops.cl` (`rmsnorm_h8r`). The engine now puts `rot.cl` in front of those three
+  kernels' sources (`engine_setup.h kernel()`), and the H8R kernels are rewritten around it. The arithmetic is the same
+  in the same order: every H8 path's logits are the same bit for bit (below). The `NOTICE` file no longer lists the H8
+  code.
+- **No register spills on the 125H, the 140T, the 285H and Alchemist.** ocloc for `mtl` / `arl-h` (Xe-LPG, where a
+  16-lane float takes 2 registers) showed three H8 kernels spilling 1 KB at 256 registers: the packed weight writer
+  (`h8r_weights -DXW_PACKW_OUT`, the 140T preset's), `h8r_decode` for the codebook types and `rmsnorm_h8r`. Their
+  addresses are now one base and small offsets (a block's region of the weights is 4 x HB uints from its first; the
+  packed order keeps each 16 words in the same 256), so the unrolled loops hold no 64-bit arithmetic. Now spill-free:
+  every `h8r_*` kernel and `h8r_decode` on `bmg`, `mtl`, `arl-h` and `ptl` (150 of 152 builds); `rmsnorm_h8r` keeps its
+  1 KB on Xe-LPG (opt-in there). Instructions down 10-43 % (`arl-h`: the packed writer 4,633 -> 2,661,
+  `h8r_decode` IQ3_S 3,434 -> 2,868, `h8r_colmax` 2,732 -> 2,239).
+- **`ARC_H8_GRF=128` (opt-in):** the rotation kernels at 128 registers, twice the threads per core, where a register
+  holds 16 floats (Xe2 / Xe3: the B-series, Lunar / Panther Lake); ignored on Xe-LPG, which spills 8-16 KB there.
+  ocloc `bmg` / `ptl`: no spills at 128. The same logits (checked on the laptop with the 128-register builds forced,
+  `ARC_H8_GRF=-128`, a test setting). Its speed: the B60 / B70 / B390 owners to measure.
+- **`ARC_GEMM_XW_WGX` / `ARC_GEMM_XW_LOCK` on 8 lanes (opt-in):** the 140T's and Alchemist's `gemm_xw8` with 2 / 4 / 8
+  column sub-groups per work-group, which then share their activations in L1, as the 16-lane `gemm_xw` has done since
+  2026-11-15 (a Pro B70 +3.7 %). The 140T's `xw_peak --probe` reached 85 % of the XMX peak with the operands in L1,
+  ~33 % in the engine. Bit-identical (checked at start for every shape used); ocloc `arl-h`: no spills. Off by
+  default on 8 lanes; `bench\xw_sweep.ps1 -Group` now runs there too.
+- **`ARC_H8_NORM=1` now works in the 140T preset:** `rmsnorm_h8r` writes `gemm_xw8`'s packed order (`-DXW_PACKA_OUT`,
+  as `h8r_act`). Before, it fell back to `rmsnorm_quant` wherever the packed activations were used, so the fused norm
+  never ran on a 140T. Bit-identical.
+
+## 2026-11-17: the launcher's icons in the website's colours
+
+- The tray icon, the window's icon and the splash's logo draw the inferzero mark in `site/icon.svg`'s colours (lit
+  `#0078d4`, dim `#c9d3de`; on dark `#59a7e3` / `#2b3440`), so it is one icon in the browser, the web UI and the
+  launcher. Before: the Windows accent colour, with half-transparent dim tiles in the tray. The tray icon lights up
+  while a model runs (the Z in the icon's blue, with the green dot) and is grey when stopped; it follows the
+  taskbar's light or dark setting.
+
+## 2026-11-17: the B390 keeps up to 16 GB of decoded weights when its GPU share is large
+
+- **Why:** gee456's B390 (128 GB of RAM, a 114.5 GiB GPU share, issue #1) ran the 27B's 4K prompt at 583-592 tok/s
+  with 16 GB of decoded weights kept resident, against 540-552 without (release .07, the path that is the default
+  since 2026.11.17.01). iGPUs had no resident decoded weights by default, because on an Arc 140T with 64 GB the
+  automatic size (26 GiB) made its prompt slower (340-357 -> 176 tok/s): on an iGPU that memory is the system's RAM.
+- **What:** an iGPU with 16-lane XMX (passed at start) and a GPU share of 64 GiB or more keeps up to 16 GiB of decoded
+  weights resident (`ARC_W8_PARTIAL_GB=auto`, `zero/engine_load.h`). The 140T (8 lanes; a 64 GB machine's share is
+  ~32 GiB) and iGPUs without XMX are unchanged; `ARC_W8_PARTIAL_GB=0` turns it off, a number of GB sets it. A resident
+  copy is decoded by the same code as the just-in-time one: the same logits.
+
 ## 2026-11-17: the B390's fast prompt path by default, Flash Next's Q8_0 MTP head, `--mtp-model` in the server
 
 - **Panther Lake's Arc B390 (and Lunar Lake): H8 on the wide-tile XMX GEMM and flash attention by default.** gee456's

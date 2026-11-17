@@ -5,8 +5,7 @@
 // its own.
 //
 // Why: a Pro B70's Flash Next spent 45 % of its 4K prompt in the per-tile gate / up kernel (DP4a), and a B60's 35B
-// prompt had its expert GEMMs at ~21 TOPS against the dense GEMMs' ~50 (issues #4, #27); urakozz's B70 engine doubled
-// its 35B-class prompt with the expert GEMMs on XMX from the raw blocks (his own code, ideas only here).
+// prompt had its expert GEMMs at ~21 TOPS against the dense GEMMs' ~50 (issues #4, #27).
 //
 // ARC_MOE_RG_XMX=1 (opt-in until a card measures it): where decode + GEMM ran (unpadded MoE models such as the 35B:
 // chunks of 1,152+ tokens), moe_rg on XMX instead, from rg_min (320) tokens a chunk, when all three of a layer's expert

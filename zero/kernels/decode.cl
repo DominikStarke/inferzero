@@ -650,44 +650,6 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
 #endif
 #define H8WPL (HB / 64)
 #define H8TP (HB / 4 + 1)
-inline float h8d_signed(float v, uint i) {
-#ifdef H8_D
-  uint x = i * 0x9E3779B1u;
-  x ^= x >> 15;
-  x *= 0x85EBCA77u;
-  return as_float(as_uint(v) ^ (x & 0x80000000u));
-#else
-  return v;
-#endif
-}
-inline void h8d_fwht_regs(float* v) {  // (h8.cl h8_fwht_regs)
-  const uint l = get_sub_group_local_id();
-#pragma unroll
-  for (uint h = 1; h < H8NV; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < H8NV; ++j)
-      if ((j & h) == 0) {
-        const float a = v[j], b = v[j + h];
-        v[j] = a + b;
-        v[j + h] = a - b;
-      }
-#pragma unroll
-  for (uint h = 1; h < 16; h <<= 1)
-#pragma unroll
-    for (uint j = 0; j < H8NV; ++j) {
-      const float o = intel_sub_group_shuffle_xor(v[j], h);
-      v[j] = (l & h) ? (o - v[j]) : (v[j] + o);
-    }
-}
-inline uint h8d_pack_q(const float v[4], float inv) {  // (h8.cl pack_q)
-  uint w = 0;
-#pragma unroll
-  for (int i = 0; i < 4; ++i) {
-    const int q = clamp((int)rint(v[i] * inv), -127, 127);
-    w |= ((uint)(q & 0xFF)) << (8 * i);
-  }
-  return w;
-}
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const uint* tabs, __global uint* wq,
                          __global const float* restrict col) {
@@ -775,31 +737,28 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
 #pragma unroll
       for (int b = 0; b < 4; ++b) {
         const float x = dq * (float)(char)(w[k] >> (8 * b)) - off;
-        v[32 * h + 4 * k + b] = h8d_signed(x, H8NV * l + 32 * h + 4 * k + b);
+        v[32 * h + 4 * k + b] = rot_sign(x, H8NV * l + 32 * h + 4 * k + b);
       }
     }
   }
-  h8d_fwht_regs(v);
+  rot_block(v);
   const float cs = col[g * 16 + c];
   const float iv = cs > 0.0f ? 1.0f / (cs * sqrt((float)HB)) : 0.0f;
 #pragma unroll
-  for (int i = 0; i < H8WPL; ++i) {
-    const float q[4] = {v[4 * i], v[4 * i + 1], v[4 * i + 2], v[4 * i + 3]};
-    tout[c * H8TP + H8WPL * l + i] = h8d_pack_q(q, iv);
-  }
+  for (int i = 0; i < H8WPL; ++i) tout[c * H8TP + H8WPL * l + i] = rot_pack(v + 4 * i, iv);
   barrier(CLK_LOCAL_MEM_FENCE);
-  const int lid = get_local_id(0);
-#pragma unroll
-  for (int i = 0; i < H8WPL; ++i) {
-    const int t = lid + 256 * i, row = t / 16, cl = t % 16, e = blk * HB + 4 * row;
+  // (as h8.cl h8r_weights writes them: the 16 rows' block is 4 HB uints from the first, lane lid writes words
+  //  lid / 16 + 16 i of row lid % 16 at uint 256 i + lid, or in gemm_xw8's packed order (XW_PACKW_OUT) at 256 i + o)
+  {
+    const int lid = get_local_id(0), cl = lid % 16, w0 = lid / 16;
 #ifdef XW_PACKW_OUT
-    // (gemm_xw8 -DXW_PACKW's order, engine_xw.h ARC_GEMM_XW_PACK; as h8.cl h8r_weights writes it)
-    const int ws = (e % 256) / 4, j = ws % 16;
-    const size_t gc = ((size_t)g * nsb + e / 256) * 4 + ws / 16;
-    wq[gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8] = tout[cl * H8TP + row];
+    const int o = ((w0 / 8) * 2 + cl / 8) * 64 + (w0 % 8) * 8 + cl % 8;
 #else
-    wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * 16 + cl] = tout[cl * H8TP + row];
+    const int o = lid;
 #endif
+    __global uint* wr = wq + (size_t)g * 4 * K + (size_t)blk * (4 * HB);
+#pragma unroll
+    for (int i = 0; i < H8WPL; ++i) wr[256 * i + o] = tout[cl * H8TP + w0 + 16 * i];
   }
   }  // (jb)
 }
@@ -909,8 +868,8 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
 #endif
 #define WIN_U (2 * BBP / 4)          // uints per two-superblock window
 #define WIN_CALLS ((WIN_U + 15) / 16)
-// -DGEMV_DB (ARC_GEMV_DB=1, zero/xe2/engine_xe2.h; 2026-11-15, from urakozz's GEMV, whose loads stay in flight across
-// its decode): the window reads one window ahead. The (step, row) windows a sub-group reads, in order, are loaded
+// -DGEMV_DB (ARC_GEMV_DB=1, zero/xe2/engine_xe2.h; 2026-11-15, the loads kept in flight across the decode): the window
+// reads one window ahead. The (step, row) windows a sub-group reads, in order, are loaded
 // into registers one window early, so the next row's (or the next step's first row's) bytes are on their way while
 // this row is decoded; without it each row's reads are issued and waited for before its decode. The same bytes in
 // the same local-memory window, the same arithmetic in the same order: bit-identical. WIN_CALLS registers more.

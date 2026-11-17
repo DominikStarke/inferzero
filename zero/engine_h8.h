@@ -24,7 +24,7 @@
 // per matrix input, so the shards' parts still sum to the product. ARC_H8_HB=256 / 512: smaller blocks (tests).
 
   bool h8_ = false;
-  std::string h8_src_, x8_src_;
+  std::string h8_src_, x8_src_, rot_src_;
   cl_mem h8_aq_ = nullptr, h8_asc_ = nullptr;   // (one GEMM input rotated: int8 [M][K], per-256 scales [K / 256][M])
   cl_mem stage_hh_[kRoles] = {};                // (the H8 scales of the weight staged per role)
   bool stage_h8_[kRoles] = {};                  // (the staged weight is in its rotated H8 form, not W8: the 140T preset mixes both)
@@ -102,10 +102,21 @@
   cl_kernel h8_kernel(int hb, int src, const char* name) {
     return kernel("h8", "-DHB=" + std::to_string(hb) + (src ? " -DSRC=" + std::to_string(src) : std::string()), name);
   }
-  // (H8R: 64 floats x 16 lanes in registers; ARC_H8_D=1: with urakozz's random signs, which gained nothing on our models)
+  // (H8R: 64 floats x 16 lanes in registers; ARC_H8_D=1: each value's sign flipped by its index first, which gained
+  //  nothing on our models)
+  // The register file of the H8R rotation kernels (h8r_colmax / h8r_weights / h8r_act, h8r_decode, rmsnorm_h8r): 256
+  // registers by default. ARC_H8_GRF=128 (opt-in, 2026-11-17): 128 where a register holds 16 floats (Xe2 / Xe3, the
+  // B-series and the B390), twice the threads per core; ocloc bmg / ptl: no spill in any of them at 128 (ptl takes 96).
+  // GPUs whose registers hold 8 floats (Xe-LPG: the 125H, the 140T and 285H, told by their 8-lane sub-groups, cl_.sg8) keep
+  // 256: 8-16 KB spilled at 128. The register file changes no arithmetic. ARC_H8_GRF=-128: 128 on any GPU (tests:
+  // the 128-register builds' results on a GPU at hand, spills and all).
+  std::string h8_grf() const {
+    static const int e = getenv("ARC_H8_GRF") ? atoi(getenv("ARC_H8_GRF")) : 256;
+    return (e == 128 && !cl_.sg8) || e == -128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+  }
   cl_kernel h8r_kernel(int hb, int src, const char* name, const std::string& extra = std::string()) {
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
-    return kernel("h8", std::string("-cl-intel-256-GRF-per-thread ") + (d ? "-DH8_D " : "") + "-DHB=" + std::to_string(hb) +
+    return kernel("h8", h8_grf() + (d ? "-DH8_D " : "") + "-DHB=" + std::to_string(hb) +
                             (src ? " -DSRC=" + std::to_string(src) : std::string()) + extra, name);
   }
   // H8R: a weight's column scales (N floats), computed once from its decoded form, then the weight rotated in place
@@ -153,7 +164,7 @@
       return e == 1 || e == 2 || e == 4 || e == 8 ? e : 4;  // (4: the laptop 27B, 1,180 -> 953 (1) -> 876 ms (4), 2026-11-14)
     }();
     const int hb = h8_block(w.K);
-    cl_kernel k = kernel("decode", std::string("-cl-intel-256-GRF-per-thread -DH8RDEC") + (d ? " -DH8_D" : "") + (priv ? " -DH8D_PRIV" : "") +
+    cl_kernel k = kernel("decode", h8_grf() + "-DH8RDEC" + (d ? " -DH8_D" : "") + (priv ? " -DH8D_PRIV" : "") +
                                        " -DH8DR=" + std::to_string(rb) + " -DQT=" +
                                        std::to_string(w.type) + " -DHB=" + std::to_string(hb) + " -DSRC=" +
                                        std::to_string(w.gemm_qtype) + (packed ? " -DXW_PACKW_OUT" : ""), "h8r_decode");
@@ -231,14 +242,16 @@
   void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
     const int hb = h8_block(K);
     if (!h8_norm_env() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
-        next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024 ||  // (the row in local memory)
-        xw_pack_a(Mp, K)) {  // (it writes the plain order only)
+        next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024) {  // (the row in local memory)
       rmsnorm_quant(x, row_off, w, K, Mp, T, act32);
       return;
     }
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
-    cl_kernel k = kernel("ops", std::string("-cl-intel-256-GRF-per-thread -DH8NORM") + (d ? " -DH8_D" : "") + " -DHB=" +
-                                    std::to_string(hb) + " -DH8N_K=" + std::to_string(K), "rmsnorm_h8r");
+    // (gemm_xw8's packed order where it will read them, as h8_act writes it: since 2026-11-17, so the 140T preset, whose
+    //  GEMMs read the packed order, can take the fused norm; before, ARC_H8_NORM fell back to rmsnorm_quant there)
+    cl_kernel k = kernel("ops", h8_grf() + "-DH8NORM" + (d ? " -DH8_D" : "") + " -DHB=" +
+                                    std::to_string(hb) + " -DH8N_K=" + std::to_string(K) +
+                                    (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : ""), "rmsnorm_h8r");
     float eps = hp.eps;
     int wh = 0, KK = K, MM = Mp, TT = T, a32 = act32;
     set_args(k, 0, x, row_off, w, KK, MM, TT, eps, aq_, asc_, absum_, big_, wh, a32, h8_aq_, h8_asc_);

@@ -13,9 +13,9 @@
 # 32 x 64. ocloc's register counts say which spill (the kernels' headers); the sweep measures what that costs.
 # -Prefetch (2026-11-13, B60 prefill plan 13.2): the default 32 x 64 with the next chunks prefetched into L1:
 # ARC_GEMM_XW_PF=1 weights / 2 activations / 3 both, ARC_GEMM_XW_PFD=1 / 2 / 4 chunks ahead (all bit-identical).
-# -Group (2026-11-15, after urakozz's pf_gemm_i8): the default 32 x 64 with ARC_GEMM_XW_WGX=2 / 4 / 8 column sub-groups
-# per work-group (the activations shared in L1) and ARC_GEMM_XW_LOCK=1 (the work-group in step each 64-value chunk),
-# alone and together, with and without the prefetch (all bit-identical).
+# -Group (2026-11-15; 8 lanes, the 140T and Alchemist, since 2026-11-17): the default tile with ARC_GEMM_XW_WGX=2 / 4 /
+# 8 column sub-groups per work-group (the activations shared in L1) and ARC_GEMM_XW_LOCK=1 (the work-group in step each
+# 64-value chunk), alone and together, with and without the prefetch (all bit-identical).
 param(
   [Parameter(Mandatory = $true)][string]$Model,
   [int[]]$Tokens = @(512, 4096, 16384),
@@ -89,7 +89,7 @@ if ($Prefetch -and -not ($probe -match "gemm_xw8, 8 lanes")) {
     foreach ($d in 1, 2, 4) { $sets["xw pf$pf d$d"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_PF = $pf; ARC_GEMM_XW_PFD = $d } }
   }
 }
-if ($Group -and -not ($probe -match "gemm_xw8, 8 lanes")) {
+if ($Group) {  # (8 lanes too since 2026-11-17: the 140T's / Alchemist's gemm_xw8)
   $sets["xw lock"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_LOCK = 1 }
   foreach ($x in 2, 4, 8) {
     $sets["xw wgx$x"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_WGX = $x }

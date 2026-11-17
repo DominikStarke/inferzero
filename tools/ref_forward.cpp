@@ -223,7 +223,7 @@ static int had_block(const std::string& name, int K) {
 }
 static void fwht_blocks(float* v, int K, int hb) {  // (normalized: orthonormal, so the product is unchanged)
   const float s = 1.0f / std::sqrt((float)hb);
-  static const bool signs = getenv("REF_HAD_D") && atoi(getenv("REF_HAD_D")) != 0;  // (REF_HAD_D=1: signs first, zero/kernels/h8.cl h8_signed)
+  static const bool signs = getenv("REF_HAD_D") && atoi(getenv("REF_HAD_D")) != 0;  // (REF_HAD_D=1: signs first, zero/kernels/rot.cl rot_sign)
   for (int b0 = 0; b0 < K; b0 += hb) {
     float* p = v + b0;
     if (signs)
@@ -244,17 +244,31 @@ static void fwht_blocks(float* v, int K, int hb) {  // (normalized: orthonormal,
 }
 static void matmul_had(const GgufTensor& t, const std::vector<float>& X0, int T, int K, int N, int hb, std::vector<float>& Y) {
   const size_t rb = t.nbytes / N;
-  const int ab = getenv("REF_HAD_ACTB") ? std::max(1, atoi(getenv("REF_HAD_ACTB"))) : K;  // (activation scale block)
+  // (REF_HAD_WB=n, 2026-11-17: the rotated weights rounded with one scale per n values, the H8 superblock form
+  //  (gemm.cl QTYPE 110) at n = 256, instead of one per row; the activations then take the same blocks)
+  const int wb = getenv("REF_HAD_WB") ? std::max(0, atoi(getenv("REF_HAD_WB"))) : 0;
+  const int ab = wb ? wb : getenv("REF_HAD_ACTB") ? std::max(1, atoi(getenv("REF_HAD_ACTB"))) : K;  // (activation scale block)
   const int nab = (K + ab - 1) / ab;
-  std::vector<int8_t> xq((size_t)T * K);
-  std::vector<float> xs((size_t)T * nab);
+  // (REF_HAD_Q2=1, 2026-11-17: two activation passes, as Gemma 4's int8 GEMMs run: the rotated row in int8, then what
+  //  that rounding missed in int8 again, both products added. REF_HAD_WF=1: the rotated weights kept in float, not
+  //  rounded to int8 per row: the weights' share of the error apart from the activations')
+  static const bool q2 = getenv("REF_HAD_Q2") && atoi(getenv("REF_HAD_Q2")) != 0;
+  static const bool wf = getenv("REF_HAD_WF") && atoi(getenv("REF_HAD_WF")) != 0;
+  std::vector<int8_t> xq((size_t)T * K), xq2(q2 ? (size_t)T * K : 0);
+  std::vector<float> xs((size_t)T * nab), xs2(q2 ? (size_t)T * nab : 0);
 #pragma omp parallel for
   for (int i = 0; i < T; ++i) {
     std::vector<float> r(X0.begin() + (size_t)i * K, X0.begin() + (size_t)(i + 1) * K);
     fwht_blocks(r.data(), K, hb);
     for (int b = 0; b < nab; ++b) {
       const int k0 = b * ab, n = std::min(ab, K - k0);
-      xs[(size_t)i * nab + b] = row_q8(r.data() + k0, n, &xq[(size_t)i * K + k0]);
+      const float s = row_q8(r.data() + k0, n, &xq[(size_t)i * K + k0]);
+      xs[(size_t)i * nab + b] = s;
+      if (q2) {
+        std::vector<float> e(n);
+        for (int k = 0; k < n; ++k) e[k] = r[k0 + k] - (float)xq[(size_t)i * K + k0 + k] * s;
+        xs2[(size_t)i * nab + b] = row_q8(e.data(), n, &xq2[(size_t)i * K + k0]);
+      }
     }
   }
   Y.assign((size_t)T * N, 0.0f);
@@ -266,17 +280,32 @@ static void matmul_had(const GgufTensor& t, const std::vector<float>& X0, int T,
     for (int n = 0; n < N; ++n) {
       dequant_row(t.type, t.data + (size_t)n * rb, K, w.data());
       fwht_blocks(w.data(), K, hb);
-      const float ws = row_q8(w.data(), K, wq.data());
+      std::vector<float> wsb(wb ? nab : 0);
+      for (int b = 0; wb && b < nab; ++b) wsb[b] = row_q8(w.data() + b * ab, std::min(ab, K - b * ab), wq.data() + b * ab);
+      const float ws = wb ? 1.0f : row_q8(w.data(), K, wq.data());
       for (int i = 0; i < T; ++i) {
         const int8_t* x = &xq[(size_t)i * K];
         double acc = 0;
         for (int b = 0; b < nab; ++b) {
           const int k0 = b * ab, k1 = std::min(K, k0 + ab);
-          int64_t s = 0;
-          for (int k = k0; k < k1; ++k) s += (int)wq[k] * x[k];
-          acc += (double)s * xs[(size_t)i * nab + b];
+          if (wf) {  // (float weights: each pass's int8 activations times the rotated float row)
+            double s = 0, s2 = 0;
+            for (int k = k0; k < k1; ++k) {
+              s += (double)w[k] * x[k];
+              if (q2) s2 += (double)w[k] * xq2[(size_t)i * K + k];
+            }
+            acc += s * xs[(size_t)i * nab + b] + (q2 ? s2 * xs2[(size_t)i * nab + b] : 0.0);
+            continue;
+          }
+          int64_t s = 0, s2 = 0;
+          for (int k = k0; k < k1; ++k) {
+            s += (int)wq[k] * x[k];
+            if (q2) s2 += (int)wq[k] * xq2[(size_t)i * K + k];
+          }
+          acc += ((double)s * xs[(size_t)i * nab + b] + (q2 ? (double)s2 * xs2[(size_t)i * nab + b] : 0.0)) *
+                 (wb ? wsb[b] : 1.0f);
         }
-        Y[(size_t)i * N + n] = (float)(acc * ws);
+        Y[(size_t)i * N + n] = (float)(wf ? acc : acc * ws);
       }
     }
   }

@@ -19,7 +19,7 @@
 // -DX2D: the activations by 2D block loads, as gemm.cl -DX2D (8 rows x 64 bytes a load).
 // Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16 * WGX, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
 // `rgroup` token rows together column block by column block, as gemm.cl, so a weight slice is reused while in L3.
-// WGX (2026-11-15, ARC_GEMM_XW_WGX, after urakozz's pf_gemm_i8: 32 sub-groups over 256 tokens x 128 columns): the
+// WGX (2026-11-15, ARC_GEMM_XW_WGX, as a GEMM of 32 sub-groups over 256 tokens x 128 columns does): the
 // work-group's sub-groups side by side on the columns too, WGX column blocks of 16 * XW_NC, so the WGY token sub-groups
 // share their weights and the WGX column sub-groups their activations in L1. Each sub-group computes what it did
 // before, in the same order: the same results bit for bit.

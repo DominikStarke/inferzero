@@ -1,0 +1,9 @@
+inferzero
+Copyright the inferzero authors. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software from other projects:
+
+- third_party/nlohmann/json.hpp: JSON for Modern C++, by Niels Lohmann, MIT license (third_party/nlohmann/LICENSE.MIT).
+- third_party/minja/minja.hpp: minja, a Jinja template engine for C++, MIT license (third_party/minja/LICENSE).
+- src/iq_tables.h (the IQ quantization formats' codebook grids) and src/unicode_tables.h: extracted from ggml, MIT
+  license, Copyright (c) 2023-2026 The ggml authors.

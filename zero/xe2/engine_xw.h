@@ -126,32 +126,33 @@
     return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && w.N % (16 * xw_nc()) == 0 && w.K % 256 == 0;
   }
   // ARC_GEMM_XW_WGX=1 / 2 / 4 / 8 (16 lanes, 2026-11-15): column sub-groups per work-group next to the WGY token ones,
-  // as urakozz's pf_gemm_i8 (256 tokens x 128 columns, 32 sub-groups), so the activations of a chunk are shared in L1
+  // (a work-group of 256 tokens x 128 columns, 32 sub-groups), so the activations of a chunk are shared in L1
   // by the work-group's column blocks; ARC_GEMM_XW_LOCK=1: the work-group in step around each 64-value chunk (a split
   // barrier). Both the same results bit for bit (checked at start). 4 by default on discrete cards since 2026-11-15: a
   // Pro B70's 27B 4K prompt 2,311 -> 2,396 tok/s in two rounds (+3.7 %; gemm_down 215 -> 191 ms; 2: +2.6 %, 8 with
   // LOCK: -1.7 %, LOCK alone +0.2 %), logits identical (joshdev-de, issue #27, 6466672). iGPUs: 1
+  // 8 lanes (gemm_xw8: the 140T, Alchemist) since 2026-11-17, opt-in: both only when set, 1 / off by default there
   int xw_wgx() const {
     static const int v = [] {
       if (!getenv("ARC_GEMM_XW_WGX")) return zrt::integrated() ? 1 : 4;
       const int e = atoi(getenv("ARC_GEMM_XW_WGX"));
       return e == 2 || e == 4 || e == 8 ? e : 1;
     }();
-    return xw_lanes() == 16 ? v : 1;
+    return xw_lanes() == 16 || getenv("ARC_GEMM_XW_WGX") ? v : 1;
   }
   bool xw_lock() const {
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;
-    return v && xw_lanes() == 16;
+    return v;
   }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
-  //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group, 16 lanes only)
+  //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group)
   cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
                              (xw_emu_ ? " -DXW_EMU" : "") + xw_pf_defs() +
                              (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
-                             (xw_lanes() == 16 && wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
+                             (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
                              (xw_lock() ? " -DXW_LOCK" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");

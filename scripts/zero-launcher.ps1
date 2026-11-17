@@ -83,8 +83,13 @@ if ($dark) {
     barErr = (RGB 253 231 233); barWarn = (RGB 255 244 206); barInfo = (RGB 230 240 250) }
 }
 $Pal.accent = $accent
-# (the mark's dim tiles: the same greys as site/icon.svg)
+# (the mark in site/icon.svg's colours, the website's and the web UI's icon: lit #0078d4 / dim #c9d3de, on dark
+#  #59a7e3 / #2b3440; not the Windows accent colour, so it is one icon everywhere, the user asked 2026-11-17)
+$markLit = if ($dark) { RGB 89 167 227 } else { RGB 0 120 212 }
 $markDim = if ($dark) { RGB 43 52 64 } else { RGB 201 211 222 }
+# (the tray's and the taskbar's: their own light / dark setting, which can differ from the apps')
+$taskbarDark = $dark
+try { $taskbarDark = (Get-ItemPropertyValue "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" SystemUsesLightTheme -ErrorAction Stop) -eq 0 } catch {}
 
 # ---- the inferzero mark: 4 x 4 rounded tiles, the lit ones drawing a Z (site/icon.svg, the web UI's /icon.svg).
 # Small sizes snap the tiles to whole pixels, so a 16 / 32-pixel icon stays sharp.
@@ -122,11 +127,11 @@ try {
   $sp.Add_HandleCreated({ param($s) [void][ArcWin]::Dwm($s.Handle, 33, 2); [void][ArcWin]::Dwm($s.Handle, 20, [int]$dark) })
   $in = New-Object System.Windows.Forms.Panel; $in.Dock = "Fill"; $in.BackColor = $Pal.bg
   $sp.Controls.Add($in)
-  # the logo: the inferzero mark in the accent colour, drawn into a picture (no Paint event needed)
+  # the logo: the inferzero mark in site/icon.svg's colours, drawn into a picture (no Paint event needed)
   $n = S 72
   $bmp = New-Object System.Drawing.Bitmap($n, $n)
   $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
-  Draw-ArcMark $g 0 0 $n $accent $markDim
+  Draw-ArcMark $g 0 0 $n $markLit $markDim
   $g.Dispose()
   $pic = New-Object System.Windows.Forms.PictureBox; $pic.Image = $bmp; $pic.Size = New-Object System.Drawing.Size($n, $n)
   $pic.Location = New-Object System.Drawing.Point((S 30), (S 40))
@@ -1278,9 +1283,11 @@ function New-ArcIcon([bool]$on) {
   $n = 32
   $bmp = New-Object System.Drawing.Bitmap($n, $n)
   $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
-  # (the mark: lit in the accent while a model runs, grey when stopped; the dim tiles half transparent, so they read
-  # on a light and a dark taskbar alike)
-  Draw-ArcMark $g 0 0 $n $(if ($on) { $accent } else { RGB 120 120 120 }) ([System.Drawing.Color]::FromArgb(90, 128, 128, 128))
+  # (the mark as site/icon.svg, in the taskbar's light or dark colours, lit while a model runs: its Z in the icon's
+  #  blue, grey when stopped; until 2026-11-17 the Windows accent colour and half-transparent dim tiles)
+  if ($taskbarDark) { $lit = if ($on) { RGB 89 167 227 } else { RGB 128 128 128 }; $dim = RGB 43 52 64 }
+  else { $lit = if ($on) { RGB 0 120 212 } else { RGB 128 128 128 }; $dim = RGB 201 211 222 }
+  Draw-ArcMark $g 0 0 $n $lit $dim
   # (running: a small green dot over the last tile)
   if ($on) { $g.FillEllipse((New-Object System.Drawing.SolidBrush((RGB 16 180 60))), $n - 11, $n - 11, 10, 10); $g.DrawEllipse((New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.5)), $n - 11, $n - 11, 10, 10) }
   $g.Dispose()

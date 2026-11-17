@@ -177,8 +177,7 @@
   // ARC_GEMV_SMALL_WG: the single-token GEMV (gemv) of a matrix with few rows, at most 512 sub-groups (DeltaNet's
   // alpha / beta projection, 96 rows; MoE routers, 256-512 rows), in work-groups of 4 sub-groups instead of 16, so
   // they spread over more Xe cores: a Pro B60's 27B ran gemm_ab's 96 rows in 6 work-groups at 60 GB/s, 14 % of its
-  // bandwidth (issue #4, 2026-11-09; urakozz's engine gained 1.9 ms a token on the same matrix by splitting it over
-  // more sub-groups). Each row's sums are the same: bit-identical. On by default on discrete cards from 2026-11-10;
+  // bandwidth (issue #4, 2026-11-09). Each row's sums are the same: bit-identical. On by default on discrete cards from 2026-11-10;
   // off again since 2026-11-12 (issue #4, package 18acafc, a Pro B60, best of 2): the 27B gained nothing (23.52 on,
   // 23.57 off; 23.72 / 23.71 on 97d225b), and the 35B lost 30 % (55.85 on, 80.35 off; with ARC_GEMV_PF=1 79.12, so
   // only the plain gemv's 64-item work-groups were slow there). iGPUs: 256 as always. ARC_GEMV_SMALL_WG=1 forces it

@@ -80,6 +80,25 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, H8's rotation in `rot.cl`, the H8R kernels spill-free; `ARC_H8_GRF=128`, `ARC_GEMM_XW_WGX` / `_LOCK` on
+  8 lanes, `ARC_H8_NORM` in the 140T preset (all three opt-in):** laptop, 27B, `ARC_H8=1`, `--bench-pp 4096 --n 0
+  --prof`, old kernels against new, two rounds each: `h8_weights` 331 / 333 -> 200 / 200 ms, `h8_act` 713 / 738 ->
+  702 / 698, `h8_decode` 859 / 880 -> 868 / 866 (memory-bound here), the prompt 119-128 -> 125-127 tok/s. ocloc:
+  every `h8r_*` and `h8r_decode` build spill-free on `bmg` / `mtl` / `arl-h` / `ptl` (before: 1 KB on Xe-LPG for the
+  packed weight writer, `h8r_decode` IQ3_S, `rmsnorm_h8r`; the last keeps it), 10-43 % fewer instructions. Logits the
+  same SHA-256 as before: 9 H8 paths on a 3,414-token prompt (`ARC_H8=1`; `_D=1`; `_NORM=1` with and without `_D`;
+  `_INT=1 _FUSE=0`; `_SB=1`; `_DEC_PRIV=1 _DEC_R=1`; the 140T preset with DPAS emulated; the 16-lane `gemm_xw`
+  emulated), the same with `ARC_H8_GRF=-128`; and, so the fused `h8r_decode` runs (from a weight's second decode),
+  3 perplexity chunks of 1,024 in chunks of 512, the saved logits of every scored position (C45938EA...) for H8 and the
+  140T preset with the old and the new kernels, the new with `ARC_H8_GRF=-128`, `ARC_GEMM_XW_WGX=2`, `=4` with
+  `_LOCK=1`, and `ARC_H8_NORM=1`. The switches' speed: the B60 / B70 / B390 owners (GRF) and the 140T / 285H /
+  Alchemist owners (WGX, NORM) to measure.
+
+- **2026-11-17, resident decoded weights on large-share 16-lane iGPUs, up to 16 GiB:** B390 (gee456, issue #1, release
+  .07, 27B `--bench-pp 4096 --n 0`): H8 on gemm_xw + attn_fx 547.9 / 552.4 / 539.7 tok/s; + `ARC_W8_PARTIAL_GB=16`
+  591.6 / 584.2 / 583.1 (`h8_decode` 1,186 -> 466 ms). Not taken where the share is under 64 GiB (the 140T's 64 GB:
+  26 GiB resident 340-357 -> 176). Laptop: not reached (no XMX).
+
 - **2026-11-17, `ARC_MOE_RG_XMX=1`, opt-in (X1: moe_rg's 32-scale types on DPAS):** laptop, DPAS emulated, Flash Next,
   a 3,131-token prompt + 8 tokens: logits the same SHA-256 as the default (830C3700...); the first-use checks against
   DP4a bit for bit for IQ3_XXS, IQ4_NL, Q2_0, IQ3_S, IQ4_XS. Not taken: Flash Next's gate / up through moe_rg (KL
