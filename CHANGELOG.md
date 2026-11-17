@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-17: a split model's RAM tier at most 128 GiB in all; H8 measured on Flash Next, not taken
+
+- **The RAM tier:** manoreken2's 4 Pro B60s (issue #4, release .16): the default 32 GiB per GPU ran as measured
+  (DeepSeek-V4.1 Q8_K_XL, 512-token prompt 24.0 tok/s, generation 8.32), while 48 and 64 GiB per GPU (192 / 256 GiB
+  pinned in all) stopped after loading. The per-GPU size is now also capped at 128 GiB divided by the GPUs
+  (`zero/engine_stream.h`), so more than 4 GPUs cannot cross what ran; 4 or fewer are unchanged.
+- **H8 on Flash Next:** faster on the B60 (8K prompt, alternated: 515.7 -> 541.2 and 550.8 -> 610.2 tok/s), but
+  less accurate than its limit allows: KL against the default path 0.0256 (max 1.22, the same top token 93.3 %; laptop,
+  2 x 2,048 tokens of USAGE.md), on top of the default's own ~0.017 against f32. It stays opt-in (`ARC_H8=1`). Flash
+  Next's H8 rotates the int8 activations (its quantization kernels keep no f32 copy for H8); the f32 copy, as for the
+  Qwen models, is what would have to come first.
 ## 2026-11-16: a split model keeps experts in RAM again, up to 32 GiB per GPU (DeepSeek-V4.1 over 4 B60s)
 
 - **Why:** since 2026-11-16 (release .05) a model split over several GPUs kept no experts in RAM, after an unbounded

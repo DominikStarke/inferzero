@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, H8 on Flash Next, measured, not taken:** B60 (manoreken2, issue #4, .16) 8K prompt default / H8
+  alternated 515.7 / 541.2, 550.8 / 610.2 tok/s; laptop KL against the default (`--perplexity USAGE.md --ppl-ctx 2048
+  --ppl-chunks 2 --ppl-kl`) 0.0256, max 1.2232, same top 93.26 %, perplexity 5.2626 -> 5.2096. Over Flash Next's limit
+  on top of its ~0.017 against f32: stays opt-in.
+- **2026-11-17, a split model's RAM tier capped at 128 GiB in all:** 4 B60s, 32 GiB per GPU ran (24.0 / 8.32 tok/s),
+  48 and 64 stopped after loading. Laptop: not reached, the 27B's logits the same SHA-256.
+
 - **2026-11-16, a split model's RAM tier back, bounded to 32 GiB per GPU** (zero/engine_stream.h): DeepSeek-V4.1-Flash
   UD-Q8_K_XL over 4 Pro B60s, 1 TB of RAM (manoreken2, issue #4, release .10, `--bench-pp 512 --n 64 --gpus 4`):
   `ARC_XRAM_GB` 0 / 8 / 16 / 32: prompt 14.4 / 14.5 / 15.9 / 23.9 tok/s, generation 3.55 / 6.69 / 8.51 / 9.25 tok/s.

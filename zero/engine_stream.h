@@ -29,7 +29,10 @@
       //  manoreken2's sweep over the same 4 B60s (issue #4, 2026-11-16, release .10), ARC_XRAM_GB 0 / 8 / 16 / 32 per GPU:
       //  512-token prompt 14.4 / 14.5 / 15.9 / 23.9 tok/s, generation 3.55 / 6.69 / 8.51 / 9.25, every size without an
       //  error. ARC_XRAM_GB=0: none; =N: N GiB per GPU)
-      const uint64_t keep = 16ull << 30, avail = plat::ram_available(), cap = 32ull << 30;
+      // (and at most 128 GiB for all the GPUs together: the same machine with 48 and 64 GiB per GPU (192 / 256 GiB
+      //  pinned in all) stopped after loading, 4 x 32 = 128 ran; release .16, 2026-11-17)
+      const uint64_t keep = 16ull << 30, avail = plat::ram_available(),
+                     cap = std::min<uint64_t>(32ull << 30, (128ull << 30) / std::max(1, opt.tp_size));
       ram = avail > keep ? std::min<uint64_t>(cap, (avail - keep) / 2 / std::max(1, opt.tp_size)) : 0;
     } else if (ram_gb < 0 && !zrt::integrated()) {
       const uint64_t keep = 16ull << 30, avail = plat::ram_available();
