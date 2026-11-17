@@ -13,6 +13,7 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <atomic>
 #include <map>
 #include <mutex>
 
@@ -198,9 +199,17 @@ static int npu_cols(const std::string& name, int N) {
   if (getenv("REF_NPU_SEL") ? !name_sel("REF_NPU_SEL", name) : name == "output.weight" || name == "token_embd.weight") return 0;
   return std::min(N, (int)std::lround(atof(f) * N));
 }
+static std::atomic<long long> g_row_q8_tiny{0};
 static float row_q8(const float* v, int n, int8_t* q) {  // symmetric int8, one scale (absmax / 127) for the row
   float amax = 0;
   for (int i = 0; i < n; ++i) amax = std::fmax(amax, std::fabs(v[i]));
+  // (127 / amax overflows to inf below ~3.7e-37, and lrintf(inf) is undefined: such a row (a small block of a rounding
+  //  residual, 2026-11-17) is rounded as zero, its values being below any scale's step anyway)
+  if (amax > 0 && !std::isfinite(127.0f / amax)) {
+    ++g_row_q8_tiny;
+    for (int i = 0; i < n; ++i) q[i] = 0;
+    return 0.0f;
+  }
   const float inv = amax > 0 ? 127.0f / amax : 0.0f;
   for (int i = 0; i < n; ++i) q[i] = (int8_t)std::lrintf(v[i] * inv);
   return amax / 127.0f;
@@ -1841,5 +1850,6 @@ int main(int argc, char** argv) {
     }
     fclose(fo);
   }
+  if (g_row_q8_tiny) fprintf(stderr, "ref_forward: %lld int8 rows below ~3.7e-37 rounded as zero\n", (long long)g_row_q8_tiny);
   return 0;
 }
