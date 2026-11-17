@@ -149,7 +149,8 @@ the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named)
   357 tok/s (release 2026.11.15.11, XMX with H8 and 32x16 tiles), generation 6.1 tok/s, 14.6 with MTP (at its
   memory's limit).
 - **Arc B390** (Panther Lake's Core Ultra X7 358H, Xe3, [issue #1](https://github.com/rizagp/inferzero/issues/1)): 4K
-  prompt 546-560 tok/s with H8 on the wide-tile XMX GEMM, the default for iGPUs with 16-lane XMX since 2026.11.17.01
+  prompt 583-592 tok/s with H8 on the wide-tile XMX GEMM (the default for iGPUs with 16-lane XMX since 2026.11.17.01)
+  and 16 GB of decoded weights kept resident (the default with a 64+ GiB GPU share since 2026.11.17.02; 546-560 without)
   (258-268 on the plain XMX path before; KL 0.0018 between the two), generation 5.9 tok/s, 16.8 with MTP. Qwen3.6
   35B-A3B: 4K prompt 1,370 tok/s, generation 26 tok/s, 46 with MTP.
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel):
