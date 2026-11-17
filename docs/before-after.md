@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-17, the Arc 140T preset: `ARC_GEMM_XW_WGX=2` and `ARC_H8_NORM=1` by default:** a 140T (PascalSoftwares,
+  issue #5, release .07, 27B IQ3_S 4K prompt, best of 3): default 368.3 tok/s, `WGX=2` 390.0, `WGX=4` 383.2, `WGX=4
+  LOCK=1` 365.8, `NC=2 WGX=2` 341.5, `NC=2 WGX=4` 327.5, `ARC_H8_NORM=1` 382.1 (`USAGE.md` logits sha256 equal,
+  313934E4...). Its `xw_peak`: packed 32 x 16 26.1 -> 28.3 TOPS with 2 column sub-groups, 29.3 with `--lock`. Laptop,
+  the emulated preset (`ARC_XMX_TRY=2 ARC_140T=1`, 3 perplexity chunks): C45938EA... as before, with `gemm_xw work-
+  groups of up to 2 column sub-groups` and `rmsnorm_h8r` running (128 launches) where `rmsnorm_quant` was.
+
 - **2026-11-17, expert types checked before the expert file; float shared experts requantized:** no speed or
   logit change. Laptop: Flash Next IQ3_S, 96 generated tokens, the same logits as before (2591150D...); the 35B-A3B
   loads and generates as before.

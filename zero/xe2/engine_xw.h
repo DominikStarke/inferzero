@@ -149,11 +149,13 @@
       const int e = atoi(getenv("ARC_GEMM_XW_WGX"));
       return e == 2 || e == 4 || e == 8 ? e : 1;
     }();
+    // (8 lanes: 2 by default in the Arc 140T preset since 2026-11-17: a 140T's 27B 4K prompt 368.3 -> 390.0 tok/s
+    //  (4: 383.2; 4 with LOCK 365.8), the same results checked at start (PascalSoftwares, issue #5, release .07))
     static const int v8 = [] {
-      const int e = getenv("ARC_GEMM_XW_WGX") ? atoi(getenv("ARC_GEMM_XW_WGX")) : 1;
-      return e == 2 || e == 4 ? e : 1;
+      const int e = getenv("ARC_GEMM_XW_WGX") ? atoi(getenv("ARC_GEMM_XW_WGX")) : 0;
+      return e == 2 || e == 4 ? e : e ? 1 : 0;
     }();
-    return xw_lanes() == 16 ? v : v8;
+    return xw_lanes() == 16 ? v : v8 ? v8 : p140_ ? 2 : 1;
   }
   bool xw_lock() const {
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;

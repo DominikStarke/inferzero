@@ -236,9 +236,11 @@
   // it no longer writes: the copy's write and read and a launch saved per input (the 27B: 128 of a prompt's 256 h8_act)
   bool h8_pre_live_ = false;
   int h8_pre_M_ = -1, h8_pre_K_ = -1;
-  static bool h8_norm_env() {
-    static const bool on = getenv("ARC_H8_NORM") && atoi(getenv("ARC_H8_NORM")) != 0;
-    return on;
+  // (on by default in the Arc 140T preset since 2026-11-17: a 140T's 27B 4K prompt 368.3 -> 382.1 tok/s, logits
+  //  identical (PascalSoftwares, issue #5, release .07); a B60 measured no gain (11-14), so opt-in elsewhere; =0 off)
+  bool h8_norm_env() const {
+    static const char* e = getenv("ARC_H8_NORM");
+    return e ? atoi(e) != 0 : p140_;
   }
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply

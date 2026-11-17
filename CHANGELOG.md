@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-17: two Arc 140T results become its preset's defaults
+
+- **The Arc 140T preset's H8 GEMM in work-groups of 2 column sub-groups (`ARC_GEMM_XW_WGX=2`)** and **the norm and the
+  rotation of its rows in one kernel (`ARC_H8_NORM=1`)**, both on by default there now. A Core Ultra 9 285H's Arc
+  140T, Qwen3.8 27B IQ3_S 4K prompt, best of 3 (PascalSoftwares, issue #5, release .07): 368.3 tok/s as it was,
+  390.0 with `WGX=2` (`WGX=4` 383.2, `WGX=4 LOCK=1` 365.8), 382.1 with `ARC_H8_NORM=1` (logits identical; `h8_act`
+  658 -> 459 ms, `rmsnorm_quant`'s 456 ms -> `rmsnorm_h8r` 306). Both together are not measured yet. The laptop's
+  emulated 140T preset gives the same logits as before. `ARC_GEMM_XW_WGX=1` / `ARC_H8_NORM=0` turn them off; other
+  GPUs keep their defaults (the preset also covers Alchemist cards, unmeasured).
+
 ## 2026-11-17: a BF16 MoE model refused before its expert file is written
 
 - **A runz / serverz older than its kernels now says so:** since the H8 rewrite, `h8.cl` needs `rot.cl` in front of
