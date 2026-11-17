@@ -794,6 +794,11 @@ bit for bit (checked at start).
 | 16 x 64 | no spills | no spills | 128 |
 | 16 x 32, 32 x 16 | no spills | no spills | 96 (10 threads per vector engine) |
 
+**Measured on a Pro B70 (joshdev-de, issue #27, 2026-11-16, Linux, the 27B at 8,192 tokens, best of 3, WGX 4):**
+32 x 64 2,726.6 / 2,718.5 tok/s (two runs), 32 x 96 (`ARC_GEMM_XW_NC=6`) 2,534.0, 32 x 32 (`_NC=2`) 2,511.4, 32 x 128
+(`_NC=8`) 1,084.4, 64 x 64 (`_TM=64`) 588.6; also `ARC_GEMM_WGY=2` / `4` 2,356.1 / 2,630.0, `ARC_GEMM_RG=2` / `8` 2,698.1 /
+2,703.8, chunks of 2,048 / 8,192 2,674.3 / 2,717.8. 32 x 64 stays the tile.
+
 **Beyond 32 x 64 (2026-11-13, for a sweep; `bench\xw_sweep.ps1 -Model <gguf> -Wide`).** The 32 x 64 tile's
 accumulators already take 128 of the 256 registers, so the next tile with more area (32 x 128 or 64 x 64) needs all
 256 for its accumulators alone. ocloc `bmg-g21`, 256 registers, with `-DX2D`:
