@@ -89,6 +89,12 @@
     }();
     return v;
   }
+  // (with ARC_GEMM_XW_2D's form, and neither ARC_GEMM_XW_PF nor _PFD set: both parts 2 chunks ahead, since 2026-11-17:
+  //  a Pro B70's 27B 4K prompt 2,853.2 with 2D alone -> 2,896.7 tok/s, logits identical; the same prefetch without 2D
+  //  2,711.4 against 2,771.7, so the plain form keeps weights 1 ahead (joshdev-de, issue #27, 1a7ac94))
+  bool xw_pf_2d_def() const { return xw_2d() && !getenv("ARC_GEMM_XW_PF") && !getenv("ARC_GEMM_XW_PFD"); }
+  int xw_pf_v() const { return xw_pf_2d_def() ? 3 : xw_pf(); }
+  int xw_pfd_v() const { return xw_pf_2d_def() ? 2 : xw_pfd(); }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
   int xw_pf_eff() const {
     // (8 lanes, gemm_xw8: the weights' part by default in the 140T preset (p140_, also Alchemist cards) since
@@ -96,11 +102,11 @@
     //  release 2026.11.16.12; 2 and 3 slower: 341.9 / 338.5); a prefetch reads no value into the sums. Otherwise
     //  only when ARC_GEMM_XW_PF is set; the activations' part with the packed layout (XW_PACKA) only)
     if (xw_lanes() != 16) return (getenv("ARC_GEMM_XW_PF") || p140_) ? xw_pf() : 0;
-    return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf();
+    return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf_v();
   }
   std::string xw_pf_defs() const {
     const int pf = xw_pf_eff();
-    return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_pfd()) : "";
+    return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_lanes() == 16 ? xw_pfd_v() : xw_pfd()) : "";
   }
   // ARC_GEMM_XW_PACK (8 lanes: the Arc 140T; issue #5, its xw_peak of 2026-11-13: packAW 32 x 16 against the default,
   // the 27B's FFN shapes, 4K 23.4 -> 25.0 TOPS, 512 21.6 -> 24.5): the activations (1), the weights (2) or both (3)
@@ -154,11 +160,17 @@
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;
     return v;
   }
-  // ARC_GEMM_XW_2D=1 (2026-11-17, opt-in, 16 lanes with the 2D block loads): gemm_xw.cl -DXW_2D, the same bytes in the
+  // ARC_GEMM_XW_2D (2026-11-17, 16 lanes with the 2D block loads): gemm_xw.cl -DXW_2D, the same bytes in the
   // same DPAS operands in fewer messages (the 32 activation rows in one read, a column group's weights in one, C in
   // 8-row blocks): 16 -> 9 a chunk in the loop at 32 x 64, the epilogue's 128 -> 16. Checked at start as every shape.
+  // On by default on discrete cards since 2026-11-17 (=0 off): a Pro B70's 27B 4K prompt 2,768.1 -> 2,853.2 tok/s,
+  // with the prefetch above 2,896.7, logits identical (joshdev-de, issue #27). iGPUs (the B390) opt-in, unmeasured
+  static bool xw_2d_env() {
+    static const bool v = getenv("ARC_GEMM_XW_2D") ? atoi(getenv("ARC_GEMM_XW_2D")) != 0 : !zrt::integrated();
+    return v;
+  }
   bool xw_2d() const {
-    static const bool v = getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0;
+    const bool v = xw_2d_env();
     return v && xw_lanes() == 16 && x2d_ && !xw_emu_ && !xw_2d_off_;
   }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
@@ -254,7 +266,7 @@
     if (it == known.end()) {
       bool ok = xw_check();
       if (!ok && xw_2d()) {  // (the 2D form differs or does not build: keep gemm_xw in its plain form, checked again)
-        zlog::eprintf("inferzero: ARC_GEMM_XW_2D=1: gemm_xw's 2D form differs from gemm.cl or does not build: without it "
+        zlog::eprintf("inferzero: ARC_GEMM_XW_2D: gemm_xw's 2D form differs from gemm.cl or does not build: without it "
                       "(please report)\n");
         xw_2d_off_ = true;
         off2d[key] = true;
@@ -266,12 +278,13 @@
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
                 xw_nc() == 6 ? "; a width's rest after its 96s 64 columns wide" : "");
         if (xw_2d())
-          zlog::eprintf("inferzero: gemm_xw loads and stores in 2D blocks (ARC_GEMM_XW_2D=1)\n");
+          zlog::eprintf("inferzero: gemm_xw loads and stores in 2D blocks (ARC_GEMM_XW_2D, =0 off)\n");
         else if (getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0)
           zlog::eprintf("inferzero: ARC_GEMM_XW_2D=1 needs 16-lane XMX with 2D block loads: not used\n");
         if (!xw_pf_defs().empty())
           zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
-                        xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations", xw_pfd(), xw_pf());
+                        xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations",
+                        xw_lanes() == 16 ? xw_pfd_v() : xw_pfd(), xw_pf_eff());
         if (xw_wgx() > 1 || xw_lock())
           zlog::eprintf("inferzero: gemm_xw work-groups of up to %d column sub-groups%s\n", xw_wgx(),
                         xw_lock() ? ", in step each 64-value chunk (ARC_GEMM_XW_LOCK=1)" : "");
