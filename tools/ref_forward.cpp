@@ -1198,10 +1198,12 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
   const int64_t pad_c = pad_id >= 0 && pad_id < (int)tmap.size() ? tmap[pad_id] : 0;
   auto engram_rows = [&](int e, int p, std::vector<int64_t>& rows) {
     std::vector<uint64_t> tk(ngram);
+    bool blocked = false;  // (llama.cpp's engram_hash: a blocked shift blocks every longer one too; audit 2026-11-18)
     for (int k = 0; k < ngram; ++k) {
       const int q = p - k;
       const int64_t c = q >= 0 && toks[q] >= 0 && toks[q] < (int)tmap.size() ? tmap[toks[q]] : -1;
-      tk[k] = (uint64_t)(c >= 0 ? c : pad_c);
+      blocked = blocked || c < 0;
+      tk[k] = (uint64_t)(blocked ? pad_c : c);
     }
     rows.assign(ncol, 0);
     uint64_t r = tk[0] * (uint64_t)mults[(size_t)e * ngram];

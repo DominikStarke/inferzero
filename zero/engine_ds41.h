@@ -338,16 +338,21 @@
     }
     // Engram: per token, its compressed id and those of the ngram - 1 before it (missing or out of range: the pad id)
     const int ng = d.ngram, nc = d.ncol, PD = d.PD;
-    auto cid = [&](int id) -> int64_t { return id >= 0 && id < (int)d.tmap.size() && d.tmap[id] >= 0 ? d.tmap[id] : d.pad_c; };
     const size_t prb = ple_table_->nbytes / ple_table_->dims[1];
     for (size_t e = 0; e < d.ple_layers.size(); ++e) {
 #pragma omp parallel for if (T > 16)
       for (int t = 0; t < T; ++t) {
         uint64_t tk[8];
+        // (as llama.cpp's engram_hash, the DeepSeek reference: once a shift is blocked, by the sequence start or a dead
+        //  token (outside the map, or mapped below 0), every longer one is the pad too. The same rows as before on any
+        //  text without a dead token inside it; audit 2026-11-18)
+        bool blocked = false;
         for (int k = 0; k < ng; ++k) {
           const int j = t - k;
           const int id = j >= 0 ? tokens[j] : (-j - 1 < (int)ds_hist_.size() ? ds_hist_[-j - 1] : -1);
-          tk[k] = (uint64_t)(id >= 0 || j >= 0 ? cid(id) : d.pad_c);
+          const bool dead = id < 0 || id >= (int)d.tmap.size() || d.tmap[id] < 0;
+          blocked = blocked || dead;
+          tk[k] = (uint64_t)(blocked ? d.pad_c : d.tmap[id]);
         }
         uint64_t r = tk[0] * (uint64_t)d.mult[e * ng];
         for (int o = 1; o < ng; ++o) {

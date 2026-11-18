@@ -440,6 +440,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       h8_auto_ = false;
       if (!h8_env()) h8_ = false;
     }
+    // (H8 turned off by a check above after build_kernels: its float copy (h8f_off_, the -DH8F of the four quantization
+    //  kernels) is not read by anything any more. Dropped, and the kernels built again without it, before
+    //  alloc_buffers sizes aq_: ~0.35 GB of the 27B back, and one float write a value less. The int8 rows the GEMMs
+    //  read are the same. Audit 2026-11-18)
+    if (!h8_ && h8f_off_) {
+      h8f_off_ = 0;
+      h8f_defs_.clear();
+      if (!opt.dry) build_kernels();
+    }
     if (p140_) {
       static std::once_flag said;
       std::call_once(said, [] {

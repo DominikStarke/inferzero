@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-18: IQ3T reads ahead, Flash Next precise mode's 32-row fix, DeepSeek Engram as llama.cpp
+
+- **`ARC_IQ3S_TILE=1` v2 (opt-in):** the planar IQ3_S GEMV now issues every row's loads of a pair before decoding
+  any of them. With `GEMV_PF` / `GEMV_DB` (on by default on discrete cards) it also loads the next pair while this
+  one decodes, as the default path does. The first form waited for each row's loads in turn: a Pro B70's 27B was
+  35.24 -> 32.7 tok/s (issue #27). Bit-identical on the laptop's 27B: generation, MTP, H8, the 140T preset, and
+  with `ARC_GEMV_PF=1` / `ARC_GEMV_DB=1` forced on. The laptop's speed is unchanged (5.52 against 5.46-5.48 tok/s,
+  no read-ahead there); the B70 decides.
+- **Flash Next, `ARC_HCF_ROWS=32` / `64` now exact:** the f32 mixer GEMM's store loop wrote only the first 16 rows
+  of a work-group. Now 32 rows are bit-identical to 16. The default stays 16: on the laptop, precise mode's 2,048
+  prompt was 91.6 / 90.4 tok/s at 16 and 75.7 / 75.1 at 32.
+- **DeepSeek-V4.1's Engram hash as llama.cpp's:** once a shift reaches the sequence start or a token outside the
+  map, every longer shift uses the pad id too (before, only that one shift did). The f32 reference
+  (`tools/ref_forward`) changed the same way. The tiny test model, 300 tokens, against the reference: KL 0.00208.
+  Text without such a token inside it gets the same rows as before.
+- **H8 turned off after its kernels were built** (an XMX check failed, or the 140T preset without XMX): the
+  float copy of the activations is dropped and the kernels are built again without it. The laptop's 27B with
+  `ARC_140T=1` gives logits bit-identical to the default.
+- Measured, not kept: `ARC_XPRED` (the next layer's experts guessed from this layer's input and read from the SSD
+  early). Flash Next on the laptop went 8.39 / 8.20 -> 7.43 / 7.40 tok/s: 27 % of the guesses were used, and the
+  hit rate fell from 94.4 to 91.3 %. Removed.
+
 ## 2026-11-18: Flash Next's mixer quantizes its own output, one launch fewer per mixer
 
 - **`hc_up1` quantizes the block input itself** (`-DHC_UPQ`), instead of a separate `quant_rows` launch after it: 97

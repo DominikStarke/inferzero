@@ -979,21 +979,48 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   //      registers, the pair's qs / signs / qh / meta in four block reads, no local-memory window and no barriers;
   //      decode32's IQ3T expression on the same bytes and the dot products below: the same results bit for bit.
   //      (laptop, gemv_bench, 27B IQ3_S matrices: 66-68 -> 70-77 GB/s.) GEMV_PF / GEMV_DB tune the window: not here
+  //      (v2, 2026-11-18: the reads ahead of the decode, as the default path's GEMV_PF / GEMV_DB do on discrete cards:
+  //       every row's four reads of a pair issued before any row is decoded, and with -DGEMV_PF / -DGEMV_DB the next
+  //       pair's too while this one decodes. The first form waited for each row's loads in turn: a Pro B70's
+  //       27B 35.24 -> 32.7 tok/s, issue #27. The same bytes and arithmetic: bit-identical)
   {
     const int sbl = lane / 8, ibl = lane % 8;
+#if defined(GEMV_PF) || defined(GEMV_DB)
+#define IQ3T_AHEAD 1
+#endif
+    uint2 Q[GROWS];
+    uint S4[GROWS], H1[GROWS], MB1[GROWS];
+#define IQ3T_LOAD(QA, SA, HA, MA, SP)                                                         \
+  _Pragma("unroll") for (int r = 0; r < GROWS; ++r) {                                         \
+    __global const uchar* pr = raw + ((size_t)min(r0 + r, N - 1) * nsb + (SP)) * BBP;          \
+    QA[r] = intel_sub_group_block_read2((__global const uint*)pr);                            \
+    SA[r] = intel_sub_group_block_read((__global const uint*)(pr + 128));                     \
+    HA[r] = intel_sub_group_block_read_uc(pr + 192);                                          \
+    MA[r] = intel_sub_group_block_read_uc(pr + 208);                                          \
+  }
+#ifdef IQ3T_AHEAD
+    uint2 Qn[GROWS];
+    uint S4n[GROWS], H1n[GROWS], MB1n[GROWS];
+    IQ3T_LOAD(Qn, S4n, H1n, MB1n, 0)
+#endif
     for (int sp = 0; sp < nsb; sp += 2) {
       const int b = sp * 8 + lane;  // this lane's 32-block within the row
       const bool has = sp + lane / 8 < nsb;
+#ifdef IQ3T_AHEAD
+#pragma unroll
+      for (int r = 0; r < GROWS; ++r) Q[r] = Qn[r], S4[r] = S4n[r], H1[r] = H1n[r], MB1[r] = MB1n[r];
+      if (sp + 2 < nsb) { IQ3T_LOAD(Qn, S4n, H1n, MB1n, sp + 2) }  // (the next pair's, in flight during this decode)
+#else
+      IQ3T_LOAD(Q, S4, H1, MB1, sp)
+#endif
       const uint8 a8 = has ? vload8(0, (__global const uint*)(aq + 32 * b)) : (uint8)0;
       const float sa = has ? asc[(size_t)b * M] : 0.0f;
 #pragma unroll
       for (int r = 0; r < GROWS; ++r) {
-        const int n = min(r0 + r, N - 1);
-        __global const uchar* pr = raw + ((size_t)n * nsb + sp) * BBP;  // (the pair: 224 bytes, 32-byte aligned)
-        const uint2 q = intel_sub_group_block_read2((__global const uint*)pr);
-        const uint sg4 = intel_sub_group_block_read((__global const uint*)(pr + 128));
-        const uint h = intel_sub_group_block_read_uc(pr + 192);
-        const uint mb = intel_sub_group_block_read_uc(pr + 208);
+        const uint2 q = Q[r];
+        const uint sg4 = S4[r];
+        const uint h = H1[r];
+        const uint mb = MB1[r];
         const uint scb = sub_group_shuffle(mb, sbl * 4 + ibl / 2);
         const uint dl = sub_group_shuffle(mb, 8 + 2 * sbl), dh = sub_group_shuffle(mb, 9 + 2 * sbl);
         const float d = f16(dl | (dh << 8));

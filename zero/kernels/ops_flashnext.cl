@@ -276,7 +276,7 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
   }
   if (n < N)
 #pragma unroll
-    for (int t = 0; t < HCF_TM; ++t)
+    for (int t = 0; t < HCF_ROWS; ++t)
       if (m0 + t < M) C[(size_t)(m0 + t) * ldc + n] = acc[t];
 }
 
