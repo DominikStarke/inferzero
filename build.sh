@@ -6,7 +6,8 @@
 #   ./build.sh                 every program
 #   ./build.sh runz serverz    only these
 # (ref_forward is built without -ffast-math, as the Windows build keeps it off /fp:fast: it is the reference)
-# Needs g++ 13 or newer (C++20) and an x86-64 CPU with AVX2 / FMA / F16C (as the Windows build). Nothing else at
+# Needs g++ 13 or newer (C++20) and an x86-64 CPU; with AVX2 / FMA / F16C (as the Windows build) or, without them,
+# a build for this CPU alone (-march=native, below). Nothing else at
 # build time: Level Zero and OpenCL are loaded at run time (libze_loader.so.1, libOpenCL.so.1).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -21,7 +22,17 @@ done
 command -v "$CXX" >/dev/null || { echo "build.sh: $CXX not found (sudo apt install g++)" >&2; exit 1; }
 mkdir -p bin
 # (-rdynamic: the crash report's function names; -include: the CPU check and the log, as build.ps1's /FI)
-FLAGS=(-std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -rdynamic -include src/cpu_check.h -include src/log.h -I third_party -pthread)
+# (the CPU: AVX2 / FMA / F16C as the release packages; a CPU without them (Ivy Bridge, an older Xeon with an A770)
+#  gets -march=native, so the programs use what it has and src/cpu_check.h checks just that; ThatGuy-Bob, issue
+#  #50. INFERZERO_MARCH=<arch> sets it, e.g. INFERZERO_MARCH=ivybridge for another machine)
+ARCH=(-mavx2 -mfma -mf16c)
+if [ -n "${INFERZERO_MARCH:-}" ]; then
+  ARCH=(-march="$INFERZERO_MARCH")
+elif [ -r /proc/cpuinfo ] && ! { grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo; }; then
+  ARCH=(-march=native)
+  echo "build.sh: this CPU has no AVX2 / FMA: built for it alone (-march=native), not for other machines"
+fi
+FLAGS=(-std=c++20 -O2 "${ARCH[@]}" -fopenmp -rdynamic -include src/cpu_check.h -include src/log.h -I third_party -pthread)
 # (-ldl: dlopen lives in libdl before glibc 2.34, e.g. Debian 11 / RHEL 8; harmless on newer systems)
 LIBS=(-ldl)
 # (a package's bin/PREBUILT.txt names its release; a build here is no longer that release)

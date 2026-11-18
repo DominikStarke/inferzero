@@ -15,8 +15,25 @@
 namespace inferzero_cpu {
 inline bool has_avx2() {
 #ifndef _WIN32
-  // (GCC / Clang: libgcc's CPU model, which counts AVX only when the OS saves the registers, as the xgetbv test below)
-  return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+  // (GCC / Clang: libgcc's CPU model, which counts AVX only when the OS saves the registers, as the xgetbv test below.
+  //  What this build was compiled for, not AVX2 always: build.sh builds for an older CPU with -march=native (issue #50))
+  bool ok = true;
+#ifdef __AVX__
+  ok = ok && __builtin_cpu_supports("avx");
+#endif
+#ifdef __AVX2__
+  ok = ok && __builtin_cpu_supports("avx2");
+#endif
+#ifdef __FMA__
+  ok = ok && __builtin_cpu_supports("fma");
+#endif
+#ifdef __F16C__
+  ok = ok && __builtin_cpu_supports("f16c");
+#endif
+#ifdef __AVX512F__
+  ok = ok && __builtin_cpu_supports("avx512f");
+#endif
+  return ok;
 #else
   int r[4] = {};
   __cpuid(r, 0);
@@ -32,8 +49,13 @@ inline bool has_avx2() {
 struct Check {
   Check() {
     if (has_avx2()) return;
+#ifndef _WIN32
+    fputs("inferzero: these programs were built for a CPU with instructions this one lacks (the packages: AVX2 and FMA, "
+          "Haswell / Zen or newer). Build them on this machine with build.sh: it builds for the CPU it runs on.\n", stderr);
+#else
     fputs("inferzero needs a CPU with AVX2 and FMA (Intel Core 4th generation / Haswell or newer, AMD Zen or newer); "
           "this one has none, so the programs cannot run here.\n", stderr);
+#endif
     fflush(stderr);
     std::_Exit(3);
   }

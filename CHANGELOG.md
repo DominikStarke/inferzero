@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-19: Linux builds for CPUs without AVX2
+
+- **`build.sh` on a CPU without AVX2 / FMA builds for that CPU** (`-march=native`) and says so, instead of a build
+  whose start-up check stopped it (ThatGuy-Bob, issue #50: an E5-2697 v2, Ivy Bridge, with an A770 / A750). The
+  engine uses no AVX2 code of its own; its CPU side works on what the compiler gives it. `src/cpu_check.h` on Linux
+  now checks the instructions the build was compiled for, not AVX2 always. `INFERZERO_MARCH=<arch>` picks another
+  target. The release packages are unchanged (AVX2 / FMA / F16C).
+
 ## 2026-11-19: setup's 35B 2-bit GSQ install fixed
 
 - **`setup.cmd` with `35b-gsq` failed after its download** ("Cannot find drive. A drive with the name '@{key=4b; ...'",
