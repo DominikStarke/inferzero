@@ -28,6 +28,7 @@ struct GpuWeight {
   uint32_t type = 0;  // GGUF type of the raw rows (BF16/F16/F32 matrices are requantized to Q8_0)
   int N = 0, K = 0;
   cl_mem raw = nullptr;               // raw GGUF rows
+  bool iq3t = false;                  // (IQ3_S rows in pairs of planes, ARC_IQ3S_TILE: its kernels built -DIQ3T)
   cl_mem wq = nullptr, wh = nullptr;  // resident GEMM form (W8, or repacked Q8_0); null = decode just in time
   int gemm_qtype = 0;                 // zero/kernels/gemm.cl QTYPE
   int role = 0;                       // just-in-time W8 staging slot (one per matrix role within a layer)
@@ -1001,8 +1002,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     events_.clear();
   }
 
-  void decode_w8(const GpuWeight& w, cl_mem dq, cl_mem dh) { decode_w8(w.raw, w.type, w.N, w.K, dq, dh); }
-  void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh) {
+  void decode_w8(const GpuWeight& w, cl_mem dq, cl_mem dh) { decode_w8(w.raw, w.type, w.N, w.K, dq, dh, w.iq3t); }
+  // (iq3t: the rows tiled, ARC_IQ3S_TILE; the experts (engine_moe.h) never are)
+  void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh, bool iq3t = false) {
     // (the W8 layout is in groups of 16 rows: a partial last group would write past w8_bytes_q / w8_bytes_h)
     if (N % 16) throw std::runtime_error("decode_w8: N = " + std::to_string(N) + " is not a multiple of 16");
     // big-codebook types decode faster per superblock with the codebook in local memory; the rest per 32-block
@@ -1021,13 +1023,13 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const bool sl = !w8_requant(type) && nsb <= 16 && N % 16 == 0 &&
                     16 * nsb * raw_padded_sb_bytes(type) <= 32768 && type != GGML_IQ1_M && type != GGML_IQ1_S;
     if (sl) {
-      cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type) + " -DSL_NSB=" + std::to_string(nsb), "decode_w8_sl");
+      cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type) + " -DSL_NSB=" + std::to_string(nsb) + (iq3t ? " -DIQ3T" : ""), "decode_w8_sl");
       set_args(k, 0, raw, N, K, tabs_, dq, dh);
       size_t g1 = (size_t)N * nsb, l1 = (size_t)16 * nsb;
       run(nm.c_str(), k, 1, &g1, &l1);
       return;
     }
-    cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type), vb ? "decode_w8_vb" : "decode_w8_sb");
+    cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type) + (iq3t ? " -DIQ3T" : ""), vb ? "decode_w8_vb" : "decode_w8_sb");
     set_args(k, 0, raw, N, K, tabs_, dq, dh);
     size_t gws[2] = {(size_t)N, (size_t)K / 256}, lws[2] = {lx, 1};
     run(nm.c_str(), k, 2, gws, lws);
@@ -1042,6 +1044,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   // gemv_v / gemv_mt_v (zero/kernels/decode.cl: weights loaded straight into registers, bit-identical to gemv): for IQ4_XS,
   // whose codebook decoding made gemv compute-bound, and Q6_K output heads; other types are as fast or faster in gemv.
+  // (the define of a weight's kernels for its raw layout: tiled IQ3_S rows, ARC_IQ3S_TILE, engine_load.h upload_padded)
+  static std::string iq3t_def(const GpuWeight& w) { return w.iq3t ? " -DIQ3T" : ""; }
   static bool gemv_v_ok(const GpuWeight& w) {
     // (measured per type with bench/gemv_bench on the regrouped GPU forms; IQ3_S stays faster in gemv)
     return (w.type == GGML_IQ4_XS || w.type == GGML_Q4_0 || w.type == GGML_IQ3_XXS || w.type == GGML_IQ2_XXS ||
@@ -1170,7 +1174,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
   int gemv1_rows(const GpuWeight& w, bool& vk) const {
     static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
-    vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S);
+    vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S && !w.iq3t);  // (tiled IQ3_S: gemv only, IQ3T)
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
@@ -1183,13 +1187,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (!on || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
         &g == &lm_head_ || &u == &lm_head_)
       return false;
+    if (g.iq3t != u.iq3t) return false;  // (one kernel for both: one layout, ARC_IQ3S_TILE)
     bool vk = false;
     const int grows = gemv1_rows(g, vk);  // (matmul1's kernel and rows for one of the matrices)
     if (g.N % grows) return false;  // (the up rows must start a sub-group of their own)
     int N = g.N, K = g.K, M = Mp, c_off = 0, a = 0;
     rd_bytes += raw_bytes(g) + raw_bytes(u);
     cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(g.type) + " -DGROWS=" + std::to_string(grows) +
-                                       head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2",
+                                       head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2" + iq3t_def(g),
                          vk ? "gemv_v" : "gemv");
     set_args(k, 0, g.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a, u.raw);
     const size_t sgs = (size_t)N / grows, l1 = vk ? 256 : xe2_gemv_wg(sgs);  // (the work-group of one matrix's launch)
@@ -1215,7 +1220,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       static const int gv_probe = getenv("ARC_GV_PROBE") ? atoi(getenv("ARC_GV_PROBE")) : 0;
       const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
       cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) + probe_def +
-                                         (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) + (vk ? std::string() : xe2_gemv_pf()),
+                                         (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) + (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w),
                            vk ? "gemv_v" : "gemv");
       q2_fused_ = q2_fuse_;
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);
@@ -1234,7 +1239,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       const int tb = cur_T_;
       // (Qwen3-ASR's Q8_0 in two-pass mode, 2-4 rows (batched parts): gemv_mt_v, both passes over one read of the
       //  weights (gemv_mt has no -DQ2F: two launches, every matrix read twice))
-      const bool vk = gemv_v_ok(w) || w.type == GGML_IQ3_S || (hp.qwen3 && w.type == GGML_Q8_0 && q2_fuse_ && a <= 1);
+      // (tiled IQ3_S, ARC_IQ3S_TILE: gemv_mt with the IQ3T decode; gemv_mt_v reads one superblock a lane)
+      const bool vk = gemv_v_ok(w) || (w.type == GGML_IQ3_S && !w.iq3t) || (hp.qwen3 && w.type == GGML_Q8_0 && q2_fuse_ && a <= 1);
       int gr = vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : 4;
       // Below 6 tokens (MTP verification of prose: 2-3 rows) 4 rows per sub-group for the codebook types and for long
       // rows (K >= 8192, the FFN down projection), Q4_K / IQ4_XS short rows 2: 27B, bench/gemv_bench, 3 tokens: gate
@@ -1253,7 +1259,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       cl_kernel k = kernel("decode", xe2_gemv_mt_grf() + "-DQT=" +
                                          std::to_string(w.type) + " -DGROWS=" + std::to_string(gr) + " -DTB=" +
                                          std::to_string(fuse ? 2 * tb : tb) + head_defs(w) +
-                                         (fuse ? " -DQ2F" + q2_defs_ : std::string()),
+                                         (fuse ? " -DQ2F" + q2_defs_ : std::string()) + iq3t_def(w),
                            vk ? "gemv_mt_v" : "gemv_mt");
       q2_fused_ = fuse;
       int N = w.N, K = w.K, M = Mp, T = cur_T_;

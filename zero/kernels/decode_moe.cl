@@ -1,5 +1,8 @@
 // Part of the decode kernels (zero/kernels/decode*.cl, KernelParts in zero/clrt.h): built after decode.cl, whose
 // decoders it uses. The mixture-of-experts kernels on the raw GGUF expert rows (single tokens and prompt chunks).
+#ifdef IQ3T
+#error "IQ3T: the experts keep the plain layout (ARC_IQ3S_TILE repacks dense weights only)"
+#endif
 
 // ---- Mixture-of-experts on standard GGUF expert tensors (Unsloth / llama.cpp quantizations of Qwen3.5 / 3.6 MoE):
 // the expert matrices [NE][N][K] of one type, in the GPU raw form. Same slots and tiles as kernels/moe.cl (tiles of

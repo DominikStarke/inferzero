@@ -112,6 +112,18 @@ inline void ar4_unpack(uint4 q, uint* w) {
 #endif
 // superblock size in the padded GPU raw form (multiple of 8 bytes)
 #define BBP ((BB + 7) / 8 * 8)
+// (-DIQ3T: IQ3_S rows in pairs of superblocks repacked as planes; decode32's IQ3_S branch says how. Only IQ3_S, and
+//  only the kernels that were taught it: the others stop at the build, below)
+#if defined(IQ3T) && (QT != IQ3_S || BBP != 112)
+#error "IQ3T: IQ3_S only"
+#endif
+// a superblock s's 32-block ib as decode32 takes it: (the superblock's bytes, ib), or with IQ3T (its pair's first
+// byte, 8 x (s % 2) + ib); p the superblock's own address in a row that starts at an even superblock
+#ifdef IQ3T
+#define IQ3_AT(p, s, ib) ((const uchar*)(p) - ((s) & 1) * BBP), (8 * ((s) & 1) + (ib))
+#else
+#define IQ3_AT(p, s, ib) (const uchar*)(p), (ib)
+#endif
 
 inline uint rd16(const uchar* p) { return (uint)p[0] | ((uint)p[1] << 8); }
 inline uint rd32(const uchar* p) { return (uint)p[0] | ((uint)p[1] << 8) | ((uint)p[2] << 16) | ((uint)p[3] << 24); }
@@ -397,6 +409,27 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
       w[2 * l + 1] = apply_signs4(grid4w(grid, p[8 * ib + 2 * l + 1]), sg >> 4);
     }
   }
+#elif QT == IQ3_S && defined(IQ3T)
+  // -DIQ3T (ARC_IQ3S_TILE, 2026-11-17): the rows in pairs of superblocks repacked as planes (engine_load.h
+  // upload_padded): p is the pair's first byte and ib its 32-block 0..15 (8 x superblock + block). Planes of the
+  // pair's 224 bytes: qs at 0 (block L's 8 bytes as words L and 16 + L), signs at 128 (word L), qh at 192 (byte L),
+  // scales at 208 (4 bytes a superblock), d at 216 (2 bytes a superblock). The same bytes as below, the same values
+  {
+    const int L = ib, hb = L / 8, b8 = L % 8;
+    d = f16(rd16(p + 216 + 2 * hb));
+    sc0 = sc1 = 1 + 2 * ((p[208 + 4 * hb + b8 / 2] >> (4 * (b8 % 2))) & 0xF);
+    const uint h = p[192 + L];
+    const uchar qb[8] = {p[4 * L], p[4 * L + 1], p[4 * L + 2], p[4 * L + 3],
+                         p[64 + 4 * L], p[65 + 4 * L], p[66 + 4 * L], p[67 + 4 * L]};
+#pragma unroll
+    for (int l = 0; l < 4; ++l) {
+      const uint g1 = qb[2 * l] | ((h << (8 - 2 * l)) & 256);
+      const uint g2 = qb[2 * l + 1] | ((h << (7 - 2 * l)) & 256);
+      const uint sg = p[128 + 4 * L + l];
+      w[2 * l] = apply_signs4(grid4w(grid, g1), sg & 0xF);
+      w[2 * l + 1] = apply_signs4(grid4w(grid, g2), sg >> 4);
+    }
+  }
 #elif QT == IQ3_S
   d = f16(rd16(p + BB - 2));
   {
@@ -524,6 +557,30 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
   if (n >= N) return;
   // the superblock into registers with 8-byte vector loads, decoded from there (byte-wise reads of global memory
   // made decoding several times slower than reading the weights)
+#ifdef IQ3T
+#if defined(XCACHE)
+#error "IQ3T: not for experts"
+#endif
+  // (this superblock's parts of its pair (superblock hb of it), loaded into superblock 0's places of a pair-shaped
+  //  copy, so the decode below reads it as lanes 0..7 at offsets the unrolled loop knows: registers, where a copy of
+  //  the whole pair indexed by s % 2 went to private memory, 8 KB a thread, ocloc bmg)
+  uint sbu[2 * BBP / 4];
+  {
+    const int hb = s & 1;
+    __global const uint* pr = (__global const uint*)(raw + ((size_t)n * nsb + (s & ~1)) * BBP);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+      sbu[i] = pr[8 * hb + i];             // qs, lanes' first words
+      sbu[16 + i] = pr[16 + 8 * hb + i];   // qs, second words
+      sbu[32 + i] = pr[32 + 8 * hb + i];   // signs
+    }
+    sbu[48] = pr[48 + 2 * hb];             // qh, the superblock's 8 bytes
+    sbu[49] = pr[48 + 2 * hb + 1];
+    sbu[52] = pr[52 + hb];                 // its scales
+    sbu[54] = (pr[54] >> (16 * hb)) & 0xFFFF;  // its d, in the low half
+  }
+  const uchar* p = (const uchar*)sbu;
+#else
   uint sbu[BBP / 4];
   {
 #ifdef XCACHE
@@ -539,6 +596,7 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
     }
   }
   const uchar* p = (const uchar*)sbu;
+#endif
   __global uint* hd = wh + ((size_t)g * nsb + s) * HSTR * GL;
 #if QT == Q2_K || QT == Q4_K || QT == Q5_K
   // Types with per-block mins (w = d*sc*q - dmin*m, q unsigned) are requantized to signed int8 so they can use
@@ -600,7 +658,7 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
     uint w[8];
     int sc0, sc1, mn0, mn1;
     float d, dmin;
-    decode32(p, ib, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+    decode32(p, ib, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);  // (IQ3T: the copy is superblock 0 of a pair)
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
 #pragma unroll
     for (int k = 0; k < 8; ++k) dst[k * GL] = w[k];
@@ -687,6 +745,9 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
 #ifdef H8D_PRIV
   // (before 2026-11-14, -DH8D_PRIV: each lane loads its whole superblock into registers, of which it decodes one or two
   //  32-blocks: the work-group fetched every superblock 4 (HB 1024) or 8 (HB 512) times, in scattered 8-byte loads)
+#ifdef IQ3T
+#error "IQ3T: not with H8D_PRIV (one superblock's copy; its bytes are spread over its pair)"
+#endif
   barrier(CLK_LOCAL_MEM_FENCE);
   uint sbu[BBP / 4];
   {
@@ -719,7 +780,7 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
     uint w[8];
     int sc0, sc1, mn0, mn1;
     float d, dmin;
-    decode32(p, ib0 + h, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+    decode32(IQ3_AT(p, s, ib0 + h), grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
 #pragma unroll
     for (int k = 0; k < 8; ++k) {
       // (the W8 header's bytes as h8r_load reads them: per-32 layouts the first 16-block's scale, per-16 each half's)
@@ -805,7 +866,7 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
     uint w[8];
     int sc0, sc1, mn0, mn1;
     float d, dmin;
-    decode32(p, ib, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+    decode32(IQ3_AT(p, s, ib), grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
 #pragma unroll
     for (int k = 0; k < 8; ++k) dst[k * GL] = w[k];
@@ -913,6 +974,54 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 #pragma unroll
   for (int r = 0; r < GROWS; ++r) acc2[r] = 0.0f;
 #endif
+#if defined(IQ3T) && !defined(Q2F) && !defined(GV_PROBE) && !defined(GU2)
+  // ---- IQ3_S in pairs of planes (ARC_IQ3S_TILE, 2026-11-17; bench\gemv_iq3p.cl): each lane's bytes straight into
+  //      registers, the pair's qs / signs / qh / meta in four block reads, no local-memory window and no barriers;
+  //      decode32's IQ3T expression on the same bytes and the dot products below: the same results bit for bit.
+  //      (laptop, gemv_bench, 27B IQ3_S matrices: 66-68 -> 70-77 GB/s.) GEMV_PF / GEMV_DB tune the window: not here
+  {
+    const int sbl = lane / 8, ibl = lane % 8;
+    for (int sp = 0; sp < nsb; sp += 2) {
+      const int b = sp * 8 + lane;  // this lane's 32-block within the row
+      const bool has = sp + lane / 8 < nsb;
+      const uint8 a8 = has ? vload8(0, (__global const uint*)(aq + 32 * b)) : (uint8)0;
+      const float sa = has ? asc[(size_t)b * M] : 0.0f;
+#pragma unroll
+      for (int r = 0; r < GROWS; ++r) {
+        const int n = min(r0 + r, N - 1);
+        __global const uchar* pr = raw + ((size_t)n * nsb + sp) * BBP;  // (the pair: 224 bytes, 32-byte aligned)
+        const uint2 q = intel_sub_group_block_read2((__global const uint*)pr);
+        const uint sg4 = intel_sub_group_block_read((__global const uint*)(pr + 128));
+        const uint h = intel_sub_group_block_read_uc(pr + 192);
+        const uint mb = intel_sub_group_block_read_uc(pr + 208);
+        const uint scb = sub_group_shuffle(mb, sbl * 4 + ibl / 2);
+        const uint dl = sub_group_shuffle(mb, 8 + 2 * sbl), dh = sub_group_shuffle(mb, 9 + 2 * sbl);
+        const float d = f16(dl | (dh << 8));
+        const int sc0 = 1 + 2 * ((scb >> (4 * (ibl % 2))) & 0xF), sc1 = sc0;
+        const uint qb[8] = {q.x & 0xFF, (q.x >> 8) & 0xFF, (q.x >> 16) & 0xFF, q.x >> 24,
+                            q.y & 0xFF, (q.y >> 8) & 0xFF, (q.y >> 16) & 0xFF, q.y >> 24};
+        uint w[8];
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+          const uint g1 = qb[2 * l] | ((h << (8 - 2 * l)) & 256);
+          const uint g2 = qb[2 * l + 1] | ((h << (7 - 2 * l)) & 256);
+          const uint sg = (sg4 >> (8 * l)) & 0xFF;
+          w[2 * l] = apply_signs4(grid4w(grid, g1), sg & 0xF);
+          w[2 * l + 1] = apply_signs4(grid4w(grid, g2), sg >> 4);
+        }
+        int lo = dot_4x8packed_ss_int(a8.s0, w[0]);
+        lo += dot_4x8packed_ss_int(a8.s1, w[1]);
+        lo += dot_4x8packed_ss_int(a8.s2, w[2]);
+        lo += dot_4x8packed_ss_int(a8.s3, w[3]);
+        int hi = dot_4x8packed_ss_int(a8.s4, w[4]);
+        hi += dot_4x8packed_ss_int(a8.s5, w[5]);
+        hi += dot_4x8packed_ss_int(a8.s6, w[6]);
+        hi += dot_4x8packed_ss_int(a8.s7, w[7]);
+        acc[r] += sa * d * (float)(sc0 * lo + sc1 * hi);
+      }
+    }
+  }
+#else
 #ifdef GEMV_DB
   uint nxt[WIN_CALLS];  // (the next window's words: step 0, row 0 first)
   {
@@ -989,7 +1098,7 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
       for (int i = 0; i < 8; ++i) w[i] = win[(lane * 8 + i) % WIN_U];
       sc0 = sc1 = 1; mn0 = mn1 = 0; d = 1.0f; dmin = 0.0f;
 #else
-      decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+      decode32(IQ3_AT((const uchar*)win + (lane / 8) * BBP, lane / 8, lane % 8), grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
 #endif
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
       int lo = dot_4x8packed_ss_int(a8.s0, w[0]);
@@ -1022,6 +1131,7 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 #endif
     }
   }
+#endif  // (the window form)
 #pragma unroll
   for (int r = 0; r < GROWS; ++r) {
 #ifdef Q2F
@@ -1242,6 +1352,16 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
     w[2 * l + 1] = apply_signs4(kt[2 * gi + 1], sg >> 4);
 #endif
   }
+#elif QT == IQ3_S && defined(IQ3T)
+  // (tiled rows, ARC_IQ3S_TILE: these per-lane loads of one superblock cannot read them; the engine takes gemv /
+  //  gemv_mt for such a weight. Every kernel of the file is built, so not an #error: a NaN scale, which no result
+  //  could hide, should one ever get here)
+  *d = NAN;
+  *dmin = 0.0f;
+  *sc0 = *sc1 = 1;
+  *mn0 = *mn1 = 0;
+#pragma unroll
+  for (int k = 0; k < 8; ++k) w[k] = 0;
 #elif QT == IQ3_S
   *d = f16(ps[(BB - 2) / 2]);
   const ushort4 qv = as_ushort4(vload2(ib, pu));
@@ -1637,7 +1757,7 @@ __kernel void gemv_mt(__global const uchar* raw, int N, int K, __global const ui
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
-      decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, grid, aux, w[r], &s0r[r], &s1r[r], &m0r[r], &m1r[r],
+      decode32(IQ3_AT((const uchar*)win + (lane / 8) * BBP, lane / 8, lane % 8), grid, aux, w[r], &s0r[r], &s1r[r], &m0r[r], &m1r[r],
                &dr[r], &dmr[r]);
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
     }

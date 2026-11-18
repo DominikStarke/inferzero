@@ -167,7 +167,9 @@
       return e == 1 || e == 2 || e == 4 || e == 8 ? e : 4;  // (4: the laptop 27B, 1,180 -> 953 (1) -> 876 ms (4), 2026-11-14)
     }();
     const int hb = h8_block(w.K);
-    cl_kernel k = kernel("decode", h8_grf() + "-DH8RDEC" + (d ? " -DH8_D" : "") + (priv ? " -DH8D_PRIV" : "") +
+    // (tiled IQ3_S rows, ARC_IQ3S_TILE: -DIQ3T, never with H8D_PRIV, whose one-superblock copy cannot hold a pair)
+    const bool pv = priv && !w.iq3t;
+    cl_kernel k = kernel("decode", h8_grf() + "-DH8RDEC" + (d ? " -DH8_D" : "") + (pv ? " -DH8D_PRIV" : "") + (w.iq3t ? " -DIQ3T" : "") +
                                        " -DH8DR=" + std::to_string(rb) + " -DQT=" +
                                        std::to_string(w.type) + " -DHB=" + std::to_string(hb) + " -DSRC=" +
                                        std::to_string(w.gemm_qtype) + (packed ? " -DXW_PACKW_OUT" : ""), "h8r_decode");
