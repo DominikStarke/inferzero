@@ -1092,7 +1092,7 @@ int main(int argc, char** argv) {
     }
     else if (a == "--alias") alias = next();
     else if (a == "--webui") so.webui = next();
-    else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.budget_given = true; }
+    else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.eo.w8_budget_set = true; so.budget_given = true; }
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
     else if (a == "--act256") so.eo.act32_all = false;
     else if (a == "--precise") precise = true;

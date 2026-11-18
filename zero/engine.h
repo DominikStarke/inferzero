@@ -75,6 +75,7 @@ struct EngineOptions {
   int chunk = 0;              // prompt tokens per forward step; 0 = auto
   int min_chunk = 0;          // at least this many (Gemma 4 images: one non-causal block of up to the image limit)
   double w8_budget_gb = 9.0;  // keep decoded W8 weights resident if raw + W8 fit in this budget
+  bool w8_budget_set = false;  // (--budget given: the Alchemist cards' preset then does not override it, plan_weights)
   bool act32_all = true;      // per-32 activation scales for every GEMM (false: only for the sensitive inputs)
   bool attn_int8 = true;      // int8 (DP4a) attention scores; false = f32 scores
   bool mtp = false;           // load the MTP (nextn) block for speculative decoding (mtp_draft / verify)

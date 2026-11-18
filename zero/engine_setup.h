@@ -312,6 +312,16 @@
     const double budget =
         opt.w8_budget_gb / (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0 ? opt.tp_size : 1);
     w8_resident = (tp_on() ? raw_s + w8_s : (double)(raw + w8)) / 1073741824.0 <= budget;
+    // (discrete cards with 8-lane XMX, the Alchemist A-series: the Arc 140T preset, which decodes the weights just in
+    //  time, rather than resident weights on DP4a, unless --budget was given. An A770's 4B 4K prompt 3,600 -> 4,821
+    //  tok/s with 3.98 GiB of buffers against 7.40, generation the same (hansong80, issue #35, release .02); the
+    //  laptop's 4B, the preset emulated against resident DP4a: KL 0.0039 over 2 x 4,096 tokens)
+    if (w8_resident && !opt.w8_budget_set && !tp_on() && !zrt::integrated() && p140_off_resident()) {
+      w8_resident = false;
+      if (!opt.dry)
+        zlog::eprintf("inferzero: the decoded weights are not kept resident: the Arc 140T preset is faster on this card "
+                      "(--budget %.0f keeps them)\n", opt.w8_budget_gb);
+    }
   }
 
   cl_kernel kernel(const std::string& which, const std::string& defs, const char* name) {

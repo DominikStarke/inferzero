@@ -438,7 +438,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--ppl-kl") ppl_kl = next();
     else if (a == "--ppl-ctx") ppl_ctx = atoi(next());
     else if (a == "--ppl-chunks") ppl_chunks = atoi(next());
-    else if (a == "--budget") eo.w8_budget_gb = atof(next());
+    else if (a == "--budget") eo.w8_budget_gb = atof(next()), eo.w8_budget_set = true;
     else if (a == "--gpus") gpus = std::max(1, atoi(next()));
     else if (!a.empty() && a[0] != '-' && text_prompt.empty()) text_prompt = a;  // PROMPT (special tokens parsed)
     else { zlog::eprintf("unknown option %s (--help: the options)\n", a.c_str()); return 1; }

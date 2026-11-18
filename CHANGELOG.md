@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-18: Alchemist cards take the Arc 140T preset for small models too
+
+- **On Arc A-series cards a dense Qwen model whose decoded weights would fit now runs the Arc 140T preset** (weights
+  decoded just in time into H8 on XMX) instead of keeping them resident for DP4a, unless `--budget` is given. An Arc
+  A770's Qwen3.5 4B 4K prompt 3,600 -> 4,821 tok/s (+34 %) with 3.98 GiB of buffers against 7.40, generation the same
+  (37.8 / 38.2 tok/s; hansong80, issue #35, release .02). On the laptop, the 4B through the emulated preset against its
+  resident DP4a path: KL 0.0039 over 2 x 4,096 tokens (perplexity 11.3685 / 11.3651). The log says so; `--budget 9`
+  (or any value) keeps the old choice. The 140T iGPU and the B-series are unchanged.
+
 ## 2026-11-18: Alchemist cards split the long H8 GEMMs as the Arc 140T does
 
 - **The Arc A-series (Alchemist) cuts the H8 prompt GEMMs over 8,192 values long into pieces of 17 superblocks**, as

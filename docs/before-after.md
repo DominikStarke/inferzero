@@ -80,6 +80,14 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, Alchemist: the preset over resident weights when `--budget` is not given:** an Arc A770 (hansong80,
+  issue #35, release .02), Qwen3.5 4B UD-Q4_K_XL 4K prompt: resident DP4a at chunk 4096 3,575-3,605 tok/s (7.40 GiB),
+  `--budget 0` (the preset) 4,819.6 / 4,820.8 (3.98 GiB); generation 38.17 / 37.80 tok/s. The same card: 9B
+  `ARC_GEMM_XW_WGX=1` 2,927-2,940 against WGX 2's 3,069-3,071 (+4.4 %), split 34 2,990-3,000 against 17's (+2.4 %),
+  chunk 8192 3,063-3,067 (no gain, +1.2 GiB); 27B one card 4K 1,177, generation 4.63 tok/s (52.5 GB/s, 19 %); over
+  both cards 1,126 / 11.75 tok/s (no peer access: 71.7 of each 79 ms token waits for the host sums). KL, the laptop's
+  4B, the emulated preset against resident DP4a: 0.0039 (max 4.37, same top 97.1 %).
+
 - **2026-11-18, Alchemist: `h8_splits` 17 superblocks a piece (34 before):** an Arc A770 (TheUniKian, issue #36,
   release .08), 27B IQ3_S 4K prompt, best of 3: default (34) 1,150.0 tok/s (`gemm_down` 822.9 ms, 128 launches),
   `ARC_GEMM_SPLIT=0` 1,154.7 (815.1, 64), `=17` 1,222.7 (622.9, 256), `ARC_GEMM_XW_WGX=4` 1,158.3 (down 853.0, up
