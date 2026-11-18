@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-18: `ARC_IQ3S_TILE=1`, opt-in: the 27B's IQ3_S rows repacked for the one-token GEMV
+
+- **For a B70 generation A/B** (plan G5, docs/arc-plan-2026-11-17.md). A dense matrix's IQ3_S rows are repacked once
+  at load, in place, as planes in pairs of superblocks: the same bytes in another order, no extra VRAM or RAM. The
+  one-token GEMV then reads each lane's bytes with block reads and no local window. Every other reader knows the
+  layout (`decode_w8_sb` / `_sl`, `h8r_decode`, `gemv_mt`, `gemv_gu`, the NPU's range decode). Experts are never
+  repacked.
+- Bit-identical: on and off, and off against the build before (the laptop's 4B and 27B, `--dump-logits`). The
+  laptop is bandwidth-bound: generation 4.13 / 4.49 tok/s off, 4.34 / 4.57 on, alternated, within its noise. The B70
+  is decode-bound, where the repack is meant to help (its FFN GEMVs at ~62 % of the bandwidth).
+
 ## 2026-11-18: the model list no longer logs "--ctx auto" as if the model were loaded again
 
 - **`serverz --ctx N`:** the model list (`/v1/models`, read when the web UI opens) works out every model's
