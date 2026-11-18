@@ -1,0 +1,24 @@
+# inferzero's server in a container: `docker compose up -d` in this folder, then http://127.0.0.1:8090/ (the web UI,
+# and the OpenAI API at /v1). Linux hosts with an Intel Arc GPU and its kernel driver (i915 or xe); the GPU runtime is
+# inside the image. Not tested yet in this form: please report on GitHub how it runs.
+services:
+  inferzero:
+    build:
+      context: .
+      args:
+        INFERZERO_RELEASE: latest   # or a release tag, e.g. 2026.11.18.05
+    image: inferzero:latest
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri           # the GPU (all of them: GPUS picks how many the model is split over); the
+                                    # container runs as root, which may open it without the render group
+    ports:
+      - "127.0.0.1:8090:8090"       # this machine only; "8090:8090" to let the network reach it
+    environment:
+      MODEL: 4b                     # a catalog key (4b, 9b, 27b, 35b, flash, g12, g31, e4b) or a .gguf path
+      GPUS: "1"
+      SERVER_ARGS: ""               # more serverz options, e.g. "--ctx 32768"
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # the models (shared with a host install)
+      - ${HOME}/.inferzero:/root/.inferzero                   # compiled kernels, expert files, settings
+      # (files written there belong to root on the host; a folder missing on the host is made by Docker)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-18: Docker and Kubernetes files (not tested yet)
+
+- **`docker/`:** a `Dockerfile` (Ubuntu 24.04, Intel's GPU runtime, a release's Linux package), a `compose.yaml`
+  (`docker compose up -d`: the GPU passed through, the models and compiled kernels kept on the host) and a
+  `kubernetes.yaml` (the GPU from Intel's device plugin, a volume for the cache). The container starts the launcher
+  with `MODEL`, `GPUS` and `SERVER_ARGS`; it downloads the model on the first start. See docs/install.md, Linux, step 6.
+
 ## 2026-11-18: a dense model that nearly fills a discrete card keeps more of its weights on it
 
 - **The memory kept free for the buffers and the context is now worked out from the model and the context asked**,

@@ -63,6 +63,20 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    `--service-name inferzero-test` and use that name in the printed commands.
    Use `--replace-service` only when you intend to replace an existing unit;
    replacement swaps the unit file itself rather than writing through a symlink.
+6. **In Docker (not tested yet):** [docker/](../docker) holds a `Dockerfile` (Ubuntu 24.04, Intel's GPU runtime from
+   the PPA, the latest release's Linux package) and a `compose.yaml`. The host needs only the GPU's kernel driver:
+   ```
+   cd docker
+   docker compose up -d
+   docker compose logs -f
+   ```
+   The web UI is then at `http://127.0.0.1:8090/`. `compose.yaml` sets the model (`MODEL: 4b`, a catalog key or a
+   `.gguf` path), `GPUS`, and `SERVER_ARGS`. It passes `/dev/dri` through and mounts the Hugging Face cache and
+   `~/.inferzero` (compiled kernels, expert files) from the host, so models and kernels are not fetched or built
+   again. The container runs as root, so the files it writes there belong to root on the host. On Kubernetes,
+   `docker/kubernetes.yaml` sets up a Deployment, a Service and a volume for the cache. The GPU comes from Intel's
+   device plugin (`gpu.intel.com/i915`), and the image must be pushed to your own registry first (the file says
+   how). Neither is tested yet: please report on GitHub how they run.
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
 reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks have Linux versions in bash: `bench/website_bench.sh`,
