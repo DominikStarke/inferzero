@@ -101,6 +101,7 @@ struct EngineOptions {
   // memory of its own: the free RAM less 16 GiB, shared by a split model's GPUs; an iGPU: none), 0 none
   double expert_ram_gb = -1;
   size_t stream_reserve = 0;  // bytes the automatic cache size leaves for GPU memory allocated later (image encoders)
+  int state_snaps = 0;  // recurrent-state snapshots the caller keeps per slot (serverz 3, runz none): plan_tight's room
   int slots = 1;  // conversations held at once (server --slots): each further one its own KV caches and states
   // the NPU next to the GPU for prompt chunks (zero/npu/engine_npu.h, --npu): 0 off, 1 on where it pays off (the Qwen3.8
   // 27B), 2 forced on every Qwen model; -1: the ARC_NPU environment variable (unset: off)

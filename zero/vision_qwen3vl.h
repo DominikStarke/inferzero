@@ -50,7 +50,7 @@ class VisionQwen3VL {
       for (int c = 0; c < 3 && c < (int)s->size(); ++c) std_[c] = (float)(*s)[c];
     // the GPU kernels want 16-multiples, heads of 64 (4B) or 72 dims (9B: 8 SIMD lanes of 9)
     hd_ = n_head > 0 ? n_embd / n_head : 0;
-    if (n_embd % 16 || n_ff % 16 || n_embd % n_head || (hd_ != 64 && hd_ != 72) || merge != 2 || 3 * patch * patch % 16)
+    if (n_head <= 0 || n_embd % 16 || n_ff % 16 || n_embd % n_head || (hd_ != 64 && hd_ != 72) || merge != 2 || 3 * patch * patch % 16)
       throw std::runtime_error("mmproj: this Qwen3-VL vision shape is not supported on the GPU yet (embedding " +
                                std::to_string(n_embd) + ", heads " + std::to_string(n_head) + ")");
     const GgufTensor& pe = f_.get("v.position_embd.weight");

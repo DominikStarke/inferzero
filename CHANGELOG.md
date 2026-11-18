@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-11-18: fixes from a review of the kernels, the failsafes and the headers
+
+A review of every kernel, the multi-GPU failsafes and the `.h` files, each finding checked in the code first. The
+iGPU path is bit-identical to the build before (4B and 27B, `--dump-logits`, every prompt and generated position).
+
+- **A dense model that nearly fills a discrete card** (today's automatic room, `plan_tight`):
+  - whether it counts as tight is decided by the old rule again. The new, smaller room was worked out for a tight
+    model's buffers (1,024-token chunks), but deciding by it let a model just under the old line come out not
+    tight: every weight on the card and 4,096-token chunks, out of memory. It also changed with the context, so the
+    server's `--ctx auto` probe and the real load could disagree;
+  - the room now only says how many of a tight model's weights go to RAM. It also counts the just-in-time staging
+    of every weight role, the layer-major residual, the asked `--chunk`, the MTP check's state, and the server's
+    three state snapshots per slot. For the 27B on a 12 GB card at 4K, `runz` keeps ~0.4 GiB more of the weights on
+    the card than the old 2.5 GiB rule; `serverz` keeps what the old rule kept, which is what it allocates.
+- **Multi-GPU, `ARC_TP_EVSUM=1` (opt-in):** a shard that fails releases its events at once. Before, GPU 0, whose
+  waits have no abort, stayed parked on them until the time limit, and the model faulted. A model held after a
+  fault releases them too, so the server's other users of GPU 0 (speech to text) are not left behind them. A
+  failed pass after such a release always loads the model again.
+- **The gemm_xw start check:** a GPU that hangs during it is reported as a hang, as in the other checks, not as
+  "the kernel differs", which turned gemm_xw off for the whole process.
+- **The XMX start check** frees its buffers on every way out (they stayed for the process).
+- **Flash Next's sparse attention:** a query whose selected blocks hold none of its keys gets 0, not NaN.
+- **Two-pass experts (Gemma 4, Flash Next `--precise`):**
+  - `ARC_G4_ONE=1` on an expert model no longer builds a broken kernel or doubles gate and up;
+  - a prompt chunk that `moe_rg` cannot take (`ARC_MOE_TM`, `ARC_MOE_RG_MIN`, an expert width not a multiple of
+    64) now runs both passes through the fused per-tile kernels, not one pass silently.
+- **A malformed model file** now gives an error instead of a crash: Flash Next PLE hash columns past the table, a
+  vision or audio encoder with 0 heads.
+- **The server:**
+  - special tokens in a bare string inside a content array are made plain text, as in a text part;
+  - a `tool_choice` naming a tool that is not in `tools` asks for any tool. Before, no call could pass, so every
+    token scanned the whole vocabulary until the context was full;
+  - a stop sequence is found when a long token runs past it;
+  - tool-call ids carry their own request's number (two requests at once on `--slots` gave the same ids);
+  - `/sessions` (clear, save) only from this computer;
+  - a downloaded file's name on Linux has its quotes and control bytes replaced.
+- **Documents and the web:**
+  - an XLSX cell keeps at most 32,767 bytes of text, and a sheet 64 MB. One long shared string used by many cells
+    was copied into each of them, many GB from a small file;
+  - turning a web page into text is no longer quadratic on many nested `<form>`, `<nav>` or `<svg>` tags.
+- **The tokenizer:** a UTF-8 lead byte without its continuation bytes is one invalid byte (U+FFFD), as llama.cpp
+  does, so the ASCII after it stays text.
+
 ## 2026-11-18: Docker and Kubernetes files (not tested yet)
 
 - **`docker/`:** a `Dockerfile` (Ubuntu 24.04, Intel's GPU runtime, a release's Linux package), a `compose.yaml`

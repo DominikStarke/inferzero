@@ -472,6 +472,13 @@
            bs = buf(asc.size() * 4, asc.data()), bb = buf(ab.size() * 2, ab.data()), bc = buf((size_t)M * N * 4),
            bt = buf(tiles.size() * 4, tiles.data()), bts = buf(tstart.size() * 4, tstart.data()),
            bm = buf(rowmap.size() * 4, rowmap.data()), bw = buf(rowscale.size() * 4, rowscale.data());
+    cl_mem q8 = nullptr, h8 = nullptr, a8 = nullptr, s8 = nullptr, b8 = nullptr, c8 = nullptr;  // (the speed check's)
+    // (every buffer of the check freed on every way out, a throw too: audit 2026-11-18, they stayed for the process)
+    struct FreeAll {
+      Engine* e;
+      std::vector<cl_mem*> v;
+      ~FreeAll() { for (cl_mem* m : v) e->free_buf(*m); }
+    } free_all{this, {&bq, &bh, &ba, &bs, &bb, &bc, &bt, &bts, &bm, &bw, &q8, &h8, &a8, &s8, &b8, &c8}};
     std::string bad;
     // one case: C from c0, then launch(kernel) with the DP4a and the XMX kernel; their C must be equal bit for bit
     // (and the DP4a result finite and not all zero, or the comparison proves nothing)
@@ -492,7 +499,7 @@
       }
       if (!sane || memcmp(out[0].data(), out[1].data(), out[0].size() * 4)) bad += " " + name;
     };
-    struct Soft { bool& f; ~Soft() { f = false; } } soft{cl_.soft_fail};
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
     cl_.soft_fail = true;
     try {
       for (int q : {101, 100, 103, 102, 8, 12, 13, 14, 110, 111})  // (110, 111: H8, zero/engine_h8.h, never per-32 activations)
@@ -594,8 +601,8 @@
         for (auto& v : sa) v = (int8_t)(rnd() >> 24);
         std::vector<float> ss((size_t)(SK / 32) * SM);
         for (auto& v : ss) v = rndf(0.01f, 0.01f);
-        cl_mem q8 = buf(sw.size() * 4, sw.data()), h8 = buf(sh.size() * 4, sh.data()), a8 = buf(sa.size(), sa.data()),
-               s8 = buf(ss.size() * 4, ss.data()), b8 = buf((size_t)(SK / 16) * SM * 2), c8 = buf((size_t)SM * SN * 4);
+        q8 = buf(sw.size() * 4, sw.data()), h8 = buf(sh.size() * 4, sh.data()), a8 = buf(sa.size(), sa.data()),
+        s8 = buf(ss.size() * 4, ss.data()), b8 = buf((size_t)(SK / 16) * SM * 2), c8 = buf((size_t)SM * SN * 4);
         // (DP4a as it would run without XMX: the GPU's own defaults, not the discrete cards' switches (xe2_), which
         //  are dropped too if XMX loses: zero/engine.h)
         const int wgy = 8;

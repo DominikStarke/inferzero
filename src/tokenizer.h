@@ -38,6 +38,9 @@ inline void utf8_decode(const std::string& s, std::vector<uint32_t>& cps, std::v
     const unsigned char c = (unsigned char)s[i];
     int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
     if (i + len > s.size()) len = 1;
+    // (a lead byte without its continuation bytes: one invalid byte, as llama.cpp, so the ASCII after it stays text)
+    for (int k = 1; k < len; ++k)
+      if (((unsigned char)s[i + k] & 0xC0) != 0x80) { len = 1; break; }
     uint32_t cp = len == 1 ? c : len == 2 ? (c & 0x1F) : len == 3 ? (c & 0x0F) : (c & 0x07);
     for (int k = 1; k < len; ++k) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3F);
     if (len == 1 && c >= 0x80) cp = 0xFFFD;

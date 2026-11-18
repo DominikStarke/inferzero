@@ -62,8 +62,16 @@
     bool force_tool_on = false;
     {
       const Json& tc = body["tool_choice"];
-      const std::string fname = tc["function"]["name"].str(tc["name"].str());
-      if (tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty())) {
+      std::string fname = tc["function"]["name"].str(tc["name"].str());
+      // (a name that is not one of the tools: no call to it can pass the constraint, and every token scanned the
+      //  whole vocabulary, the engine held, to the end of the context: audit 2026-11-18. Then any tool, as "required")
+      if (!fname.empty() && tools.is_array()) {
+        bool known = false;
+        for (const Json& t : tools.items()) known = known || t["function"]["name"].str(t["name"].str()) == fname;
+        if (!known) fname.clear();
+      }
+      if (tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty() ||
+                                              !tc["function"]["name"].str(tc["name"].str()).empty())) {
         force_tool_on = true;
         force_tool = gemma_ ? "<|tool_call>call:" + (fname.empty() ? std::string() : fname + "{")
                             : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
@@ -308,7 +316,8 @@
     ++busy_;
     struct Idle { std::atomic<int>& b; ~Idle() { --b; } } idle{busy_};
     const zmet::Running running_m;
-    const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
+    const std::string req_n = std::to_string(++counter_);  // (this request's number: its id and its tool calls' ids)
+    const std::string id = "chatcmpl-arc" + req_n;
     const long long created = (long long)time(nullptr);
     if (stream) rs.sse_begin();
 
@@ -587,7 +596,8 @@
     };
     // Tool calls are streamed while they are generated, as OpenAI does: the first delta of a call carries its id and
     // name, the following ones pieces of its arguments JSON (clients concatenate them per index).
-    auto call_id = [&](size_t k) { return "call_" + std::to_string(counter_.load()) + "_" + std::to_string(k); };
+    // (the request's own number, not the counter now: two requests at once on --slots gave the same ids)
+    auto call_id = [&](size_t k) { return "call_" + req_n + "_" + std::to_string(k); };
     std::vector<std::string> tc_sent;  // arguments sent so far, per call
     auto send_tool_deltas = [&](const std::string& t, bool fin) {
       const auto pcs = parser.partial_tool_calls(t, fin);
@@ -773,7 +783,9 @@
         // (cut at the match in the recent tail, not at an earlier copy of the stop string in the text)
         const size_t at = s.empty() || text.size() < s.size()
                               ? std::string::npos
-                              : text.find(s, text.size() > s.size() + 16 ? text.size() - s.size() - 16 : 0);
+                              : text.find(s, before >= s.size() ? before - s.size() + 1 : 0);  // (a match this
+        //  token completes starts at most s.size() - 1 bytes before its piece, however long the piece: audit 2026-11-18,
+        //  the 16-byte window missed "\n" at the start of a long run of spaces)
         if (at != std::string::npos) {
           text = text.substr(0, at);
           hit_stop = true;

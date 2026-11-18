@@ -86,6 +86,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     so.sess_gb = 0;
   }
   EngineOptions eo = so.eo;
+  eo.state_snaps = 3;  // (kSnaps, server.cpp: the memory a model that nearly fills a discrete card keeps for them)
   // (--mtp-model: the head or drafter of one model; the engine decides whether it fits (its own test, Qwen heads and
   //  Gemma drafters alike) and, for another model after a switch, says so and loads that one as without it)
   eo.mtp_model_soft = true;

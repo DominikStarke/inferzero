@@ -222,6 +222,12 @@
       if (hp.ple_layer >= 0) {
         ple_table_ = &f_.get("per_layer_token_embd.weight");
         if ((int)ple_table_->dims[0] != hp.ple_dim) throw std::runtime_error("unexpected PLE table shape");
+        // (every hash column inside the table: a vocab of 0 divided by zero, one past the rows read past the file;
+        //  as DeepSeek's Engram check, audit 2026-11-18)
+        const uint64_t rows = ple_table_->dims.size() > 1 ? (uint64_t)ple_table_->dims[1] : 0;
+        for (int h = 0; h < (hp.ple_ng - 1) * hp.ple_per; ++h)
+          if (hp.ple_voc[h] <= 0 || hp.ple_off[h] < 0 || (uint64_t)hp.ple_off[h] + (uint64_t)hp.ple_voc[h] > rows)
+            throw std::runtime_error("PLE hash columns past the table");
       }
     } else {
       out_norm_ = load_f32("output_norm.weight");

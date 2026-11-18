@@ -74,12 +74,6 @@
     // (Gemma 4, two passes: prompt chunks through the T > 1 routing and moe_rg, whose two passes it runs; generation
     //  and verification (T <= 8) through the per-tile kernels with both passes fused, -DQ2F, as plain decoding)
     static const int rg_min0 = getenv("ARC_MOE_RG_MIN") ? atoi(getenv("ARC_MOE_RG_MIN")) : 320;
-    // (two passes: Gemma 4, Flash Next's precise mode; layers whose expert types moe_rg lacks per tile at every size)
-    const bool q2f = q2_ && hp.moe_std && ((T <= 8 && T < rg_min0) || !moe_rg_layer_ok(L));
-    const bool q2g = q2_ && !q2f;
-    const std::string q2fd = q2f ? " -DQ2F" + q2_defs_ + " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" +
-                                       std::to_string(q2m_sc_ / 4)
-                                 : std::string();
     // (fused two-pass tiles hold twice the sums: as many slots as the tokens (an expert gets at most T, here <= 8);
     //  TM 16 spilled 4 KB per thread in verification. Each slot's terms are the same at any TM: bit-identical)
     // (2..8 rows, a batched step or a verification pass: tiles of 2 / 4 / 8 slots, as many as an expert can get; TM 16
@@ -93,6 +87,17 @@
       return -1;
     }();
     const int tm_dec = tm_small < 0 ? (T <= 2 ? 2 : T <= 4 ? 4 : 8) : tm_small > 0 ? tm_small : tm_std;
+    // (two passes: Gemma 4, Flash Next's precise mode; layers whose expert types moe_rg lacks per tile at every size.
+    //  Audit 2026-11-18: only when the engine runs two passes (ARC_G4_ONE=1 leaves q2mm_ off and no residual is
+    //  written), and fused per tile wherever moe_rg would not take the experts (its TM 16 and F % 64), which ran one
+    //  pass silently)
+    const bool q2on = q2_ && q2mm_;
+    const bool rg_fits = (T <= 8 ? tm_dec : tm_std) == 16 && F % 64 == 0;
+    const bool q2f = q2on && hp.moe_std && ((T <= 8 && T < rg_min0) || !moe_rg_layer_ok(L) || !rg_fits);
+    const bool q2g = q2on && !q2f;
+    const std::string q2fd = q2f ? " -DQ2F" + q2_defs_ + " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" +
+                                       std::to_string(q2m_sc_ / 4)
+                                 : std::string();
     const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? (T <= 8 ? tm_dec : tm_std) : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
@@ -235,7 +240,7 @@
       run("moe_gateup", k, 2, gws, lws);
     };
     auto quant_h = [&] {
-      cl_kernel k = kernel("moe", defs + (q2_ ? " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" + std::to_string(q2m_sc_ / 4)
+      cl_kernel k = kernel("moe", defs + (q2_ && q2mm_ ? " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" + std::to_string(q2m_sc_ / 4)
                                              : std::string()), "moe_quant");
       int FF = Fp;
       set_args(k, 0, mh_, FF, slots_, mhq_, mhsc_);
@@ -437,12 +442,12 @@
       int kv = i == 2 ? F : K;
       // (two-pass mode: the matrix on the values, then on their residual, added; the up projection into mh2_ and
       //  the GELU product after both)
-      const int passes = q2_ ? 2 : 1;
+      const int passes = q2_ && q2mm_ ? 2 : 1;
       for (int ps = 0; ps < passes; ++ps) {
         cl_mem a = i == 2 ? (ps ? from(mhq_, q2m_hq_) : mhq_) : (ps ? from(aq_, q2_aq_) : aq_);
         cl_mem as = i == 2 ? (ps ? from(mhsc_, q2m_sc_) : mhsc_) : (ps ? from(asc_, q2_sc_) : asc_);
-        cl_mem c = i == 2 ? my_ : (q2_ && i == 1 ? mh2_ : mh_);
-        int ac = q2_ ? ps : acc;
+        cl_mem c = i == 2 ? my_ : (q2_ && q2mm_ && i == 1 ? mh2_ : mh_);
+        int ac = q2_ && q2mm_ ? ps : acc;
         const size_t ny = ny_env > 0 ? (size_t)ny_env : max_tiles;
         auto launch = [&](cl_kernel kk, cl_mem cc) {
           if (xc_)
@@ -460,7 +465,7 @@
           launch(kx && rgx_state_[L.ex_type[i]] == 1 ? kx : k, c);
         }
       }
-      if (q2_ && i == 1) {
+      if (q2_ && q2mm_ && i == 1) {
         cl_kernel g = kernel("moe", "-DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(hp.n_expert_used) + " -DTM=16" +
                                         (hp.gemma ? "" : " -DSILU"),  // (Flash Next's precise mode: silu(gate) * up)
                              "moe_gelu_mul");

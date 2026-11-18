@@ -420,6 +420,11 @@
           }
         }
       }
+    } catch (const zrt::GpuWaitError&) {
+      // (a GPU that hangs or is lost: not a verdict on gemm_xw, which would otherwise stay off for the process; as
+      //  the other start checks, audit 2026-11-18)
+      for (cl_mem& b : bufs) free_buf(b);
+      throw;
     } catch (const std::exception& e) {
       built = false;
       bad += std::string(" build: ") + e.what();

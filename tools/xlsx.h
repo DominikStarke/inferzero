@@ -212,8 +212,11 @@ struct Grid {
   std::string name;
   std::map<int, std::map<int, Cell>> rows;  // (row -> column -> cell, 1-based)
   size_t cells = 0;
+  size_t bytes = 0;  // (the cells' text: a shared string is copied into every cell that uses it)
   bool cut = false;  // (stopped at the cell budget)
 };
+constexpr size_t kMaxCellText = 32767;      // (Excel's own limit for one cell)
+constexpr size_t kMaxSheetText = 64u << 20;  // (one sheet's text: one long shared string in many cells stays bounded)
 
 inline std::vector<std::string> shared_strings(const std::string& x) {
   std::vector<std::string> v;
@@ -282,9 +285,15 @@ inline void read_sheet(const std::string& x, const std::vector<std::string>& sst
         const double d = strtod(v.c_str(), &end);
         t = end && *end == 0 ? value_text(d, style >= 0 && (size_t)style < xfs.size() ? xfs[(size_t)style] : Fmt{}, d1904) : v;
       }
+      if (t.size() > kMaxCellText) {  // (cut on a UTF-8 character's first byte)
+        size_t e = kMaxCellText;
+        while (e > 0 && ((unsigned char)t[e] & 0xC0) == 0x80) --e;
+        t.resize(e);
+      }
       t = rdoc::tidy(t);
       if (!t.empty() && col <= 16384 && row <= 1048576) {
-        if (g.cells >= budget) { g.cut = true; return false; }
+        if (g.cells >= budget || g.bytes + t.size() > kMaxSheetText) { g.cut = true; return false; }
+        g.bytes += t.size();
         Cell& c = g.rows[row][col];
         g.cells += c.text.empty();
         c = {t, s};
@@ -894,6 +903,7 @@ inline Doc read_xlsx(const std::string& zip) {
     g.name = s.name;
     xlsx::read_sheet(x, sst, xfs, d1904, g, budget);
     budget -= g.cells;
+    inflated += g.bytes;  // (the cells' text counts toward the workbook's bound too)
     if (g.cut || (!whole && !x.empty())) cut.push_back(s.name);
     xlsx::grid_paras(g, d);
   }

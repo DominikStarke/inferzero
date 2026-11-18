@@ -1113,7 +1113,14 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
       // (content-addressed: the same id is always the same bytes)
       // (private: a shared cache in front of a tunnel must not keep what a password protects)
       rs.extra = "Cache-Control: private, max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
-      if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
+      if (q("download")) {
+        // (the name as it is on disk: on Linux it may hold a quote, CR or LF, which would end the header and start
+        //  another one; those, other control bytes and the backslash become '_', audit 2026-11-18)
+        std::string nm = i.name;
+        for (char& ch : nm)
+          if ((unsigned char)ch < 0x20 || ch == 0x7f || ch == '"' || ch == '\\') ch = '_';
+        rs.extra += "Content-Disposition: attachment; filename=\"" + nm + "\"\r\n";
+      }
       // (a page or drawing the model wrote, opened at its own address: its scripts must not run as this server's page,
       //  which can drive the tools and the remote access settings. mime_of gives these text/plain with nosniff, so they
       //  do not run; by the file's extension, in case that ever changes, the sandbox as a second layer. The web UI shows

@@ -35,7 +35,7 @@ class AudioGemma4A : public GemmaAudioEncoder {
     n_head = (int)f_.get_int("clip.audio.attention.head_count", 8);
     n_mel = (int)f_.get_int("clip.audio.num_mel_bins", 128);
     n_out = (int)f_.get("mm.a.input_projection.weight").dims[1];
-    if (n_embd % 16 || n_ff % 16 || n_out % 16 || n_embd / n_head % 16 || n_embd / n_head > 128 || n_mel != 128)
+    if (n_head <= 0 || n_embd < 16 * n_head || n_embd % 16 || n_ff % 16 || n_out % 16 || n_embd / n_head % 16 || n_embd / n_head > 128 || n_mel != 128)
       throw std::runtime_error("mmproj: this Gemma 4 audio shape is not supported");
     build_mel_filters();
   }

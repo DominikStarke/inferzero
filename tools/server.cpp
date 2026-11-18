@@ -338,7 +338,9 @@ class Server {
       } else if (c.is_array()) {
         Json parts = Json::array();
         for (const Json& p : c.items()) {
-          if (p["text"].is_string()) {
+          if (p.is_string()) {  // (a bare string part: chat::content_text adds it as text too)
+            parts.push(Json(tok_.defuse_specials(p.as_string())));
+          } else if (p["text"].is_string()) {
             Json p2 = p;
             p2.set("text", tok_.defuse_specials(p["text"].as_string()));
             parts.push(p2);
@@ -391,8 +393,13 @@ class Server {
       r.set("data", d);
       return rs.send(200, "application/json", r.dump());
     }
-    if (rq.path == "/sessions" || (rq.path == "/sessions/save" && rq.method == "POST"))
-      return sessions(rq, rs);  // GET: size of the session cache; DELETE: clear it; POST /sessions/save: keep the held one
+    if (rq.path == "/sessions" || (rq.path == "/sessions/save" && rq.method == "POST")) {
+      // (this computer only, as the slots: with --host 0.0.0.0 another machine could clear every saved conversation
+      //  or force large writes, audit 2026-11-18)
+      if (!rq.local_peer)
+        return rs.send(403, "application/json", "{\"error\":{\"message\":\"the session cache is only for this computer\"}}");
+      return sessions(rq, rs);
+    }  // GET: size of the session cache; DELETE: clear it; POST /sessions/save: keep the held one
     if (rq.path == "/props") {
       Json r = Json::object();
       r.set("model", model_id_);

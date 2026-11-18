@@ -217,7 +217,8 @@ __kernel void attn_fa(__global const float* q, __global const half* kc, __global
     vstore16(o[r], 0, parts + at + 16 * lane);
     if (lane == 0) { parts[at + 256] = mx[r]; parts[at + 257] = L; }
 #else
-    vstore16(o[r] / L, 0, out + ((size_t)m * nh + hg * GQ + r) * 256 + 16 * lane);
+    // (a row that saw no key, QSA: 0, not 0 / 0; audit 2026-11-18)
+    vstore16(L > 0.0f ? o[r] / L : (float16)(0.0f), 0, out + ((size_t)m * nh + hg * GQ + r) * 256 + 16 * lane);
 #endif
   }
 }
@@ -239,7 +240,7 @@ __kernel void qsa_fa_combine(__global const float* parts, int nh, int nsplits, _
     numerator += parts[at + d] * scale;
     denominator += L * scale;
   }
-  out[((size_t)m * nh + h) * 256 + d] = numerator / denominator;
+  out[((size_t)m * nh + h) * 256 + d] = denominator > 0.0f ? numerator / denominator : 0.0f;  // (no key: 0)
 }
 #endif
 
@@ -576,7 +577,8 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
   if (active) {
 #pragma unroll
     for (int r = 0; r < HS; ++r) {
-      const float inv = 1.0f / sub_group_reduce_add(lp[r]);
+      // (a QSA row whose selected blocks hold none of its keys skips every tile: 0, not 0 * inf; audit 2026-11-18)
+      const float lsum = sub_group_reduce_add(lp[r]), inv = lsum > 0.0f ? 1.0f / lsum : 0.0f;
       __global float* dst = out + ((size_t)m * nh + h0 + r) * HD + lane;
 #pragma unroll
       for (int i = 0; i < DPL; ++i) dst[16 * i] = o[r][i] * inv;
@@ -1154,7 +1156,8 @@ __kernel void attn_combine(__global const float* part, int nsplit, int nh, __glo
       for (int j = 0; j < n; ++j) acc = fma(q[j * stride], sub_group_broadcast(w, j), acc);
     }
   }
-  out[((size_t)orow * nh + h) * hd + d] = acc / sub_group_reduce_add(L);
+  const float Ls = sub_group_reduce_add(L);
+  out[((size_t)orow * nh + h) * hd + d] = Ls > 0.0f ? acc / Ls : 0.0f;  // (every split empty, QSA: 0, audit 2026-11-18)
 }
 
 // MTP (nextn) block input: out[m] = [rmsnorm(e[m]) * ew | rmsnorm(h[m]) * hw] (f32, 2E wide). grid (256, n).

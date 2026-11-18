@@ -90,7 +90,14 @@ struct TpComm {
   std::unique_ptr<std::atomic<int64_t>[]> ev_n;  // per shard: the event sums it queued (the watchdog's progress too)
   // (failsafe: a shard that fails leaves the others' lists waiting on its events: all signalled from the host, so no
   //  GPU stays blocked; what they then add is thrown away with the failed pass)
+  //  Audit 2026-11-18: released as soon as a shard throws, not only when wait_done gives up (GPU 0's waits have no
+  //  abort, so its list stayed parked on the failed shard's event until the time limit, then the model faulted), and
+  //  when the model is held after a fault (TpHold: GPU 0's list is the server's other users' too). A released ring
+  //  holds stale signals, so such a pass is never taken as in step: the model is loaded again)
+  std::atomic<bool> ev_released{false};
   void release_events() {
+    if (ev.empty()) return;
+    ev_released = true;
     for (ze_event_handle_t e : ev)
       if (e) zeEventHostSignal(e);
   }
@@ -976,7 +983,10 @@ class TpEngine {
   }
   void disarm(bool release_stuck = false) {
     static std::atomic<bool> gone{true};
-    if (release_stuck) leaked_fault() = true;
+    if (release_stuck) {
+      leaked_fault() = true;
+      comm_.release_events();  // (a model held after a fault: no GPU list, GPU 0's shared one, left on its events)
+    }
     for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
       zrt::devs[r]->abort = release_stuck || leaked_fault() ? &gone : nullptr;  // (a model left earlier: its threads still leave)
       zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
@@ -1513,6 +1523,7 @@ class TpEngine {
         int none = -1;
         comm_.first_failed.compare_exchange_strong(none, r);
         comm_.failed = true;
+        comm_.release_events();  // (the others' GPUs waiting on this shard's events go on, ARC_TP_EVSUM)
       }
       std::lock_guard<std::mutex> lk(mu_);
       if (stuck_[r]) return;  // (given up on by wait_done: the call ended without it)
@@ -1606,7 +1617,10 @@ inline void TpMirror::finish() {
   TpEngine& t = *e.tp_front_;
   TpComm& c = t.comm();
   const bool threw = std::uncaught_exceptions() > uncaught_;
-  if (threw && !c.cancel_now) c.failed = true;  // (the others leave any barrier they wait at)
+  if (threw && !c.cancel_now) {
+    c.failed = true;  // (the others leave any barrier they wait at)
+    c.release_events();  // (and their GPUs any wait on GPU 0's events, ARC_TP_EVSUM)
+  }
   const std::vector<std::exception_ptr> errs = t.wait_others();
   bool all_threw = true, abort = false;
   std::exception_ptr first;
@@ -1628,7 +1642,7 @@ inline void TpMirror::finish() {
   bool same_sums = true;
   for (int r = 1; r < t.gpus(); ++r) same_sums = same_sums && c.reduces[r] == c.reduces[0];
   if (threw || first) {
-    const bool in_step = threw && all_threw && !abort && !c.fault && same_sums && c.arrived.load() == 0;
+    const bool in_step = threw && all_threw && !abort && !c.fault && same_sums && c.arrived.load() == 0 && !c.ev_released;
     if (in_step) {  // (every shard stopped on its own at the same point: a cancel, a context overflow)
       c.failed = false;
       c.first_failed = -1;

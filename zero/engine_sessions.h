@@ -565,14 +565,39 @@
       if (const char* e = getenv("ARC_HOST_KEEP_GB"))
         return std::max(0.5, atof(e)) * GiB + (disc ? keep_old - 2.5 * GiB : 0.0);
       if (!disc) return keep_old;
-      double big = 0;  // (the largest layer matrix, in values)
+      // (the chunk the tight model gets: 1024, or the one asked)
+      const double ch = opt.chunk > 0 ? (double)((std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128) : 1024.0;
+      // (the just-in-time staging: one W8 copy per matrix role, each the size of that role's largest matrix)
+      std::map<std::string, double> role_max;
       for (const GgufTensor& t : f_.tensors)
-        if (t.dims.size() == 2 && t.name.compare(0, 4, "blk.") == 0) big = std::max(big, (double)t.dims[0] * t.dims[1]);
-      const double act = 1024.0 * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
-      const double need = 0.4 * GiB + act + 3.0 * big * 1.03 + kv_est(ctx) * std::max(opt.slots, 1) + (double)opt.stream_reserve;
+        if (t.dims.size() == 2 && t.name.compare(0, 4, "blk.") == 0) {
+          const size_t d = t.name.find('.', 4);
+          double& m = role_max[d == std::string::npos ? t.name : t.name.substr(d + 1)];
+          m = std::max(m, (double)t.dims[0] * t.dims[1]);
+        }
+      double stage = 0;
+      for (const auto& [r, v] : role_max) stage += v * 1.03;
+      const double act = ch * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
+      // (the layer-major residual: a segment of up to 16K tokens (8K with hc) and a chunk, engine_alloc.h)
+      const double seg = std::max(ch, std::floor(std::min((double)ctx, hp.hc ? 8192.0 : 16384.0) / ch) * ch);
+      const double resid = (seg + ch) * hp.hce() * 4.0;
+      // (the recurrent states: the caller's snapshots per slot (serverz 3, opt.state_snaps), and the MTP
+      //  verification's second copy)
+      double rec = 0;
+      for (int il = 0; il < hp.n_layer; ++il)
+        if (hp.recurrent(il)) rec += (double)(state_bytes() + conv_bytes());
+      const double snaps = (double)std::max(opt.state_snaps, 0) * (rec + (opt.mtp ? (double)hp.n_embd * 4 : 0.0)) *
+                               std::max(opt.slots, 1) + (opt.mtp ? rec : 0.0);
+      const double need = 0.4 * GiB + act + stage + resid + snaps + kv_est(ctx) * std::max(opt.slots, 1) +
+                          (double)opt.stream_reserve;
       return std::min(keep_old, need);
     }();
-    tight_ = disc ? total > budget - keep : total > 0.85 * budget;
+    // (tight or not by the old rule (audit 2026-11-18): the automatic room above is worked out for a tight model's
+    //  buffers (1,024-token chunks, smaller rings), and keep_old does not change with the context below 32K, so the
+    //  server's --ctx auto probe and the real load agree on it. The room then only says how many of a tight model's
+    //  weights go to RAM. Deciding it by the smaller room let a model just under the old line come out not tight:
+    //  every weight on the card and 4,096-token chunks, out of memory)
+    tight_ = disc ? total > budget - keep_old : total > 0.85 * budget;
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_ && disc) {
       want = std::max(0.0, std::min(total - (budget - keep), (double)plat::ram_available() - 4.0 * GiB));

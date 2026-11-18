@@ -865,9 +865,14 @@ inline std::string html_to_text(const std::string& html, std::string* title = nu
         if (sk) {  // to the matching close tag (nesting of the same tag counted)
           int depth = 1;
           size_t j = i;
+          // (the next close tag looked up again only once j passes it: a page of many open tags and one close tag
+          //  scanned the rest of the page at each open tag, minutes for 4 MB, audit 2026-11-18)
+          const std::string op = "<" + name, cl = "</" + name;
+          size_t b = lo.find(cl, j), a = lo.find(op, j);  // (the next close and open tags at or after j)
           while (depth > 0) {
-            const size_t a = lo.find("<" + name, j), b = lo.find("</" + name, j);
+            if (b != std::string::npos && b < j) b = lo.find(cl, j);
             if (b == std::string::npos) { j = to; break; }
+            if (a != std::string::npos && a < j) a = lo.find(op, j);
             if (a != std::string::npos && a < b) ++depth, j = a + 1;
             else --depth, j = b + 1;
           }
