@@ -1020,3 +1020,17 @@ runs the plain XMX path (258-268 tok/s), and no NPU share makes that up. The NPU
 prompt best of 3: the defaults (`WGX=2`, `H8_NORM`) 405.0 tok/s, `ARC_GEMM_XW_LOCK=1` 387.2, the old `WGX=1` without `H8_NORM` 370.0.
 An Arc A770 (TheUniKian, issue #45), `ARC_H8_NORM` (on by default on discrete cards since .07) off / on, two rounds:
 1,210.4 / 1,223.5 and 1,209.7 / 1,211.4 tok/s: no loss, it stays on.
+
+**An Arc B580 against llama.cpp (d-dorok, issue #37, 2026-11-19; NixOS, compute runtime 26.18, inferzero 651efd8,
+llama.cpp b1b770d SYCL and Vulkan, `llama-bench -p 4096 -n 64 -ub 1024 -fa 1`), pp4096 / tg64 tok/s:**
+
+| Model | inferzero | llama.cpp SYCL | llama.cpp Vulkan |
+|---|---|---|---|
+| Qwen3.5 4B Q4_K_M | 7,915 / 92.6 | 1,520 / 95.4 | 2,411 / 79.7 |
+| Qwen3.5 9B Q4_K_M | 5,455 / 56.2 | 864 / 61.1 | 1,703 / 53.0 |
+| Qwen3.6 35B-A3B UD-IQ4_XS | 2,469 / 84.7 | 535 / 41.9 (`-ncmoe 18`) | 224 / 29.1 |
+| Qwen3.8 27B IQ3_S (does not fit 12 GB) | 1,877 / 7.1 (`ARC_HOST_KEEP_GB=0.75`) | 213 / 11.4 (`-ngl 60`) | 486 / 5.3 (`-ngl 61`) |
+
+The 27B's generation loses because its 0.49 GiB of weights in RAM cross PCIe 3.0 every token, where llama.cpp
+runs its last layers on the CPU: QUEUE, "Cards too small for the whole model". The 4B / 9B generation is 3-8 %
+behind SYCL's.
