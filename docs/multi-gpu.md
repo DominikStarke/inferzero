@@ -741,7 +741,7 @@ and 2: the parts of a sum are added in another order, and the second token is a 
 - MoE models: Gemma 4 26B; the 35B and Flash Next are split and measured over B60s (above).
 - Fewer host round trips per sum: **built 2026-11-18 for generation's sums, opt-in `ARC_TP_EVSUM=1`** (each GPU
   waits on every GPU's copy event, no host wait or barrier per sum; bit-identical under `ARC_TP_SIM`; two real GPUs to
-  measure: two Arc A770s under Windows spent 73.5 ms of an 81 ms token in 128 sums, issue #35). Its failsafe: a
+  measure: two Arc A770s under Windows spent 73.5 ms of an 81 ms token in 128 sums, issue #35). Measured 2026-11-18 on two A770s under Windows (hansong80, issue #35): the host wait per token 72.7 -> 0.00 ms, the logits bit-identical, but generation 12.33 -> 11.98 tok/s (2.7 % slower, two rounds): the host round trips overlapped the GPUs' work, and each GPU waiting on both GPUs' events over an x4 link costs more. So it stays off; a layer split (#44) is the next try for slow links. Its failsafe: a
   shard that throws signals every event from the host at once, as does a model held after a fault, so no GPU's list,
   GPU 0's included (its waits have no abort), stays on a failed shard's event; a pass after such a release is never
   taken as in step, the model is loaded again. Slots: a PC's slots
