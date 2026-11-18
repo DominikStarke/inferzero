@@ -1034,3 +1034,10 @@ llama.cpp b1b770d SYCL and Vulkan, `llama-bench -p 4096 -n 64 -ub 1024 -fa 1`), 
 The 27B's generation loses because its 0.49 GiB of weights in RAM cross PCIe 3.0 every token, where llama.cpp
 runs its last layers on the CPU: QUEUE, "Cards too small for the whole model". The 4B / 9B generation is 3-8 %
 behind SYCL's.
+
+**An Arc Pro B65 32 GB (teodortomas, issue #47, Linux, release .08):** `ARC_BATCH=64` 21.29 -> 21.47 tok/s on the 27B (2.9 ->
+1.4 us a launch, the same logits): on Linux a launch is cheap already, so batching stays an Alchemist-on-Windows default.
+Generation is the GEMVs: `gemm_gate` / `gemm_up` / `gemm_down` 62 % of a step at ~45 % of its 599 GB/s, with 160 EUs
+against the B70's 256 (which reads ~66 %): decoding IQ3_S likely limits it. Other models, 4K prompt / generation / MTP:
+35B-A3B 3,512 / 82.0 / 99.8, 9B 5,226 / 49.2 / 79.0, 4B 7,774 / 81.2 / 115.5. Compute runtime 26.35 from Fedora's packages
+aborted at start-up (command_stream_receiver.cpp line 1205), so the 2D-store check stays failed on 26.05.
