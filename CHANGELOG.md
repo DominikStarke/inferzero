@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-18: `--npu on` warns where it costs the GPU its H8 prompt path
+
+- **A line at load when `--npu on` turns off H8 on a GPU where H8 is the default** (discrete cards, the B390, the 140T
+  preset): the GPU alone is likely faster there. An Arc B390's 27B 4K prompt ran 613-628 tok/s alone and 193-330
+  with the NPU at every share from 0.12 to 0.5 (gee456, issue #31; docs/xe2-tuning.md, section 15). A log line only:
+  nothing else changes.
+
 ## 2026-11-18: IQ3T reads ahead, Flash Next precise mode's 32-row fix, DeepSeek Engram as llama.cpp
 
 - **`ARC_IQ3S_TILE=1` v2 (opt-in):** the planar IQ3_S GEMV now issues every row's loads of a pair before decoding

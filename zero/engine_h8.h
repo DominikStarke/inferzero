@@ -66,6 +66,15 @@
       zlog::eprintf("inferzero: ARC_H8 is not for a two-pass model: its prompt GEMMs stay as they are\n");
     if (h8_env() && !q2mm_ && npu_wanted() && !opt.dry)
       zlog::eprintf("inferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
+    // (H8 is this GPU's default, and the NPU turns it off: a B390's 27B 4K prompt 628 tok/s alone, 194-330 with the
+    //  NPU at every share from 0.12 to 0.5; gee456, issue #31, 2026-11-18)
+    if (!h8_env() && (p140_ || h8_auto_) && !q2mm_ && npu_wanted() && !opt.dry) {
+      static std::once_flag f;
+      std::call_once(f, [] {
+        zlog::eprintf("inferzero: the NPU turns off H8, this GPU's prompt path: the GPU alone is likely faster "
+                      "(an Arc B390's 27B 4K prompt 628 tok/s alone, at most 330 with the NPU)\n");
+      });
+    }
     // (once per process: a split model's shards each init; bench/gemm_sweep.ps1 reads this line)
     static std::once_flag said;
     if (h8_ && !opt.dry) std::call_once(said, [] {

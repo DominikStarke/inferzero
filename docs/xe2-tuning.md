@@ -1006,3 +1006,10 @@ Nothing changed: the B390 keeps the defaults. The 2D-block stores of `gemm_xw`'s
 loads are fine), so the check that turns them off on any GPU where they differ stays. `ARC_H8_GRF=128` gave the same
 logits as 256, so it is safe there, but not faster. The 268 tok/s set was probably the GPU throttled by something else
 running.
+
+**The NPU on the B390 (issue #31, release 2026.11.18.06):** the 27B 4K prompt, the GPU alone 613-628 tok/s; with
+`--npu on` at the default shares 193-197; with `ARC_NPU_SHARE` / `_DOWN` / `_QKV` at 0.12 / 0.08 / 0.08 289-299, 0.2 / 0.15 /
+0.15 195-201, 0.4 / 0.35 / 0.35 310-330, 0.5 / 0.45 / 0.45 318-325 (the first run of each compiles the NPU graphs: 28-130).
+The NPU turns H8 off (both convert the same weights), and H8 is what doubled this GPU's prompt: without it the GPU
+runs the plain XMX path (258-268 tok/s), and no NPU share makes that up. The NPU stays off on the B390; since
+2026-11-18 `--npu on` says so where H8 is the GPU's default.
