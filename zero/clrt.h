@@ -100,6 +100,7 @@ struct Mapping;
 struct Dev {
   ze_device_handle_t dev = nullptr;
   ze_command_list_handle_t cl = nullptr;
+  int q_ord = 0, q_idx = 0;  // (cl's queue group and queue: ARC_TP_SIM spreads its shards over the GPU's queues)
   std::unordered_set<ZMem*> mems;
   uint64_t global_mem = 0;
   uint64_t device_bytes = 0;  // device USM allocated by the engine
@@ -1177,6 +1178,20 @@ struct ClRt {
         return 0;
       }
     }
+    // (ARC_TP_SIM: the shards on the GPU's compute queues in turn, group 0 queue 0 first as device 0's own list, so a
+    //  shard's list waiting on another's event (ARC_TP_EVSUM) does not hold up the queue that event needs; real GPUs
+    //  each have their own. Fewer queues than shards: they share, as before, and the event sums stay off under SIM)
+    std::vector<std::pair<int, int>> qs;
+    if (sim) {
+      uint32_t ng = 0;
+      ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(zrt::dev0.dev, &ng, nullptr));
+      std::vector<ze_command_queue_group_properties_t> gp(ng);
+      for (auto& g : gp) g.stype = ZE_STYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
+      ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(zrt::dev0.dev, &ng, gp.data()));
+      for (uint32_t g = 0; g < ng; ++g)
+        if (gp[g].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE)
+          for (uint32_t q = 0; q < gp[g].numQueues; ++q) qs.push_back({(int)g, (int)q});
+    }
     for (int i = (int)zrt::devs.size(); i < n; ++i) {
       zrt::Dev* d = new zrt::Dev{};  // (kept until the process ends, as device 0's state: a later engine reuses it)
       d->dev = gpus[i];
@@ -1186,8 +1201,11 @@ struct ClRt {
       mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
       ZE_CHECK(zeDeviceGetMemoryProperties(d->dev, &nm, &mp));
       d->global_mem = mp.totalSize;
-      ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 2 /* in order */, 2 /* asynchronous */, 0};
+      if (sim && i < (int)qs.size()) d->q_ord = qs[i].first, d->q_idx = qs[i].second;
+      ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)d->q_ord, (uint32_t)d->q_idx,
+                                 2 /* in order */, 2 /* asynchronous */, 0};
       ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, d->dev, &qd, &d->cl));
+      if (sim) zlog::eprintf("inferzero: ARC_TP_SIM: shard %d on queue group %d, queue %d\n", i, d->q_ord, d->q_idx);
       zrt::devs.push_back(d);
     }
     return n;

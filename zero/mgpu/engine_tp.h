@@ -68,6 +68,32 @@ struct TpComm {
   //  these grow for the life of a load, 2 to 8 a sum: at 64-row chunks a nonstop server could wrap them in ~4 days,
   //  then a shard passed a wait early (wrong sums) or never did; a review, 2026-11-17)
   std::unique_ptr<std::atomic<int64_t>[]> put_n, res_n;
+  // ARC_TP_EVSUM=1 (2026-11-18, opt-in): the one-step f32 sums (generation, drafts: under 64 rows) meet on the GPUs
+  // instead of the host. A shard's copy of its part is followed by a barrier that signals its event of this sum; every
+  // shard's list then waits on all the shards' events of the sum before its tp_add reads the parts: no zrt::sync, no
+  // host barrier. Two Arc A770s under Windows spent 73.5 ms of an 81 ms token in 128 such sums (~0.57 ms each, for
+  // ~20 KB a part: a host round trip each, issue #35). The same kernels on the same parts in the same order: the
+  // logits bit for bit as without it. The events: one host-visible pool for all the shards' devices (one context), a
+  // ring of kEvRing per shard, used in two halves. When a shard starts a half, it waits for its GPU, resets its events
+  // of that half and meets the others at a barrier: every GPU is idle there (so none still waits on an event of the
+  // half's last round), and no shard queues a wait on an event of the new round before every shard reset its own.
+  // (Resetting each event just before its reuse, without that barrier, let a shard whose host ran ahead queue a wait
+  // on another's event still signalled from the round before: its GPU passed at once and read a part not yet copied,
+  // one 2-shard run in three under ARC_TP_SIM.) One sync and barrier per kEvRing / 2 sums, a few tokens' worth,
+  // instead of one per sum. The buffer halves stay safe without a barrier per sum: a shard's copy into a half comes
+  // after its add of the sum before, which waited for every shard's copy of that sum, each queued after that shard's
+  // read of the half.
+  static constexpr int kEvRing = 1024;
+  bool evsum = false;
+  ze_event_pool_handle_t ev_pool = nullptr;
+  std::vector<ze_event_handle_t> ev;  // [shard * kEvRing + i]
+  std::unique_ptr<std::atomic<int64_t>[]> ev_n;  // per shard: the event sums it queued (the watchdog's progress too)
+  // (failsafe: a shard that fails leaves the others' lists waiting on its events: all signalled from the host, so no
+  //  GPU stays blocked; what they then add is thrown away with the failed pass)
+  void release_events() {
+    for (ze_event_handle_t e : ev)
+      if (e) zeEventHostSignal(e);
+  }
   void wait_all(std::atomic<int64_t>* cnt, int64_t target, int r, const char* what) {
     std::chrono::steady_clock::time_point t0{};
     unsigned long long beat = 0;
@@ -305,6 +331,13 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   if (n > c.slot_floats) throw std::runtime_error("tensor parallel: more rows than the shared buffer holds");
   tp_build();      // (the sum thread: both made before it starts, tpo_begin)
   tp_wrap_host();
+  // (ARC_TP_EVSUM: an event sum here, every shard alike, as they decide from the same rows and switches)
+  const bool ev = c.evsum && !a.bg && !tp_rs_rows(rows, c.n);
+  if (tp_ev_live_ && !ev) {  // (from event sums to another kind: this GPU idle and every shard at a barrier first)
+    zrt::sync();
+    c.barrier(opt.tp_rank);
+    tp_ev_live_ = false;
+  }
   if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows, a);
   const TpKs ks = tp_ks(a);
   const int h = c.half[r];
@@ -319,6 +352,29 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
       ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.inbox[k] + (off + (size_t)r * stride) * 4, a.part->ptr, n * 4, nullptr, 0, nullptr));
   } else {
     ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+  }
+  if (ev) {  // (the copies' end signals this shard's event of the sum; the list then waits for every shard's)
+    const int64_t s = c.ev_n[r].load(std::memory_order_relaxed);
+    const size_t i = (size_t)(s % TpComm::kEvRing), half_ev = TpComm::kEvRing / 2;
+    if (i % half_ev == 0) {  // (a half of the ring starts: see TpComm::evsum)
+      zrt::sync();
+      for (size_t j = i; j < i + half_ev; ++j) ZE_CHECK(zeEventHostReset(c.ev[(size_t)r * TpComm::kEvRing + j]));
+      c.barrier(opt.tp_rank);
+    }
+    ze_event_handle_t mine = c.ev[(size_t)r * TpComm::kEvRing + i];
+    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), mine, 0, nullptr));
+    ze_event_handle_t all[64];
+    for (int k = 0; k < c.n; ++k) all[k] = c.ev[(size_t)k * TpComm::kEvRing + i];
+    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), nullptr, (uint32_t)c.n, all));
+    c.ev_n[r].store(s + 1, std::memory_order_relaxed);
+    tp_ev_live_ = true;
+    ++c.reduces[r];
+    int nn = (int)n, np = c.n;
+    if (p2p) tp_inbox_fence(c, r, h);
+    set_args(ks.add, 0, a.x, p2p ? tp_in_ : tp_host_, off, nn, np, stride);
+    tp_run(a, "tp_add", ks.add, (n + 255) / 256 * 256, 256);
+    c.half[r] = h ^ 1;
+    return;
   }
   const auto t0 = std::chrono::steady_clock::now();
   zrt::sync();
@@ -1042,14 +1098,60 @@ class TpEngine {
     }
     zrt::oom_throws = false;
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
+    comm_.ev_n.reset(new std::atomic<int64_t>[n]);
+    for (int r = 0; r < n; ++r) comm_.ev_n[r] = 0;
+    if (getenv("ARC_TP_EVSUM") && atoi(getenv("ARC_TP_EVSUM")) != 0) make_events(n);
     choose_sums(sim);
     size_t vocab = 0;
     for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
     logits_.assign(vocab, 0.0f);
   }
+  // ARC_TP_EVSUM's events (TpComm::evsum): one pool for every device of the split (ARC_TP_SIM: device 0 once), so a
+  // shard's list can wait on another GPU's event. A pool the driver refuses: the host sums, as without the switch
+  void make_events(int n) {
+    // (two shards on one queue, ARC_TP_SIM with fewer queues than shards: a wait on the other's event would hold up
+    //  the queue that signals it, a deadlock. Real GPUs each have their own queues)
+    for (int a = 0; a < n; ++a)
+      for (int b = a + 1; b < n; ++b)
+        if (zrt::devs[a]->dev == zrt::devs[b]->dev && zrt::devs[a]->q_ord == zrt::devs[b]->q_ord &&
+            zrt::devs[a]->q_idx == zrt::devs[b]->q_idx) {
+          zlog::eprintf("inferzero: ARC_TP_EVSUM: shards %d and %d share a queue (ARC_TP_SIM on a GPU with too few): "
+                        "the sums through the host\n", a, b);
+          return;
+        }
+    std::vector<ze_device_handle_t> devs;
+    for (int r = 0; r < n; ++r)
+      if (std::find(devs.begin(), devs.end(), zrt::devs[r]->dev) == devs.end()) devs.push_back(zrt::devs[r]->dev);
+    ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)(n * TpComm::kEvRing)};
+    if (zeEventPoolCreate(zrt::ctx, &pd, (uint32_t)devs.size(), devs.data(), &comm_.ev_pool) != ZE_RESULT_SUCCESS) {
+      comm_.ev_pool = nullptr;
+      zlog::eprintf("inferzero: ARC_TP_EVSUM: no event pool for the GPUs together: the sums through the host\n");
+      return;
+    }
+    comm_.ev.assign((size_t)n * TpComm::kEvRing, nullptr);
+    for (uint32_t k = 0; k < (uint32_t)comm_.ev.size(); ++k) {
+      ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
+      if (zeEventCreate(comm_.ev_pool, &ed, &comm_.ev[k]) != ZE_RESULT_SUCCESS) {
+        free_events();
+        zlog::eprintf("inferzero: ARC_TP_EVSUM: the events could not be made: the sums through the host\n");
+        return;
+      }
+    }
+    comm_.evsum = true;
+    zlog::eprintf("inferzero: generation's sums wait on the GPUs' events, not on the host (ARC_TP_EVSUM)\n");
+  }
+  void free_events() {
+    for (ze_event_handle_t e : comm_.ev)
+      if (e) zeEventDestroy(e);
+    comm_.ev.clear();
+    if (comm_.ev_pool) zeEventPoolDestroy(comm_.ev_pool);
+    comm_.ev_pool = nullptr;
+    comm_.evsum = false;
+  }
   // the shards freed (each on its own GPU's thread), the threads ended, the shared memory freed; from the
   // destructor or a constructor that threw part way
   void shutdown() {
+    comm_.release_events();  // (no list left waiting on a failed shard's event: their frees can finish)
     // (first the GPUs' waits back to no limit and no abort: a shard's destructor waits for its GPU, and a wait that
     //  threw there would end the process. After a wait gave up on a GPU (fault) its work may still be queued: then
     //  nothing is freed, the server says to restart)
@@ -1125,6 +1227,7 @@ class TpEngine {
       return;
     }
     shards_.clear();  // (after a failure: whatever is left, freed here)
+    free_events();
     if (comm_.host) zrt::mem_free(zrt::ctx, comm_.host);
     if (comm_.flags) zrt::mem_free(zrt::ctx, comm_.flags);
     for (char* p : comm_.inbox)
@@ -1327,6 +1430,8 @@ class TpEngine {
     auto progress = [this] {
       int64_t v = comm_.gen.load(std::memory_order_acquire);
       for (int r = 0; r < n_ && comm_.put_n; ++r) v += comm_.put_n[r].load(std::memory_order_relaxed) + comm_.res_n[r].load(std::memory_order_relaxed);
+      // (ARC_TP_EVSUM: its sums meet at no barrier; a GPU that stops leaves its host at the pass end, these with it)
+      for (int r = 0; r < n_ && comm_.ev_n; ++r) v += comm_.ev_n[r].load(std::memory_order_relaxed);
       return v;
     };
     int64_t last_gen = progress();
@@ -1364,6 +1469,7 @@ class TpEngine {
         if (now - since < std::chrono::seconds(10)) continue;
       }
       comm_.failed = true;  // (the others leave their barriers and waits)
+      comm_.release_events();  // (and their GPUs their waits on the events of a shard that stopped, ARC_TP_EVSUM)
       for (int r = 0; r < n_; ++r)
         if (w_[r].has) {
           stuck_[r] = 1;

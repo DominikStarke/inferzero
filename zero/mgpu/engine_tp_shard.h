@@ -81,6 +81,9 @@
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
   cl_mem tp_host_ = nullptr;  // (the shared host memory as this GPU's kernel argument)
   cl_mem tp_in_ = nullptr;    // (this GPU's inbox for direct GPU-to-GPU sums, TpComm::p2p)
+  // (ARC_TP_EVSUM: this shard's last sum met on the GPUs, no host barrier since: any other sum first waits for this
+  //  GPU and meets the others at a barrier, so it starts as without the switch; tp_reduce_at)
+  bool tp_ev_live_ = false;
   cl_mem tp_part_ = nullptr;                                // (the partial output of a projection, [max_chunk][E])
   bool tp_on() const { return opt.tp_size > 1; }
 

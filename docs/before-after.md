@@ -80,6 +80,14 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, `ARC_TP_EVSUM=1` (opt-in): generation's split sums on GPU events:** the laptop, Qwen3.5 4B over 2
+  shards (`ARC_TP_SIM`, on 2 queues), logits of every generated token against the host sums: a 48-token answer 6 / 6
+  runs 901D5D90... both ways; `USAGE.md` (18.6K tokens, the reduce-scatter, then event sums) + 8 tokens 52771C66... both
+  ways, twice; 200 generated tokens (the event ring wraps ~13 times) AD3AEC83... both ways, twice; 3 shards on 2 queues:
+  the switch off, as it says, 4EBE5A8D... both ways. The first form (each event reset just before its reuse) gave 1 run
+  in 3 other logits: fixed by the reset per half ring behind a sync and a barrier. Speed: two real GPUs to measure (the
+  simulated shards share one GPU).
+
 - **2026-11-18, Alchemist: the preset over resident weights when `--budget` is not given:** an Arc A770 (hansong80,
   issue #35, release .02), Qwen3.5 4B UD-Q4_K_XL 4K prompt: resident DP4a at chunk 4096 3,575-3,605 tok/s (7.40 GiB),
   `--budget 0` (the preset) 4,819.6 / 4,820.8 (3.98 GiB); generation 38.17 / 37.80 tok/s. The same card: 9B

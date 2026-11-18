@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-18: a split model's generation sums without host round trips (opt-in)
+
+- **`ARC_TP_EVSUM=1`: the sums of a model split over several GPUs meet on the GPUs during generation** (and drafts,
+  under 64 rows), not on the host. Each GPU's copy of its part signals an event, and each GPU waits on every GPU's
+  events of that sum before adding the parts: no wait for the GPU and no barrier on the host per sum, the host
+  queueing ahead. Two Arc A770s under Windows spent 73.5 ms of an 81 ms token in 128 such sums, ~0.57 ms each for
+  ~20 KB a part: a round trip each, not bandwidth (hansong80, issue #35). The same kernels on the same parts in the
+  same order: the logits are the same bit for bit. Once per 512 sums each GPU waits and the shards meet, so the
+  events can be reused (resetting each one just before its reuse let a shard ahead pass on a stale signal: found
+  and fixed in testing). Prompt chunks keep the reduce-scatter; after event sums, a GPU waits and the shards meet
+  before it. A shard that fails gets its events signalled from the host, so no GPU stays blocked. Off by default
+  until two real GPUs measure it.
+- **`ARC_TP_SIM` puts its shards on the GPU's compute queues in turn** (one queue for all before): a shard waiting on
+  another's event would otherwise hold up the queue that event needs. The same logits as before (the old and new
+  builds 901D5D90... three times each). With fewer queues than shards, `ARC_TP_EVSUM` stays off under it, and says so.
+
 ## 2026-11-18: memory bandwidth measured closer to a fast card's peak
 
 - **The bandwidth runz compares generation against ("% of this GPU's measured N GB/s") is the best of two read
