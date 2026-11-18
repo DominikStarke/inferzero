@@ -669,6 +669,14 @@ static size_t encoder_reserve(const std::string& model, const std::string& mmpro
     return 0;
   }
 }
+// (set while the model list sizes its rows: its "--ctx auto:" lines are only the picker's figures, at debug level.
+//  At the info level they read as the loaded model's context being changed, while it kept its --ctx: issue #39)
+inline thread_local bool g_ctx_listing = false;
+struct CtxListing {
+  bool was = g_ctx_listing;
+  CtxListing() { g_ctx_listing = true; }
+  ~CtxListing() { g_ctx_listing = was; }
+};
 static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_given = false, size_t reserve = 0) {
   namespace fs = std::filesystem;
   const std::string key = ctx_key(model, eo) + (budget_given ? "|b" + std::to_string(eo.w8_budget_gb) : "|auto") +
@@ -721,9 +729,13 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       mo.context = mp.context;
       mo.per_1k = ((double)probe.ctx_bytes(cc + 4096) - (double)probe.ctx_bytes(cc)) / 4.0;
     }
-    zlog::eprintf("--ctx auto: %d tokens with %s weights (trained %d; %.2f GiB of GPU memory without the context, "
-                    "%.2f GiB with it, device %.2f GiB)\n", ctx, res ? "resident" : "just-in-time", trained, base / gib,
-            (base + probe.ctx_bytes(cc)) / gib, probe.device_mem() / gib);
+    if (g_ctx_listing)
+      LOG_DBG("model list: %s would get %d tokens with --ctx auto (%s weights; the loaded model keeps its own)\n",
+              fs::path(model).filename().string().c_str(), ctx, res ? "resident" : "just-in-time");
+    else
+      zlog::eprintf("--ctx auto: %d tokens with %s weights (trained %d; %.2f GiB of GPU memory without the context, "
+                      "%.2f GiB with it, device %.2f GiB)\n", ctx, res ? "resident" : "just-in-time", trained, base / gib,
+              (base + probe.ctx_bytes(cc)) / gib, probe.device_mem() / gib);
     return ctx;
   };
   bool res = false;
@@ -782,6 +794,7 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
 static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   EngineOptions eo;
   eo.mtp = mtp;
+  const CtxListing listing;
   try {
     return auto_ctx(model, eo, false, vision ? encoder_reserve(model, "", 0) : 0).ctx;
   } catch (const std::exception&) {
@@ -793,6 +806,7 @@ static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
 //  counts it (no MTP block or drafter, no image encoder: a split runs without them yet; the speech reserve kept), so
 //  the list's row and the server's are one; else as on one GPU, which is what the server then loads)
 static AutoCtx list_ctx(const std::string& path, const EngineOptions& eo, size_t enc, size_t speech, int gpus) {
+  const CtxListing listing;
   if (gpus > 1) {
     EngineOptions s = eo;
     s.tp_size = gpus, s.tp_rank = 0;

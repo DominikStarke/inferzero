@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-18: the model list no longer logs "--ctx auto" as if the model were loaded again
+
+- **`serverz --ctx N`:** the model list (`/v1/models`, read when the web UI opens) works out every model's
+  automatic context for the picker, and logged it as "--ctx auto: ... tokens", which read as the loaded model's
+  context being replaced. It was not: the model kept its `--ctx` (`/props` n_ctx 8000 after the list and a chat,
+  `-c 8000`). Those lines now say "model list: ... would get ..." and are debug-level (ThatGuy-Bob, issue #39).
+
 ## 2026-11-18: the rest of the review's fixes
 
 - **A hostile PDF** (which `web_fetch` can bring in from a page) no longer fills memory through its fonts. A
