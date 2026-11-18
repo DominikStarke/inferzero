@@ -552,10 +552,26 @@
       }
       return n;
     };
-    const double keep = [] {
-      const char* e = getenv("ARC_HOST_KEEP_GB");
-      return (e ? std::max(0.5, atof(e)) : 2.5) * 1073741824.0;
-    }() + (disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0);
+    // (the room, automatic since 2026-11-18: what this model and this context need, at most the old rule's 2.5 GiB + the
+    //  context past 32K, so where that rule fitted this keeps no fewer weights on the GPU. An Arc B580 12 GB, the 27B at
+    //  a 4,240-token context: 2.24 GiB of the weights in RAM with 9.89 of ~11.3 GiB used, generation 1.94 tok/s over
+    //  PCIe 3.0, issue #37; its buffers besides the weights ~1.5 GiB. The parts: 0.4 GiB for the kernels, the driver
+    //  and the small buffers; the activations of a 1,024-token chunk (the tight chunk) at ~48 bytes per n_embd and 24
+    //  per n_ff value a row, for the residual, the norms, the int8 and rotated copies, the FFN's rows; three W8 copies
+    //  of the largest matrix for the just-in-time decode; the context's KV caches for the slots asked; the server's
+    //  reserve. ARC_HOST_KEEP_GB=N: N GiB of room as before, plus the reserve and the context past 32K)
+    const double keep_old = 2.5 * GiB + (disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0);
+    const double keep = [&] {
+      if (const char* e = getenv("ARC_HOST_KEEP_GB"))
+        return std::max(0.5, atof(e)) * GiB + (disc ? keep_old - 2.5 * GiB : 0.0);
+      if (!disc) return keep_old;
+      double big = 0;  // (the largest layer matrix, in values)
+      for (const GgufTensor& t : f_.tensors)
+        if (t.dims.size() == 2 && t.name.compare(0, 4, "blk.") == 0) big = std::max(big, (double)t.dims[0] * t.dims[1]);
+      const double act = 1024.0 * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
+      const double need = 0.4 * GiB + act + 3.0 * big * 1.03 + kv_est(ctx) * std::max(opt.slots, 1) + (double)opt.stream_reserve;
+      return std::min(keep_old, need);
+    }();
     tight_ = disc ? total > budget - keep : total > 0.85 * budget;
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_ && disc) {

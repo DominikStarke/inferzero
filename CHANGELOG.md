@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-18: a dense model that nearly fills a discrete card keeps more of its weights on it
+
+- **The memory kept free for the buffers and the context is now worked out from the model and the context asked**,
+  not a fixed 2.5 GiB (sized for a 32K context): the activations of a prompt chunk, the just-in-time decode's
+  copies, the context's KV caches, the server's reserve. What does not fit then goes to RAM, as before. An Arc B580
+  12 GB ran the 27B at a 4,240-token context with 2.24 GiB of its weights in RAM and ~1.5 GiB of its card unused:
+  every token read those over PCIe 3.0, 1.94 tok/s (d-dorok, issue #37). Never more room than the old rule, so a
+  32K context keeps what it had. `ARC_HOST_KEEP_GB=N` still sets it by hand. iGPUs are unchanged.
+
 ## 2026-11-18: a split model's generation sums without host round trips (opt-in)
 
 - **`ARC_TP_EVSUM=1`: the sums of a model split over several GPUs meet on the GPUs during generation** (and drafts,
