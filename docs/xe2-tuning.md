@@ -26,6 +26,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMV_WAVE` / `_MT` | on / on | off | off | off | off |
 | `ARC_GDN_L1PF` | 2 | 0 | 0 | 2 | 0 |
 | `ARC_XALL` (MoE) | on | off | off | on | off |
+| `ARC_BATCH` | off | off | off | 64 on Windows | off |
 | `ARC_W8_PARTIAL_GB` | auto (dense models, not split) | auto up to 16 GiB with a GPU share of 64 GiB+, else off | off | off in the preset; auto for other dense models | off |
 | `ARC_HOST_KEEP_GB` | automatic, at most 2.5 GiB | – (iGPUs: their own rule) | – | automatic | – |
 | `ARC_GEMM_2D` / `_PF` | on where the driver offers them | the same | the same | the same | – |
@@ -95,6 +96,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_WIDE_ROWS=0` | on (every GPU) since 2026-11-10 | the 1-8 token row kernels that quantize for the next GEMV (`swiglu_quant` on the Qwen and MoE paths, `rmsnorm_quant`, `gated_norm_quant`, `attn_gate_quant`) in one work-group per row, as before; by default their superblocks spread over many work-groups; bit-identical |10 |
 | `ARC_ATTN_DEC_GRF=128`, `ARC_ATTN_DEC_SG=N`, `ARC_ATTN_DEC_SMAX=N`, `ARC_QWEN_DSPLIT=0` / `1` | 256 registers, 512, 256, by model (the 35B: on) | experiments with the generation attention (flash-decoding): its register file, the sub-groups the key split aims for, the most keys per split, `attn_dsplit` for Qwen models (4 q heads a sub-group, the dimensions over 4 sub-groups) | – |
 | `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
+| `ARC_BATCH=n` / `0` | 64 on Alchemist on Windows since 2026-11-18, off elsewhere | kernels recorded in lists of up to n, each list submitted at once: the same commands in the same order, bit-identical. Two A770s on Windows, the 27B's generation 12.67 -> 21.58 and 14.33 -> 22.66 tok/s, a step 78.6 -> 46.1 and 69.4 -> 43.8 ms (`replay_probe`: 33-44 us a kernel appended alone, 2.5 recorded; hansong80, TheUniKian, issue #45). A B60: no gain (table in section 2) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_P2P`, `ARC_TP_PIPE`, `ARC_TP_EVSUM` (opt-in since 2026-11-18), `ARC_TP_OVERLAP`, `ARC_TP_LM`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`, `ARC_TP_SIM`) | [multi-gpu.md](multi-gpu.md) |
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-18: Alchemist on Windows: kernels sent in recorded lists, the 27B's generation +58-70 %
+
+- **`ARC_BATCH=64` by default on Alchemist (A770 / A750 / A580) on Windows.** Each kernel appended to the GPU's queue
+  on its own cost 33-44 us there (`replay_probe`), against ~2.5 us in a recorded list. The 27B makes 837 launches a
+  token, so ~19 ms of a 73 ms step was the GPU waiting. Two A770s, 27B generation, `--bench-pp 128 --n 64`:
+  12.67 -> 21.58 tok/s (78.6 -> 46.1 ms a step, hansong80) and 14.33 -> 22.66 (69.4 -> 43.8 ms, TheUniKian, issue
+  #45). The logits are the same bit for bit at 0, 16, 64 and 256. `ARC_BATCH=0` turns it off. Other GPUs are
+  unchanged: a Pro B60 gained nothing from it (2026-11-12).
+- **Measured, not changed yet:** with batching on, MTP no longer pays on the A770 (21.36 plain, 20.44-20.47 with 3 or
+  7 drafts). Its passes wait on the host, and each wait restarts the lists at 4 kernels. To look into.
+- **Measured:** an Arc 140T's 27B 4K prompt 405 tok/s on release .07's defaults, `ARC_GEMM_XW_LOCK=1` 387 (stays
+  off). An A770's `ARC_H8_NORM` off / on: 1,210 / 1,223 tok/s, it stays on.
+
 ## 2026-11-18: `--npu on` warns where it costs the GPU its H8 prompt path
 
 - **A line at load when `--npu on` turns off H8 on a GPU where H8 is the default** (discrete cards, the B390, the 140T

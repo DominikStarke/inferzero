@@ -177,8 +177,13 @@ inline bool (*oom_hook)() = nullptr;
 // kernels after every wait (an idle GPU gets work soon) and double up to n. Anything else that goes to the
 // immediate list (copies, fills, barriers, waits) first appends the list being recorded (imm(), sync()). Kernels
 // that signal an event (profiling, ARC_ZE_WATCH) and ARC_ZE_SYNC_EACH go to the immediate list as before.
+// (the default without ARC_BATCH, set when GPU 0 is known (Ctx::init): 64 on Alchemist (a discrete GPU with 8-lane
+//  sub-groups) on Windows, 0 elsewhere. Two A770s on Windows, the 27B's generation 12.67 -> 21.58 and 14.33 -> 22.66
+//  tok/s, the logits the same (hansong80, TheUniKian, issue #45, 2026-11-18): a kernel appended on its own cost
+//  33-44 us there (replay_probe), against 2.5 recorded. ARC_BATCH=0 turns it off)
+inline std::atomic<int> batch_auto{0};
 inline int batch_max() {
-  static const int n = getenv("ARC_BATCH") ? std::max(0, std::min(4096, atoi(getenv("ARC_BATCH")))) : 0;
+  static const int n = getenv("ARC_BATCH") ? std::max(0, std::min(4096, atoi(getenv("ARC_BATCH")))) : batch_auto.load();
   return n;
 }
 struct BatchFns {
@@ -1094,6 +1099,10 @@ struct ClRt {
       static std::atomic<bool> said{false};
       if (!sg8 && !said.exchange(true))
         zlog::eprintf("inferzero: GPU 0 (%s): no 8-lane sub-groups, so the 16-lane kernels\n", name);
+#ifdef _WIN32
+      // (Alchemist: kernels in recorded lists by default, zrt::batch_max)
+      if (sg8 && have0 && !(p0.flags & 1u)) zrt::batch_auto = 64;
+#endif
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');

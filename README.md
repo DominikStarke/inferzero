@@ -158,7 +158,7 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   1,877 and 7.08, the setting to use on that card.
 - **One Arc A770 16 GB** under Windows ([issue #35](https://github.com/rizagp/inferzero/issues/35),
   [issue #36](https://github.com/rizagp/inferzero/issues/36)): 4K prompt 1,223 tok/s (release 2026.11.17.08 with
-  `ARC_GEMM_SPLIT=17`, the default on Alchemist since 2026.11.18.02), generation 12.6-12.8 tok/s (2026.11.18.02).
+  `ARC_GEMM_SPLIT=17`, the default on Alchemist since 2026.11.18.02), generation 21.6-22.7 tok/s with `ARC_BATCH=64`, the default on Alchemist on Windows since 2026.11.18.08 (12.6-12.8 without).
   Qwen3.5 4B: 4K prompt 4,821 tok/s through the preset (2026.11.18.02, the default since 2026.11.18.03), generation
   37.8-38.2; Qwen3.5 9B: 2,969-3,017 (2026.11.17.08).
 - **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
