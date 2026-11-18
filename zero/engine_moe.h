@@ -162,8 +162,8 @@
       for (int i = 0; i < 3; ++i)
         rd_bytes += (uint64_t)(share * NU * (i == 2 ? E : F) * ((i == 2 ? F : E) / 256) * gguf_sb_bytes(L.ex_type[i]));
     }
-    static const int gr_gu = getenv("ARC_MOE_GR_GU") ? atoi(getenv("ARC_MOE_GR_GU")) : 1,
-                     gr_dn = getenv("ARC_MOE_GR_DN") ? atoi(getenv("ARC_MOE_GR_DN")) : 4;  // (rows per sub-group;
+    static const int gr_gu = getenv("ARC_MOE_GR_GU") ? std::clamp(atoi(getenv("ARC_MOE_GR_GU")), 1, 8) : 1,
+                     gr_dn = getenv("ARC_MOE_GR_DN") ? std::clamp(atoi(getenv("ARC_MOE_GR_DN")), 1, 8) : 4;  // (rows per sub-group;
     // the down projection's 512-wide rows: 4 per sub-group in generation, 5.1 -> 4.0 ms per token, 1 for prompts)
     // standard experts, chunks of >= gemm_min tokens: decode + int8 GEMM (moe_gemm). Decoding all experts costs ~1 s
     // per chunk, so shorter chunks keep the per-tile kernels (Qwen3.6 35B: 1024 tokens 499 vs 490 tok/s, 2048 tokens
@@ -249,7 +249,7 @@
     };
     auto down_q = [&](cl_mem tiles) {
       // (2..8 rows: 4 rows per sub-group too, Flash Next 2 slots down 27.5 -> 20.7 ms per step; ARC_MOE_GR_DN_S=n)
-      static const int gr_dn_s = getenv("ARC_MOE_GR_DN_S") ? atoi(getenv("ARC_MOE_GR_DN_S")) : 4;
+      static const int gr_dn_s = getenv("ARC_MOE_GR_DN_S") ? std::clamp(atoi(getenv("ARC_MOE_GR_DN_S")), 1, 8) : 4;
       const int grows = T == 1 ? gr_dn : T <= 8 ? gr_dn_s : 1;
       // (two passes fused: the 256-register file, as gate / up; with 128 the sums spilled, ocloc: 28-61 scratch messages)
       cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +

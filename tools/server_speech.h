@@ -216,7 +216,10 @@ inline bool audio_route(const HttpRequest& rq, HttpResponse& rs, const AudioRout
     secs = (double)audio::decode_16k(std::vector<uint8_t>(fit->second.data.begin(), fit->second.data.end()), 3600).size() / 16000;
   } catch (const std::exception&) {}  // (the chat request says what is wrong with the audio)
   const Json chat_body = audio_chat_body(
-      fit->second.data, fit->second.filename.substr(fit->second.filename.rfind('.') + 1), model, field("language"),
+      // (the extension, or "" for a name without a dot: the whole name was taken as the format, audit 2026-11-18)
+      fit->second.data,
+      fit->second.filename.rfind('.') == std::string::npos ? std::string() : fit->second.filename.substr(fit->second.filename.rfind('.') + 1),
+      model, field("language"),
       field("prompt"), translate, secs, field("temperature").empty() ? 0.0 : atof(field("temperature").c_str()),
       field("max_tokens").empty() ? 0.0 : atof(field("max_tokens").c_str()),
       field("repeat_penalty").empty() ? 1.1 : atof(field("repeat_penalty").c_str()));

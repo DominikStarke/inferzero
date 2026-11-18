@@ -262,6 +262,11 @@ class AudioGemma4A : public GemmaAudioEncoder {
       // (llama.cpp: the GGUF's conv_norm / norm_conv names are swapped: "conv_norm" is the norm before the module)
       l.conv_pre = f32(p + "conv_norm.weight");
       l.conv_post = f32(p + "norm_conv.weight");
+      {  // (the depthwise convolution [E][5], as the kernel reads it)
+        uint64_t ne = 1;
+        for (uint64_t d : f_.get(p + "conv_dw.weight").dims) ne *= d;
+        if (ne != (uint64_t)n_embd * 5) throw std::runtime_error("mmproj: Gemma 4 audio conv_dw is not [E][5]");
+      }
       l.conv_dw = f32(p + "conv_dw.weight");
       l.ln2 = f32(p + "ln2.weight");
       l.ff_up = clw(p + "ffn_up");
@@ -292,6 +297,10 @@ class AudioGemma4A : public GemmaAudioEncoder {
     outp_ = f16("a.pre_encode.out.weight");
     outp_b_ = f32("a.pre_encode.out.bias");
     mmp_ = f16("mm.a.input_projection.weight");
+    // (the GEMM reads K in steps of 16 and launches 16 wide over N: an output projection of another width read past
+    //  the rows or failed to launch, audit 2026-11-18)
+    if (outp_.N % 16 || outp_.K % 16 || mmp_.K % 16)
+      throw std::runtime_error("mmproj: this Gemma 4 audio output projection shape is not supported");
     {
       const std::vector<float> one(std::max(outp_.N, n_embd), 1.0f);
       ones_ = f32(one);

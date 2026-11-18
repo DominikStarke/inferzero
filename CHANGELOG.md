@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-11-18: the rest of the review's fixes
+
+- **A hostile PDF** (which `web_fetch` can bring in from a page) no longer fills memory through its fonts. A
+  ToUnicode entry keeps at most 32 UTF-16 units, each font's maps and the text they expand to are charged to the
+  document's work budget, and once that is spent a font builds no maps. One code mapped to 1 MB, repeated in a 1 KB
+  content stream, gave a TB of text; a thousand fonts sharing one `/W` array built ~50 GB of maps.
+- **The server:**
+  - a page of another local server (allowed the model API) can no longer name the user's chats, transcripts or
+    saved files in a chat request (`file` parts, `/files/` references), whose text the answer would show it;
+  - a missing `/files/<id>` reads the chat folders again at most every 2 s (any web page could load it in a loop);
+  - an MCP server started through a `.cmd` / `.bat` gets an argument with `& | < > ^ ( )` quoted
+    (`npx mcp-remote https://h/sse?a=1&b=2` ran `b=2` as a second command);
+  - Anthropic streaming reports the prompt's tokens in `message_delta` (it said 0);
+  - an HTTP body of many small chunks, and slow headers, no longer cost quadratic time;
+  - an audio upload named without an extension no longer takes the whole name as its format.
+- **Files and formats:**
+  - a GGUF tensor must be whole blocks in every row, as ggml requires;
+  - Whisper's `model.bin`: every variable's shape is checked against its bytes, and the f16 copies no longer read
+    64 bytes past the variable; conv1's padding is checked against the mel bins;
+  - Gemma 4 and Qwen3-VL image encoders, Gemma 4 audio: the position tables, patch weights, output projection and
+    depthwise convolution are checked against the widths the kernels use;
+  - a Word template unpacks to 512 MB at most; an audio file's gaps add an hour of silence at most;
+  - a saved conversation with a negative position is refused.
+- **Chat template (Qwen):** a conversation that starts with a tool message opens its user turn.
+- **The Qwen3-VL image encoder** runs in f16 where the engine runs two int8 passes of its own (Flash Next
+  `--precise` with `ARC_VIT_Q2=1`, a qwen3 text model with a Qwen3-VL mmproj), which wrote past its buffer.
+- **Test switches** clamped to what the buffers hold: `ARC_ATTN_DEC_SG`, `ARC_QWEN_DS_S`, `ARC_MOE_GR_GU`,
+  `ARC_MOE_GR_DN`, `ARC_MOE_GR_DN_S`. The multi-GPU sum counter is 64-bit.
+- Checked: the 4B and 27B bit-identical to the build before; Flash Next loads and answers; the 4B's image encoder
+  and Whisper large-v3 load and answer; `test_doc_read` passes; a foreign page's file part 403, its plain chat 200.
+
 ## 2026-11-18: the automatic room beside a dense model's weights, measured on a B580
 
 - **A dense model that nearly fills a discrete card keeps fewer of its weights in RAM.** d-dorok swept

@@ -21,6 +21,7 @@ struct HttpRequest {
   std::map<std::string, std::string> headers;  // lower-case keys
   bool local_peer = false;  // (the connection comes from this machine: 127.x.x.x or ::1, whatever the Host header says)
   bool remote = false;  // (a signed-in remote request through a tunnel: tools/server_remote.h, HttpServer::gate)
+  bool foreign = false;  // (from a page of another local server, let through by foreign_ok: the model API only)
   std::string peer;     // (the client's address, for the log: 127.0.0.1, 192.168.1.20)
   std::string header(const std::string& k) const {
     auto it = headers.find(k);
@@ -462,7 +463,9 @@ class HttpServer {
       if (begun) {
         plat::sock_recv_timeout(c, 30000);
       }
-      while ((he = buf.find("\r\n\r\n")) == std::string::npos) {
+      size_t searched = 0;  // (the end of the headers looked for from the new bytes on, not from 0 each read)
+      while ((he = buf.find("\r\n\r\n", searched)) == std::string::npos) {
+        searched = buf.size() > 3 ? buf.size() - 3 : 0;
         const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
         if (n <= 0) { plat::sock_close(c); return; }
         buf.append(tmp, n);
@@ -547,17 +550,21 @@ class HttpServer {
       if (rq.headers.count("transfer-encoding") && coding != "chunked")
         return reply_close(c, 400, "unsupported Transfer-Encoding (chunked only)");
       if (!coding.empty()) {
+        // (p: the bytes of buf already taken; buf is cut only every 64 KB: an erase per chunk moved the rest of the
+        //  buffer each time, and a body of 1-byte chunks cost ~350 MB of copying per read, audit 2026-11-18)
+        size_t p = 0;
         while (true) {
+          if (p > 65536) buf.erase(0, p), p = 0;
           size_t le;
-          while ((le = buf.find("\r\n")) == std::string::npos) {
-            if (buf.size() > 4096) return reply_close(c, 400, "chunk size line too long");
+          while ((le = buf.find("\r\n", p)) == std::string::npos) {
+            if (buf.size() - p > 4096) return reply_close(c, 400, "chunk size line too long");
             const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
             if (n <= 0) { plat::sock_close(c); return; }
             buf.append(tmp, n);
             if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
           }
           size_t len = 0;
-          if (!parse_size(buf.substr(0, le), 16, len)) return reply_close(c, 400, "malformed chunk size");
+          if (!parse_size(buf.substr(p, le - p), 16, len)) return reply_close(c, 400, "malformed chunk size");
           if (len > kMaxBody || rq.body.size() + len > kMaxBody) return reply_close(c, 413, "request body too large");
           if (!hold.add(len)) return reply_close(c, 503, "the server is receiving too much at once; try again");
           if (len == 0) {  // the last chunk: optional trailer lines (ignored), then an empty line
@@ -569,7 +576,7 @@ class HttpServer {
               buf.append(tmp, n);
               if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
             }
-            buf.erase(0, te + 4);
+            buf.erase(0, te + 4);  // (what follows is the next request's)
             break;
           }
           while (buf.size() < le + 2 + len + 2) {
@@ -580,7 +587,7 @@ class HttpServer {
           }
           if (buf.compare(le + 2 + len, 2, "\r\n") != 0) return reply_close(c, 400, "malformed chunk (no CRLF after its data)");
           rq.body.append(buf, le + 2, len);
-          buf.erase(0, le + 2 + len + 2);
+          p = le + 2 + len + 2;
         }
       } else {
         size_t len = 0;
@@ -655,6 +662,7 @@ class HttpServer {
         if (!foreign_ok(rq))
           return reply_close(c, 403, "this is only for the server's own page (or a client without an Origin), not for "
                                      "pages of other local servers");
+        rq.foreign = true;  // (its chat requests may not name the user's saved files or chats either: server_chat.h)
       }
       rs.cors_origin = origin;
       if (rq.method == "OPTIONS") rs.send(204, "text/plain", ""), done_hook(rq, rs, 0);

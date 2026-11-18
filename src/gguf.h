@@ -226,7 +226,10 @@ class GgufFile {
     }
     if (blk <= 0 || bytes <= 0 || ne / (uint64_t)blk > UINT64_MAX / (uint64_t)bytes)
       throw std::runtime_error("gguf: bad tensor type for " + t.name);
-    if (ne % (uint64_t)blk) throw std::runtime_error("gguf: " + t.name + " is not a whole number of blocks");
+    // (per row, as ggml requires: a Q4_K [384, 2] was whole blocks as a tensor, and dequant_row decoded one superblock
+    //  of each 384-value row and left 128 values unwritten, audit 2026-11-18)
+    if (ne % (uint64_t)blk || (!t.dims.empty() && t.dims[0] % (uint64_t)blk))
+      throw std::runtime_error("gguf: " + t.name + " is not a whole number of blocks a row");
     return ne / blk * bytes;
   }
   void add_virtual() {

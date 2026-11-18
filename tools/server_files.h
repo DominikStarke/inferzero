@@ -299,10 +299,18 @@ class Store {
           out = i;
           return true;
         }
-      if (pass == 0) rescan();  // (moved or deleted by hand: the folders again)
+      // (moved or deleted by hand: the folders again, at most every 2 s for a miss: any web page can load
+      //  <img src=".../files/<id>"> in a loop, and each miss walked every chat folder under the lock, audit 2026-11-18)
+      if (pass == 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - miss_scan_ < std::chrono::seconds(2)) break;
+        miss_scan_ = now;
+        rescan();
+      }
     }
     return false;
   }
+  std::chrono::steady_clock::time_point miss_scan_{};
   static bool read(const std::string& path, std::string& out) { return read_shared(fs::path(path), out); }
   // every file once (its first copy), newest first; the folders read again, so changes made by hand show
   std::vector<Info> list() {

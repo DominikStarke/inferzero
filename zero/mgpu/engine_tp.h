@@ -54,7 +54,7 @@ struct TpComm {
   bool served = false;              // (serverz drives shard 0: TpEngine::serve)
   std::atomic<bool> cancel_now{false};  // (served: shard 0's answer to the request's cancel, for every shard)
   std::vector<double> wait_ms;      // per shard: time in reduce from its GPU wait to the barrier's end
-  std::vector<long> reduces;        // per shard: how many
+  std::vector<int64_t> reduces;       // per shard: how many
   // Failsafe against a GPU that hangs: a shard waiting longer than this at a barrier (ARC_TP_TIMEOUT seconds,
   // default 120: far beyond one layer of a prompt chunk) stops every shard and names the GPUs that did not come.
   // The limit counts from the last expert read from the SSD that finished (g_expert_reads_done): a shard reading its

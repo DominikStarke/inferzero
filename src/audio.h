@@ -541,6 +541,7 @@ inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay, int pick =
   };
   format();
   double pos = 0;  // (seconds placed so far)
+  double gaps = 0;  // (silence put in for gaps: an hour at most, a file of tiny samples 599 s apart grew without bound, audit 2026-11-18)
   std::vector<float> mono;
   for (;;) {
     DWORD flags = 0;
@@ -569,7 +570,7 @@ inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay, int pick =
           mb->Unlock();
           const double t = delay + ts / 1e7;
           bool more = true;
-          if (t - pos > 0.1 && t - pos < 600) more = sink.silence(t - pos, (int)sr);
+          if (t - pos > 0.1 && t - pos < 600 && gaps + (t - pos) <= 3600) gaps += t - pos, more = sink.silence(t - pos, (int)sr);
           if (t - pos > 0.1) pos = t;
           if (more) more = sink.add(mono.data(), n, (int)sr);
           pos += (double)n / sr;

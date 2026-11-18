@@ -47,6 +47,14 @@ class VisionGemma4V : public GemmaImageEncoder {
     if (n_embd % 16 || n_ff % 16 || n_out % 16 || !head_ok(hd_) || 3 * patch * patch % 16)
       throw std::runtime_error("mmproj: this Gemma 4 vision shape is not supported on the GPU (embedding " +
                                std::to_string(n_embd) + ", heads " + std::to_string(n_head) + ")");
+    {  // (the shapes the encoder indexes by n_embd: a position table not [2][pos][E], or a patch weight not E wide,
+       //  read or wrote past their rows, audit 2026-11-18)
+      const GgufTensor& pe = f_.get("v.position_embd.weight");
+      const GgufTensor& pw = f_.get("v.patch_embd.weight");
+      if (pe.dims.size() < 3 || (int)pe.dims[0] != n_embd || pe.dims[1] < 1 || pe.dims[2] < 2 || pw.dims.size() < 4 ||
+          (int)pw.dims[3] != n_embd)
+        throw std::runtime_error("mmproj: unexpected Gemma 4 vision position / patch tensor shapes");
+    }
     pos_size = (int)f_.get("v.position_embd.weight").dims[1];
     // Google's default budget is 280 tokens, 1120 the most it was trained with; small text needs the full 1120
     min_tokens = 1120;

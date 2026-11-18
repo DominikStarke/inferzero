@@ -1559,7 +1559,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       return e != nullptr && std::string(e) == "128";
     }();
     const std::string dec_grf = dec_small ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
-    static const int dec_sg = getenv("ARC_ATTN_DEC_SG") ? atoi(getenv("ARC_ATTN_DEC_SG")) : 512;
+    static const int dec_sg = getenv("ARC_ATTN_DEC_SG") ? std::clamp(atoi(getenv("ARC_ATTN_DEC_SG")), 1, 512) : 512;  // (at most 512: apart_ holds that many splits a row, audit 2026-11-18)
     static const int dec_smax = getenv("ARC_ATTN_DEC_SMAX") ? (std::max(1, atoi(getenv("ARC_ATTN_DEC_SMAX"))) + 15) / 16 * 16 : 256;  // (keys per split, most)
     auto opts = [&](int tpw) {
       return dec_grf + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
@@ -1589,7 +1589,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         const int hg = hpg % 4 == 0 && qwen_ds != 1 ? 4 : 2, n = hg == 4 ? 1 : std::min(left, 2), tr = n, nsub = 4;
         const int sgs = hpg / hg * nsub, lsz = 16 * sgs;
         const int lo = win ? std::max(0, pos0 + r0 - win + 1) : 0, plast = pos0 + r0 + n - 1;
-        static const int qs_len = getenv("ARC_QWEN_DS_S") ? (std::max(1, atoi(getenv("ARC_QWEN_DS_S"))) + 15) / 16 * 16 : 256;  // (experiment)
+        static const int qs_len = getenv("ARC_QWEN_DS_S") ? (std::max(256, atoi(getenv("ARC_QWEN_DS_S"))) + 15) / 16 * 16 : 256;  // (at least 256: apart_ holds ctx / 256 + 1 splits)  // (experiment)
         const int S = qs_len, kstart = lo / S * S, ns = (plast - kstart) / S + 1;
         int p0 = pos0 + r0, nv = n, q0 = r0, SS = S, ks = kstart, nss = ns;
         cl_kernel k = kernel("ops", opts(1) + " -DHG=" + std::to_string(hg) + " -DNSUB=" + std::to_string(nsub) +

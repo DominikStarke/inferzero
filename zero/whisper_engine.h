@@ -425,7 +425,11 @@ class WhisperEngine : public whisper::Backend {
   cl_mem half_buf(const std::string& name) {
     const whisper::Ct2Var& v = m_.file->get(name);
     if (v.dtype != 4) throw std::runtime_error("whisper: " + name + " is not f16");
-    return buf(v.bytes + 64, v.data);
+    // (64 bytes of slack after the data, zeros, not the file's next bytes: the last variable's copy read past the
+    //  file's mapping when it ended within 64 bytes of a page, audit 2026-11-18)
+    std::vector<uint8_t> h((size_t)v.bytes + 64, 0);
+    memcpy(h.data(), v.data, v.bytes);
+    return buf(h.size(), h.data());
   }
   // an f16 matrix [N][K] as the Q8_0 GEMM form, rows padded to Np with zeros
   // (raw: also the GPU raw Q8_0 rows, for the decoder's GEMVs of passes of 1-8 rows; the same int8 values and scales)
@@ -437,13 +441,17 @@ class WhisperEngine : public whisper::Backend {
   // a convolution weight [N][C][3] as [N][C * 3] (K padded to Kp)
   GW weight_conv(const std::string& name, int Kp) {
     const whisper::Ct2Var& v = m_.file->get(name);
+    if (v.shape.size() != 3) throw std::runtime_error("whisper: " + name + " is not a [N][C][3] convolution");
     const int N = v.shape[0], K = v.shape[1] * v.shape[2];
     return upload_q8(name, v, N, K, N, Kp, [&](int n, int k) { return whisper::h2f(((const uint16_t*)v.data)[(size_t)n * K + k]); }, false);
   }
   template <typename F>
   GW upload_q8(const std::string& name, const whisper::Ct2Var& v, int N, int K, int Np, int Kp, F at, bool raw) {
     if (v.dtype != 4) throw std::runtime_error("whisper: " + name + " is not f16");
-    if (Np % 16 || Kp % 256) throw std::runtime_error("whisper: " + name + " does not fit the GEMM tiles");
+    // (K <= Kp, N <= Np: conv1's K padded to 512 wrote past the rows for a model of more than 170 mel bins, audit
+    //  2026-11-18)
+    if (Np % 16 || Kp % 256 || K > Kp || N > Np || K <= 0 || N <= 0)
+      throw std::runtime_error("whisper: " + name + " does not fit the GEMM tiles");
     std::vector<float> f((size_t)Np * Kp, 0.0f);
 #pragma omp parallel for
     for (int n = 0; n < N; ++n)

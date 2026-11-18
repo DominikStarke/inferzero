@@ -55,6 +55,9 @@ class VisionQwen3VL {
                                std::to_string(n_embd) + ", heads " + std::to_string(n_head) + ")");
     const GgufTensor& pe = f_.get("v.position_embd.weight");
     side = (int)std::lround(std::sqrt((double)pe.dims[1]));
+    // (a square table n_embd wide: a count that rounds up (2400 -> 49) read past pos_table_, audit 2026-11-18)
+    if (pe.dims.size() < 2 || (int)pe.dims[0] != n_embd || (int64_t)side * side != (int64_t)pe.dims[1])
+      throw std::runtime_error("mmproj: the Qwen3-VL position table is not a square of " + std::to_string(n_embd) + "-wide rows");
   }
 
   // Whether this mmproj is a Qwen3-VL projector these kernels run (the shape checks of the constructor).
@@ -254,6 +257,11 @@ class VisionQwen3VL {
   void load() {
     if (loaded_) return;
     i8_ = getenv("ARC_VIT_Q2") ? atoi(getenv("ARC_VIT_Q2")) != 0 : !e_.hp.moe && !e_.hp.hc;
+    // (not where the engine runs two int8 passes of its own (q2mm_): its -DQ2_AQ comes after this encoder's in every
+    //  ops build, so vit_quant_pad wrote the residual at the engine's offset, past vaq_, and the GEMM ran a third
+    //  pass; audio_qwen3a.h takes the engine's layout instead. Audit 2026-11-18: Flash Next --precise with
+    //  ARC_VIT_Q2=1, or a qwen3 text model given a Qwen3-VL mmproj)
+    if (e_.q2mm_) i8_ = false;
     // the two temporal patch kernels see the same frame: their sum is the 2-D patch embedding
     {
       std::vector<float> w = host("v.patch_embd.weight"), w1 = host("v.patch_embd.weight.1");

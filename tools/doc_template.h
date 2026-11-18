@@ -287,11 +287,14 @@ inline std::string fill(const std::string& docx, const Json& data, std::string& 
   }
   // the zip again: every entry as it was, the document new
   std::vector<std::pair<std::string, std::string>> files;
+  size_t total = x.size();  // (all the parts unpacked: 512 MB at most, as xlsx.h and pptx.h; many entries pointing at
+                            //  one deflated bomb unpacked 256 MB each, and the zip's 32-bit sizes ended at 4 GB)
   for (const std::string& n : zip_names(docx)) {
     if (n.empty() || n.back() == '/') continue;
     std::string d;
     if (n == "word/document.xml") d = x;
     else if (!infl::zip_entry(docx, n, d, 256u << 20)) { bad = "cannot read " + n + " of the template"; return ""; }
+    else if ((total += d.size()) > (512u << 20)) { bad = "the template is too large unpacked"; return ""; }
     files.push_back({n, std::move(d)});
   }
   return doc::zip(files);

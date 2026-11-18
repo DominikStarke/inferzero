@@ -993,6 +993,10 @@ class Adapter {
       d.set("stop_reason", anthropic_stop(finish_));
       d.set("stop_sequence", Json());
       Json u = Json::object();
+      // (the prompt's count too: message_start goes out before the prompt is read, with 0, and a client that sizes
+      //  its context from the stream saw 0 for ever, audit 2026-11-18; message_delta's usage is cumulative)
+      u.set("input_tokens", usage_["prompt_tokens"].as_int() - usage_["prompt_tokens_details"]["cached_tokens"].as_int());
+      u.set("cache_read_input_tokens", usage_["prompt_tokens_details"]["cached_tokens"].as_int());
       u.set("output_tokens", usage_["completion_tokens"].as_int());
       Json e = Json::object();
       e.set("type", "message_delta");

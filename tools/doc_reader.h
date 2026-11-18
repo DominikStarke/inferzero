@@ -725,9 +725,12 @@ inline void parse_cmap(const std::string& cm, Font& f) {
   std::vector<P> ops;
   auto u16 = [](const std::string& s) {  // (UTF-16BE -> UTF-8)
     std::string o;
-    for (size_t i = 0; i + 1 < s.size(); i += 2) {
+    // (at most 32 UTF-16 units a code: a ligature is a few; a hostile CMap mapped one code to 1 MB, and a content
+    //  stream of that code repeated expanded a KB into a TB of text, audit 2026-11-18)
+    const size_t n = std::min<size_t>(s.size(), 64);
+    for (size_t i = 0; i + 1 < n; i += 2) {
       uint32_t c = (unsigned char)s[i] << 8 | (unsigned char)s[i + 1];
-      if (c >= 0xD800 && c < 0xDC00 && i + 3 < s.size()) {
+      if (c >= 0xD800 && c < 0xDC00 && i + 3 < n) {
         const uint32_t lo = (unsigned char)s[i + 2] << 8 | (unsigned char)s[i + 3];
         c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
         i += 2;
@@ -837,6 +840,9 @@ class Reader {
   const Font& font(const P& fo) {
     auto it = fonts_.find(fo.get());
     if (it != fonts_.end()) return it->second;
+    // (the work budget spent: no more maps built. Each font's maps are charged below: a thousand font dicts sharing
+    //  one /W array of a million entries built ~50 GB of maps from a 100 KB file, audit 2026-11-18)
+    if (f_.over_budget) return fonts_[fo.get()] = Font{};
     Font f;
     P sub = f_.get(fo, "Subtype");
     if (sub && sub->s == "Type0") {
@@ -894,6 +900,13 @@ class Reader {
       parse_cmap(f_.decode(tu), f);
       if (f.map.empty()) f.bytes = bytes;
     }
+    // (about what an entry costs in an unordered_map: node, hash slot, string)
+    size_t cost = f.w.size() * 32;
+    for (const auto& [c, s] : f.map) cost += 48 + s.size();
+    if (!f_.spend(cost)) {
+      f.map.clear();
+      f.w.clear();
+    }
     return fonts_[fo.get()] = f;
   }
   void run(const std::string& cs, const P& res, int depth, M ctm) {
@@ -920,6 +933,7 @@ class Reader {
       } else if (r[4] > last_x_ + std::max(0.5, sz * 0.15) && !cur_.empty() && cur_.back() != ' ') cur_ += ' ';
       cur_size_ = std::max(cur_size_, sz);
       const std::string t = fnt->text(codes);
+      if (!f_.spend(t.size())) return;  // (the text a font expands codes to, charged too)
       cur_ += t;
       const size_t visible = (size_t)std::count_if(t.begin(), t.end(), [](char ch) { return ch != ' '; });
       chars_ += visible;

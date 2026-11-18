@@ -57,7 +57,7 @@
     const int spos = hdr[7], swh = hdr[8], slo = hdr[9];
     if (hdr[0] != kStateMagic || hdr[1] != 2 || hdr[2] != hp.n_layer || hdr[3] != hp.n_embd || hdr[4] != hp.n_vocab ||
         hdr[5] != state_flags() || hdr[6] != (has_mtp ? 1 : 0) || hdr[10] != (int)kl.size() || spos < 0 ||
-        spos > ctx || swh > ctx || slo < 0)
+        spos > ctx || swh < 0 || swh > ctx || slo < 0)
       return false;
     std::vector<int32_t> geo(kl.size() * 5);
     if (!get(f, geo.data(), geo.size() * 4)) return false;

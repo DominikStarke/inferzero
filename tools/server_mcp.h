@@ -177,9 +177,12 @@ inline std::string find_program(const std::string& command) {
 }
 #else
 // CommandLineToArgvW's quoting
-inline void append_arg(std::wstring& cl, const std::wstring& a) {
+// (for_cmd: an argument cmd.exe reads, a batch file's: also quoted when it holds & | < > ^ ( ), which cmd takes
+//  literally only inside quotes; "npx mcp-remote https://h/sse?a=1&b=2" ran "b=2" as a second command, audit
+//  2026-11-18. A % still expands, as cmd does inside quotes)
+inline void append_arg(std::wstring& cl, const std::wstring& a, bool for_cmd = false) {
   if (!cl.empty()) cl += L' ';
-  if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+  if (!a.empty() && a.find_first_of(for_cmd ? L" \t\n\v\"&|<>^()" : L" \t\n\v\"") == std::wstring::npos) {
     cl += a;
     return;
   }
@@ -441,8 +444,8 @@ class Client : public std::enable_shared_from_this<Client> {
       GetSystemDirectoryW(sys, MAX_PATH);
       app = std::wstring(sys) + L"\\cmd.exe";
       std::wstring inner;
-      append_arg(inner, prog);
-      for (auto& a : cfg_.args) append_arg(inner, w8(a));
+      append_arg(inner, prog, true);
+      for (auto& a : cfg_.args) append_arg(inner, w8(a), true);
       cl = L"cmd.exe /d /s /c \"" + inner + L"\"";
     } else {
       app = prog;

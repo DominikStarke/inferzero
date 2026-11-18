@@ -23,6 +23,14 @@
     const auto t_req = clk::now();  // (the request's arrival: time to first token, end to end)
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
+    // (a page of another local server: no "file" parts (chat:<id>, transcript:<id>, a saved file) and no /files/
+    //  references, which would paste the user's chats and files into a prompt whose answer that page reads; the
+    //  foreign_ok rule says such pages never reach them, audit 2026-11-18)
+    if (rq.foreign)
+      for (const Json& m : body["messages"].items())
+        for (const Json& p : m["content"].items())
+          if (p["type"].str() == "file" || p["type"].str() == "input_file" || p.dump().find("\"/files/") != std::string::npos)
+            return rs.send(403, "application/json", err("saved files and chats are only for the server's own page").dump());
     if (ocr_ && ocr_batch(rq, body, rs)) return;  // (several images / PDFs at once: file by file, tools/server_ocr.h)
     if (ocr_ && ocr_pdf(rq, body, rs)) return;  // (an OCR model and a PDF: page by page, tools/server_ocr.h)
     // (/metrics: in the server, waiting until past claim_slot; after the OCR batches, which call chat() per page: each

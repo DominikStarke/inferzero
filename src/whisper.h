@@ -124,6 +124,17 @@ class Ct2File {
       v.dtype = u8();
       v.bytes = u32();
       need(v.bytes);
+      // (the shape against the bytes: the readers take count() values of the dtype's size, and a shape larger than
+      //  the bytes read past the file; a negative dimension made count() huge, audit 2026-11-18)
+      {
+        uint64_t cnt = 1;  // (rank 0: a scalar, one value)
+        bool ok = true;
+        for (int d : v.shape) ok = ok && d > 0 && (cnt *= (uint64_t)d) <= (1ull << 40);
+        static const uint64_t es_of[6] = {4, 1, 2, 4, 2, 2};  // (f32, i8, i16, i32, f16, bf16)
+        const uint64_t es = v.dtype >= 0 && v.dtype < 6 ? es_of[v.dtype] : 1;
+        if (!ok || cnt * es > v.bytes)
+          throw std::runtime_error("model.bin: variable " + name + " is smaller than its shape");
+      }
       v.data = base_ + p;
       p += v.bytes;
       vars_[name] = v;

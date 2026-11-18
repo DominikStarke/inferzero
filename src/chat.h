@@ -153,7 +153,9 @@ inline std::string render(const Json& messages, const Json& tools, const ChatOpt
         }
       out += "<|im_end|>\n";
     } else if (r == "tool") {
-      if (i > 0 && role(i - 1) != "tool") out += "<|im_start|>user";
+      // (as the template's "loop.first or the one before not a tool": a conversation that starts with a tool message
+      //  opens its user turn too, audit 2026-11-18)
+      if (i == 0 || role(i - 1) != "tool") out += "<|im_start|>user";
       out += "\n<tool_response>\n" + content + "\n</tool_response>";
       if (i + 1 == n || role(i + 1) != "tool") out += "<|im_end|>\n";
     }
