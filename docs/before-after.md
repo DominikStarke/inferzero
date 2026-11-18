@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-18, Alchemist: `h8_splits` 17 superblocks a piece (34 before):** an Arc A770 (TheUniKian, issue #36,
+  release .08), 27B IQ3_S 4K prompt, best of 3: default (34) 1,150.0 tok/s (`gemm_down` 822.9 ms, 128 launches),
+  `ARC_GEMM_SPLIT=0` 1,154.7 (815.1, 64), `=17` 1,222.7 (622.9, 256), `ARC_GEMM_XW_WGX=4` 1,158.3 (down 853.0, up
+  550 -> 523, gate 486 -> 452). KL, the laptop's emulated 140T preset (`ARC_XMX_TRY=2 ARC_140T=1`), `USAGE.md` 2 x
+  4,096 tokens: 17 against 34 pieces mean 0.00110, max 0.1501, same top 98.46 % (perplexity 6.1688 / 6.1800). The
+  laptop's own default is 17 already: unchanged.
+
 - **2026-11-18, measured: `ARC_GEMM_XW_2D` on a B60 under Linux** (MaineTim, issue #19, main 1b5bd69), 27B
   UD-Q5_K_XL 4K prompt, 2 rounds alternating: 2D 1,644.9 / 1,645.7 tok/s, `ARC_GEMM_XW_2D=0` 1,576.4 / 1,580.3 (+4.1 %;
   the B70 +4.6 %). An Arc A770 (TheUniKian, issue #36, release .08, the 140T preset): 27B IQ3_S 4K 1,140.7, 9B 3,042.1,

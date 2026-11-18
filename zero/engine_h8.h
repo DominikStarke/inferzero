@@ -355,9 +355,12 @@
   // before (the same bits). ARC_GEMM_SPLIT=N sets it, 0: one piece. (Only the variable is cached: iGPU or card is
   //  asked per call, so each GPU of a split model gets its own default; the value is clamped so the piece count
   //  cannot overflow.)
-  static int h8_splits(int K, int a) {
+  // (superblocks a piece: 17 on iGPUs and in the Arc 140T preset, 34 elsewhere. The preset's discrete cards, the
+  //  Alchemist A-series, took 17 since 2026-11-18: an A770's 27B 4K prompt 1,150 -> 1,223 tok/s, gemm_down 823 -> 623
+  //  ms (TheUniKian, issue #36, release .08; 0, one piece: 1,155); before, the B-series' 34)
+  int h8_splits(int K, int a) const {
     static const int env = getenv("ARC_GEMM_SPLIT") ? std::clamp(atoi(getenv("ARC_GEMM_SPLIT")), 0, 4096) : -1;
-    const int sk_sb = env >= 0 ? env : (zrt::integrated() ? 17 : 34);
+    const int sk_sb = env >= 0 ? env : (zrt::integrated() || p140_ ? 17 : 34);
     const int nsb = K / 256;
     return a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1;
   }

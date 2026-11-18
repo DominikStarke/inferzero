@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-18: Alchemist cards split the long H8 GEMMs as the Arc 140T does
+
+- **The Arc A-series (Alchemist) cuts the H8 prompt GEMMs over 8,192 values long into pieces of 17 superblocks**, as
+  iGPUs and the Arc 140T do (34 before, the B-series' figure). An Arc A770's Qwen3.8 27B 4K prompt 1,150 -> 1,223 tok/s,
+  its `gemm_down` 823 -> 623 ms (TheUniKian, issue #36, release .08; one piece: 1,155). Another order of the pieces'
+  sums: the laptop's emulated preset, 2 x 4,096 tokens of the 27B, 17 against 34 pieces: KL 0.00110 (max 0.150, the
+  same top token 98.5 %). `ARC_GEMM_SPLIT=34` as before. The B-series and the laptop are unchanged.
+
 ## 2026-11-18: the 2D prompt GEMM's fallback goes to the plain form
 
 - **A failed check of the 2D prompt GEMM now runs the plain form**, not the 2D loads alone: on the B60 under Windows
