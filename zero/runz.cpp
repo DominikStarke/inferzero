@@ -1127,7 +1127,12 @@ static int run_main(int argc, char** argv) {
       return 0;
     }
     // warm-up so kernel compilation is not counted in the time to first token
-    { int w = toks[0]; eng.forward(&w, 1); eng.reset(); }
+    // (with MTP, the server's warm-up: after an update every draft count's verification and drafting kernels are
+    //  built once before the timed run (warm_up_once, a marker in the kernel cache). Without it the first run after a
+    //  build compiled them inside the generation: the laptop's 35B 21.3 tok/s plain, 4.6 with MTP that first time
+    //  and ~35 after; a B70's 27B 8.4-8.7 tok/s in its first MTP round, issue #27, 2026-11-18)
+    if (eng.has_mtp) eng.warm_up_once(toks[0], false);
+    else { int w = toks[0]; eng.forward(&w, 1); eng.reset(); }
     // (ARC_PROMPT_WARM=N: N untimed runs of the whole prompt first, e.g. to fill the expert cache)
     for (int r = 0, nw = getenv("ARC_PROMPT_WARM") ? atoi(getenv("ARC_PROMPT_WARM")) : 0; r < nw; ++r) {
       auto tw = std::chrono::steady_clock::now();
@@ -1255,6 +1260,7 @@ static int run_main(int argc, char** argv) {
     const uint64_t rb0 = eng.rd_bytes;
     auto t1 = std::chrono::steady_clock::now();
     int steps = 0, accepted = 0, drafted = 0;
+    double mtp_draft_ms = 0, mtp_verify_ms = 0, mtp_done_ms = 0;  // (where an MTP step's time goes, 2026-11-18)
     if (eng.has_mtp) {
       // speculative decoding with the MTP block: up to two drafts per step, verified by one main-model pass
       const size_t V = eng.hp.n_vocab;
@@ -1269,8 +1275,13 @@ static int run_main(int argc, char** argv) {
       while ((int)gen.size() < n_gen) {
         gen.push_back(tok);
         if (tok == vocab.eos || (int)gen.size() >= n_gen) break;
+        const auto c0 = std::chrono::steady_clock::now();
         const std::vector<int> drafts = eng.mtp_draft(tok, eng.opt.mtp_drafts);
+        const auto c1 = std::chrono::steady_clock::now();
         const auto& lv = eng.verify(tok, drafts);
+        const auto c2 = std::chrono::steady_clock::now();
+        mtp_draft_ms += std::chrono::duration<double, std::milli>(c1 - c0).count();
+        mtp_verify_ms += std::chrono::duration<double, std::milli>(c2 - c1).count();
         int acc = 0, next = argmax_row(lv, 0);
         if (dl) fwrite(lv.data(), sizeof(float), V, dl);
         bool stop = false;
@@ -1281,7 +1292,9 @@ static int run_main(int argc, char** argv) {
           next = argmax_row(lv, acc);
           if (dl) fwrite(lv.data() + acc * V, sizeof(float), V, dl);
         }
+        const auto c3 = std::chrono::steady_clock::now();
         eng.verify_done(acc);
+        mtp_done_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c3).count();
         ++steps;
         drafted += (int)drafts.size();
         accepted += acc;
@@ -1313,6 +1326,9 @@ static int run_main(int argc, char** argv) {
     }
     if (steps) printf("MTP: %d drafts, %d accepted (%.1f %%), %.2f tokens per main-model pass (%d passes)\n", drafted,
                       accepted, 100.0 * accepted / std::max(drafted, 1), (double)gen.size() / steps, steps);
+    if (steps)
+      printf("MTP time: drafting %.1f ms, verification %.1f ms (%.1f ms a pass), verify_done %.1f ms\n", mtp_draft_ms,
+             mtp_verify_ms, mtp_verify_ms / steps, mtp_done_ms);
     if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
   }
   if (prof) {

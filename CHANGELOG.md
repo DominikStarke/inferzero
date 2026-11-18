@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-18: `runz --mtp` warms up the verification kernels first, and says where an MTP step's time goes
+
+- **The first `runz --mtp` run after an update no longer compiles inside the timed generation.** The server already
+  built every draft count's drafting and verification kernels before serving (`warm_up_once`); `runz` warmed up
+  one plain token only. So the first MTP run after a build looked several times slower than plain: the laptop's
+  35B 4.6 tok/s with MTP against 21.3 plain, ~35 after; Flash Next 1.94 against 4.42, 7.74 after. A Pro B70's 27B
+  ran 8.4-8.7 tok/s in its first MTP round (issue #27). Its Flash Next drop from 38.55 to 5.44 with MTP was most
+  likely the same. Logits bit-identical (the 35B with `--mtp`, before and after).
+- **A new line after an MTP run:** `MTP time: drafting X ms, verification Y ms (Z ms a pass), verify_done W ms`.
+- Measured on the laptop with the kernels built: the 35B (every expert cached) 21.2 tok/s plain, 32.7-35.3 with
+  MTP (a verify pass of ~6 rows 85-90 ms, ~1.9 plain steps); Flash Next 6.71 plain, 7.74 with MTP. The 2-8 row expert
+  kernels already read each distinct expert once for all the rows of a pass (the plan's G2 "union read").
+
 ## 2026-11-18: discrete cards: the norm and the H8 rotation in one kernel, 3 MTP drafts for the 27B
 
 - **`ARC_H8_NORM` on by default on discrete cards** (it was on in the 140T preset only). A Pro B70's 27B 4K prompt
