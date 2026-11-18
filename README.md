@@ -162,7 +162,7 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   Qwen3.5 4B: 4K prompt 4,821 tok/s through the preset (2026.11.18.02, the default since 2026.11.18.03), generation
   37.8-38.2; Qwen3.5 9B: 2,969-3,017 (2026.11.17.08).
 - **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
-  390 tok/s (release 2026.11.17.07 with `ARC_GEMM_XW_WGX=2`, its preset's default since 2026.11.17.08; 357 on
+  405 tok/s (release 2026.11.18.07, its defaults; 390 on 2026.11.17.07 with `ARC_GEMM_XW_WGX=2`, 357 on
   2026.11.15.11), generation 6.1 tok/s, 14.6 with MTP (at its memory's limit).
 - **Arc B390** (Panther Lake's Core Ultra X7 358H, Xe3, [issue #1](https://github.com/rizagp/inferzero/issues/1)): 4K
   prompt 634-637 tok/s (release 2026.11.18.06) with H8 on the wide-tile XMX GEMM (the default for iGPUs with 16-lane XMX since 2026.11.17.01)

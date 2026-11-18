@@ -1013,3 +1013,8 @@ running.
 The NPU turns H8 off (both convert the same weights), and H8 is what doubled this GPU's prompt: without it the GPU
 runs the plain XMX path (258-268 tok/s), and no NPU share makes that up. The NPU stays off on the B390; since
 2026-11-18 `--npu on` says so where H8 is the GPU's default.
+
+**Release 2026.11.18.07 on the 140T and the A770 (2026-11-18):** an Arc 140T (PascalSoftwares, issue #5), the 27B 4K
+prompt best of 3: the defaults (`WGX=2`, `H8_NORM`) 405.0 tok/s, `ARC_GEMM_XW_LOCK=1` 387.2, the old `WGX=1` without `H8_NORM` 370.0.
+An Arc A770 (TheUniKian, issue #45), `ARC_H8_NORM` (on by default on discrete cards since .07) off / on, two rounds:
+1,210.4 / 1,223.5 and 1,209.7 / 1,211.4 tok/s: no loss, it stays on.
