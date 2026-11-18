@@ -18,7 +18,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <atomic>
 #include <ctime>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
