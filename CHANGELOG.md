@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-19: `--gpus`: the host staging buffers sized at load
+
+- **A split model no longer fails at its first long prompt for want of pinned host memory** (hibagus, PR #48). Each
+  GPU's staging buffer (the bounce buffer for host copies) started at 4 MB and grew on the first prompt with a
+  larger input, on every shard's thread at the same moment. With 4 Data Center GPU Max 1550 stacks, that
+  `zeMemAllocHost` failed now and then (7 of 56 runs of a 512-token 27B prompt) with ~1 TB of RAM free. The buffers
+  are now sized at load to a prompt chunk's input, one GPU at a time (80 MB a GPU for the 27B at chunk 4096): 0 of
+  40 failed. If that allocation fails, the load throws and the server loads the model on one GPU, as for the shards'
+  other allocations. The results are the same (a bounce buffer). The RAM is the same as after a first long prompt
+  before. `ARC_TP_STAGE_PRE=0`: as before.
+
 ## 2026-11-19: the `--ctx auto` memory line's "kept free", an Arc Pro B65 on the site, Docker tested
 
 - **serverz's `memory (--ctx auto):` line showed 1.17 GiB kept free**, a figure of an older plan, while the plan keeps

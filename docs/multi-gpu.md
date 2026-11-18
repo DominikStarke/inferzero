@@ -27,6 +27,7 @@ Environment variables, read once per process (the one-GPU switches: [xe2-tuning.
 | `ARC_TP_SUM=f32`, `ARC_TP_RS_MIN=N` | the f16 reduce-scatter from 64 rows | the one-step f32 sum for prompts too; the rows from which the reduce-scatter runs |
 | `ARC_TP_P2P=0` / `1` | by the links timed at load, where the driver reports peer access | the sums through host memory always / directly whenever there is peer access ("Sums straight between GPUs") |
 | `ARC_TP_PIPE=0`, `ARC_TP_PIPE_PIECES=N` | on, 2-8 pieces of ~2 MB | the prompt sums in pieces that overlap their copies ("The sums in pieces") |
+| `ARC_TP_STAGE_PRE=0` | on | each GPU's host staging buffer grown at the first long prompt, as before 2026-11-19, instead of sized at load (4 Data Center GPU Max 1550 stacks: the growth on every shard at once failed 7 runs in 56; PR #48) |
 | `ARC_TP_EVSUM=1` | off (2026-11-18) | generation's sums meet on GPU events, no host wait and barrier per sum ("Not yet") |
 | `ARC_TP_OVERLAP=1`, `ARC_TP_LM=1` | off | the prompt sums beside the next chunk's work; `LM`: a dense split model with resident weights runs its prompts layer by layer without the overlap (to measure the two apart) |
 | `ARC_TP_ATT_QSPLIT=1` | off | a MoE model's attention divided by q-head where it would otherwise stay whole on every GPU ("Mixture of experts") |

@@ -1120,7 +1120,15 @@ class TpEngine {
       for (int q = 0; q < n; ++q)
         run_on({q}, [&](int r) {
           const Engine& e = *shards_[r];
-          zrt::staging((size_t)e.max_chunk * std::max(e.hp.hce(), e.hp.n_embd) * 4);
+          // (short of host memory: a throw, which the server turns into a load on one GPU, not the process's end)
+          zrt::oom_throws = true;
+          try {
+            zrt::staging((size_t)e.max_chunk * std::max(e.hp.hce(), e.hp.n_embd) * 4);
+          } catch (...) {
+            zrt::oom_throws = false;
+            throw;
+          }
+          zrt::oom_throws = false;
         });
     choose_sums(sim);
     size_t vocab = 0;
