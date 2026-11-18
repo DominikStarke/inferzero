@@ -63,7 +63,7 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    `--service-name inferzero-test` and use that name in the printed commands.
    Use `--replace-service` only when you intend to replace an existing unit;
    replacement swaps the unit file itself rather than writing through a symlink.
-6. **In Docker (not tested yet):** [docker/](../docker) holds a `Dockerfile` (Ubuntu 24.04, Intel's GPU runtime from
+6. **In Docker** (run on Unraid with an Arc B580, no `ipc: host` or `privileged` needed: tenken, issue #40; the Kubernetes file is not tested yet): [docker/](../docker) holds a `Dockerfile` (Ubuntu 24.04, Intel's GPU runtime from
    the PPA, the latest release's Linux package) and a `compose.yaml`. The host needs only the GPU's kernel driver:
    ```
    cd docker

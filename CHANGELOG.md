@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-19: the `--ctx auto` memory line's "kept free", an Arc Pro B65 on the site, Docker tested
+
+- **serverz's `memory (--ctx auto):` line showed 1.17 GiB kept free**, a figure of an older plan, while the plan keeps
+  `ARC_DRIVER_RESERVE_GB` free (0.5 GiB by default). So its "left" read 0.67 GiB too low: -0.65 on a B580 that had
+  ~0.02 left (tenken, issue #40). The context chosen was right; only the line (and `/metrics`' `keep_free`) was wrong.
+- **Docker:** the image from `docker/` ran on Unraid with an Arc B580, without `ipc: host` or `privileged` (tenken,
+  issue #40). The Kubernetes file is still untested.
+- **Site:** an Arc Pro B65 (32 GB, Linux, release .08; teodortomas, issue #47): the 27B 4K prompt 1,735 tok/s,
+  generation 21.6, 46.7 with MTP.
+
 ## 2026-11-18: Alchemist on Windows: kernels sent in recorded lists, the 27B's generation +58-70 %
 
 - **`ARC_BATCH=64` by default on Alchemist (A770 / A750 / A580) on Windows.** Each kernel appended to the GPU's queue
@@ -7,7 +17,8 @@
   token, so ~19 ms of a 73 ms step was the GPU waiting. Two A770s, 27B generation, `--bench-pp 128 --n 64`:
   12.67 -> 21.58 tok/s (78.6 -> 46.1 ms a step, hansong80) and 14.33 -> 22.66 (69.4 -> 43.8 ms, TheUniKian, issue
   #45). The logits are the same bit for bit at 0, 16, 64 and 256. `ARC_BATCH=0` turns it off. Other GPUs are
-  unchanged: a Pro B60 gained nothing from it (2026-11-12).
+  unchanged: a Pro B60 gained nothing from it (2026-11-12). The 35B-A3B on an A770: 24.87 -> 42.00 tok/s, the same
+  logits (hansong80).
 - **MTP on top of it:** a code answer of 95 tokens, 21.71 / 23.06 tok/s plain, 30.14 / 31.31 with MTP (50 % of
   the drafts accepted, 3.06 tokens a pass). In `--bench-pp`'s synthetic prompt few drafts are accepted, so MTP
   loses there (21.32 plain, 20.47 MTP): that is the prompt, not the batching (855 launches and 5 host waits a token,

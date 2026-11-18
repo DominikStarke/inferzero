@@ -59,7 +59,7 @@ several cards (`--gpus N`). See [Discrete GPUs](#discrete-arc-gpus-experimental)
 **Linux** (Ubuntu 24.04 or newer): download `inferzero-<version>-linux-x64.tar.gz` from the same release, unpack it,
 and run `./zero-launcher.sh` (a terminal menu that downloads a model and starts the headless server). It needs Intel's
 GPU runtime and nothing else (bash, curl): [docs/install.md](docs/install.md#linux). A `Dockerfile`, a
-`compose.yaml` and a Kubernetes file are in [docker/](docker) (not tested yet).
+`compose.yaml` (run on Unraid with an Arc B580) and a Kubernetes file (not tested yet) are in [docker/](docker).
 
 On Windows:
 

@@ -762,7 +762,8 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       mo.host_gb = (double)probe.host_weight_bytes() / gib;
       const Engine::MemParts mp = probe.mem_parts(cc);
       mo.dev = (double)probe.device_mem();
-      mo.keep = (0.95 + 0.22) * gib;
+      mo.keep = Engine::driver_slack();  // (what budget above keeps free; it said 1.17 GiB, a figure of an old plan, so the
+                                         //  log line's "left" read 0.67 GiB too low: -0.65 on a B580, tenken, issue #40)
       mo.snap = (double)probe.snapshot_bytes();
       mo.reserve = (double)reserve;
       mo.weights = mp.weights;
