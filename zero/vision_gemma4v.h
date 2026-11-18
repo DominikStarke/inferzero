@@ -52,7 +52,7 @@ class VisionGemma4V : public GemmaImageEncoder {
       const GgufTensor& pe = f_.get("v.position_embd.weight");
       const GgufTensor& pw = f_.get("v.patch_embd.weight");
       if (pe.dims.size() < 3 || (int)pe.dims[0] != n_embd || pe.dims[1] < 1 || pe.dims[2] < 2 || pw.dims.size() < 4 ||
-          (int)pw.dims[3] != n_embd)
+          (int)pw.dims[3] != n_embd || pw.dims[0] * pw.dims[1] * pw.dims[2] != (decltype(pw.dims[0]))3 * patch * patch)
         throw std::runtime_error("mmproj: unexpected Gemma 4 vision position / patch tensor shapes");
     }
     pos_size = (int)f_.get("v.position_embd.weight").dims[1];

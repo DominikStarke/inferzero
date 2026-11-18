@@ -162,7 +162,7 @@
   (`nextn` tensors). Gemma 4: the assistant drafter `mtp-*.gguf` next to the model (found automatically), which
   reads the main model's KV cache. The drafts are verified in one main-model pass and the next token is still
   sampled from the model's distribution, so the output is unchanged (checked: identical answers at every draft
-  count). `--mtp-drafts N`: inferzero 1–7 (default 7 for the 27B, 4 for it on the B-series cards, 7 whenever
+  count). `--mtp-drafts N`: inferzero 1–7 (default 7 for the 27B, 3 for it on the B-series cards, 7 whenever
   DFlash2 drafts, 5 for the 35B, 3 for the 4B and Flash Next, 2 for the 9B; Gemma 4's drafters always draft 3).
   `--mtp-model FILE` (implies `--mtp`): an MTP head in a file of its own, such as Flash Next's
   `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` or `-Q8_0.gguf`; without it the server takes an `mtp-*.gguf` next to the model.

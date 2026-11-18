@@ -219,17 +219,32 @@ static std::string models_fingerprint() {
   namespace fs = std::filesystem;
   std::string fp;
   std::error_code ec;
-  auto walk = [&](const fs::path& d, int depth) {
-    if (d.empty()) return;
-    for (const auto& e : dir_list(d, depth > 1)) {
-      if (e.path().extension() != ".gguf") continue;
-      fp += e.path().string() + "|" + std::to_string(fs::file_size(e.path(), ec)) + "\n";
+  auto add = [&](const fs::path& p) {
+    if (p.extension() == ".gguf") fp += p.string() + "|" + std::to_string(fs::file_size(p, ec)) + "\n";
+  };
+  // (the folders as deep as scan_models reads them: loose files, plain folders one level, models--*\snapshots all
+  //  the way; not a whole tree walked under the server's lock for an extra folder such as a drive's root; and the
+  //  packages folder, whose new package was not seen until a restart; self audit 2026-11-19)
+  auto walk = [&](const fs::path& dir) {
+    if (dir.empty()) return;
+    for (const auto& d : dir_list(dir)) {
+      if (!d.is_directory(ec)) {
+        add(d.path());
+        continue;
+      }
+      if (d.path().filename().string().rfind("models--", 0) != 0) {
+        for (const auto& e : dir_list(d.path())) add(e.path());
+        continue;
+      }
+      for (const auto& e : dir_list(d.path() / "snapshots", true)) add(e.path());
     }
   };
-  if (const std::string hub = hf_hub_dir(); !hub.empty()) walk(hub, 4);
+  if (const std::string hub = hf_hub_dir(); !hub.empty()) walk(hub);
   for (const auto& d : extra_model_dirs())
-    if (folder_reachable(fs::path(d)) == 1) walk(fs::path(d), 4);
-  walk(fs::path(app_dir()) / "models", 1);
+    if (folder_reachable(fs::path(d)) == 1) walk(fs::path(d));
+  for (const auto& e : dir_list(fs::path(app_dir()) / "models")) add(e.path());
+  for (const auto& d : dir_list(zpack::packages_dir()))
+    if (d.is_directory(ec)) add(d.path() / (d.path().filename().string() + ".gguf"));
   return fp;
 }
 

@@ -564,10 +564,16 @@
     //  per n_ff value a row, for the residual, the norms, the int8 and rotated copies, the FFN's rows; three W8 copies
     //  of the largest matrix for the just-in-time decode; the context's KV caches for the slots asked; the server's
     //  reserve. ARC_HOST_KEEP_GB=N: N GiB of room as before, plus the reserve and the context past 32K)
-    const double keep_old = 2.5 * GiB + (disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0);
+    // (ARC_HOST_KEEP_GB set: its room decides whether the model is tight too, as before 2026-11-18; the automatic room
+    //  had left it only the share of the weights, so =4 on a model under the 2.5 GiB line kept nothing in RAM. Self
+    //  audit 2026-11-19)
+    const double keep_old = [&] {
+      const double extra = disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0;
+      if (const char* e = getenv("ARC_HOST_KEEP_GB")) return std::max(0.5, atof(e)) * GiB + extra;
+      return 2.5 * GiB + extra;
+    }();
     const double keep = [&] {
-      if (const char* e = getenv("ARC_HOST_KEEP_GB"))
-        return std::max(0.5, atof(e)) * GiB + (disc ? keep_old - 2.5 * GiB : 0.0);
+      if (getenv("ARC_HOST_KEEP_GB")) return keep_old;
       if (!disc) return keep_old;
       // (the chunk the tight model gets: 1024, or the one asked)
       const double ch = opt.chunk > 0 ? (double)((std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128) : 1024.0;

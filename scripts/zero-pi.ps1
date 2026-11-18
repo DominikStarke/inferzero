@@ -213,7 +213,7 @@ bin\serverz.exe --help)
   -m, --model <model.gguf>       model file              --port <N>          port (default 8080)
   -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
   --alias <name>                 model id in the API     --mtp               speculative decoding
-  --mtp-drafts <N>               drafts per step (27B 7, on B-series cards 4; 35B 5; 4B, Flash Next and Gemma 4
+  --mtp-drafts <N>               drafts per step (27B 7, on B-series cards 3; 35B 5; 4B, Flash Next and Gemma 4
                                  3; else 2; 7 with DFlash2)
   --mtp-model <file>             an MTP head in a .gguf of its own (Flash Next's mtp-*.gguf; implies --mtp)
   --draft auto|mtp|dflash        with a DFlash2 drafter: both (auto), the MTP block only, DFlash2 only (the

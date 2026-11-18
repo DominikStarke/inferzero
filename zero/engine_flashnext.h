@@ -68,10 +68,11 @@
     }
     const bool f32_down = f32_mode == 1 || f32_mode == 2, f32_up = f32_mode == 1 || f32_mode == 3;
     // (rows a work-group, HCF_ROWS: each output is one work-item's sum in the same order at any value, so more rows only
-    //  read the weights fewer times (a 2,048-row chunk at 16: 128 times); ARC_HCF_ROWS=16 / 32 / 64)
+    //  read the weights fewer times (a 2,048-row chunk at 16: 128 times); ARC_HCF_ROWS=16 / 32. Not 64: its rows,
+    //  64 x 256 floats, are the whole 64 KiB of local memory (self audit 2026-11-19))
     static const int hcf_rows = [] {
       const int v = getenv("ARC_HCF_ROWS") ? atoi(getenv("ARC_HCF_ROWS")) : 16;
-      return v == 32 || v == 64 ? v : 16;
+      return v == 32 ? v : 16;
     }();
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {
       cl_kernel k = kernel("ops", hc_weight_defs(w) + " -DHCF_ROWS=" + std::to_string(hcf_rows), "hc_gemm_f32");

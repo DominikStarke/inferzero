@@ -240,8 +240,8 @@
     H8Src(const H8Src&) = delete;
     H8Src& operator=(const H8Src&) = delete;
   };
-  // ---- the norm and the rotation of its rows in one kernel (B60 prefill plan 13.5; ops.cl rmsnorm_h8r; ARC_H8_NORM=1,
-  // opt-in until a B60 measures it): the norm of a layer's input runs inside the H8Share scope of the GEMMs that read
+  // ---- the norm and the rotation of its rows in one kernel (B60 prefill plan 13.5; ops.cl rmsnorm_h8r; ARC_H8_NORM,
+  // on by default on discrete cards and in the 140T preset, see h8_norm_env): the norm of a layer's input runs inside the H8Share scope of the GEMMs that read
   // it and leaves h8_aq_ / h8_asc_ rotated (h8_pre_live_), so their h8_act has nothing left to do; the scope's end or
   // any other rotation ends it. The same values bit for bit as rmsnorm_quant + h8r_act from the f32 copy (H8F), which
   // it no longer writes: the copy's write and read and a launch saved per input (the 27B: 128 of a prompt's 256 h8_act)

@@ -1267,7 +1267,7 @@ int main(int argc, char** argv) {
             "  --mtp-model FILE      an MTP head or drafter in a .gguf of its own (implies --mtp): Flash Next's\n"
             "                        mtp-Qwen3.8-Flash-Next-Q4_0 / -Q8_0.gguf; without it, an mtp-*.gguf in the\n"
             "                        model's folder is taken\n"
-            "  --mtp-drafts N        drafts per step, Qwen 2..7 (default: 7 for Qwen 27B-class, 4 on B-series cards; 7 with\n"
+            "  --mtp-drafts N        drafts per step, Qwen 2..7 (default: 7 for Qwen 27B-class, 3 on B-series cards; 7 with\n"
             "                        DFlash2; 5 for MoE; 3 for 4B and Flash Next; 2 otherwise); Gemma 4's drafter\n"
             "                        always drafts 3\n"
             "  --npu on|off|force    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU\n"
@@ -2284,6 +2284,16 @@ int main(int argc, char** argv) {
     if (chat_post && wh) {
       Json in;
       if (Json::try_parse(rq.body, in) && srvwh::Service::has_audio_parts(in)) {
+        // (a page of another local server: the rule of chat() (server_chat.h) before Whisper reads a saved file it
+        //  names, whose transcript would reach that page in the answer; self audit 2026-11-19)
+        if (rq.foreign)
+          for (const Json& m : in["messages"].items())
+            for (const Json& p : m["content"].items())
+              if (p["type"].str() == "file" || p["type"].str() == "input_file" ||
+                  p.dump().find("\"/files/") != std::string::npos)
+                return rs.send(403, "application/json",
+                               "{\"error\":{\"message\":\"saved files and chats are only for the server's own page\","
+                               "\"type\":\"invalid_request_error\"}}");
         bool hears = false;
         {
           std::shared_lock<std::shared_mutex> lk(swap_mu);

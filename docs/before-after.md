@@ -109,6 +109,12 @@ That property is what every speed change is held to:
   Gemma 4 12B 671.7 tok/s (DP4a: the XMX check lost, 2.4 vs 4.9 ms); its 27B `gemm_down` 825 ms against `gemm_up`'s
   550 (2 split-K pieces a layer). Website: the B60 bar 1,522 -> 1,726 (manoreken2, issue #4, .08), an A770 bar.
 
+- **2026-11-19, the 4,096-token chunks of resident weights reach 12 GB cards (self audit):** the line was 12 GiB,
+  so a B580 12 GB (11.33 GiB reported) kept 512; now 11 GiB. Not measured on a 12 GB card yet. The A770's 512 / 4096
+  of the row below (3,211-3,219 / 3,594-3,598 tok/s) is what to expect; the laptop's KL 0.00000 between the two
+  chunks holds. Memory: +0.6 GiB of buffers on such a card, as on 16 GB ones. Laptop (an iGPU): unchanged, the 4B and
+  27B logits bit-identical (`--dump-logits`, 64 tokens). `ARC_HOST_KEEP_GB` deciding "tight" again: only when set.
+
 - **2026-11-18, `ARC_GEMM_XW_2D`'s fallback straight to the plain form:** a B60 under Windows (manoreken2, issue #4,
   release .08), 27B IQ3_S 4K prompt, 2 rounds: the loads alone (the full form failed its check) 1,705.2 / 1,705.6 /
   1,705.1 / 1,705.3 tok/s, `ARC_GEMM_XW_2D=0` 1,725.9 / 1,726.0 / 1,725.6 / 1,725.8; logits sha256 equal (ABE2A162...).

@@ -312,7 +312,7 @@ static int run_main(int argc, char** argv) {
             "  --snap-test           a snapshot (device, then host) restored after other tokens, the next tokens' logits\n"
             "                        against a fresh run, bit for bit (DeepSeek-V4.1's rings and pending rows)\n"
             "  --mtp                 speculative decoding (MTP block / Gemma drafter)\n"
-            "  --mtp-drafts N        drafts per step, 2..7 (default: 27B 7, on B-series cards 4; 35B-A3B 5; Qwen 4B and\n"
+            "  --mtp-drafts N        drafts per step, 2..7 (default: 27B 7, on B-series cards 3; 35B-A3B 5; Qwen 4B and\n"
             "                        smaller, Flash Next 3; 9B 2; with --dflash 7); Gemma 4's drafter always drafts 3\n"
             "  --mtp-model F         the MTP head or drafter in a file of its own (Gemma 4 drafter; Qwen3.8 Flash Next's\n"
             "                        mtp-*.gguf head); default: an mtp-*.gguf next to the model\n"

@@ -725,13 +725,15 @@ __kernel void hc_up1(__global const float* res, int r0, __global const float* w,
   __local int last;
   barrier(CLK_GLOBAL_MEM_FENCE | CLK_LOCAL_MEM_FENCE);  // (this work-group's values written)
   const int sb = get_group_id(0) / 16;                  // (16 values a work-group, 256 a superblock)
+  // (device-scope release before the count and acquire after it: mem_fence and the barrier order memory within one
+  //  work-group only, and the superblock's other work-groups may run on other Xe-cores; self audit 2026-11-19)
   if (get_local_id(0) == 0) {
-    mem_fence(CLK_GLOBAL_MEM_FENCE);
+    atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_device);
     last = atomic_inc(&cnt[sb]) == 15;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
   if (last && get_sub_group_id() == 0) {
-    mem_fence(CLK_GLOBAL_MEM_FENCE);
+    atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_device);
     const int lane = get_sub_group_local_id();
     for (int r = 0; r < M; ++r) {
       float v[16];

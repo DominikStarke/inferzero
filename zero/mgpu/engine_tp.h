@@ -1627,7 +1627,8 @@ inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g,
 }
 // After shard 0's own part (returned or threw): the others waited for. All of them having thrown the same way at
 // the same point (a cancel, a context overflow) leaves them in step; anything else (one shard failing on its own,
-// shards that left a barrier for it) breaks the split model until it is loaded again.
+// shards that left a barrier for it) breaks the split model until it is loaded again. With ARC_TP_EVSUM=1 a throw
+// other than a cancel releases the events (TpComm::release_events), so a context overflow too loads the model again.
 inline void TpMirror::finish() {
   Engine& e = *e_;
   --e.tp_depth_;

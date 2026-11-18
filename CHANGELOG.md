@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-11-19: self audit of 2026-11-18's changes
+
+- **`ARC_HOST_KEEP_GB` decides again whether a dense model is tight on a discrete card**, as before 2026-11-18. The
+  automatic room had left it only the share of the weights kept in RAM, while "tight" was always decided by the old
+  2.5 GiB line. So `=4` with a model under that line kept every weight on the card, and `=0.5` with a model just over
+  it gave 1,024-token chunks and nothing in RAM. Without the switch nothing changes.
+- **Resident weights' 4096-token prompt chunks now reach 12 GB cards.** The line was 12 GiB, and a "12 GB" card
+  reports ~11.3 GiB (a B580: 11.33), so only 16 GB cards got them. It is now 11 GiB. iGPUs are unchanged.
+- **Security:** a page of another local server could send a chat request naming a saved audio file. Whisper wrote
+  that file as text before the check that refuses saved files to such pages, so the transcript reached the page in
+  the answer. The check now runs before Whisper.
+- **serverz:** a package made while the server runs (`zero-server pack`) is found by name. The model-list fingerprint
+  did not look in the packages folder, so the request failed until a restart. The fingerprint also reads the model
+  folders only as deep as the scan does: an extra folder such as a drive's root was walked whole, under the server's
+  lock.
+- **Flash Next `-DHC_UPQ`:** the last work-group of a superblock now reads the others' values behind device-scope
+  release and acquire fences. Before, only work-group fences ordered them, and the other work-groups may run on other
+  Xe-cores. The logits are the same bit for bit on the laptop. `ARC_HCF_ROWS=64` is refused (16 is used): its rows
+  took the whole 64 KiB of local memory.
+- **Image encoders:** the Qwen3-VL position table's rank is checked before it is read. Gemma 4 and Qwen3-VL patch
+  weights are checked against 3 x patch x patch, and Qwen3-VL's second patch weight against the first. The f16 fallback
+  of 2026-11-18 covers every model that sets `hp.qwen3`, so every dense Qwen3-VL model unless `ARC_Q3_Q2=0`. Its
+  comment said only Flash Next `--precise` and a qwen3 model given such a projector.
+- **Launcher:** the Get models dialog counts the memory of an Arc Pro B65 and of the laptops' Arc A-series (A370M to
+  A770M). Their names did not match, so only the RAM was counted.
+- **Small:** the IQ tables' GPU buffer is made once. A second kernel build (H8 off after its checks) leaked the first
+  until the engine ended.
+- **Text:** the help (runz, serverz, zero-pi) and docs/server.md say 3 MTP drafts for the 27B on B-series cards, as
+  the code does since 2026-11-18. Comments on `ARC_H8_NORM` (on by default on discrete cards) and on
+  `ARC_TP_EVSUM=1` corrected: under that switch a context overflow loads the split model again.
+- Checked: the 4B and 27B logits bit-identical to the build before (`--dump-logits`, 64 tokens); Flash Next too;
+  the Linux build.
+
 ## 2026-11-19: `--gpus`: the host staging buffers sized at load
 
 - **A split model no longer fails at its first long prompt for want of pinned host memory** (hibagus, PR #48). Each

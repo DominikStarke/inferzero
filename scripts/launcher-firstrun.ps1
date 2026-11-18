@@ -52,15 +52,15 @@ $script:openWeb = $false    # the web UI opens once a start ends well
 # (a discrete Intel GPU's own memory in GB, 0 on a laptop's iGPU: a model's weights go there, so it counts with the
 #  RAM a laptop would need. An Arc A770 16 GB with 16 GB of RAM could not tick the 27B or the 35B (issue #34). The
 #  registry's 64-bit size: Win32_VideoController's AdapterRAM stops at 4 GB. Discrete cards by name only: an iGPU
-#  reports its share of the RAM there (the 125H: 23 GB), which is that RAM again. Discrete: Alchemist A310-A770, Pro
-#  A40-A60; Battlemage B570 / B580, Pro B50-B70. Not the Panther Lake B370 / B390, the 140T, 130V / 140V: iGPUs)
+#  reports its share of the RAM there (the 125H: 23 GB), which is that RAM again. Discrete: Alchemist A310-A770 (and the laptops'
+#  A370M-A770M), Pro A40-A60; Battlemage B570 / B580, Pro B50-B70 (B65 too). Not the Panther Lake B370 / B390, the 140T, 130V / 140V: iGPUs)
 function Get-ArcVramGb {
   $best = 0.0
   try {
     Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}" -ErrorAction Stop |
       ForEach-Object {
         $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-        if ($p -and "$($p.DriverDesc)" -match "Intel.*Arc\(TM\) (Pro [AB]\d0|A\d{3}|B5\d0)\b") {
+        if ($p -and "$($p.DriverDesc)" -match "Intel.*Arc\(TM\) (Pro [AB]\d{2}|A\d{3}M?|B5\d0)\b") {
           $q = $p."HardwareInformation.qwMemorySize"
           if ($q) { $g = [double]$q / 1GB; if ($g -gt $best) { $best = $g } }
         }

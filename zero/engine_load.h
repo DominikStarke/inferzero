@@ -13,7 +13,7 @@
     if (hp.ds41) {  // (DeepSeek-V4.1: its shared expert's SwiGLU clamped; none of the Qwen attention / DeltaNet kernels)
       k_swiglu_ = kernel("ops", h8f_defs_ + ds_swi_defs(), "swiglu_quant");
       auto tabs = build_iq_tables();
-      tabs_ = buf(tabs.size() * 4, tabs.data());
+      if (!tabs_) tabs_ = buf(tabs.size() * 4, tabs.data());  // (once: a second build_kernels, H8 off, reuses it)
       return;
     }
     k_swiglu_ = kernel("ops", h8f_defs_, "swiglu_quant");
@@ -50,7 +50,9 @@
     k_attn_comb_ = kernel("ops", "", "attn_combine");
     k_mtp_concat_ = kernel("ops", "", "mtp_concat");
     auto tabs = build_iq_tables();
-    tabs_ = buf(tabs.size() * 4, tabs.data());
+    // (once: build_kernels runs again when H8 turns off after its checks (engine.h), and a second buffer leaked the
+    //  first until the engine ended; the tables are the same; self audit 2026-11-19)
+    if (!tabs_) tabs_ = buf(tabs.size() * 4, tabs.data());
   }
 
   cl_mem buf(size_t bytes, const void* host = nullptr) {

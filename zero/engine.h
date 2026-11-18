@@ -354,8 +354,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     // (resident weights: 512 on iGPUs, where it was tuned; 4096 on discrete cards of 12 GB or more since 2026-11-18,
     //  as the weights decoded just in time have: no decode per chunk, so a longer chunk only means fewer passes over
     //  them. An Arc A770's 4B 4K prompt 3,211-3,219 -> 3,594-3,598 tok/s (hansong80, issue #35); the laptop's 4B over
-    //  2 x 4,096 tokens: the same perplexity, KL 0.00000 against chunk 512; +0.6 GiB of buffers, hence the 12 GB)
-    const bool res_long = !zrt::integrated() && zrt::D().global_mem >= (12ull << 30);
+    //  2 x 4,096 tokens: the same perplexity, KL 0.00000 against chunk 512; +0.6 GiB of buffers, hence the 12 GB. A "12 GB" card
+    //  reports ~11.3 GiB (a B580: 11.33), so the line is 11 GiB; it was 12 GiB until the self audit of 2026-11-19, which
+    //  left the 12 GB cards at 512)
+    const bool res_long = !zrt::integrated() && zrt::D().global_mem >= (11ull << 30);
     max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();

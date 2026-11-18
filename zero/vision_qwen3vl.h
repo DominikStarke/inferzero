@@ -54,8 +54,9 @@ class VisionQwen3VL {
       throw std::runtime_error("mmproj: this Qwen3-VL vision shape is not supported on the GPU yet (embedding " +
                                std::to_string(n_embd) + ", heads " + std::to_string(n_head) + ")");
     const GgufTensor& pe = f_.get("v.position_embd.weight");
-    side = (int)std::lround(std::sqrt((double)pe.dims[1]));
-    // (a square table n_embd wide: a count that rounds up (2400 -> 49) read past pos_table_, audit 2026-11-18)
+    // (a square table n_embd wide: a count that rounds up (2400 -> 49) read past pos_table_, audit 2026-11-18; the
+    //  rank checked before dims[1] is read, self audit 2026-11-19)
+    side = pe.dims.size() < 2 ? 0 : (int)std::lround(std::sqrt((double)pe.dims[1]));
     if (pe.dims.size() < 2 || (int)pe.dims[0] != n_embd || (int64_t)side * side != (int64_t)pe.dims[1])
       throw std::runtime_error("mmproj: the Qwen3-VL position table is not a square of " + std::to_string(n_embd) + "-wide rows");
   }
@@ -260,11 +261,16 @@ class VisionQwen3VL {
     // (not where the engine runs two int8 passes of its own (q2mm_): its -DQ2_AQ comes after this encoder's in every
     //  ops build, so vit_quant_pad wrote the residual at the engine's offset, past vaq_, and the GEMM ran a third
     //  pass; audio_qwen3a.h takes the engine's layout instead. Audit 2026-11-18: Flash Next --precise with
-    //  ARC_VIT_Q2=1, or a qwen3 text model given a Qwen3-VL mmproj)
+    //  ARC_VIT_Q2=1, and every model with hp.qwen3 (the qwen3 and qwen3vl architectures, so every dense Qwen3-VL
+    //  model) unless ARC_Q3_Q2=0; not the Qwen3.5 / 3.6 / 3.8 models)
     if (e_.q2mm_) i8_ = false;
     // the two temporal patch kernels see the same frame: their sum is the 2-D patch embedding
     {
       std::vector<float> w = host("v.patch_embd.weight"), w1 = host("v.patch_embd.weight.1");
+      // (both n_embd x 3*patch*patch, as f16() and the sum read them; self audit 2026-11-19)
+      if (w.size() != (size_t)n_embd * 3 * patch * patch || w1.size() != w.size())
+        throw std::runtime_error("mmproj: the Qwen3-VL patch embedding is not " + std::to_string(n_embd) + " x 3x" +
+                                 std::to_string(patch) + "x" + std::to_string(patch));
       for (size_t i = 0; i < w.size(); ++i) w[i] += w1[i];
       patch_w_ = f16(w, n_embd, 3 * patch * patch);
     }
