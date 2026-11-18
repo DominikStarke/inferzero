@@ -138,7 +138,7 @@ chat's folder (each command allowed by the user), chats search.
 - **Discrete Arc cards** (experimental): the B-series (B580 / Pro B60 / Pro B70) and the A-series (Alchemist: A770 /
   A750 / A580, on the Arc 140T's preset since 2026-11-16). Their own switches in `zero/xe2/`, XMX for the prompt GEMMs after a start-up
   check, and scripts that measure each setting ([xe2-tuning.md](xe2-tuning.md)). Users measured the 27B's 4K prompt
-  at 2,897 tok/s on a Pro B70, 1,726 on a Pro B60, 1,223 on an A770 (issues #27, #4, #36; README, "Discrete GPUs").
+  at 2,972 tok/s on a Pro B70, 1,726 on a Pro B60, 1,223 on an A770 (issues #27, #4, #36; README, "Discrete GPUs").
 - **A dense model a little larger than the card** keeps part of its weights in RAM, read over PCIe: an Arc B580
   12 GB runs the 27B with 0.49 GiB of them there (`ARC_HOST_KEEP_GB=0.75`), a 4K prompt at 1,877 tok/s and 7.1 tok/s
   generation (issue #37).

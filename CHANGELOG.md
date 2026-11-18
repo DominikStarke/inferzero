@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-18: discrete cards: the norm and the H8 rotation in one kernel, 3 MTP drafts for the 27B
+
+- **`ARC_H8_NORM` on by default on discrete cards** (it was on in the 140T preset only). A Pro B70's 27B 4K prompt
+  2,890 -> 2,972 tok/s: `h8_act` 88.4 -> 60.3 ms, the norm 69.7 -> 60.0 ms, hashes equal (joshdev-de, issue #27,
+  7368768). The B60's no gain of 11-14 was before the 128-register default. `ARC_H8_NORM=0` turns it off. iGPUs
+  unchanged.
+- **3 MTP drafts a step for the 27B on discrete cards** (4 before): the same B70, a code prompt, drafts 2 / 3 / 4
+  58.2 / 59.8 / 57.5 tok/s, accepted 75.0 / 70.6 / 60.4 %. The 4th draft is accepted too seldom to pay for its
+  verification. `--mtp-drafts N` still sets it.
+- Measured, not changed: `ARC_GDN_L1PF=8` no gain (2,893); `ARC_IQ3S_TILE=1` slower on the B70 (35.24 -> 32.7 tok/s
+  generation, every FFN GEMV slower), so it stays off. The B70's `gpu_bench`: memory read 603 GB/s, INT8 XMX
+  366.6 of 367 TOPS.
+
 ## 2026-11-18: a request naming a model the server doesn't list no longer waits for a rescan
 
 - **serverz:** a request whose `model` is not in the list (a benchmark's or a client's own name, `gpt-4o`) rescanned

@@ -145,7 +145,7 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   2026.11.14.09), 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation
   82.4 tok/s, 111.9 with MTP (2026.11.13.11). What each switch measured there: [docs/xe2-tuning.md](docs/xe2-tuning.md).
 - **One Pro B70** on native Linux ([issue #27](https://github.com/rizagp/inferzero/issues/27), joshdev-de, Fedora 45):
-  4K prompt 2,897 tok/s (main 1a7ac94 with the 2D GEMM and its prefetch, the defaults since 2026.11.17.06), 8K 2,727
+  4K prompt 2,972 tok/s (main 7368768 with `ARC_H8_NORM`, the default on discrete cards since 2026-11-18; 2,897 with the 2D GEMM and its prefetch alone), 8K 2,727
   (2026.11.16.12), generation 35.2 tok/s, 70.6 with MTP (2026.11.16.02). Qwen3.6 35B-A3B: 8K prompt 5,647 tok/s
   (2026.11.17.04), 4K 5,177, 16K 5,445, generation 95-98 tok/s (2026.11.16.15). Flash Next, 46 % of its experts in the
   card's 32 GB: 4K prompt 1,414 (2026.11.17.04), 16K 1,145, generation 38.6 tok/s once the expert cache holds what

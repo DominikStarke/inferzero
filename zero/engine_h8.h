@@ -239,10 +239,12 @@
   bool h8_pre_live_ = false;
   int h8_pre_M_ = -1, h8_pre_K_ = -1;
   // (on by default in the Arc 140T preset since 2026-11-17: a 140T's 27B 4K prompt 368.3 -> 382.1 tok/s, logits
-  //  identical (PascalSoftwares, issue #5, release .07); a B60 measured no gain (11-14), so opt-in elsewhere; =0 off)
+  //  identical (PascalSoftwares, issue #5, release .07). On discrete cards since 2026-11-18: a Pro B70's 27B 4K prompt
+  //  2,890 -> 2,972 tok/s, h8_act 88.4 -> 60.3 ms and the norm 69.7 -> 60.0, hashes equal (joshdev-de, issue #27,
+  //  7368768); the B60's no gain of 11-14 was before the 128-register default. iGPUs off; =0 off, =1 on)
   bool h8_norm_env() const {
     static const char* e = getenv("ARC_H8_NORM");
-    return e ? atoi(e) != 0 : p140_;
+    return e ? atoi(e) != 0 : p140_ || !zrt::integrated();
   }
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply

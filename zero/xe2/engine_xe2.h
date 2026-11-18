@@ -207,7 +207,10 @@
   // 64.9 / 53.4 / 79.1 (mean 62.2 -> 65.8, +6 %); each draft past 3 adds ~6-7 ms of verification a pass there, and the
   // later drafts are accepted less (joshdev-de, issue #27, a51686e). The iGPU keeps 7 (laptop: 3 -> 7 drafts 12.6 ->
   // 14.7 tok/s). --mtp-drafts N overrides either; DFlash2 keeps its 7.
-  int xe2_mtp_drafts(int d) const { return d == 7 && !zrt::integrated() && cl_.xmx && !cl_.sg8 ? 4 : d; }
+  // 3 since 2026-11-18: the same B70, runz --mtp, a code prompt, 256 asked: drafts 2 / 3 / 4 58.2 / 59.8 / 57.5 tok/s,
+  // accepted 75.0 / 70.6 / 60.4 %, 2.38 / 2.79 / 2.88 tokens a pass (joshdev-de, issue #27, 7368768): the 4th draft is
+  // accepted too seldom to pay its verification
+  int xe2_mtp_drafts(int d) const { return d == 7 && !zrt::integrated() && cl_.xmx && !cl_.sg8 ? 3 : d; }
   int xe2_gdn_l1pf() const {
     static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
     return e >= 0 ? e : (zrt::integrated() ? 0 : 2);
