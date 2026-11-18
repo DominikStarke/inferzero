@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-18: Flash Next's mixer quantizes its own output, one launch fewer per mixer
+
+- **`hc_up1` quantizes the block input itself** (`-DHC_UPQ`), instead of a separate `quant_rows` launch after it: 97
+  launches fewer a Flash Next token (48 layers x 2 mixers + the last). Each 256-value superblock is quantized by the
+  last of its 16 work-groups to finish (an atomic count, nobody waits), with the same `quant_store16` on the same
+  floats, padding rows included. Bit-identical: the default and precise modes' generation and MTP's 2-8 row verify
+  passes, `--dump-logits` with and without. The laptop, one pair of runs: 6.08 -> 7.75 tok/s generation (this
+  laptop's noise is large; a card's measurement decides). `ARC_HC_UPQ=0`: the separate launch.
+- Test switches for measuring Flash Next's error part by part (the plan's F1), all off unless set:
+  `ARC_FN_HCBF16=1` (the HC mixers' rows as the file has them), `ARC_FN_AB32=1` (DeltaNet's alpha / beta in f32),
+  `ARC_HCF_ROWS=16 / 32 / 64` (the rows per work-group of the f32 mixer GEMM in precise mode; 32: its time 3.74 ->
+  2.30 s of a 2,048-token prompt, the prompt 84.5 -> 88.2 tok/s, but not bit-identical, so 16 stays until its KL is
+  measured).
+- runz `--mtp`: the per-phase time line (`MTP time`).
+
 ## 2026-11-18: `runz --mtp` warms up the verification kernels first, and says where an MTP step's time goes
 
 - **The first `runz --mtp` run after an update no longer compiles inside the timed generation.** The server already

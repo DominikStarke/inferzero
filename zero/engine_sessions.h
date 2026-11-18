@@ -635,6 +635,7 @@
   // outputs, the block output / mixed input), the PLE block's n-gram embeddings (per chunk view in layer-major
   // prefill) and the token ids before the current position (host copy of the ones kept in the PLE layer's state)
   cl_mem hc_rinv_ = nullptr;  // (single-token mixers: the streams' 1 / rms)
+  cl_mem hc_cnt_ = nullptr;   // (hc_up1 -DHC_UPQ: the work-groups counted in per superblock, back to 0 after each)
   cl_mem out_hc_norm_ = nullptr, hc_xn_ = nullptr, hc_gate_ = nullptr, hc_lo_ = nullptr, hco_ = nullptr,
          ple_emb_ = nullptr, ple_hist_ = nullptr;
   GpuWeight out_hc_down_, out_hc_up_;

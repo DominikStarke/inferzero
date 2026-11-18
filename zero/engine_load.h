@@ -327,7 +327,7 @@
     return out;
   }
   void load_gdn_in(Layer& L, const std::string& p) {
-    if (hp.hc && fn_precise() && !tp_on()) {
+    if (hp.hc && fn_ab32() && !tp_on()) {
       const GgufTensor &alpha = T(p + "ssm_alpha.weight"), &beta = T(p + "ssm_beta.weight");
       const int E = hp.n_embd, N = hp.ssm_nv;
       if (alpha.nelements() != (uint64_t)N * E || beta.nelements() != (uint64_t)N * E)
@@ -366,7 +366,7 @@
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
       ab = quantize_rows_q8_0(v.data(), tp_rows(nab), E);
     }
-    L.qz_ab = !(hp.hc && fn_precise() && !tp_on()) && type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");
+    L.qz_ab = !(hp.hc && fn_ab32() && !tp_on()) && type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");
     std::vector<uint8_t> cat(tq.nbytes + tz.nbytes + (L.qz_ab ? ab.size() : 0));
     memcpy(cat.data(), tq.data, tq.nbytes);
     memcpy(cat.data() + tq.nbytes, tz.data, tz.nbytes);
@@ -519,7 +519,17 @@
     static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
     return env || fn_precise_hold_.on;
   }
-  bool hc_bf16() const { return fn_precise(); }
+  // (each of precise mode's parts alone, for measuring which one carries the default mode's error (the plan's F1,
+  //  2026-11-18); off unless set, so the default and precise modes are unchanged: ARC_FN_HCBF16=1 the HC mixers'
+  //  rows as the file has them, ARC_FN_AB32=1 DeltaNet's alpha / beta in f32)
+  bool hc_bf16() const {
+    static const bool env = getenv("ARC_FN_HCBF16") && atoi(getenv("ARC_FN_HCBF16")) != 0;
+    return fn_precise() || env;
+  }
+  bool fn_ab32() const {
+    static const bool env = getenv("ARC_FN_AB32") && atoi(getenv("ARC_FN_AB32")) != 0;
+    return fn_precise() || env;
+  }
   // Q8 and F32 GGUF rows need not be exactly representable as BF16 after dequantization.
   // Preserve them in F32; BF16 source values retain the compact existing path.
   static bool hc_bf16_exact(const std::vector<float>& v) {

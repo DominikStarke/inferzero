@@ -20,12 +20,24 @@
       set_args(k1, 0, x_, rr, normw, e, hc, eps, down.raw, n, hc_xn_, hc_rinv_);
       size_t g1[2] = {(size_t)256 * ((n + 15) / 16), 8}, l1[2] = {256, 1};  // (8 K slices: HC_KS)
       run("hc_down1", k1, 2, g1, l1);
-      cl_kernel k2 = kernel("ops", rt + hc_weight_defs(up), "hc_up1");
+      // (the block input's quantization inside hc_up1, -DHC_UPQ, 2026-11-18: one launch fewer a mixer, bit-identical;
+      //  ARC_HC_UPQ=0: the separate quant_rows as before)
+      static const bool upq_env = !getenv("ARC_HC_UPQ") || atoi(getenv("ARC_HC_UPQ")) != 0;
+      const bool upq = upq_env && E % 256 == 0;
+      cl_kernel k2 = kernel("ops", rt + hc_weight_defs(up) + (upq ? " -DHC_UPQ " + h8f_defs_ : std::string()), "hc_up1");
       set_args(k2, 0, x_, rr, normw, hc_rinv_, hc_xn_, n, hc_lo_, lr, kp, e, hc, up.raw, hco_);
+      if (upq) {
+        if (!hc_cnt_) {
+          const std::vector<int> z((size_t)E / 256, 0);
+          hc_cnt_ = buf(z.size() * sizeof(int), z.data());
+        }
+        int mm = Mp, a32 = act32;
+        set_args(k2, 13, mm, aq_, asc_, absum_, a32, hc_cnt_);  // (after hc_up1's 13 arguments)
+      }
       size_t g2 = (size_t)256 * ((E + 15) / 16), l2 = 256;
       run("hc_up1", k2, 1, &g2, &l2);
       rd_bytes += raw_bytes(down) + raw_bytes(up);
-      quant_rows(hco_, E, Mp, T, act32);
+      if (!upq) quant_rows(hco_, E, Mp, T, act32);
       return;
     }
     {
@@ -55,11 +67,17 @@
       zlog::eprintf("HC mixers of prompt chunks: %s (ARC_HC_F32=%d)\n", f32_mode >= 0 && f32_mode <= 4 ? names[f32_mode] : "int8", f32_mode);
     }
     const bool f32_down = f32_mode == 1 || f32_mode == 2, f32_up = f32_mode == 1 || f32_mode == 3;
+    // (rows a work-group, HCF_ROWS: each output is one work-item's sum in the same order at any value, so more rows only
+    //  read the weights fewer times (a 2,048-row chunk at 16: 128 times); ARC_HCF_ROWS=16 / 32 / 64)
+    static const int hcf_rows = [] {
+      const int v = getenv("ARC_HCF_ROWS") ? atoi(getenv("ARC_HCF_ROWS")) : 16;
+      return v == 32 || v == 64 ? v : 16;
+    }();
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {
-      cl_kernel k = kernel("ops", hc_weight_defs(w), "hc_gemm_f32");
+      cl_kernel k = kernel("ops", hc_weight_defs(w) + " -DHCF_ROWS=" + std::to_string(hcf_rows), "hc_gemm_f32");
       int ldi = ld_in, kk = K, li = lo_in, lr = LR, hc = HC, nn = N, lc = ldc, mm = Mp;
       set_args(k, 0, in, ldi, kk, li, lr, hc, w.raw, nn, C, lc, mm);
-      size_t gws[2] = {(size_t)256 * ((N + 255) / 256), (size_t)(Mp + 15) / 16}, lws[2] = {256, 1};
+      size_t gws[2] = {(size_t)256 * ((N + 255) / 256), (size_t)(Mp + hcf_rows - 1) / hcf_rows}, lws[2] = {256, 1};
       run("hc_gemm_f32", k, 2, gws, lws);
     };
     if (f32_down)

@@ -212,18 +212,21 @@ inline float f32sb_dot(__global const float* p, __local const float* x, int nv) 
 
 #define HCF_TM 16
 #endif
+#ifndef HCF_ROWS  // (rows a work-group: a host define, -DHCF_ROWS (engine_flashnext.h); each output summed by one
+#define HCF_ROWS HCF_TM  //  work-item in the same order at any value, so bit-identical)
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, int LR, int HC,
                           __global const uchar* wq, int N, __global float* C, int ldc, int M) {
-  __local float xs[HCF_TM * 256];
-  const int li = get_local_id(0), n = get_global_id(0), m0 = get_group_id(1) * HCF_TM, nsb = K / 256;
+  __local float xs[HCF_ROWS * 256];
+  const int li = get_local_id(0), n = get_global_id(0), m0 = get_group_id(1) * HCF_ROWS, nsb = K / 256;
   const float inv_hc = 1.0f / (float)HC;
-  float acc[HCF_TM];
+  float acc[HCF_ROWS];
 #pragma unroll
-  for (int t = 0; t < HCF_TM; ++t) acc[t] = 0.0f;
+  for (int t = 0; t < HCF_ROWS; ++t) acc[t] = 0.0f;
   for (int sb = 0; sb < nsb; ++sb) {
     barrier(CLK_LOCAL_MEM_FENCE);
-    for (int i = li; i < HCF_TM * 256; i += 256) {
+    for (int i = li; i < HCF_ROWS * 256; i += 256) {
       const int t = i / 256, k = sb * 256 + i % 256, m = m0 + t;
       float v = 0.0f;
       if (m < M) {
@@ -266,7 +269,7 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
 #endif
           const int k = 16 * l + j;
 #pragma unroll
-          for (int t = 0; t < HCF_TM; ++t) acc[t] += w * xs[t * 256 + k];
+          for (int t = 0; t < HCF_ROWS; ++t) acc[t] += w * xs[t * 256 + k];
         }
       }
     }
@@ -660,10 +663,20 @@ __kernel void hc_down1(__global const float* res, int r0, __global const float* 
 }
 // mixed[i] = mean over the streams c of xn_c[i] * sigmoid(W_up[c E + i] . silu(lo / HC)), lo = the sum of the partial
 // sums (LR values, the rest of the KP-wide input zero). grid (256 * ceil(E / 16)), local (256): a sub-group per i.
+// -DHC_UPQ (2026-11-18): the mixed rows quantized here as well, as quant_rows (swiglu_quant with fused = 1) would,
+// one launch fewer per mixer (97 a Flash Next token). The 16 work-groups of a 256-value superblock each count in on
+// cnt[superblock] once their values are written; the last to arrive quantizes the superblock (rows < HC_RT from
+// `mixed`, rows up to M as zeros, quant_store16 on the same floats: bit-identical) and sets the count back to 0. No
+// work-group waits for another. E a multiple of 256 (the host checks).
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void hc_up1(__global const float* res, int r0, __global const float* w, __global const float* rinv,
                      __global const float* part, int N, __global float* lo, int LR, int KP, int E, int HC,
-                     __global const uchar* wu, __global float* mixed) {
+                     __global const uchar* wu, __global float* mixed
+#ifdef HC_UPQ
+                     , int M, __global char* aq, __global float* asc, __global ushort* absum, int act32,
+                     __global volatile int* cnt
+#endif
+                     ) {
   __local float xs[HC_RT][1024];
   const int li = get_local_id(0);
   for (int r = 0; r < HC_RT; ++r)
@@ -677,7 +690,9 @@ __kernel void hc_up1(__global const float* res, int r0, __global const float* w,
     }
   barrier(CLK_LOCAL_MEM_FENCE);
   const int i = get_group_id(0) * 16 + get_sub_group_id(), nsb = KP / 256;
+#ifndef HC_UPQ
   if (i >= E) return;
+#endif
   float m[HC_RT];
 #pragma unroll
   for (int r = 0; r < HC_RT; ++r) m[r] = 0.0f;
@@ -706,4 +721,26 @@ __kernel void hc_up1(__global const float* res, int r0, __global const float* w,
   if (get_sub_group_local_id() == 0)
 #pragma unroll
     for (int r = 0; r < HC_RT; ++r) mixed[(size_t)r * E + i] = m[r] / (float)HC;
+#ifdef HC_UPQ
+  __local int last;
+  barrier(CLK_GLOBAL_MEM_FENCE | CLK_LOCAL_MEM_FENCE);  // (this work-group's values written)
+  const int sb = get_group_id(0) / 16;                  // (16 values a work-group, 256 a superblock)
+  if (get_local_id(0) == 0) {
+    mem_fence(CLK_GLOBAL_MEM_FENCE);
+    last = atomic_inc(&cnt[sb]) == 15;
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (last && get_sub_group_id() == 0) {
+    mem_fence(CLK_GLOBAL_MEM_FENCE);
+    const int lane = get_sub_group_local_id();
+    for (int r = 0; r < M; ++r) {
+      float v[16];
+      __global volatile const float* src = (__global volatile const float*)mixed + (size_t)r * E + sb * 256 + 16 * lane;
+#pragma unroll
+      for (int q = 0; q < 16; ++q) v[q] = r < HC_RT ? src[q] : 0.0f;
+      quant_store16(v, sb, r, M, E, aq, asc, absum, act32);
+    }
+    if (lane == 0) cnt[sb] = 0;
+  }
+#endif
 }
