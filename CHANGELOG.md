@@ -11,7 +11,7 @@
 - **MTP on top of it:** a code answer of 95 tokens, 21.71 / 23.06 tok/s plain, 30.14 / 31.31 with MTP (50 % of
   the drafts accepted, 3.06 tokens a pass). In `--bench-pp`'s synthetic prompt few drafts are accepted, so MTP
   loses there (21.32 plain, 20.47 MTP): that is the prompt, not the batching (855 launches and 5 host waits a token,
-  2.4 us a launch).
+  2.4 us a launch). `runz --bench-pp` now says so when it is given `--mtp`: its generation line never drafts.
 - **Measured:** an Arc 140T's 27B 4K prompt 405 tok/s on release .07's defaults, `ARC_GEMM_XW_LOCK=1` 387 (stays
   off). An A770's `ARC_H8_NORM` off / on: 1,210 / 1,223 tok/s, it stays on.
 

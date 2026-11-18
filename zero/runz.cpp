@@ -1073,6 +1073,10 @@ static int run_main(int argc, char** argv) {
     // (--n 0: the prompt only; the summary reads step_ms[0], which crashed before the pp lines were flushed, 2026-11-12)
     if (n_gen > 0) {
       printf("tg%d: %.1f ms  ->  %.2f tokens/s\n", n_gen, ms, n_gen / ms * 1000.0);
+      // (--bench-pp's generation is one token a step, never drafted: with --mtp it measured plain decoding plus the MTP
+      //  block's upkeep, and an A770 owner read it as MTP losing to plain; issue #45, 2026-11-18)
+      if (eng.has_mtp)
+        printf("(tg%d is plain decoding even with --mtp: MTP's speed comes from a prompt, e.g. runz <model> \"<text>\" --n 256 --mtp)\n", n_gen);
       if (zrt::launch_stats)  // (ARC_LAUNCH_STATS: the host's share of a step)
         printf("launches: %.0f per token, host waits %.1f; host %.2f ms appending + %.2f ms setting arguments per token (%.1f us per launch)\n",
                (double)(zrt::launch_n - ln0) / n_gen, (double)(zrt::sync_n - sy0) / n_gen, (zrt::launch_ns - lt0) / 1e6 / n_gen, (zrt::setarg_ns - sa0) / 1e6 / n_gen,
