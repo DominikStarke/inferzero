@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-18: the automatic room beside a dense model's weights, measured on a B580
+
+- **A dense model that nearly fills a discrete card keeps fewer of its weights in RAM.** d-dorok swept
+  `ARC_HOST_KEEP_GB` with the 27B on an Arc B580 12 GB at 4K (issue #37): room 2.5 GiB (the old rule) 2.24 GiB of
+  weights in RAM, 1.94 tok/s generation; 1.25: 3.98; 1.0: 5.03; 0.75: 7.08 tok/s, prompt 1,606 -> 1,877 tok/s,
+  no error; 0.5: the prompt fell to 701 tok/s (the card over its memory). Its buffers were 1.56 GiB.
+  - The estimate now takes the KV cache as allocated (Qwen: int8 K and V with their scales, a third of the 6 bytes
+    a value it counted);
+  - and it fills the card's whole reported memory: the driver's 0.5 GiB reserve is not kept a second time (the
+    card had 0.3 GiB more than it reports, and the estimate is ~0.15 GiB high).
+  - For that run: ~0.95 GiB of the weights in RAM, between the measured 1.25 and 1.0 points (~4-5 tok/s), 0.7 GiB
+    short of where the prompt fell. `ARC_HOST_KEEP_GB=0.75` is the measured best for 4K. Whether a model counts as
+    tight is unchanged.
+- **Linux launcher:** Ctrl+C stops the server again. A background command of a non-interactive shell starts with
+  SIGINT ignored, so the INT the launcher passed on never stopped `serverz`; it now passes TERM (d-dorok).
+
 ## 2026-11-18: fixes from a review of the kernels, the failsafes and the headers
 
 A review of every kernel, the multi-GPU failsafes and the `.h` files, each finding checked in the code first. The

@@ -541,14 +541,18 @@
     //  the layers not loaded yet (f32 K and f16 V at most, a sliding layer's ring at its window + 2,048). Audit
     //  2026-11-16: without them speech to text or an image encoder left a B580 no context, and --ctx 65536 ran out
     //  of the card's memory instead of keeping more weights in RAM)
-    auto kv_est = [&](double c) {
+    // (exact: the KV bytes the engine allocates for a model without sliding rings (Qwen: int8 K and V and their
+    //  scales, kv_pos_bytes), for the automatic room below; the old rule keeps its 6 bytes a value, so whether a model
+    //  is tight does not move. d-dorok's B580, the 27B at 4K: 0.39 GiB by 6 bytes a value, 0.13 allocated, issue #37)
+    auto kv_est = [&](double c, bool exact = false) {
       double n = 0;
       for (int il = 0; il < hp.n_layer; ++il) {
         if (hp.recurrent(il)) continue;
         const bool sw = hp.swa_rings && il < (int)hp.swa.size() && hp.swa[il];
         const int nkv = il < (int)hp.kv_heads.size() && hp.kv_heads[il] > 0 ? hp.kv_heads[il] : hp.n_head_kv;
         const int hd = hp.swa_rings ? (sw ? hp.hd_swa : hp.hd_full) : hp.head_dim;
-        n += (sw ? std::min(c, (double)hp.n_swa + 2048) : c) * nkv * hd * 6.0;
+        const double per = exact && !hp.swa_rings ? (double)kv_pos_bytes() : hd * 6.0;
+        n += (sw ? std::min(c, (double)hp.n_swa + 2048) : (exact ? std::ceil(c / 16) * 16 : c)) * nkv * per;
       }
       return n;
     };
@@ -588,9 +592,13 @@
         if (hp.recurrent(il)) rec += (double)(state_bytes() + conv_bytes());
       const double snaps = (double)std::max(opt.state_snaps, 0) * (rec + (opt.mtp ? (double)hp.n_embd * 4 : 0.0)) *
                                std::max(opt.slots, 1) + (opt.mtp ? rec : 0.0);
-      const double need = 0.4 * GiB + act + stage + resid + snaps + kv_est(ctx) * std::max(opt.slots, 1) +
+      const double need = 0.4 * GiB + act + stage + resid + snaps + kv_est(ctx, true) * std::max(opt.slots, 1) +
                           (double)opt.stream_reserve;
-      return std::min(keep_old, need);
+      // (less the driver's reserve, which budget already left out: d-dorok's B580 ran the 27B at 4K with 0.3 GiB
+      //  more in use than the card reports (room 0.75 GiB: 7.08 tok/s, 11.64 GiB in use of 11.33) and only fell over
+      //  at 11.88 (room 0.5: the prompt 1,877 -> 701 tok/s); its buffers were 1.56 GiB, this estimate 1.71. So the
+      //  card's whole reported memory: the estimate's own excess and the 0.3 GiB the card had are the margin, issue #37)
+      return std::min(keep_old, std::max(0.0, need - driver_slack()));
     }();
     // (tight or not by the old rule (audit 2026-11-18): the automatic room above is worked out for a tight model's
     //  buffers (1,024-token chunks, smaller rings), and keep_old does not change with the context below 32K, so the

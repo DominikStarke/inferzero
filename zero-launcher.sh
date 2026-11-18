@@ -273,8 +273,10 @@ run_server() {
   (cd "$ROOT" && exec "${CMD[@]}") &
   pid=$!
   # (passed on: Ctrl+C reaches the server from the terminal too, which is harmless; a SIGINT or SIGTERM sent to the
-  #  launcher alone (kill, an IDE's stop, systemd) must reach it as well)
-  trap 'kill -INT $pid 2>/dev/null' INT
+  #  launcher alone (kill, an IDE's stop, systemd) must reach it as well. As TERM: a background command of a
+  #  non-interactive shell starts with SIGINT and SIGQUIT ignored, so an INT never stopped the server (d-dorok,
+  #  issue #37: SigIgn 0x1006))
+  trap 'kill -TERM $pid 2>/dev/null' INT
   trap 'kill -TERM $pid 2>/dev/null' TERM
   while kill -0 "$pid" 2>/dev/null; do
     if [ $opened -eq 0 ] && curl -s --noproxy '*' --max-time 2 -o /dev/null -w '%{http_code}' "${url}health" 2>/dev/null | grep -q '^200$'; then
