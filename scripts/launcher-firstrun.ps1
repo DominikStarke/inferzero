@@ -49,13 +49,36 @@ $script:wantStart = $null   # catalog entry of the chat model to start
 $script:wantSpeech = $false
 $script:openWeb = $false    # the web UI opens once a start ends well
 
+# (a discrete Intel GPU's own memory in GB, 0 on a laptop's iGPU: a model's weights go there, so it counts with the
+#  RAM a laptop would need. An Arc A770 16 GB with 16 GB of RAM could not tick the 27B or the 35B (issue #34). The
+#  registry's 64-bit size: Win32_VideoController's AdapterRAM stops at 4 GB. Discrete cards by name only: an iGPU
+#  reports its share of the RAM there (the 125H: 23 GB), which is that RAM again. Discrete: Alchemist A310-A770, Pro
+#  A40-A60; Battlemage B570 / B580, Pro B50-B70. Not the Panther Lake B370 / B390, the 140T, 130V / 140V: iGPUs)
+function Get-ArcVramGb {
+  $best = 0.0
+  try {
+    Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}" -ErrorAction Stop |
+      ForEach-Object {
+        $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        if ($p -and "$($p.DriverDesc)" -match "Intel.*Arc\(TM\) (Pro [AB]\d0|A\d{3}|B5\d0)\b") {
+          $q = $p."HardwareInformation.qwMemorySize"
+          if ($q) { $g = [double]$q / 1GB; if ($g -gt $best) { $best = $g } }
+        }
+      }
+  } catch {}
+  if ($best -lt 4) { return 0 }
+  return [int][math]::Round($best)
+}
+
 function Show-GetModels([bool]$first) {
   $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+  $vramGb = Get-ArcVramGb
+  $memGb = $ramGb + $vramGb  # (the memory a model can use: the RAM, and a discrete card's own)
   $hub = Get-HfHub
   $drive = Get-PSDrive ((Split-Path $hub -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
   $chat = @($ArcModels | Where-Object { -not $_.speech -and -not $_.install })  # (flash-ar4: imported; Downloads / setup)
   $speech = @($ArcModels | Where-Object { $_.speech })
-  $rec = if ($ramGb -ge 30) { "35b" } else { "4b" }
+  $rec = if ($memGb -ge 30) { "35b" } else { "4b" }
 
   $d = New-Object System.Windows.Forms.Form
   $d.Text = $(if ($first) { "Welcome to inferzero: get a model" } else { "Get models" })
@@ -72,7 +95,8 @@ function Show-GetModels([bool]$first) {
   $intro = New-Object System.Windows.Forms.Label
   $intro.AutoSize = $true; $intro.MaximumSize = New-Object System.Drawing.Size((S 700), 0)
   $intro.Text = $(if ($first) { "inferzero runs AI models on this laptop's own GPU: nothing goes to the internet. First it needs a model. " } else { "" }) +
-    "This laptop has $ramGb GB of RAM; the model that suits it is ticked. Free disk space: " +
+    $(if ($vramGb -gt 0) { "This PC has $ramGb GB of RAM and a GPU with $vramGb GB of its own" } else { "This laptop has $ramGb GB of RAM" }) +
+    "; the model that suits it is ticked. Free disk space: " +
     $(if ($drive) { "{0:N0} GB" -f ($drive.Free / 1GB) } else { "?" }) + ". You can add more models later (Get models)."
   $p.Controls.Add($intro)
   $radios = @()
@@ -81,9 +105,9 @@ function Show-GetModels([bool]$first) {
     $rb = New-Object System.Windows.Forms.RadioButton
     $rb.AutoSize = $true; $rb.MaximumSize = New-Object System.Drawing.Size((S 700), 0)
     $rb.Margin = New-Object System.Windows.Forms.Padding(3, 8, 3, 0)
-    $tooBig = $ramGb -lt $m.ram - 2
+    $tooBig = $memGb -lt $m.ram - 2
     $rb.Text = "{0}  ({1:N1} GB{2})`n      {3}{4}" -f ($m.name -replace ' \(.*$', ''), $m.gb, $(if ($have) { ", already here" } else { "" }), $m.plain,
-      $(if ($tooBig) { "  Needs $($m.ram) GB of RAM." } else { "" })
+      $(if ($tooBig) { $(if ($vramGb -gt 0) { "  Needs $($m.ram) GB of RAM and GPU memory together." } else { "  Needs $($m.ram) GB of RAM." }) } else { "" })
     $rb.Tag = $m
     $rb.Enabled = -not $tooBig
     $rb.Checked = ($m.key -eq $rec)

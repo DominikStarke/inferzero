@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-18: the launcher's model list counts a discrete card's own memory
+
+- **Fixed: on a PC with a discrete Arc card, the launcher's "Get models" dialog refused models larger than the RAM**:
+  an Arc A770 16 GB with 16 GB of RAM could not tick the 27B, the 35B-A3B or Flash Next (hhunaid, issue #34). Their RAM
+  figure is a laptop's, whose iGPU's memory is that RAM; a discrete card holds the weights in its own. The dialog now
+  adds the card's memory (from the registry's 64-bit size; discrete A-series and B-series cards by name, not iGPUs,
+  whose figure there is their share of the RAM) and says "This PC has 16 GB of RAM and a GPU with 16 GB of its own".
+  Laptops are unchanged.
+
 ## 2026-11-18: `gpu_bench` says the clock each test ran at
 
 - **`bin\gpu_bench.exe` reads the GPU's actual clock and throttle reasons while each test runs** (Level Zero Sysman,
