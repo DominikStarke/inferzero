@@ -233,8 +233,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     lg = tp.forward(prompt.data(), (int)prompt.size());
     const double ms = ms_since(t0);
     const auto [w1, n1] = syncs();
-    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s (sums: %ld, %.1f ms waiting)\n", prompt.size(), r, ms,
-           prompt.size() / ms * 1000.0, n1 - n0, w1 - w0);
+    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s (sums: %lld, %.1f ms waiting)\n", prompt.size(), r, ms,
+           prompt.size() / ms * 1000.0, (long long)(n1 - n0), w1 - w0);
   }
   if (bench_pp <= 0) {
     std::vector<std::pair<int, float>> tk;
@@ -312,7 +312,7 @@ static int run_main(int argc, char** argv) {
             "  --snap-test           a snapshot (device, then host) restored after other tokens, the next tokens' logits\n"
             "                        against a fresh run, bit for bit (DeepSeek-V4.1's rings and pending rows)\n"
             "  --mtp                 speculative decoding (MTP block / Gemma drafter)\n"
-            "  --mtp-drafts N        drafts per step, 2..7 (default: 27B 7, on discrete cards 4; 35B-A3B 5; Qwen 4B and\n"
+            "  --mtp-drafts N        drafts per step, 2..7 (default: 27B 7, on B-series cards 4; 35B-A3B 5; Qwen 4B and\n"
             "                        smaller, Flash Next 3; 9B 2; with --dflash 7); Gemma 4's drafter always drafts 3\n"
             "  --mtp-model F         the MTP head or drafter in a file of its own (Gemma 4 drafter; Qwen3.8 Flash Next's\n"
             "                        mtp-*.gguf head); default: an mtp-*.gguf next to the model\n"
@@ -323,12 +323,15 @@ static int run_main(int argc, char** argv) {
             "engine:\n"
             "  --ctx N               context (default: what the prompt needs)     --chunk N   prompt tokens per step\n"
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
-            "  --budget GB           keep decoded weights resident when the model and them fit in GB (default 9); above it\n"
-            "                        they are decoded just in time, and on discrete cards the layers loaded first keep a\n"
-            "                        resident copy in the room the context leaves (ARC_W8_PARTIAL_GB=0: off, a number:\n"
-            "                        that many GB; on iGPUs only a number works)\n"
-            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B, Flash Next): the prompt\n"
-            "                        or --bench-pp, then greedy generation (ARC_TP_SIM=1: N shards on GPU 0, to test the split)\n"
+            "  --budget GB           keep decoded weights resident when the model and them fit in GB (default 9; Alchemist\n"
+            "                        cards (A770, A750, A580) without --budget: decoded just in time, for the Arc 140T\n"
+            "                        preset); above it they are decoded just in time, and on discrete cards the layers\n"
+            "                        loaded first keep a resident copy in the room the context leaves (iGPUs with 16-lane\n"
+            "                        XMX and a GPU share of 64 GiB or more: up to 16 GiB; ARC_W8_PARTIAL_GB=0: off, a\n"
+            "                        number: that many GB; on other iGPUs only a number works)\n"
+            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B, Flash Next,\n"
+            "                        DeepSeek-V4.1): the prompt or --bench-pp, then greedy generation (ARC_TP_SIM=1: N\n"
+            "                        shards on GPU 0, to test the split)\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any\n"
             "                        Qwen3.5 / 3.6 / 3.8 or Gemma 4 model; default off, or ARC_NPU)\n"
@@ -360,9 +363,12 @@ static int run_main(int argc, char** argv) {
             "  ARC_VIT_Q2=0 / 1 the Qwen vision encoder's int8 matmuls off / on, A/B switches of the 2026-10-27 kernel\n"
             "  changes: ARC_MOE_TM_SMALL=0 (MoE tiles of 16 for 2-8 rows), ARC_MOE_GR_DN_S=1, ARC_RG_IMUL=1; of the stacked\n"
             "  float matrices (BF16 models, 2026-10-31): ARC_NO_QZ_FLT=1, ARC_NO_GU_FLT=1, ARC_NO_QKV_FLT=1, ARC_NO_QZAB16=1;\n"
-            "  the discrete cards' defaults of 2026-11-15/16 turned off (iGPUs do not use them): ARC_ATTN_FX=0 prompt attention\n"
-            "  as flash attention on XMX, ARC_GEMM_XW_WGX=1 the H8 GEMM's work-groups of 4 column sub-groups (2 / 8: that\n"
-            "  many), ARC_GEMV_DB=0 the GEMV's read-ahead (dense models), ARC_GEMV_WAVE=0 GEMV rows from the GPU's threads\n");
+            "  the discrete cards' defaults of 2026-11-15 to 17 turned off (iGPUs do not use them, but for the first):\n"
+            "  ARC_ATTN_FX=0 prompt attention as flash attention on XMX (also on iGPUs with 16-lane XMX), ARC_GEMM_XW_WGX=1\n"
+            "  the H8 GEMM's work-groups of 4 column sub-groups (2 / 8: that many), ARC_GEMM_XW_2D=0 its 2D block loads,\n"
+            "  ARC_GEMV_DB=0 the GEMV's read-ahead (dense models), ARC_GEMV_WAVE=0 GEMV rows from the GPU's threads,\n"
+            "  ARC_H8_GRF=256 / ARC_MOE_GRF=256 the H8 and MoE GEMM kernels' 256 registers (not 128), ARC_MOE_GEMM_PAD=0\n"
+            "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;

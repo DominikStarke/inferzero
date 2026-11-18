@@ -1,21 +1,56 @@
-# Tuning on Arc B-series GPUs (Xe2: B580, Pro B60, Pro B70)
+# Tuning on Arc B-series GPUs (Xe2: B580, Pro B60, Pro B70), the B390, the Arc 140T and Alchemist
+
+The defaults per kind of GPU (2026-11-18, from the code: `zero/xe2/engine_xe2.h`, `engine_xw.h`, `zero/engine_h8.h`,
+`engine_load.h`, `engine_sessions.h`). "Qwen dense" is Qwen3.5 / 3.6 / 3.8 without experts; MoE models, Gemma 4,
+Flash Next and Qwen3 keep the plain XMX or DP4a GEMM. An iGPU takes its XMX defaults only where XMX passed its
+start-time checks, the speed check included; one that failed runs as a GPU without XMX.
+
+| Switch | B-series (discrete, 16-lane XMX) | B390, Lunar Lake (iGPU, 16-lane XMX) | Arc 140T (iGPU, 8-lane XMX) | Alchemist A770 / A750 / A580 (discrete, 8-lane XMX) | 125H (no XMX) |
+|---|---|---|---|---|---|
+| XMX for the prompt GEMMs | on (checked bit for bit at start) | on if the speed check finds it faster | only in the 140T preset (`ARC_XMX_FORCE=1`: `gemm_x8`) | the 140T preset; other models `gemm_x8` if the speed check finds it faster | none |
+| `ARC_140T` (the preset) | – | – | on: Qwen dense, weights decoded just in time | on: Qwen dense; since 2026-11-18 also where the decoded weights would fit (unless `--budget` is given) | – |
+| `ARC_H8` | on: Qwen dense, 4 column groups | on: Qwen dense, 1 column group | in the preset (chunks of 512+ tokens) | in the preset | off |
+| `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
+| `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off | 1 / off | 2 / off | 2 / off | – |
+| `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 0 (opt-in) | – (16 lanes only) | – | – |
+| `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form, 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |
+| `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |
+| `ARC_H8_NORM` | off | off | on | on | off |
+| `ARC_H8_GRF` | 128 | 256 | 256 (128 ignored: spills) | 256 (128 ignored) | 256 |
+| `ARC_GEMM_SPLIT` (H8 GEMMs) | 34 | 17 | 17 | 17 (since 2026-11-18) | 17 |
+| `ARC_GEMM_GRF` / `ARC_GEMV_MT_GRF` | 128 / 128 | 128 / 128 | 256 / 256 | 256 / 256 | 256 / 256 |
+| `ARC_MOE_GRF` | 128 | 256 | 256 | 256 | 256 |
+| `ARC_ATTN_XMX` / `ARC_ATTN_FX` | on / on | on / on | off / off | off / off | off / off |
+| `ARC_MOE_GEMM_PAD` (Flash Next) | on | off | off | off | off |
+| `ARC_GEMV_DB` / `ARC_GEMV_PF` | DB for dense models, PF for MoE models | off / off | off / off | off / off | off / off |
+| `ARC_GEMV_WAVE` / `_MT` | on / on | off | off | off | off |
+| `ARC_GDN_L1PF` | 2 | 0 | 0 | 2 | 0 |
+| `ARC_XALL` (MoE) | on | off | off | on | off |
+| `ARC_W8_PARTIAL_GB` | auto (dense models, not split) | auto up to 16 GiB with a GPU share of 64 GiB+, else off | off | off in the preset; auto for other dense models | off |
+| `ARC_HOST_KEEP_GB` | automatic, at most 2.5 GiB | – (iGPUs: their own rule) | – | automatic | – |
+| `ARC_GEMM_2D` / `_PF` | on where the driver offers them | the same | the same | the same | – |
+| MTP drafts a step (the 27B, not a switch) | 4 | 7 | 7 | 7 | 7 |
 
 All the switches (environment variables; each is read once per process):
 
 | Switch | Default | What it does | Section |
 |---|---|---|---|
 | `ARC_GEMM_GRF=256` | 128 on GPUs with 16-lane XMX (discrete cards, Lunar / Panther Lake) | the dense prompt GEMM's register file | 1 |
-| `ARC_MOE_GRF=128` | 256 | the MoE expert GEMMs' register file | 1 |
+| `ARC_MOE_GRF=128` / `256` | 128 on discrete cards with 16-lane XMX since 2026-11-16 (a Pro B70's 35B 8K prompt 5,377 -> 5,612 tok/s, issue #27; a B60 neutral), 256 elsewhere | the MoE expert GEMMs' register file (the same logits) | 1 |
 | `ARC_MOE_CG` / `ARC_MOE_WY` | 1 / 1 | sub-groups per work-group of the MoE expert GEMM (prompt chunks of 1,280+ tokens): along a tile's columns (its activation rows shared through L1) / along the tiles, mostly one expert's (its weights shared). Bit-identical at every shape. A B60's 35B 16K prompt spent 1.55 s of 5.08 in these GEMMs (+0.26 s `decode_w8`), about 21 TOPS against ~50 for the dense GEMMs; laptop: no gain (2026-11-07) | 1 |
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
-| `ARC_GEMM_XW_PF=1` / `2` / `3` on 8 lanes | off (16 lanes: 1) | the 140T's / Alchemist's `gemm_xw8`: the next chunk's weights (1) and, with the packed layout, activations (2) prefetched with `prefetch()`. The 140T's `xw_peak --probe` (issue #5, 2026-11-16): 85 % of the XMX peak at 32 x 32 with the data in L1, loads ~128 B/clk per Xe-core, against ~33 % in the engine. Bit-identical (laptop, DPAS emulated, 27B: PF 0 / 1 / 3 the same SHA-256; 1,753-token prompt 78.8 / 93.2 / 65.7 tok/s there, emulated: not the 140T's speed) | 12 |
+| `ARC_GEMM_XW_PF=0` / `1` / `2` / `3`, `ARC_GEMM_XW_PFD=1` / `2` / `4` | 16 lanes: 1 / 1 (since 2026-11-14), 3 / 2 with the 2D form (since 2026-11-17, a Pro B70's 27B 4K prompt 2,853 -> 2,897 tok/s); 8 lanes: 1 in the Arc 140T preset (the 140T and Alchemist, since 2026-11-16: the 140T's 27B 8K prompt +2 %), off elsewhere | the wide-tile H8 GEMM prefetches the weights (1), the activations (2: 2D loads on 16 lanes, the packed layout on 8) or both (3) of the chunk `PFD` chunks ahead into L1. The 140T's `xw_peak --probe` (issue #5, 2026-11-16): 85 % of the XMX peak at 32 x 32 with the data in L1, ~33 % in the engine. Bit-identical (checked at start) | 11, 12 |
 | `ARC_MOE_RG_XMX=1` / `ARC_MOE_RG_XEMU=1` | off (**a Pro B70, 2026-11-17: the 35B's 4K prompt 5,177 -> 4,371, 16K 5,435 -> 4,465 tok/s, slower: stays off**, issue #27) | the MoE expert GEMMs of prompt chunks on XMX from the raw expert rows (moe_rg with DPAS for IQ4_XS, IQ3_S, IQ3_XXS, IQ2_XXS and the per-32 types), instead of decode + GEMM from 320 tokens a chunk; Flash Next's down projection too. Bit for bit the DP4a moe_rg's and decode + GEMM's results (checked per expert type at its first use). `_XEMU`: DPAS emulated, tests on a GPU without XMX. A B60 / B70 to measure (the plan's X1) | – |
 | `ARC_IQ3S_TILE=1` | off | dense IQ3_S rows (the 27B GSQ-RCO's FFN) repacked as planes in pairs of superblocks at load, in place; the one-token GEMV reads each lane's bytes by block reads without the local window and its barriers. Bit-identical. The laptop (bandwidth-bound) is no faster; the B70 (decode-bound, FFN GEMVs ~62 % of the bandwidth) to measure (plan G5, issue #27) | – |
 | `ARC_MOE_GEMM_PAD=1` / `0` | on on discrete cards with 16-lane XMX since 2026-11-17 (a Pro B70's Flash Next 4K prompt 1,182 -> 1,414 tok/s, issue #27), off elsewhere | MoE models with padded experts (Flash Next: 640 in rows of 768): the gate / up of prompt chunks of 1,152+ tokens through decode + the int8 GEMM (XMX on discrete cards) instead of the per-tile DP4a kernel; down stays on `moe_rg`. Bit-identical (laptop, KL 0.00000). Slower on the laptop (no XMX: the decode of every expert costs more than the GEMM saves); a B70's Flash Next spent 45 % of its 4K prompt in the per-tile gate / up | – |
 | `ARC_HOST_KEEP_GB` / `ARC_HOST_WEIGHTS_GB` | automatic (at most 2.5) / automatic | a dense model larger than the card (the 27B on a 12 GB B580): the weights past what leaves `ARC_HOST_KEEP_GB` of the card free stay in pinned host memory, read over PCIe (once per prompt chunk, on every token in generation); at most the RAM free less 4 GiB. Automatic since 2026-11-18: the model's buffers and the context's KV cache, the card's whole reported memory. `ARC_HOST_WEIGHTS_GB=N`: N GiB there, 0 none. Bit-identical logits; generation slows with the share | d-dorok's B580 12 GB, PCIe 3.0, Linux, the 27B (issue #37): automatic 1.02 GiB in RAM at 4K (tg 3.53, pp 1,783), 1.63 at 16K (2.58, 1,865); `ARC_HOST_KEEP_GB=0.75` 0.49 GiB at both (4K: 7.08 / 1,877; 16K: 4.77 / 1,890), 12.24 GiB in use of the 11.33 reported with no slowdown at 16K; 0.5 at 4K: the prompt 701 tok/s. **On that card and driver, 0.75 is the setting to use**; the default keeps a margin for drivers that do not take the excess |
-| `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights; since 2026-11-08 also on iGPUs with 8-lane DPAS (the 140T: `gemm_x16.cl -DX16_SG8`) **A B60 (manoreken2, 2026-11-14): 27B 4K prompt 1,522 -> 1,522 tok/s, no gain: stays off.** | 6, 8 |
-| `ARC_140T=0` | on, on GPUs with 8-lane DPAS and weights decoded just in time | the Arc 140T preset off: per GEMM, chunks of 512+ tokens take XMX + H8 + TM 32 + CG 2 + 128 registers, shorter chunks and resident weights the DP4a default (140T 27B: 2K 180 -> 221, 8K 185 -> 231 tok/s; 512 tokens the same). `=1` with `ARC_XMX_TRY=2`: the preset on a GPU without XMX, for tests. On discrete cards with 8-lane DPAS too (Alchemist: A770, A750, A580, the same XMX as the 140T) by default since 2026-11-16, not yet measured there; before, such a card took the plain `gemm_x8` or DP4a, whichever won the start-time speed check (on a 140T `gemm_x8` was 1.6x slower than DP4a); its weights stay decoded just in time (no `ARC_W8_PARTIAL_GB=auto`) | 8 |
+| `ARC_W8_PARTIAL_GB=auto` / `N` / `0` | auto on discrete cards since 2026-11-16 (dense models whose weights are decoded just in time; not split models, MoE models or the 140T preset); on 16-lane iGPUs with a GPU share of 64 GiB or more at most 16 GiB since 2026-11-17 (a B390's 27B 4K prompt 540-552 -> 583-592 tok/s, issue #1); off on other iGPUs (a 140T's 27B with 26 GiB resident: 357 -> 176 tok/s, issue #5) | the decoded W8 copies of the layer matrices loaded first stay resident in the room the model, its buffers and its context leave, so a prompt chunk decodes only the rest (a Pro B70's 27B 4K prompt 2,490 -> 2,694 tok/s with 15.7 GiB resident, issue #27). `N`: N GB on any GPU. Bit-identical (one decoder) | 3 |
+| `ARC_DRIVER_RESERVE_GB=N` | 0.5 on every GPU (1.2 until 2026-11-08) | GPU memory left to the driver in every memory plan (`--ctx auto`, the expert cache, resident weights); 0 to 8; also `--driver-reserve-gb N` | – |
+| `ARC_XRAM_GB=N` / `0` | discrete cards: one GPU the free RAM less 16 GiB; a split model at most 32 GiB per GPU and 128 GiB in all (since 2026-11-17); iGPUs none | MoE experts read from the SSD kept in pinned host memory, copied to the card from there on a later miss; also `serverz --expert-ram-gb N` | [multi-gpu.md](multi-gpu.md) |
+| `ARC_W8_RESIDENT=1` | off | MoE models that stream their experts: the dense matrices' W8 copies stay resident even when the experts do not all fit (an A/B test) | – |
+| `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights, on discrete cards with XMX and iGPUs with 8-lane DPAS (the 140T: `gemm_x16.cl -DX16_SG8`, since 2026-11-08); taken once its results match DP4a within f16 rounding. `ARC_X16_TRY=1`: on any GPU, DPAS emulated where it has none (tests). **A B60 (manoreken2, 2026-11-14): 27B 4K prompt 1,522 -> 1,522 tok/s, no gain: stays off.** | 6, 8 |
+| `ARC_140T=0` | on, on GPUs with 8-lane DPAS (the 140T, Alchemist) for Qwen dense models with weights decoded just in time | the Arc 140T preset off: per GEMM, chunks of 512+ tokens take XMX + H8 on `gemm_xw8` (32 x 16, 256 registers, packed operands, `WGX=2`, the norm fused), shorter chunks and resident weights the DP4a default (140T 27B 4K: 214 before `gemm_xw8`, 390 tok/s on release .07). `=1` with `ARC_XMX_TRY=2`: the preset on a GPU without XMX, for tests. Alchemist cards (the same XMX as the 140T) take it since 2026-11-16, and since 2026-11-18 also where their decoded weights would fit and stay resident (an A770's 4B 4K prompt 3,600 -> 4,821 tok/s, KL 0.0039, issue #35; `--budget N` keeps resident DP4a, the log says why the preset is off); an A770's 27B 4K prompt 1,223 tok/s (issue #36). Its weights stay decoded just in time (no `ARC_W8_PARTIAL_GB=auto`) | 8 |
 | `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs. On iGPUs with 16-lane XMX: XMX without the speed check | 8 |
 | `ARC_X8_W=1` | off | 8-lane GPUs with `ARC_XMX_FORCE=1`: gemm_x8 with one sub-group for both 8-column halves of a 16-column group, the activations loaded once (ocloc `arl-h`: 28 % fewer memory messages and 17 % fewer instructions per DPAS, no spills at 256 registers and 16 tokens); bit-identical | 8 |
 | `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8). Since 2026-11-08 also the DP4a GEMM of iGPUs (it spills there: 6x slower on the 125H) | 8 |
@@ -26,32 +61,42 @@ All the switches (environment variables; each is read once per process):
 | `ARC_H8_FUSE=0` | on | H8's weight rotation after `decode_w8` again, instead of in one pass with the decode (`decode.cl h8r_decode`); the same values | 8 |
 | `ARC_H8_GRF=128` / `256` | 128 on discrete cards with 16-lane registers since 2026-11-17 (a Pro B70's 27B 4K prompt 2,725 -> 2,772 tok/s, `h8_decode` 61.9 -> 43.7 ms, the same logits; issue #27), 256 on iGPUs | the H8 rotation kernels (`h8r_colmax`, `h8r_weights`, `h8r_act`, `h8r_decode`, `rmsnorm_h8r`) at 128 registers, twice the threads per core, on GPUs whose registers hold 16 floats (Xe2 / Xe3: the B-series, Lunar / Panther Lake); ignored on Xe-LPG (the 125H, 140T, 285H), where 128 spills 8-16 KB. ocloc `bmg` / `ptl` (2026-11-17): no spill in any of them at 128. The register file changes no arithmetic; a B60 / B70 / B390 to measure (`--prof`: `h8_decode`, `h8_act`) | – |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
+| `ARC_XMX_TRY=1` / `2` / `3` | off | tests on a GPU without XMX (or any GPU): the XMX check and switches as if it had XMX; `2` DP4a in place of DPAS (right), `3` a wrong kernel (the check must refuse it). With `ARC_140T=1`: the 140T preset emulated | 8 |
+| `ARC_NO_SG8=1` | off | the 16-lane kernels on a GPU with 8-lane sub-groups (tests) | – |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
-| `ARC_H8=0` | on for Qwen dense models on discrete cards with 16-lane XMX (with `ARC_GEMM_CG=4`), and in the 140T preset | H8 off (2026-11-08: B60 27B 512 / 4K / 16K 615 / 766 / 706 -> 677 / 1,024 / 937 tok/s with it) | 8 |
+| `ARC_H8=0` | on for Qwen dense models on GPUs with 16-lane XMX: discrete cards (with `ARC_GEMM_CG=4`) and, since 2026-11-17, iGPUs where XMX passed its checks (the B390, Lunar Lake: 1 column group); and in the 140T preset | H8 off (2026-11-08: B60 27B 512 / 4K / 16K 615 / 766 / 706 -> 677 / 1,024 / 937 tok/s with it; a B390's 27B 4K prompt 258-268 -> 546-560 with H8 on `gemm_xw`, KL 0.00175, issue #1) | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop **A B60 on the 35B-A3B (manoreken2, 2026-11-14): 4K prompt 3,536 -> 3,491 tok/s, generation 73.8 -> 75.5; KL against the default 0.0077 (USAGE.md, 20 chunks), within the limit but no gain: stays off for MoE models.** | 8 |
-| `ARC_GEMM_XW=1` | on where H8 is on by default on discrete cards since 2026-11-13 (gemm_xw 32 x 64: a B60's 27B 512 / 4K / 16K prompts 691 / 1,067 / 979 -> 717 / 1,292 / 1,170 tok/s) and in the Arc 140T preset (gemm_xw8 32 x 16 at 256 registers, 2026-11-11: 27B 4K prompt 214 -> 299 tok/s); off elsewhere; `=0` off | the H8 (per-column / per-token scale) prompt GEMMs through `gemm_xw.cl` (QUEUE 33.4, 2026-11-11): a sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16, so each 64-value chunk of activations is loaded once for 64 columns and each column group's weights once for 32 tokens (twice the DPAS work per byte loaded). Bit-identical to `gemm.cl` (checked at start bit for bit; the laptop with DPAS emulated: the 4B's logits identical at every shape). `_TM=16/32`, `_NC=1/2/4` (16-column groups), `_GRF=128`; `bench\xw_sweep.ps1`. ocloc `bmg`: 32 x 64 at 256 registers no spills (128 DPAS a superblock), at 128 registers 5.6 KB spilled; the smaller shapes no spills at either | 11 |
+| `ARC_GEMM_XW=1` | on where H8 is on by default (discrete cards since 2026-11-13, 16-lane iGPUs since 2026-11-17) (gemm_xw 32 x 64: a B60's 27B 512 / 4K / 16K prompts 691 / 1,067 / 979 -> 717 / 1,292 / 1,170 tok/s) and in the Arc 140T preset (gemm_xw8 32 x 16 at 256 registers, 2026-11-11: 27B 4K prompt 214 -> 299 tok/s); off elsewhere; `=0` off | the H8 (per-column / per-token scale) prompt GEMMs through `gemm_xw.cl` (QUEUE 33.4, 2026-11-11): a sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16, so each 64-value chunk of activations is loaded once for 64 columns and each column group's weights once for 32 tokens (twice the DPAS work per byte loaded). Bit-identical to `gemm.cl` (checked at start bit for bit; the laptop with DPAS emulated: the 4B's logits identical at every shape). `_TM=16/32/64` (32), `_NC=1/2/4` (16-column groups; 4 on 16 lanes, 1 on 8; 6 / 8 on 16 lanes for sweeps), `_GRF=128` (256); `_TRY=1`: on any GPU with H8, DPAS emulated where it has none (tests); `_LANES=16`: the 16-lane kernel on an 8-lane GPU, emulated (tests); `bench\xw_sweep.ps1`. ocloc `bmg`: 32 x 64 at 256 registers no spills (128 DPAS a superblock), at 128 registers 5.6 KB spilled; the smaller shapes no spills at either | 11 |
 | `ARC_GEMM_XW_2D` | on on discrete cards since 2026-11-17 (`=0` off; iGPUs `=1`; `=2` the loads only) | a failed start check runs the plain form (a B60 under Windows fails the full form in the add modes, and its loads alone were slower than plain, 1,705 vs 1,726, issue #4; a B60 under Linux passes it, issue #19);  a Pro B70's 27B 4K prompt 2,768 -> 2,853 tok/s, 2,897 with the weights and activations prefetched 2 chunks ahead (then the default with it when `ARC_GEMM_XW_PF` / `_PFD` are unset; without 2D that prefetch is slower, 2,711), logits identical (joshdev-de, issue #27). 16-lane XMX with 2D block loads (B-series, Lunar / Panther Lake): `gemm_xw` reads a chunk's 32 activation rows in one 2D message, a column group's weights in one, and writes C 8 rows a message; the same bytes in the same DPAS operands (ocloc `bmg` / `ptl`: sends 489 -> 77, instructions 7,957 -> 6,866, no spills), checked at start, a failed check keeps the plain form. Not the 32 x 96 tiles (spill). A card to measure (2026-11-17) | - |
-| `ARC_GEMM_XW_WGX=1` / `2` / `4` / `8`, `ARC_GEMM_XW_LOCK=1` | 4 on discrete cards with 16-lane XMX (since 2026-11-15: a Pro B70's 27B 4K prompt +3.7 %, issue #27), 2 in the Arc 140T preset (since 2026-11-17: its 27B 4K prompt 368 -> 390 tok/s, issue #5), 1 on other iGPUs and 8-lane GPUs; off | since 2026-11-17 also 8 lanes (`gemm_xw8`: the 140T, Alchemist), opt-in there: the 140T's `xw_peak --probe` reached 85 % of the XMX peak with the operands in L1 against ~33 % in the engine, and these share a work-group's activations in L1 (ocloc `arl-h`: no spills; bit-identical, the laptop with DPAS emulated; `bench\xw_sweep.ps1 -Group`). 16 lanes (2026-11-15, after urakozz's `pf_gemm_i8`): `WGX` column sub-groups per work-group beside the token ones (the widest count up to it that divides a matrix's column blocks; fewer token sub-groups past 32 a work-group at 256 registers), so the work-group shares its activations in L1 as well as its weights; `LOCK` a split barrier around each 64-value chunk, the work-group in step. Bit-identical (checked at start; the laptop, DPAS emulated: the 4B's logits identical); `bench\xw_sweep.ps1 -Group` | 13 |
+| `ARC_GEMM_XW_WGX=1` / `2` / `4` / `8`, `ARC_GEMM_XW_LOCK=1` | 4 on discrete cards with 16-lane XMX (since 2026-11-15: a Pro B70's 27B 4K prompt +3.7 %, issue #27), 2 in the Arc 140T preset, so on the 140T and Alchemist (since 2026-11-17: the 140T's 27B 4K prompt 368 -> 390 tok/s, issue #5), 1 on 16-lane iGPUs (the B390) and other 8-lane GPUs; `LOCK` off everywhere | `WGX` column sub-groups per work-group beside the token ones (the widest count up to it that divides a matrix's column blocks; fewer token sub-groups past 32 a work-group at 256 registers), so the work-group shares its activations in L1 as well as its weights; `LOCK` a split barrier around each 64-value chunk, the work-group in step. 16 lanes since 2026-11-15 (after another engine's prefill GEMM); 8 lanes (`gemm_xw8`) since 2026-11-17, with the packed 32 x 32 tile allowed (`_NC=2`); 8 lanes take 2 or 4 only. Bit-identical (checked at start; the laptop, DPAS emulated: the 4B's and 27B's logits identical; ocloc `arl-h`: no spills); `bench\xw_sweep.ps1 -Group` | 13 |
+| `ARC_GEMM_XW_PACK=0` / `1` / `2` / `3` | 3 in the Arc 140T preset (the 140T, Alchemist), 0 elsewhere | 8 lanes: the activations (1), the weights (2) or both (3) written in `gemm_xw8`'s DPAS operand order by the kernels that make them (`h8r_act`, `rmsnorm_h8r`, `h8r_decode`, `h8r_weights`), no repacking pass. The 140T's `xw_peak` (2026-11-13): the 27B's FFN shapes 23.4 -> 25.0 TOPS at 4K. The same values in another order, checked at start | 12 |
+| `ARC_H8_NORM=1` / `0` | on in the Arc 140T preset since 2026-11-17 (the 140T's 27B 4K prompt 368 -> 382 tok/s, logits identical, issue #5), off elsewhere (a B60: 1,522 -> 1,509, no gain) | the norm of a layer's input and the H8 rotation of its rows in one kernel (`rmsnorm_h8r`), which leaves the rotated rows for the GEMMs that read them; bit-identical | 13 |
+| `ARC_H8_SB`, `ARC_H8_INT`, `ARC_H8_D`, `ARC_H8_HB=N`, `ARC_H8_DEC_PRIV=1`, `ARC_H8_DEC_R=n` | off / off / off / 1024 / off / 4 | tests of H8: one scale per 256 values, the rotation from int8, random signs, the largest rotation block, `h8r_decode` loading each superblock into a lane's registers (as before 2026-11-14) instead of local memory, rotation blocks per work-group (1 / 2 / 4 / 8) | 8 |
 | `ARC_GEMV_GU=1` | off | one token: the FFN's gate and up GEMVs in one launch of 2F rows instead of two of F (QUEUE 33.5, 2026-11-11), each row as in its own launch; bit-identical. The laptop: no faster (27B ~3 % slower); `decode_try.ps1` row `GEMV_GU=1` | 7 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GV_IQ3S=1` | off | single-token IQ3_S weights through `gemv_v` (straight into registers) instead of `gemv`'s local window; bit-identical; the 125H 6 % slower (27B step 210 -> 223 ms), a B60 to measure (2026-11-08) **A B60 (manoreken2, 2026-11-14): generation 23.0 -> 16.3 tok/s, slower: stays off.** | 2 |
 | `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
+| `ARC_MOE_TM`, `ARC_MOE_TM_SMALL`, `ARC_MOE_RG_MIN` / `_MAX`, `ARC_MOE_GEMM_MIN`, `ARC_MOE_GR_DN_S` | 16, by tokens (2 / 4 / 8), 320 / 1,280, 1,152, 4 (every GPU) | the MoE kernels' choices: tokens per expert tile, the tiles of 2-8 token steps, the chunk sizes that take `moe_rg` (the int8 GEMM on the raw expert rows) and decode + GEMM, the shared expert's down GEMV rows | – |
 | `ARC_GEMV_MT_GRF=256` | 128 on GPUs with 16-lane XMX (discrete cards, Lunar / Panther Lake) | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
-| `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s) and MoE models since 2026-11-12 (B60 35B 79.93 -> 88.91; off for them 2026-11-09 to 11-12 after a run of older code, 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GEMV_PF=1` | on on discrete cards with 16-lane XMX for MoE models (since 2026-11-12: B60 35B 79.93 -> 88.91 tok/s) and for dense models with `ARC_GEMV_DB=0` (dense models took it 2026-11-08 to 11-15: B60 27B 22.33 -> 23.08); off on iGPUs and 8-lane GPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GEMV_DB=1` / `0` | on on discrete cards with 16-lane XMX for dense models since 2026-11-15 (a Pro B70's 27B 31.9 -> 32.3 tok/s, logits identical, issue #27), off elsewhere; setting `ARC_GEMV_PF` (or `ARC_GV_PROBE`) turns the default off | the single-token GEMV's window reads one window ahead (`decode.cl -DGEMV_DB`), in place of the prefetch; bit-identical | 10 |
+| `ARC_GEMV_WAVE=0` / `1`, `ARC_GEMV_WAVE_MT=0` | on on discrete cards with 16-lane XMX since 2026-11-16, off on iGPUs and 8-lane GPUs | the GEMVs' rows per sub-group from the GPU's thread count (one token: 4 or 1; 2-8 tokens: 3-5, whichever fills the last round best), not by type. A Pro B70's 27B generation 32.3 -> 35.2 tok/s, MTP with 4 drafts 66.0 -> 70.6 (joshdev-de, issue #27); bit-identical. `_MT=0`: only the 2-8 token part off; `ARC_GVROWS` turns it off | 14 |
+| `ARC_GV_PROBE=1` / `2` | off | a measurement, the output is wrong: `gemv` reads the weights without decoding them (1) or decodes without streaming (2); compare `--prof-gen`'s GEMV rows | 10 |
 | `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`; `3` measured on a Pro B70 2026-11-15: `gdn_chunk_x` 295 ms against 244, the 4K prompt -3 %, issue #27) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |
 | `ARC_GDN_XEMU=1` / `8` / `16` | off | with `ARC_GDN_CHUNK=3`: DPAS emulated on any GPU, in its own / the 8- / 16-lane form (tests) | 9 |
 | `ARC_GDN_L1PF=D` | 2 on discrete cards, 0 on iGPUs | `gdn_recur` prefetches token t+D's q / k / v into L1 (`cl_intel_subgroup_buffer_prefetch`; ignored where the driver lacks it). joshdev-de's B70, the 27B IQ3_S 4K prompt: `gdn_recur` 293 -> 263 ms, 2,216 -> 2,247 tok/s; 2 / 4 the same, 8-32 slower. chumbleyjl's B70, the 27B UD-Q5_K_XL: `=8` the lowest `gdn_recur` (253 -> 228 ms), the prompt within noise (issue #27, 2026-11-15). Bit-identical. `=0` or `=1`: off (the kernel already loads one token ahead) | — |
 | `ARC_GDN_PF=2` | off | `gdn_recur` holds 2 tokens' operands in registers. A B70: 293 -> 305 ms, slower; spills at 4 (16 lanes) and at 2 on 8-lane iGPUs. Bit-identical. While it is on (2 or more), `ARC_GDN_L1PF` does nothing: the PF loop has no L1 prefetch | — |
-| `ARC_GEMM_SPLIT=N` | H8 GEMMs: 34 on discrete cards, 17 on iGPUs | superblocks per split-K piece of a matrix with K > 8,192 (the 27B's FFN down: 2 pieces at 34, 4 at 17, 1 at 0). A B70's 27B 4K prompt: 34 +3.1-3.2 % (`gemm_down` 253 -> 214 ms), 0 +2 %; KL against the plain path 0.00145 / 0.00152 / 0.00155, max 0.039 / 0.052 / 0.090 (17 / 34 / 0; issue #27, 2026-11-15). Not bit-identical | — |
-| `ARC_ATTN_FX=0` / `1` / `2` | on on discrete cards (16-lane XMX) since 2026-11-15; off on iGPUs | `attn_fx` (PR #29): the plain causal prompt attention as flash attention on XMX, 8 query tokens a sub-group so every int8 DPAS has 8 rows, 32-key spans read from the int8 cache with an L1 prefetch, 32 sub-groups a work-group. Sliding windows, images, Flash Next's sparse masks and Gemma keep `attn_q8`. A Pro B70's 27B: attention 2.6-2.8x faster, prompt +4 % at 4K, +17 % at 16K, +51 % at 64K; KL 0.00152 -> 0.00146. Checked at start against `attn_q8` (else `attn_q8`). `0` `attn_q8`, `1` forced, `2` without the check (timing tests only); `ARC_ATTN_FX_WG=NT,NH`, `ARC_ATTN_FX_PF=0`, `ARC_ATTN_FX_DEFS` for tests |
-| `ARC_ATTN_XMX=0` | on on discrete cards since 2026-11-10 (B60, 64K prompts: 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B +10.2 %), off on iGPUs; `=1` forces it | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
+| `ARC_GEMM_SPLIT=N` | H8 GEMMs: 34 on the B-series, 17 on iGPUs and in the Arc 140T preset (Alchemist since 2026-11-18: an A770's 27B 4K prompt 1,150 -> 1,223 tok/s, KL 0.0011 against 34, issue #36); the W8 / f16 GEMMs 17 | superblocks per split-K piece of a matrix with K > 8,192 (the 27B's FFN down: 2 pieces at 34, 4 at 17, 1 at 0). A B70's 27B 4K prompt: 34 +3.1-3.2 % (`gemm_down` 253 -> 214 ms), 0 +2 %; KL against the plain path 0.00145 / 0.00152 / 0.00155, max 0.039 / 0.052 / 0.090 (17 / 34 / 0; issue #27, 2026-11-15). Not bit-identical | — |
+| `ARC_ATTN_FX=0` / `1` / `2` | on on discrete cards (16-lane XMX) since 2026-11-15 and on 16-lane iGPUs where XMX passed its checks since 2026-11-17 (a B390's 27B 4K prompt attention 377 -> 160 ms, issue #1); off on the 140T, Alchemist and the 125H | `attn_fx` (PR #29): the plain causal prompt attention as flash attention on XMX, 8 query tokens a sub-group so every int8 DPAS has 8 rows, 32-key spans read from the int8 cache with an L1 prefetch, 32 sub-groups a work-group. Sliding windows, images, Flash Next's sparse masks and Gemma keep `attn_q8`. A Pro B70's 27B: attention 2.6-2.8x faster, prompt +4 % at 4K, +17 % at 16K, +51 % at 64K; KL 0.00152 -> 0.00146. Checked at start against `attn_q8` (else `attn_q8`). `0` `attn_q8`, `1` forced, `2` without the check (timing tests only); `ARC_ATTN_FX_WG=NT,NH`, `ARC_ATTN_FX_PF=0`, `ARC_ATTN_FX_DEFS` for tests | 9 |
+| `ARC_ATTN_XMX=0` | on on discrete cards with 16-lane XMX since 2026-11-10 (B60, 64K prompts: 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B +10.2 %) and on 16-lane iGPUs where XMX passed its checks since 2026-11-16 (a B390 at 65K: 4B 950 -> 1,079, 35B 795 -> 904 tok/s, issue #31); off on 8-lane GPUs and the 125H; `=1` forces it | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
 | `ARC_GEMV_SMALL_WG=1` | off (on on discrete cards 2026-11-10 to 11-12: a B60's 27B no gain, 23.71 without against 23.72 tok/s, gemm_ab 13.35 -> 12.72 ms; its 35B 80.35 without against 55.85 tok/s, package 18acafc); `=1` forces it | the single-token GEMV of a matrix with at most 512 sub-groups (DeltaNet's alpha / beta, 96 rows; MoE routers) in work-groups of 4 sub-groups instead of 16, spread over more Xe cores; bit-identical |10 |
 | `ARC_WIDE_ROWS=0` | on (every GPU) since 2026-11-10 | the 1-8 token row kernels that quantize for the next GEMV (`swiglu_quant` on the Qwen and MoE paths, `rmsnorm_quant`, `gated_norm_quant`, `attn_gate_quant`) in one work-group per row, as before; by default their superblocks spread over many work-groups; bit-identical |10 |
+| `ARC_ATTN_DEC_GRF=128`, `ARC_ATTN_DEC_SG=N`, `ARC_ATTN_DEC_SMAX=N`, `ARC_QWEN_DSPLIT=0` / `1` | 256 registers, 512, 256, by model (the 35B: on) | experiments with the generation attention (flash-decoding): its register file, the sub-groups the key split aims for, the most keys per split, `attn_dsplit` for Qwen models (4 q heads a sub-group, the dimensions over 4 sub-groups) | – |
 | `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
-| `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
+| `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_P2P`, `ARC_TP_PIPE`, `ARC_TP_EVSUM` (opt-in since 2026-11-18), `ARC_TP_OVERLAP`, `ARC_TP_LM`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`, `ARC_TP_SIM`) | [multi-gpu.md](multi-gpu.md) |
 
 The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
 `bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\membw_probe.exe` (memory read
@@ -78,16 +123,19 @@ XMX (DPAS), but their settings are still the iGPU's, and only the owners of thes
 Every switch below gives the same results as the default (checked bit for bit on the laptop), except `--act256`,
 which changes the numbers and needs a KL check before it could become a default.
 
-The environment switches live in `zero/xe2/engine_xe2.h` and act only on **discrete** GPUs with XMX (one card or the
-multi-GPU shards on them). On every iGPU, with XMX (Lunar Lake 140V, Arrow Lake 140T) or without (Xe-LPG), they are
-ignored and every kernel is built exactly as before (checked: the same kernel builds, bit-identical logits). This
-keeps the tuned iGPU path safe from settings meant for the B-series. (On the 125H iGPU, forced on with
+The environment switches live in `zero/xe2/` (`engine_xe2.h`, `engine_xw.h`, `engine_moe_xw.h`) and
+`zero/engine_h8.h`. They act on GPUs that offer XMX and pass its start-time checks: discrete cards (one card or the
+multi-GPU shards on them), and iGPUs with XMX whose speed check finds XMX faster (Lunar / Panther Lake, the B390) or
+that run the Arc 140T preset. Most defaults that came from a B60 or B70 test `!zrt::integrated()` and 16-lane XMX, so
+the iGPUs and Alchemist keep their own (the table at the top). On the 125H (no XMX) every kernel is built exactly as
+before (checked: the same kernel builds, bit-identical logits): the tuned iGPU path stays safe from settings meant
+for the B-series. (On the 125H iGPU, forced on with
 `ARC_XMX_TRY`, 128 registers per thread made the 35B's prompt 2.7-3.5x slower: 519 -> 194 tok/s for the dense GEMMs,
 148 with the MoE GEMMs too.)
 
 **Default since 2026-11-02:** the dense prompt GEMM uses 128 registers per thread on discrete cards (B60, 27B:
-450 -> 617 tok/s). `ARC_GEMM_GRF=256` goes back to the old build; `ARC_MOE_GRF=128` tries the same for the MoE
-expert GEMMs (not yet measured on a B-series card).
+450 -> 617 tok/s). `ARC_GEMM_GRF=256` goes back to the old build. The MoE expert GEMMs took 128 too on 2026-11-16
+(`ARC_MOE_GRF`, a Pro B70's 35B +4.4-5.1 %).
 
 ## What the data so far says (1x Arc Pro B60, Qwen3.8 27B IQ3_S)
 
@@ -317,16 +365,16 @@ One Pro B60, Qwen3.8 27B IQ3_S, `runz --bench-pp 4096 --n 16 --prof`, the owner'
   0.00120, max 0.0777, same top token 98.04 %.
 - **H8 over several B60s:** [multi-gpu.md](multi-gpu.md).
 
-**Why that H8 did not gain what urakozz's does.** Its engine (urakozz/intel-arc-inference-server, Apache-2.0, a B70, a
+**Why that H8 did not gain what another engine's does.** That engine (Apache-2.0, a B70, a
 W4A16 checkpoint; `src/kernels/prefill/pf_int8.cl`, `src/runtime/prefill/int8.cc`, spec 5) gains 1.28x over its bf16
 prompt, 2,104 tok/s. Its GEMM runs 2.29x faster than the bf16 one (gate || up: 6.08 -> 2.66 ms) at 72-81 % of the int8
 DPAS peak, and pays about 50 % of that GEMM's time for its rotations. Ours on the B60 (2D + H8): the GEMM 1.33x, ~60
 of ~194 T/s (31 %), the rotations 47 %. So the rotations cost about the same share: the GEMM is what falls short. The
 differences its code shows:
 
-| | urakozz | ours before 2026-11-06 | ours now (`ARC_H8=1`) |
+| | the other engine | ours before 2026-11-06 | ours now (`ARC_H8=1`) |
 |---|---|---|---|
-| Scales | one per column, one per token, applied once at the end of K | one per 256 values | the same as urakozz |
+| Scales | one per column, one per token, applied once at the end of K | one per 256 values | the same as the other engine |
 | Column scales | computed once per weight | every decode | once per weight |
 | Rotation | in registers, 64 floats x 16 lanes; words through local memory once | through local memory, a barrier per stage | in registers |
 | Signs before the rotation | random, per K | none | none (`ARC_H8_D=1`: random): no gain measured on our models |
@@ -365,9 +413,9 @@ KL against the default path on USAGE.md, 4 x 512:**
   against 0.46 / 0.45; 2 and 4 shards, row 6, a tie of 0.31 / 0.30).
 
 **Against f32** (`tools/ref_forward`, 480 tokens of USAGE.md, one chunk; `runz --kl-ref` now also prints the logits'
-relative L2, worst cosine and top-5 overlap, each row's mean taken out). "Simulated" is the closest to urakozz's method
+relative L2, worst cosine and top-5 overlap, each row's mean taken out). "Simulated" is the closest to the other engine's method
 on our models: `ref_forward REF_HAD=1024 REF_HAD_D=1`, activations rotated straight from f32, one int8 scale per token
-and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not his W4A16 file.
+and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not its W4A16 file.
 
 | Model, form | KL mean | KL max | Same top token | Relative L2 | Worst cosine | Top-5 |
 |---|---|---|---|---|---|---|
@@ -400,7 +448,7 @@ and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not his W4
 - The signs do not earn their place in these runs: the largest row's KL is higher with them in five of six pairs
   (27B from f32 0.127 against 0.046), the means about equal.
 - The per-column form has a higher KL than the per-256 one in the engine: coarser scales cost accuracy.
-- Urakozz publishes no KL for this path. His 12.0 -> 12.5 % relative L2 (against bf16, the file's own error included)
+- The other engine publishes no KL for this path. Its 12.0 -> 12.5 % relative L2 (against bf16, the file's own error included)
   means about 3.5 % added, if the errors are independent (worked out here): the same size as ours, 3.2-4.6 %
   in the simulation, but on another model file, prompts and reference.
 
@@ -419,7 +467,7 @@ and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not his W4
 | 4 | 1,455-1,501 tok/s, step 18.4 ms | 1,546-1,570 tok/s, step 18.3 ms |
 
 - The per-column scales did what they were built for on XMX: the GEMMs are 1.58x the default's (1.33x in the per-256
-  form), about 72 T/s on gate + up, ~37 % of the int8 peak (worked out; urakozz's 72-81 % on a B70).
+  form), about 72 T/s on gate + up, ~37 % of the int8 peak (worked out; the other engine's 72-81 % on a B70).
 - Against the default path: KL mean 0.00144, max 0.0274, same top token 97.25 %, perplexity 6.6371 -> 6.6501.
 - H8 takes 0.34 GiB more GPU memory. Generation is unchanged (20.5 tok/s).
 - Over 4 cards H8 adds 5 %: GPU time per card would allow ~1.1 s per chunk and a chunk takes 2.6 s, so the sums limit it.
@@ -436,7 +484,7 @@ $env:ARC_GEMM_GRF=256; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; 
 .\bin\runz.exe <27B gguf> --perplexity USAGE.md --ppl-chunks 4 --ppl-kl base.kl; Remove-Item Env:ARC_H8
 ```
 
-If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and urakozz's wider tile.
+If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and a wider tile.
 
 **The B60's sweep (2026-11-08, package 4aae0c5).**
 - **27B, default path:** 770 tok/s at 4K. No setting was 3 % ahead (column groups 4: 780, no split-K: 781); 256
@@ -492,7 +540,7 @@ is 3.4 s.
   bit-identical) for ~4 %.
 - **Not done: the SwiGLU / norm quantization in the GEMM epilogue.** It needs each row's largest value over all
   columns, which are spread over many work-groups; the SwiGLU product itself is already fused into the up GEMM.
-- **Not done: a wider XMX tile (32 x 64 per sub-group, as sycl-tla and urakozz).** The GEMMs run at roughly 80 TOPS
+- **Not done: a wider XMX tile (32 x 64 per sub-group, as sycl-tla and another engine).** The GEMMs run at roughly 80 TOPS
   of int8 (the B60's peak is around 197, from memory). This is the largest lever left, and a rewrite of the XMX
   kernel.
 
@@ -661,11 +709,11 @@ measures it; gains are estimates for the 27B on one B60 at 4K):
 | 13.6 | ✅ **built 2026-11-14, opt-in `ARC_W8_PARTIAL_GB=x` (the laptop's 27B, 4 GB: 512 tokens +3-5 %, bit-identical); a B60's size to measure. 2026-11-15: `ARC_W8_PARTIAL_GB=auto` sizes it by the room left after the model, its buffers and its context (the same `--ctx auto` context), discrete cards only (a 140T's 27B: 357 -> 176 tok/s with 26 GiB resident); on by default there since 2026-11-16 (a Pro B70's 27B 4K prompt +8.1 % at a 4K context, +4.1 % at 262K, bit-identical; `ARC_W8_PARTIAL_GB=0` off); a Pro B70's 27B with 16 GB: 4K prompt 2,217 -> 2,358 tok/s.** **One B60: part of the layers' decoded weights resident** (as many as fit next to the context asked; the rest just in time) | -1/3 of the decode: ~-100 ms at 4K, more at 512 | medium | bit for bit (resident and just-in-time weights are the same values) |
 | 13.7 | **`gdn_recur` (290 ms)**: the chunked DeltaNet on XMX lost on the B60 (918 against 1,087 tok/s, 2026-11-13): find why (its f16 hi / lo split doubles the DPAS work) before trying again | up to -150 ms | high | KL (not bit-identical) |
 | 13.8 | **Splits: the sums** (3 B60s waited 2.3 s per 4K prompt in their sums): `ARC_TP_OVERLAP=1` measured; note that the overlap runs only on the just-in-time path, so 13.1 and it have to be measured together | splits | measurement | already bit-identical |
-| 13.9 | ✅ built 2026-11-15 (`ARC_GEMM_XW_WGX`, `ARC_GEMM_XW_LOCK`); `WGX=4` the default on discrete cards since 2026-11-15 (a Pro B70: 4K prompt 2,311 -> 2,396 tok/s, bit-identical; `LOCK` no gain), B60s to confirm. **The work-group of the H8 GEMM as urakozz's** (its `pf_gemm_i8` on a B70: 32 sub-groups over 256 tokens x 128 columns, a split barrier each 64-value chunk, a 2-chunk prefetch shared by the work-group; 72-81 % of the int8 peak against our ~62 % on a B70, issue #27). Ours keeps its 32 x 64 sub-group tile and adds the column sub-groups and the lockstep | B70 62 % -> 70-80 % of peak: up to -190 ms of a 4K prompt (estimate) | small | bit for bit (the same sums per sub-group) |
+| 13.9 | ✅ built 2026-11-15 (`ARC_GEMM_XW_WGX`, `ARC_GEMM_XW_LOCK`); `WGX=4` the default on discrete cards since 2026-11-15 (a Pro B70: 4K prompt 2,311 -> 2,396 tok/s, bit-identical; `LOCK` no gain), B60s to confirm. **The work-group of the H8 GEMM as another engine's** (its prefill int8 GEMM on a B70: 32 sub-groups over 256 tokens x 128 columns, a split barrier each 64-value chunk, a 2-chunk prefetch shared by the work-group; 72-81 % of the int8 peak against our ~62 % on a B70, issue #27). Ours keeps its 32 x 64 sub-group tile and adds the column sub-groups and the lockstep | B70 62 % -> 70-80 % of peak: up to -190 ms of a 4K prompt (estimate) | small | bit for bit (the same sums per sub-group) |
 
-The DeltaNet (13.7) has less room than first thought: urakozz's chunked form is not faster than `gdn_recur`. His
+The DeltaNet (13.7) has less room than first thought: the other engine's chunked form is not faster than `gdn_recur`. Its
 `gdn_scan` row (~128 ms at 4K) is only the last of its ten launches; the six recurrence kernels together take ~155 ms
-per 2,048 tokens (his probe of 2026-11-10, after its 3n change), ~310 ms at 4K, against `gdn_recur`'s 263 ms on a B70.
+per 2,048 tokens (its probe of 2026-11-10, after its 3n change), ~310 ms at 4K, against `gdn_recur`'s 263 ms on a B70.
 
 Order: 13.1 (a bug, small), 13.2, 13.3, 13.4 (asked with the next package), 13.5, 13.6, then 13.7. Target: the 4K
 prompt 1,322 -> ~1,600-1,700 tok/s on one B60, the 512-token prompt 737 -> ~1,000.
@@ -706,7 +754,7 @@ in its GGUF (their sum is the 11,321 MB a token runz reports):
 - The other kernels took 3.59 ms a token, and the GPU idled ~2.9 ms (a step 45.1 ms, its kernels 42.2).
   `swiglu_quant` took 15 us each (64 a token) and `rmsnorm_quant` 7 us (129 a token): one work-group per row, so one
   Xe core of 20 did each row.
-- urakozz's engine (a B70, a W4A16 27B) reaches 78 % of its card's measured bandwidth by the same means: its GEMVs at
+- Another engine (a B70, a W4A16 27B) reaches 78 % of its card's measured bandwidth by the same means: its GEMVs at
   89-97 % per shape, split-K for the matrices with few rows, and its small kernels spread over more sub-groups
   (its norm 16 -> 320 sub-groups, -2.2 ms a token; its alpha / beta GEMV over 128 sub-groups, -1.9 ms).
 
@@ -729,13 +777,13 @@ work-groups cost ~5.5 ms a token on the MoE model only (its profile: 10.3 ms of 
 known yet. Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
 each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.
 
-### Against urakozz's decode GEMV (2026-11-15)
+### Against another engine's decode GEMV (2026-11-15)
 
-His plain 27B decode on a B70 reads 15.54 GB a token at 33.6 tok/s, ~522 GB/s, 88 % of his measured 590 GB/s. That
-figure includes a bf16 output head of 2.5 GB at ~97 %; his linears run at 89-97 % alone. Ours: 11.3 GB a token in
-30.8 ms, 365 GB/s, 67 % of 547; the FFN GEMVs at ~62 % (issues #12, #27). His `src/kernels/gemv.cl` does it this way:
+Its plain 27B decode on a B70 reads 15.54 GB a token at 33.6 tok/s, ~522 GB/s, 88 % of its measured 590 GB/s. That
+figure includes a bf16 output head of 2.5 GB at ~97 %; its linears run at 89-97 % alone. Ours: 11.3 GB a token in
+30.8 ms, 365 GB/s, 67 % of 547; the FFN GEMVs at ~62 % (issues #12, #27). Its `src/kernels/gemv.cl` does it this way:
 
-| | urakozz `gemv` | ours `gemv` (IQ3_S, K-quants, Q8_0) / `gemv_v` (IQ3_XXS, IQ4_XS, IQ2, Q6_K) |
+| | the other engine's `gemv` | ours `gemv` (IQ3_S, K-quants, Q8_0) / `gemv_v` (IQ3_XXS, IQ4_XS, IQ2, Q6_K) |
 |---|---|---|
 | Weights | int4, one f16 scale per 64: a mask (or a shift) and a subtract per weight | codebooks: grid lookups in local memory, sign masks, scales per 32 |
 | Lane owns | one output column for the whole K range: no reduction across lanes | one 32-value block of two superblocks: a sub-group reduction per row at the end (once per row, cheap) |
@@ -743,9 +791,9 @@ figure includes a bf16 output head of 2.5 GB at ~97 %; his linears run at 89-97 
 | Few rows | split-K (S = 4 at N = 5,120: 1,280 sub-groups); partials summed by the next kernel | one sub-group per 1-4 rows: N = 5,120 gives 1,280-2,560 sub-groups (a B70 has 2,048 threads) |
 
 Per 27B shape (K x N), sub-groups on a B70 at today's rules: `attn_output` / `ssm_out` 6,144 x 5,120 and
-`ffn_down` 17,408 x 5,120: `gemv` 2,560, `gemv_v` 1,280 (4 rows), IQ4_XS 2,560. His S = 4 there was worth 2x at
-that shape, where at S = 1 he had only 320. qkv + z 5,120 x 16,384 and gate / up 5,120 x 17,408: 4,096-4,352. So our
-lane-per-block layout already gives the few-row matrices more sub-groups than his split-K did. Split-K would not be
+`ffn_down` 17,408 x 5,120: `gemv` 2,560, `gemv_v` 1,280 (4 rows), IQ4_XS 2,560. Its S = 4 there was worth 2x at
+that shape, where at S = 1 it had only 320. qkv + z 5,120 x 16,384 and gate / up 5,120 x 17,408: 4,096-4,352. So our
+lane-per-block layout already gives the few-row matrices more sub-groups than its split-K did. Split-K would not be
 bit-identical either (it was tried on the laptop before: 512-row matrices 10-15 % faster, no gain overall).
 
 **What the laptop shows** (`ARC_GV_PROBE`, `--prof-gen`, Qwen3.5 4B Q4_K_XL over 128 tokens and the 27B over 32):
@@ -757,8 +805,8 @@ bit-identical either (it was tried on the laptop before: 512-row matrices 10-15 
   ~60-64 GB/s.
 - A B70 has about 8x this GPU's bandwidth (590 against ~73 GB/s) but only ~4.6-5.8x its vector lanes x clock
   (4,096 lanes against 896, at equal or 2.8 / 2.2 GHz clocks: worked out, not measured). A decode about 1.1x as fast
-  as the stream here then holds the GEMV to roughly 60-80 % of the card's bandwidth, around the ~62 % measured. So the gap to urakozz on
-  the B-series is mostly the formats' decode cost, not the access pattern. His int4 g64 costs a few operations a
+  as the stream here then holds the GEMV to roughly 60-80 % of the card's bandwidth, around the ~62 % measured. So the gap to the other engine on
+  the B-series is mostly the formats' decode cost, not the access pattern. Its int4 g64 costs a few operations a
   weight; IQ3_S costs a grid lookup per 4 weights plus signs and scales.
 - `ARC_GEMV_DB=1` (`gemv` reads one window ahead, bit-identical) is neutral on the laptop; on a Pro B70 the 27B gains +1.4 % (31.9 -> 32.3 tok/s, issue #27), so it is the default for dense models on discrete cards since 2026-11-15 (`ARC_GEMV_DB=0`: the prefetch; MoE models keep the prefetch until measured). It helps only
   where loads, not the decode, are what waits; a B60 / B70 can tell (`decode_try.ps1` with `ARC_GEMV_DB=1` against

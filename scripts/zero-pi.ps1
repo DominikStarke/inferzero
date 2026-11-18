@@ -126,7 +126,8 @@ LAUNCHER OPTIONS
                                  with --ctx 32768).
   --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; 35B 8192; Gemma 4 26B
                                  and Flash Next 2048; 512 when the decoded weights stay resident, as on the 4B /
-                                 9B / E4B; Gemma with images at least 2048). Smaller chunks need less GPU
+                                 9B / E4B (4096 on a discrete card of 12 GB or more); Gemma with images at least
+                                 2048). Smaller chunks need less GPU
                                  memory, which the auto context turns into more context: 27B with
                                  --chunk 1024 -> ~65K tokens at 17.4 GiB, 118,784 at 18.3 GiB; ~11K-token
                                  prompts ~4 % slower, long prompts the same speed.
@@ -145,6 +146,11 @@ LAUNCHER OPTIONS
                                  models (/model, zero-pi on another model) and on a restart; off after zero-server stop
   --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0105 -> 0.0060 at 3.5K tokens (under the
                                  0.015 limit), prompts about half as fast; kept like --npu (--no-precise: off)
+  --gpus <N>, -Gpus              one model split over N GPUs (1-64; Qwen3.5 / 3.6 / 3.8, Flash Next,
+                                 DeepSeek-V4.1; docs/multi-gpu.md). Not given: a running split server keeps its GPUs
+  --whisper auto|on|off|<folder>, --asr auto|off|<file>, --whisper-device gpu|npu, --whisper-max-minutes <N>
+  (also -Whisper ...)            speech to text, passed to zero-server as its -Whisper, -Asr, -WhisperDevice and
+                                 -WhisperMaxMinutes (zero-server help options)
   --help, -h, -?, /?, help       the short help;  --help-all: this text
 
   A launcher option that differs from what the running server uses restarts the server (loading takes
@@ -192,7 +198,7 @@ SERVER COMMANDS (zero-server)
     -Slots <N>  -Npu on|off  -Precise / -NoPrecise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
     -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
     UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
-    -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
+    -Port <N> (default 8090)  -MtpDrafts <2..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
     -Preset <name>  -Drafter auto|mtp|dflash|off|<folder>  -DryRun  -Quiet
     exit codes: 0 ok, 1 wrong option, 2 the server stopped while loading, 3 timeout, 4 port in use
@@ -207,7 +213,9 @@ bin\serverz.exe --help)
   -m, --model <model.gguf>       model file              --port <N>          port (default 8080)
   -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
   --alias <name>                 model id in the API     --mtp               speculative decoding
-  --mtp-drafts <N>               drafts per step (27B 7, 35B 5, 4B and Gemma 26B 3, else 2; 7 with DFlash2)
+  --mtp-drafts <N>               drafts per step (27B 7, on B-series cards 4; 35B 5; 4B, Flash Next and Gemma 4
+                                 3; else 2; 7 with DFlash2)
+  --mtp-model <file>             an MTP head in a .gguf of its own (Flash Next's mtp-*.gguf; implies --mtp)
   --draft auto|mtp|dflash        with a DFlash2 drafter: both (auto), the MTP block only, DFlash2 only (the
                                  -nodf / -df variants)
   --think-budget <N>             close reasoning after N tokens
@@ -220,12 +228,12 @@ bin\serverz.exe --help)
   --host <addr>                  listen address (default 127.0.0.1)
   --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
   --slots <N>                    hold N conversations at once, taking turns step by step
-  --gpus <N>                     one model split over N GPUs (Qwen3.5 / 3.6 / 3.8), the context sized per GPU
+  --gpus <N>                     one model split over N GPUs (Qwen3.5 / 3.6 / 3.8, Flash Next, DeepSeek-V4.1)
   --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
   --whisper auto|on|<dir>|off    speech to text (Whisper large-v3; turbo when large-v3 is not cached; <dir>: the
                                  folder that holds model.bin)
   --whisper-device gpu|npu       Whisper's encoder on the iGPU or the NPU
-  --asr auto|<file>|off          Qwen3-ASR next to Whisper, the default speech model (needs --whisper)
+  --asr auto|<file>|off          Qwen3-ASR, the default speech model (next to Whisper; alone without --whisper)
   --whisper-max-minutes <N>      longest upload / chat clip (default 180; library files up to 6 hours)
   --no-web-tools                 no web_search / web_fetch for the web UI
   --no-terminal                  no run_command (the web UI's terminal tool)

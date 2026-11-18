@@ -1,8 +1,8 @@
 # Multi-GPU: one model split over several GPUs
 
 `runz --gpus N` splits a dense Qwen3.5 / 3.6 / 3.8 model (the 27B, the 9B, the 4B), the Qwen3.6 35B-A3B MoE
-(and fine-tunes of it such as Ornith 1.5 35B) or Qwen3.8 Flash Next over N GPUs with tensor parallelism; see "Mixture
-of experts" and "Flash Next" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
+(and fine-tunes of it such as Ornith 1.5 35B), Qwen3.8 Flash Next or DeepSeek-V4.1-Flash over N GPUs with tensor
+parallelism; see "Mixture of experts", "Flash Next" and "DeepSeek-V4.1-Flash" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
 Generation is bound by memory bandwidth, so this is the only kind of split that speeds it up; a layer split only adds
 capacity. The server uses it too: `serverz --gpus N` (see "The server" below).
 
@@ -17,10 +17,30 @@ The output adds:
 - **after generation:** the sums per token (2 per layer: 128 for the 27B) and the milliseconds of each token spent
   waiting for them.
 
+## The switches
+
+Environment variables, read once per process (the one-GPU switches: [xe2-tuning.md](xe2-tuning.md)).
+
+| Switch | Default | What it does |
+|---|---|---|
+| `ARC_TP_SIM=1` | off | every shard on GPU 0, on its compute queues in turn: correctness only, not speed ("Accuracy" below) |
+| `ARC_TP_SUM=f32`, `ARC_TP_RS_MIN=N` | the f16 reduce-scatter from 64 rows | the one-step f32 sum for prompts too; the rows from which the reduce-scatter runs |
+| `ARC_TP_P2P=0` / `1` | by the links timed at load, where the driver reports peer access | the sums through host memory always / directly whenever there is peer access ("Sums straight between GPUs") |
+| `ARC_TP_PIPE=0`, `ARC_TP_PIPE_PIECES=N` | on, 2-8 pieces of ~2 MB | the prompt sums in pieces that overlap their copies ("The sums in pieces") |
+| `ARC_TP_EVSUM=1` | off (2026-11-18) | generation's sums meet on GPU events, no host wait and barrier per sum ("Not yet") |
+| `ARC_TP_OVERLAP=1`, `ARC_TP_LM=1` | off | the prompt sums beside the next chunk's work; `LM`: a dense split model with resident weights runs its prompts layer by layer without the overlap (to measure the two apart) |
+| `ARC_TP_ATT_QSPLIT=1` | off | a MoE model's attention divided by q-head where it would otherwise stay whole on every GPU ("Mixture of experts") |
+| `ARC_TP_RG_GU=0` | on | a split MoE model's expert gate / up on `moe_rg`; `0`: per tile |
+| `ARC_TP_TIMEOUT=s` | 120 (5 to 3,600) | the failsafe's limit for a sum, counted again from each expert read from the SSD ("When a GPU hangs") |
+| `ARC_XRAM_GB=N` / `0` | up to 32 GiB per GPU, 128 GiB in all | experts kept in RAM ("Experts in RAM") |
+| `ARC_TP_PARALLEL_LOAD=1`, `ARC_TP_LINKS_SIM=1` | off | the shards loaded together; the links timed under `ARC_TP_SIM` (tests) |
+| `ARC_TP_HANG`, `ARC_TP_OOM`, `ARC_TP_F16_LIMIT`, `ARC_FAKE_OOM` | off | failsafe tests ("When a GPU hangs") |
+
 ## How it is split
 
 Code, apart from the one-GPU engine: `zero/mgpu/engine_tp_shard.h` (what one shard holds), `zero/mgpu/engine_tp.h`
-(`TpEngine`: the shards on their threads and the sums), kernels in `zero/kernels/tp.cl`. The one-GPU code only calls
+(`TpEngine`: the shards on their threads and the sums), `zero/mgpu/tp_mirror.h` (the server's calls mirrored on
+every shard), kernels in `zero/kernels/tp.cl`. The one-GPU code only calls
 hooks (`T`, `tp_head`, `tp_out`, `tp_out_hc`, `gdn_ab`, `tp_conv_lws`, `tp_loaded`) that do what it did before when the model is
 not split.
 
@@ -39,7 +59,9 @@ before they reach the residual stream:
 2. The GPUs meet at a barrier.
 3. Each GPU adds every part to its residual stream, in rank order.
 
-That is for generation (1-63 rows: the cost of a sum is its latency). Prompt chunks (64 rows or more, since
+That is for generation (1-63 rows: the cost of a sum is its latency). With `ARC_TP_EVSUM=1` (opt-in since
+2026-11-18) steps 1-2 run on the GPUs instead: each GPU's copy signals an event and each GPU waits on every GPU's
+events before it adds the parts, so the host queues ahead (the same parts in the same order: bit-identical). Prompt chunks (64 rows or more, since
 2026-11-02) sum through a **reduce-scatter in f16** instead, as the bytes are what costs there (4 B60s, 35B: 65-80 %
 of a split prompt went to the sums):
 1. Each GPU converts its part to f16 and copies every row but its own block (rows `[T·r/N, T·(r+1)/N)`) to host memory.
@@ -382,8 +404,11 @@ Flash Next's activations after their int8 rounding, so it does not help here.)
 
 Experts are read from the SSD unbuffered (no Windows file cache), so a machine with a large RAM never used it for
 them. On a GPU with memory of its own (`zrt::integrated()` false: Arc B580 / B60 / A770, not the iGPUs) each record
-read from the SSD now goes into pinned host memory and stays there, up to the free RAM less 16 GiB (shared by a
-split model's GPUs; `serverz --expert-ram-gb N`, `ARC_XRAM_GB`, 0: off). A later miss of that expert is no SSD
+read from the SSD now goes into pinned host memory and stays there, up to the free RAM less 16 GiB
+(`serverz --expert-ram-gb N`, `ARC_XRAM_GB`, 0: off). A split model's GPUs share one pool: since 2026-11-16 at most
+32 GiB per GPU and half the RAM free beyond 16 GiB, and since 2026-11-17 at most 128 GiB for all the GPUs together
+(`zero/engine_stream.h`; manoreken2's 4 B60s, DeepSeek-V4.1 Q8: 0 / 8 / 16 / 32 GiB per GPU gave generation 3.55 /
+6.69 / 8.51 / 9.25 tok/s, while 48 and 64 GiB per GPU stopped after loading; issue #4). A later miss of that expert is no SSD
 read: the GPU copies it from RAM (PCIe DMA), no CPU copy in between (a memcpy into the staging memory ran at only
 3-4 GB/s on the laptop). The tiers are then GPU cache -> RAM -> SSD.
 
@@ -552,7 +577,9 @@ the same as before.
 
 A GPU that stops answering would otherwise leave the others at a barrier for good, and the server with them:
 - **Barrier timeout:** a shard waiting longer than `ARC_TP_TIMEOUT` seconds (default 120, far beyond one layer of a
-  prompt chunk; 5 s to an hour) stops every shard; the error names the GPUs that did not come.
+  prompt chunk; 5 s to an hour) stops every shard; the error names the GPUs that did not come. Since 2026-11-15
+  the limit counts again from each expert read from the SSD that finished: a shard reading its experts is slow, not
+  hung (DeepSeek-V4.1's cold first prompt over 4 B60s passed 120 s, issue #4).
 - **GPU waits** (`zrt::sync` on a split model's GPUs) wait in pieces of 100 ms: they give up after the same timeout,
   or, on GPUs 1 and up, as soon as another shard failed. GPU 0's waits leave only by the timeout: Whisper and
   Qwen3-ASR share that GPU, and their waits must not be cut short. One GPU waits as before, with no limit.
@@ -651,7 +678,8 @@ On the laptop, `--sim 2` runs two command lists on the one iGPU. That is a test 
 - the failsafe released the waiting list in 0.05 ms;
 - the zex functions are present.
 
-If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (QUEUE F31.3).
+The decode sums on events were built on 2026-11-18 as `ARC_TP_EVSUM=1` (opt-in; "Not yet" below), after two Arc
+A770s under Windows spent 73.5 ms of an 81 ms token in 128 sums (issue #35).
 
 ```powershell
 .\bin\event_probe.exe

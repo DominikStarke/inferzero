@@ -15,6 +15,12 @@
   engine checks that at start before it uses them: every weight layout on random data, launched as the engine
   launches them (split-K, accumulate, fused SwiGLU, the mixture-of-experts tiles); a kernel that fails to build or
   differs keeps DP4a (`ARC_NO_XMX=1`: off).
+- **H8 prompt GEMMs on XMX** (`zero/engine_h8.h`, `kernels/rot.cl`, `h8.cl`, `gemm_xw.cl` / `gemm_xw8.cl`): on GPUs
+  with XMX the Qwen dense models' prompt GEMMs rotate weights and activations by a Walsh-Hadamard transform and
+  quantize them to int8 with one scale per column and per token, so the scales are applied once at the end of K.
+  A sub-group holds a wide tile (32 tokens x 64 columns on 16 lanes, 32 x 16 on 8), checked at start bit for bit
+  against the reference GEMM. On by default on the B-series and the 16-lane iGPUs (B390), and in the Arc 140T preset
+  (the 140T, Alchemist cards); the defaults per GPU kind: [xe2-tuning.md](xe2-tuning.md).
 - **Just-in-time weight decoding.** Every GGUF quant type is decoded into W8 on the GPU: IQ/K types without
   block minimums losslessly; types with minimums (Q2_K/Q4_K/Q5_K) are requantized to signed int8 with a per-16/32
   scale (adds ~1/10 of their own quantization noise; +0.05% perplexity on Qwen3.5-4B), which lets them use the
@@ -71,46 +77,69 @@
 ## Layout
 
 ```
-src/        shared code: quants.h (GGUF decoding/repacking), tokenizer.h, chat.h (Qwen), chat_gemma4.h +
+src/        shared code: quants.h + iq_tables.h (GGUF decoding / repacking), tokenizer.h, chat.h (Qwen), chat_gemma4.h +
             chat_jinja.h (Gemma 4, minja templates), image.h + vision_gemma4.h (image input), audio.h +
-            audio_gemma4.h (audio input), json.h, http.h, gguf.h, clrt.h / cl_min.h (OpenCL loader for clinfo, the
+            audio_gemma4.h (audio input), whisper.h + whisper_formats.h (Whisper's model files), json.h, http.h,
+            gguf.h, log.h (the log: docs/logging.md), load_progress.h (the `progress:` lines), platform.h /
+            platform_net.h / platform_proc.h (files, sockets, child processes on Windows and Linux), app_dir.h (the
+            data folder), kcache.h (the compiled-kernel cache), crash_log.h, cpu_check.h, full_speed.h, curl_min.h
+            (libcurl on Linux), pbkdf2.h, autoround_revision.h, clrt.h / cl_min.h (OpenCL loader for clinfo, the
             benchmarks and tests)
 zero/       the engine: engine.h (the forward passes, dispatch) with its parts, included inside class Engine:
             engine_setup.h, engine_load.h, engine_load_gemma.h, engine_alloc.h, engine_stream.h (setup, weights,
             memory, expert streaming), engine_slots.h, engine_sessions.h (slots, batched decoding, saved
             conversations), engine_gemma.h, engine_qwen.h, engine_flashnext.h, engine_moe.h, engine_drafters.h,
-            engine_h8.h (forward passes by model family), clrt.h (OpenCL-style calls on Level Zero), xcache.h +
-            expert_store.h (MoE experts on the SSD, GPU cache), serverz.cpp / runz.cpp, vision_gemma4v.h /
-            vision_qwen3vl.h / audio_gemma4a.h (encoders), kernels/ (gemm.cl DP4a / int8 XMX GEMM, gemm_x16.cl
-            f16 XMX GEMM (discrete GPUs, ARC_X16), decode.cl JIT decode + GEMV (decode_moe.cl: MoE experts), ops*.cl norms / DeltaNet / attention /
-            quantization / encoders / Flash Next / DFlash2 in parts (a kernel builds from its part and the ones
-            before it: KernelParts in clrt.h), moe.cl expert routing and GEMMs, tp.cl the multi-GPU sums), npu/ (the NPU next to the
-            GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), xe2/ (engine_xe2.h:
-            switches and the f16 XMX GEMM for discrete Arc cards only), mgpu/ (one model over several GPUs:
-            engine_tp.h TpEngine and the sums, engine_tp_shard.h what a shard holds, tp_mirror.h the server's
-            mirrored calls), mgpu_probe.cpp / event_probe.cpp (what syncing GPUs costs), grf_probe.cpp
+            engine_ds41.h (DeepSeek-V4.1), engine_h8.h (the H8 prompt GEMMs), clrt.h (OpenCL-style calls on Level
+            Zero) + ze_min.h, xcache.h + expert_store.h + io_beat.h (MoE experts on the SSD, in RAM, GPU cache),
+            gguf_pack.h (MoE model packages), serverz.cpp / runz.cpp / transcribez.cpp, vision_gemma4v.h /
+            vision_qwen3vl.h / audio_gemma4a.h / audio_qwen3a.h (encoders), asr_qwen3.h + whisper_engine.h (speech
+            to text), kernels/ (gemm.cl DP4a / int8 XMX GEMM, gemm_x8.cl its 8-lane XMX form, gemm_xw.cl /
+            gemm_xw8.cl the wide-tile H8 GEMM on 16 / 8 lanes, h8.cl + rot.cl H8's rotation, gemm_x16.cl f16 XMX
+            GEMM (ARC_X16), decode.cl JIT decode + GEMV (decode_moe.cl: MoE experts), ops*.cl norms / DeltaNet /
+            attention / quantization / encoders / Flash Next / DFlash2 / DeepSeek in parts (a kernel builds from its
+            part and the ones before it: KernelParts in clrt.h), attn_x.cl / attn_fx.cl / gdn_x.cl attention and
+            DeltaNet on XMX, moe.cl expert routing and GEMMs, tp.cl the multi-GPU sums, whisper.cl / asr.cl speech),
+            npu/ (the NPU next to the GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer,
+            probes), xe2/ (switches and defaults of GPUs with XMX: engine_xe2.h the defaults per GPU kind, the Arc
+            140T preset, attention on XMX, the f16 GEMM; engine_xw.h the wide-tile H8 GEMM; engine_moe_xw.h the MoE
+            expert GEMM on XMX), mgpu/ (one model over several GPUs: engine_tp.h TpEngine and the sums,
+            engine_tp_shard.h what a shard holds, tp_mirror.h the server's mirrored calls), mgpu_probe.cpp /
+            event_probe.cpp (what syncing GPUs costs), grf_probe.cpp, ze_probe.cpp, page_probe.cpp, ssd_bench.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
-            server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
-            search / page fetch), server_files.h (the web UI's chat folders), server_memory.h (MEMORY.md, remember /
-            forget), server_projects.h (projects: a folder, its AGENTS.md, its files to the tools), doc_writer.h (DOCX / PDF / RTF
-            from Markdown), doc_reader.h + inflate.h (reading DOCX / PDF: outline, BM25 search),
-            server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
-            Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.cpp (ISTA GSQ checkpoint -> GGUF),
-            tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
-bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, gpu_bench, ...), run_bench.ps1
-            (comparison with llama.cpp), prompt_bench.py, review_data.py (review data); gemm_sweep.ps1 /
-            decode_try.ps1 / replay_probe.cpp (settings and launch costs to measure on a discrete card)
-scripts/    zero-server.ps1 (server in the background), zero-launcher.ps1 (launcher window, zero-launcher.cmd),
-            zero-pi.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model list), pi-models.ps1 (writes that list)
-tests/      run_tests.ps1 and its reference data
+            server_catalog.h / server_load.h / server_startup.h / server_metrics.h, api_compat.h (Anthropic / Ollama /
+            Responses formats), sampler.h, tool_constraint.h + json_constraint.h (tool calls), web_tools.h +
+            web_view.h + web_github.h (web search / page fetch), server_files.h + server_file_tools.h (the web UI's
+            chat folders), server_memory.h (MEMORY.md, remember / forget), server_projects.h (projects: a folder, its
+            AGENTS.md, its files to the tools), server_mcp.h (MCP servers), server_remote.h (remote access),
+            server_speech.h / server_whisper.h / server_whisper_asr.h (speech to text), server_ocr.h, doc_writer.h
+            (DOCX / PDF / RTF from Markdown), doc_reader.h + inflate.h + xlsx.h + pptx.h + pdf_render.h /
+            pdf_images.h (reading documents: outline, BM25 search), server_terminal.h (the terminal tool),
+            ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash Next, DeepSeek-V4.1),
+            gemma4v_ref.cpp / gemma4a_ref.cpp / ref_qwen3a.cpp / ref_whisper.cpp (f32 encoder references),
+            convert_gsq.cpp (ISTA GSQ checkpoint -> GGUF), import_autoround_experts.cpp / import_autoround_pack.cpp
+            (AutoRound INT4 experts), zero_recorder.cpp, tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
+bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, gpu_bench, membw_probe, xw_peak, ...),
+            run_bench.ps1 (comparison with llama.cpp), website_bench.ps1 / .sh (the website's numbers),
+            prompt_bench.py, review_data.py (review data); gemm_sweep.ps1 / decode_try.ps1 / .sh / xw_sweep.ps1 /
+            f33_sweep.ps1 / b60_sweep.ps1 / .sh / gemv_probe.ps1 / replay_probe.cpp (settings and launch costs to
+            measure on a discrete card)
+scripts/    zero-server.ps1 (server in the background), zero-launcher.ps1 (launcher window, zero-launcher.cmd) with
+            launcher-*.ps1, get-models.ps1 + model-catalog.ps1 + hf-get.ps1 (downloads), autoround.ps1 /
+            get-autoround.ps1, remote-tunnel.ps1, zero-pi.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model
+            list), pi-models.ps1 (writes that list), make-package.ps1 / make-package-linux.sh (release packages)
+docker/     Dockerfile (Ubuntu 24.04, Intel's GPU runtime, a release's Linux package), compose.yaml, kubernetes.yaml
+            (Intel's GPU device plugin), entrypoint.sh (not tested yet: docs/install.md)
+tests/      run_tests.ps1, fail_inject.ps1, the unit tests (test_*.cpp) and their reference data
 webui/      index.html (chat, files and documents, terminal, web search tools, Talk voice mode)
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
-            (speed by date), lessons-intel-arc-igpu.md, flash-next-spec.md, npu-experiment.md (the NPU next to
-            the GPU), qwen3-asr.md + whisper-native.md + whisper-native-status.md (speech to text), kernel-audit and
-            self-audit reports, archive/ (arcinferzero-log.md, review_notes.md, f21-q2-speed.md: older logs, notes
-            and finished plans)
+            (speed by date), lessons-intel-arc-igpu.md, xe2-tuning.md (GPUs with XMX), multi-gpu.md, linux-port.md,
+            logging.md, install.md, flash-next-spec.md, deepseek41-spec.md, npu-experiment.md (the NPU next to the
+            GPU), qwen3-asr.md + whisper-native.md + whisper-native-status.md (speech to text), plans
+            (arc-plan-2026-11-17.md, night-plan-2026-11-17.md, gemma4-plan.md), archive/ (arcinferzero-log.md,
+            review_notes.md, f21-q2-speed.md: older logs, notes and finished plans)
 QUEUE.md    open work, measurements and the decisions waiting for the user
-setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools
+setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools; build.sh and
+            zero-launcher.sh: the same on Linux
 ```
 
 ## Validation

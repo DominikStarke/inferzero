@@ -23,7 +23,7 @@
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),
   `GET /v1/models` (every model of `--list-models`, the loaded one first; the served context as `context_length`,
   llama-server's `meta.n_ctx` and `max_model_len`), plus `GET /health`, `GET /props`, `POST /tokenize`, `GET` /
-  `DELETE /sessions` (session cache size / clear).
+  `DELETE /sessions` (session cache size / clear; from this computer only).
 - Web tools (the web UI's, usable by any client): `POST /v1/tools/web_search` `{"query": ..., "max_results": 8,
   "engine": "auto"}` (Brave Search, Bing, DuckDuckGo and Wikipedia asked at once, their results merged and ranked as
   SearXNG does: a page several engines put high comes first; `engine` one of them or several joined by `,`; the
@@ -162,8 +162,11 @@
   (`nextn` tensors). Gemma 4: the assistant drafter `mtp-*.gguf` next to the model (found automatically), which
   reads the main model's KV cache. The drafts are verified in one main-model pass and the next token is still
   sampled from the model's distribution, so the output is unchanged (checked: identical answers at every draft
-  count). `--mtp-drafts N`: inferzero 1–7 (default 7 for the 27B and whenever DFlash2 drafts, 5 for the 35B,
-  3 for the 4B and Gemma 4 26B, 2 for the 9B and the other Gemma models).
+  count). `--mtp-drafts N`: inferzero 1–7 (default 7 for the 27B, 4 for it on the B-series cards, 7 whenever
+  DFlash2 drafts, 5 for the 35B, 3 for the 4B and Flash Next, 2 for the 9B; Gemma 4's drafters always draft 3).
+  `--mtp-model FILE` (implies `--mtp`): an MTP head in a file of its own, such as Flash Next's
+  `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` or `-Q8_0.gguf`; without it the server takes an `mtp-*.gguf` next to the model.
+  After a model switch, a head that does not belong to the loaded model is skipped with a line in the log.
 - `--dflash DIR` (inferzero: `serverz`, `runz`): speculative decoding with a DFlash2 block drafter, `DIR` being
   the folder with its `config.json` and `model.safetensors` (the snapshot folder of `hf download
   z-lab/Qwen3.8-27B-DFlash2` for the 27B, `hf download incoai/Qwen3.6-35B-A3B-DFlash2` for the 35B). It drafts a
@@ -182,8 +185,10 @@
   logs the raw text of every tool call.
 - During a long prompt, streaming responses carry `: prefill N/M` progress comments (also shown in the web UI).
 - Qwen3.8 Flash Next (inferzero only): pass the first part (`...-IQ3_S-00001-of-00002.gguf`) with `-m`; part 2
-  must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`; `ARC_FN_PRECISE=1`
-  (opt-in) is the more exact, slower mode. Its speed and KL: the tables above and "Supported models"; running it:
+  must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`; `--precise` (or
+  `ARC_FN_PRECISE=1`, opt-in) is the more exact, slower mode. Its MTP head comes as a file of its own
+  (`--mtp-model`, above). With Intel's AutoRound INT4 experts (`setup -Models flash-ar4`,
+  [install.md](install.md#flash-next-with-intels-autoround-int4-experts-flash-ar4)) it runs in precise mode by itself. Its speed and KL: the tables above and "Supported models"; running it:
   [USAGE.md, section 3](../USAGE.md#3-managing-the-server); where its time goes and what was tried: QUEUE F21.13 /
   F21.15.
 
@@ -236,7 +241,7 @@ into groups of 8 layers.
 Several GPUs and GPU tuning:
 
 ```powershell
-.\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a Qwen model (dense or 35B-A3B) split over 2 GPUs (2, 3, 4, ...)
+.\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a model split over 2 GPUs (2, 3, 4, ...)
 .\bin\serverz.exe -m model.gguf --gpus 4 --slots 4           # the server on a split model
 .\bin\mgpu_probe.exe                                         # the GPUs, and what moving data between them costs
 .\bin\event_probe.exe                                        # whether GPUs can sync without the CPU in the middle
@@ -244,10 +249,11 @@ Several GPUs and GPU tuning:
 .\bench\decode_try.ps1 -Models model.gguf                     # generation: plain, MTP, DFlash2, GEMV switches
 ```
 
-What to run on an Arc B-series card (B580 / B60 / B70): [docs/xe2-tuning.md](xe2-tuning.md).
+What to run on a discrete Arc card (B580 / B60 / B70, A770 / A750 / A580): [docs/xe2-tuning.md](xe2-tuning.md).
 
-`--gpus N` (runz and serverz) splits the model over N GPUs, and each reads 1/N of the weights per token:
-- the heads and FFN columns are divided, and the 35B-A3B's experts too;
+`--gpus N` (runz and serverz) splits the model over N GPUs (Qwen3.5 / 3.6 / 3.8 dense, the 35B-A3B, Flash Next and
+DeepSeek-V4.1), and each reads 1/N of the weights per token:
+- the heads and FFN columns are divided, and the MoE models' experts too;
 - `--slots` gives batched decoding over the split.
 
 Not yet on a split model: MTP / DFlash2, images, and the prompt and session caches on disk. A model that cannot be

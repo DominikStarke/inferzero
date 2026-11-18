@@ -2,6 +2,8 @@
 
 The server (`serverz`) writes its log to stderr. `zero-server` and the launcher send it to
 `%USERPROFILE%\.inferzero\server.log`. It is written anew at each start, and earlier starts are kept in `logs\` next to it.
+On Linux `zero-launcher.sh` leaves it on the terminal, and its systemd service sends it to the journal
+(`journalctl --user -u inferzero -f`); `--log-file F` keeps a copy in a file on either system.
 `GET /metrics` gives the same numbers in Prometheus' format. The code is in `src/log.h` (the log),
 `tools/server_startup.h` (the first lines) and `tools/server_metrics.h` (the metrics).
 
@@ -24,7 +26,7 @@ The server (`serverz`) writes its log to stderr. `zero-server` and the launcher 
 |---|---|
 | `--log-verbosity N`, `-lv N` | 0 errors only, 1 + warnings, 2 + info (default), 3 + debug. Names work too: `error`, `warn`, `info`, `debug`. `ARC_LOG_LEVEL` sets the same. |
 | `--log-timestamps on\|off` | the date and time in front (default on); off leaves the level letter |
-| `--log-colors auto\|on\|off` | colors for W / E / D; auto: in Windows Terminal only, never in a redirected log; on: always, a redirected `server.log` too |
+| `--log-colors auto\|on\|off` | colors for W / E / D; auto: in Windows Terminal only (on Linux a terminal whose `TERM` is not `dumb`), never in a redirected log; on: always, a redirected `server.log` too |
 | `--log-file F` | every line to F as well (appended), except a crash report: that goes to stderr only (`server.log`). Not rotated: it grows for as long as servers append to it, so point it at a file you clear yourself. Refused when F is the file stderr already goes to (zero-server's `server.log`) |
 | `--log-disable` | no log, not even the `progress:` lines (zero-server's and the launcher's bars stay empty); a crash report is still written |
 
@@ -34,7 +36,8 @@ runz and the other tools print as before, byte for byte: the bench scripts parse
 
 **At start**, before the model:
 - **Build:** `inferzero 2026.11.12.12 (built …, commit …)` from `bin\PREBUILT.txt` in a package, else "built from source".
-- **System:** the Windows build, the CPU, logical processors, RAM (total and free).
+- **System:** the Windows build (on Linux the distribution and the kernel), the CPU, logical processors, RAM (total
+  and free).
 - **GPU:** name, driver, EUs, clock, memory (shared with the CPU or its own), XMX, sub-group sizes.
 - **Switches:** every `ARC_*` variable set (any case), with its value; your user folder in a value shows as
   `%USERPROFILE%`. A name with TOKEN, SECRET, PASS, KEY, AUTH, CRED or COOKIE shows `(set)` only.

@@ -101,7 +101,9 @@ chat's folder (each command allowed by the user), chats search.
 
 ## 9. A web UI that searches, talks and transcribes
 
-- **Web search** and page reading through the server (public addresses only).
+- **Web search** and page reading through the server (public addresses only). A search asks Brave Search, Bing,
+  DuckDuckGo and Wikipedia at once and merges their results as SearXNG does (2026-11-16): a page several engines
+  rank high comes first, and one engine's captcha or rate limit leaves the others' results.
 - **Talk**: the microphone stays open, the answer is spoken sentence by sentence, can be interrupted, and looks
   things up while it talks (Gemma 4 E4B / 12B hear the audio themselves; Qwen3-ASR writes it down for any model).
 - **Transcripts and Meetings**: audio and video files, recordings from the browser (microphone or a tab, mono or
@@ -125,22 +127,31 @@ chat's folder (each command allowed by the user), chats search.
 
 - **NPU next to the GPU** for prompts (`--npu on`): Qwen3.8 27B +15 %, Gemma 4 12B +10 %
   ([npu-experiment.md](npu-experiment.md)).
-- **Several GPUs** for one Qwen model, dense or the 35B-A3B MoE (`runz` / `serverz --gpus N`, tensor parallel):
+- **Several GPUs** for one model: Qwen dense, the 35B-A3B, Flash Next and DeepSeek-V4.1-Flash (`runz` / `serverz
+  --gpus N`, tensor parallel):
   - each GPU reads 1/N of the weights per token, and the KL on 2-4 shards matches one GPU's;
   - batched slots work over the split;
   - failsafes cover a GPU that hangs.
 
   On 4 Arc Pro B60s the 27B generates 53 tok/s, 2.44x one card in the same run of 2026-10-31
   ([multi-gpu.md](multi-gpu.md)).
-- **Discrete Arc B-series cards** (B580 / Pro B60 / B70, experimental): their own switches in `zero/xe2/`, XMX for
-  the prompt GEMMs after a start-up check, and scripts that measure each setting ([xe2-tuning.md](xe2-tuning.md)).
+- **Discrete Arc cards** (experimental): the B-series (B580 / Pro B60 / Pro B70) and the A-series (Alchemist: A770 /
+  A750 / A580, on the Arc 140T's preset since 2026-11-16). Their own switches in `zero/xe2/`, XMX for the prompt GEMMs after a start-up
+  check, and scripts that measure each setting ([xe2-tuning.md](xe2-tuning.md)). Users measured the 27B's 4K prompt
+  at 2,897 tok/s on a Pro B70, 1,726 on a Pro B60, 1,223 on an A770 (issues #27, #4, #36; README, "Discrete GPUs").
+- **A dense model a little larger than the card** keeps part of its weights in RAM, read over PCIe: an Arc B580
+  12 GB runs the 27B with 0.49 GiB of them there (`ARC_HOST_KEEP_GB=0.75`), a 4K prompt at 1,877 tok/s and 7.1 tok/s
+  generation (issue #37).
 - Xe2 / Xe3 iGPUs (Lunar Lake, Panther Lake) build the 8-lane kernels with 16 lanes; XMX engines are used after a
-  start-up check where the GPU has them.
+  start-up check where the GPU has them. Panther Lake's Arc B390 takes the discrete cards' H8 prompt path by default:
+  the 27B's 4K prompt at 583-592 tok/s (issue #1).
 
 ## 11. Easy to start
 
 A ready-to-use package (no compiler, no Python): unpack, double-click `zero-launcher.cmd`, pick a model that suits the
 laptop's RAM, and the web UI opens. The launcher shows each model's memory plan, whether the options set fit, saved
-presets and the running server's state and log, in Windows' light or dark mode with a tray icon; `zero-server` does
-the same from a terminal (`list`, `start -Preset`, `-DryRun`, `logs`, `doctor`, `pull`); one command connects the
-[Pi](https://pi.dev) coding agent.
+presets and the running server's state and log, in Windows' light or dark mode with a tray icon (minimized, it waits
+in the tray); `zero-server` does the same from a terminal (`list`, `start -Preset`, `-DryRun`, `logs`, `doctor`,
+`pull`); one command connects the [Pi](https://pi.dev) coding agent. On Linux, `./zero-launcher.sh` is a terminal
+menu that downloads a model and starts the headless server, with nothing but bash and curl, and
+[docker/](../docker) holds Docker and Kubernetes files (not tested yet): [install.md](install.md#linux).

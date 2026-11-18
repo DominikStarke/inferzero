@@ -374,7 +374,8 @@ int main(int argc, char** argv) {
     else if (a == "--help" || a == "-h") {
       printf("usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"
              "Measures the GPU's matrix engines (XMX int8 / f16 / bf16), vector engines (FP32, FP16, DP4a) and memory\n"
-             "read bandwidth, next to what its kind of GPU should do on paper.\n"
+             "read bandwidth, next to what its kind of GPU should do on paper, with the clock each test ran at and why\n"
+             "it was held lower, when the driver tells (Level Zero Sysman).\n"
              "  --seconds S   how long each test repeats, the best launch counts (default 1.5)\n"
              "  --out DIR     where <gpu>.json and gpu-benchmark.html go (default: %s)\n"
              "  --no-html     the .json only, no page\n"

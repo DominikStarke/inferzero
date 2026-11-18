@@ -50,6 +50,8 @@ and passes the requests to the server. Every remote request needs a password.
   - MCP servers (their `mcp.json` holds tokens);
   - loading or unloading models by hand (a chat that names a model still loads it);
   - the conversation slots;
+  - the saved-conversation cache on disk (`/sessions`: its size, clearing it);
+  - importing transcripts from a folder of this computer;
   - saving OCR text into a folder.
 
   "Full access remotely" in Settings turns all of this on. Only do that if the password is strong: a remote session

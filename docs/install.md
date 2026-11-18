@@ -9,7 +9,7 @@ If PowerShell refuses to run the scripts ("running scripts is disabled on this s
 
 ## Ready-to-use package (no compiler, no Python, no terminal)
 
-The package (`inferzero-<version>-win64.zip`, 6 MB, **download: https://github.com/rizagp/inferzero/releases/latest**)
+The package (`inferzero-<version>-win64.zip`, 9 MB, **download: https://github.com/rizagp/inferzero/releases/latest**)
 holds the programs already built. On a laptop with an Intel
 Core Ultra (Arc graphics) and Intel's graphics driver, nothing else is needed:
 
@@ -76,7 +76,9 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    again. The container runs as root, so the files it writes there belong to root on the host. On Kubernetes,
    `docker/kubernetes.yaml` sets up a Deployment, a Service and a volume for the cache. The GPU comes from Intel's
    device plugin (`gpu.intel.com/i915`), and the image must be pushed to your own registry first (the file says
-   how). Neither is tested yet: please report on GitHub how they run.
+   how). Neither is tested yet: please report on GitHub how they run. If the GPU is not usable inside the
+   container, `compose.yaml` has two commented lines to try: `ipc: host` first, `privileged: true` only if that is
+   not enough (issue #40).
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
 reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks have Linux versions in bash: `bench/website_bench.sh`,
@@ -133,7 +135,7 @@ affected. A run stopped halfway goes on where it stopped (the downloads resume; 
 | | Needed | Tested with |
 |---|---|---|
 | OS | Windows 11, 64-bit | Windows 11 Home 25H2 (build 26200) |
-| GPU | Intel Core Ultra with Intel Arc integrated graphics: Meteor Lake / Arrow Lake (Xe-LPG), and Lunar Lake / Panther Lake (Xe2 / Xe3: the 8-lane kernels are built with 16 lanes there, and the prompt GEMMs use XMX after a start-up check; a user ran the 35B on an Arc B390 at 1,182 tok/s prompt, 24 tok/s generation, before the XMX path existed). The engine needs OpenCL 3.0 with `cl_intel_subgroups` and `cl_khr_integer_dot_product` (DP4a). Discrete Arc B-series cards (B580, Pro B60, Pro B70) work experimentally, one or several for one model (`--gpus N`): [xe2-tuning.md](xe2-tuning.md), [multi-gpu.md](multi-gpu.md). The kernels are compiled through OpenCL, so a card OpenCL does not list (an eGPU without Resizable BAR, as a user reports) cannot run them unless another card of the same kind is listed. | Core Ultra 5 125H, Arc iGPU 112 EU; Arc Pro B60 x1-4 (a user) |
+| GPU | Intel Core Ultra with Intel Arc integrated graphics: Meteor Lake / Arrow Lake (Xe-LPG), and Lunar Lake / Panther Lake (Xe2 / Xe3: the 8-lane kernels are built with 16 lanes there, and the prompt GEMMs use XMX after a start-up check; a user's Arc B390 runs the 27B's 4K prompt at 583-592 tok/s, the 35B's at 1,370). The engine needs OpenCL 3.0 with `cl_intel_subgroups` and `cl_khr_integer_dot_product` (DP4a). Discrete Arc cards work experimentally, one or several for one model (`--gpus N`): the B-series (B580, Pro B60, Pro B70) and the A-series (Alchemist: A770, A750, A580). A dense model that nearly fills a card keeps part of its weights in RAM (a B580 12 GB runs the 27B that way): [xe2-tuning.md](xe2-tuning.md), [multi-gpu.md](multi-gpu.md). The kernels are compiled through OpenCL, so a card OpenCL does not list (an eGPU without Resizable BAR, as a user reports) cannot run them unless another card of the same kind is listed. | Core Ultra 5 125H, Arc iGPU 112 EU; users: Arc Pro B60 x1-4, Pro B70, B580, A770 x1-2, Arc 140T, Arc B390 |
 | Memory | 16 GB works for the 4B / E4B models; 32 GB for the 12B–35B models and long contexts. The iGPU can use part of the RAM (`bin\clinfo.exe`, "global mem": set in Intel Graphics Software; 20.4 GiB of 32 GB on the test laptop now); inferzero uses all of it but 0.5 GiB for the driver, the rest of the RAM stays with Windows. Each model's context follows that setting. | 32 GB LPDDR5x-6400 |
 | CPU | AVX2 (every Core Ultra has it; the build uses `/arch:AVX2`) | |
 | Graphics driver | Intel Arc & Iris Xe graphics driver (it contains the OpenCL runtime; nothing else to install) | 32.0.101.9033 |

@@ -4,12 +4,13 @@ Asked for in issue #11 (a headless server on a Core Ultra 9 285H) and by the use
 since then `runz` and `serverz` build and run on Linux (see Progress), and users run them on native Linux machines
 (issues #17, #19). This is the scope, what was Windows-only when it was written, and the order. The goal of the first step is `serverz` running headless on Ubuntu
 with the same kernels and results; the launcher (a WinForms window) stays Windows-only. Since 2026-11-14 Linux has a
-release package and a terminal launcher of its own (step 4, Progress; how to use it: [install.md](install.md#linux)).
+release package and a terminal launcher of its own (step 4, Progress; how to use it: [install.md](install.md#linux)),
+and since 2026-11-18 Docker and Kubernetes files (`docker/`, not tested yet).
 
 ## What carries over as it is
 
 - **The GPU layer.** The engine talks to the GPU through Level Zero and compiles its kernels through OpenCL; Intel ships
-  both for Linux (`libze_loader.so.1`, `libOpenCL.so.1`, the compute runtime). The 22 kernel files (OpenCL C with
+  both for Linux (`libze_loader.so.1`, `libOpenCL.so.1`, the compute runtime). The kernel files (22 then, 24 now) (OpenCL C with
   Intel's sub-group and DPAS extensions) are the same on both systems.
 - **Most of the C++** (~58,000 lines in `src/`, `zero/`, `tools/`): the engine, the tokenizer, the chat templates,
   the JSON / HTTP parsing, the samplers, the document readers (DOCX / XLSX / PPTX / PDF text), Whisper and Qwen3-ASR,
@@ -37,6 +38,29 @@ release package and a terminal launcher of its own (step 4, Progress; how to use
 
 ## Progress
 
+- **2026-11-18: Docker and Kubernetes** (`docker/`: `Dockerfile`, `compose.yaml`, `kubernetes.yaml`, `entrypoint.sh`;
+  not tested yet, please report): an Ubuntu 24.04 image with Intel's GPU runtime (the `kobuk-team/intel-graphics` PPA
+  added by hand: `add-apt-repository` brought Python into the image) and a release's Linux package; the container
+  starts the launcher with `MODEL`, `GPUS` and `SERVER_ARGS` and downloads the model at its first start. Compose
+  passes `/dev/dri`, keeps the models and compiled kernels on the host and runs a small init (a stop during the
+  download); `ipc: host` and then `privileged: true` are commented fallbacks for a host where `zeInit` fails in the
+  container (a B580 on Unraid, issue #40). Kubernetes takes the GPU from Intel's device plugin, with a 3-hour startup
+  probe for the first download. How to use them: [install.md](install.md#linux), step 6.
+- **2026-11-18: what native Linux machines measured since:** a Pro B60 under Linux passes the full 2D form of the
+  H8 prompt GEMM's start check, which a B60 under Windows fails (MaineTim, issue #19: the 27B UD-Q5_K_XL 1,635-1,644
+  tok/s, the same logits with and without it); an Arc B580 12 GB on PCIe 3.0 ran the 27B with part of its weights in
+  RAM (d-dorok, issue #37: `ARC_HOST_KEEP_GB=0.75` 1,877 tok/s prompt, 7.08 generation at 4K). The launcher's Ctrl+C
+  stops the server again (it passes TERM: a background command of a non-interactive shell starts with SIGINT ignored).
+- **2026-11-15: no Python on Linux.** `zero-launcher.sh` is the whole launcher in bash (curl downloads into the Hugging
+  Face cache layout, each file's size and SHA-256 from the repository's headers, `HF_TOKEN`); the benchmarks have bash
+  twins (`bench/website_bench.sh`, `b60_sweep.sh`, `decode_try.sh`); `tests/test_zero_launcher.sh` and
+  `tests/check_catalog_sync.sh` run in CI's `linux-package` job. `ref_forward` and `gpu_bench` build with g++ and are
+  in the package (`plat::fseek64` for `_fseeki64`).
+- **2026-11-14: contributions for Linux.** `--install-service` never overwrites an existing unit without
+  `--replace-service` (`--service-name` for a second instance; PR #28, chumbleyjl); builds with GCC 16 (`<climits>`,
+  issue #27); an expert read into Level Zero host memory that fails with `EFAULT` under `O_DIRECT` goes through an
+  aligned buffer, and a split model's shards free their kernels one at a time (Intel's Linux runtime crashed when two
+  did at once; PR #24, chumbleyjl).
 - **2026-11-14: step 4, the package and a launcher.** `build.sh` (the g++ build line below, `-ldl` for glibc before
   2.34); `scripts/make-package-linux.sh` makes `inferzero-<version>-linux-x64.tar.gz` (the tracked files plus
   `bin/runz`, `serverz`, `mgpu_probe` and `bin/PREBUILT.txt`, owned by root in the archive; since 2026-11-15 also
@@ -172,13 +196,13 @@ release package and a terminal launcher of its own (step 4, Progress; how to use
     of files on both systems (images the same; audio the same lengths within the codecs' padding and the same levels;
     PDF pages 1240 x 1755 against 1239 x 1754). Windows: every CI target builds without new warnings, its 11 unit tests
     pass, the server test the same as release 2026.11.13.09's (the web UI's page apart, changed on purpose).
-  - **Audited** by Pi / DeepSeek (docs/audit-2026-11-13b.md): no Windows change found; its 16 findings checked and the
+  - **Audited** by Pi / DeepSeek (its report, since removed from the repository): no Windows change found; its 16 findings checked and the
     real ones fixed (a PDF page that could throw, `run_program`'s deadline over the final wait, `SIGPIPE` from the start,
     the project paths, the crash handler's safety, kill before reap, FIFOs refused, `$TMPDIR`, atomic terminal state).
   - **Not yet:** a CMake build and a release archive (step 4); `web_view` (headless Chromium); the recorder (WASAPI);
     the GPU memory budget through Sysman; a native Linux machine's numbers (since then: issues #17 and #19, the last
     entry of this list).
-- 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static, docs/audit-2026-11-14-linux.md): no Windows
+- 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static; its report since removed): no Windows
   change; every fix of the first audit in place. Fixed after it: the Hugging Face cache found where `hf download`
   writes it on Linux (`$XDG_CACHE_HOME` or `~/.cache/huggingface/hub`: the model list, Whisper and Qwen3-ASR found no
   model without `HF_HOME` set), the expert file's writer taking a short `write(2)` as the rest to write, a child process

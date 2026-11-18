@@ -4,8 +4,8 @@
 // Also: what the f16 DPAS keeps inside (products, the 16-term sum, the accumulator), for the chunked DeltaNet on XMX,
 // which missed its start-up check on the 140T by f16's precision (QUEUE row 4).
 //
-// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--emu]
-//   [--kernels DIR] (default zero/kernels)
+// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--wgx 2|4]
+//   [--lock] [--emu] [--probe] [--kernels DIR] (default zero/kernels; every option: --help)
 //   default shapes: the Qwen3.8 27B's FFN, gate 17408x5120, up 17408x5120 with the fused SwiGLU (:2), down 5120x17408
 //   (split-K in 4 pieces, as the engine runs it). --emu: DPAS emulated (any GPU; correctness only, no speed meaning).
 //   Without XMX (the 125H) the DPAS is emulated by itself.

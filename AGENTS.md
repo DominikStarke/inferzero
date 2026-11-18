@@ -57,14 +57,21 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 
 | | |
 |---|---|
-| `zero/engine.h` | the Engine class: forward passes, dispatch; parts included in its body: setup `engine_setup.h`, `engine_load.h`, `engine_load_gemma.h`, `engine_alloc.h`, `engine_stream.h`; slots `engine_slots.h`, `engine_sessions.h`; layers `engine_qwen.h`, `engine_gemma.h`, `engine_moe.h`, `engine_drafters.h`, `engine_flashnext.h`, `engine_h8.h` |
-| `zero/kernels/ops*.cl` | non-GEMM kernels in parts (`KernelParts`, `zero/clrt.h`): `ops.cl` norms / DeltaNet, `ops_attn.cl`, `ops_attn_g.cl`, `ops_vit.cl`, `ops_flashnext.cl`, `ops_dflash.cl`, `ops_gdn.cl` (chunked DeltaNet); `decode.cl` + `decode_moe.cl` likewise; a kernel builds from its part and the ones before. Discrete-card XMX kernels in files of their own: `gdn_x.cl`, `attn_x.cl` (put in front of the ops parts for `attn_q8`), `attn_fx.cl` (the prompt attention as flash attention), `gemm_x16.cl`, `gemm_x8.cl`, `h8.cl` |
+| `zero/engine.h` | the Engine class: forward passes, dispatch; parts included in its body: setup `engine_setup.h`, `engine_load.h`, `engine_load_gemma.h`, `engine_alloc.h`, `engine_stream.h`; slots `engine_slots.h`, `engine_sessions.h`; layers `engine_qwen.h`, `engine_gemma.h`, `engine_moe.h`, `engine_drafters.h`, `engine_flashnext.h`, `engine_ds41.h` (DeepSeek-V4.1), `engine_h8.h` (the H8 prompt GEMMs) |
+| `zero/xe2/` | GPUs with XMX, parts of the Engine class too: `engine_xe2.h` (the switches and their defaults per GPU kind, the Arc 140T preset, attention on XMX, the f16 GEMM), `engine_xw.h` (the wide-tile H8 GEMM), `engine_moe_xw.h` (the MoE expert GEMM on XMX) |
+| `zero/mgpu/` | one model over several GPUs: `engine_tp.h` (`TpEngine`, the shards' threads, the sums and their failsafes), `engine_tp_shard.h` (what a shard holds), `tp_mirror.h` (the server's calls mirrored on every shard) |
+| `zero/kernels/ops*.cl` | non-GEMM kernels in parts (`KernelParts`, `zero/clrt.h`): `ops.cl` norms / DeltaNet, `ops_attn.cl`, `ops_attn_g.cl`, `ops_vit.cl`, `ops_flashnext.cl`, `ops_dflash.cl`, `ops_gdn.cl` (chunked DeltaNet), `ops_ds41.cl` (DeepSeek-V4.1); `decode.cl` + `decode_moe.cl` likewise; a kernel builds from its part and the ones before. GEMMs: `gemm.cl` (DP4a and 16-lane XMX), `moe.cl` (expert routing and tiles), `tp.cl` (the multi-GPU sums). XMX kernels in files of their own: `gemm_x8.cl` (8-lane XMX: the 140T, Alchemist), `gemm_xw.cl` / `gemm_xw8.cl` (the wide-tile H8 GEMM, 16 / 8 lanes), `h8.cl` + `rot.cl` (H8's rotation; `rot.cl` is put in front of `h8.cl`, `decode.cl` and `ops.cl` for the H8R kernels), `gdn_x.cl`, `attn_x.cl` (put in front of the ops parts for `attn_q8`), `attn_fx.cl` (the prompt attention as flash attention), `gemm_x16.cl`. Speech: `whisper.cl`, `asr.cl` |
 | `zero/clrt.h` | the OpenCL-style calls on Level Zero (kernels compiled through OpenCL, cached in `%USERPROFILE%\.inferzero\kernels`) |
+| `zero/xcache.h`, `zero/expert_store.h` | MoE experts: the expert file on the SSD, the RAM tier, the GPU cache |
 | `zero/runz.cpp` | CLI: `--bench-pp`, `--dump-logits`, `--perplexity`, `--kl-ref`, `--gpus`; `runz --help` |
+| `src/log.h`, `src/platform*.h` | the log ([docs/logging.md](docs/logging.md)); files, sockets and child processes on Windows and Linux |
 | `tools/ref_forward.cpp` | the f32 CPU reference used for KL |
 | `docs/before-after.md` | every change with its numbers; `docs/speed-progress.md`, `docs/lessons-intel-arc-igpu.md` for history and what did not work |
-| `docs/multi-gpu.md`, `docs/xe2-tuning.md` | split models and discrete cards: design, failsafes, switches, what users measured |
-| `bench/` | `gemm_sweep.ps1`, `decode_try.ps1` (discrete cards), micro-benchmarks |
+| `docs/multi-gpu.md`, `docs/xe2-tuning.md` | split models and GPUs with XMX (B-series, B390, Arc 140T, Alchemist): design, failsafes, switches and their defaults per GPU kind, what users measured |
+| `docs/architecture.md`, `docs/linux-port.md` | how the engine works and the source layout; the Linux port |
+| `bench/` | `gemm_sweep.ps1`, `decode_try.ps1` / `.sh`, `xw_sweep.ps1`, `f33_sweep.ps1`, `b60_sweep.ps1` / `.sh` (discrete cards), `website_bench.ps1` / `.sh`, `gpu_bench.cpp`, `xw_peak.cpp`, micro-benchmarks |
+| `docker/` | `Dockerfile`, `compose.yaml`, `kubernetes.yaml`, `entrypoint.sh`: the server in a container on Linux (not tested yet) |
+| `build.sh`, `zero-launcher.sh` | the Linux build and the terminal launcher (bash only) |
 
 Measurements from users' cards are in the attachments of GitHub issue #4: read them before concluding how a path
 behaves on a B60. For example, the logs show "XMX on for the prompt GEMMs".

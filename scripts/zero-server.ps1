@@ -353,7 +353,7 @@ Common options for start / restart:
   -Npu on|off        part of each prompt on the NPU (27B, Gemma 4 12B)
   -Whisper auto|off  speech to text (Transcripts / Meetings tabs)
   -Slots <N>         conversations at once          -Host 0.0.0.0   reachable from other computers
-  -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8; the context sized per GPU)
+  -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8, Flash Next, DeepSeek-V4.1)
   -DryRun            check the options, print the server's command line and a GPU memory estimate; start nothing
 
 More: zero-server help options (every option) | help writing (values, paths) | help errors (what a message means)
@@ -419,13 +419,14 @@ Options for start / restart:
                                  a running server keeps its context, a new one starts with auto. -Ctx auto
                                  also restarts a server that runs a fixed context.
   -Chunk <N>                     prompt chunk size (default per model: 27B 4096; 35B 8192; Gemma 4 26B and Flash
-                                 Next 2048; 4B / 9B / E4B 512; Gemma with images at least 2048); smaller = less
-                                 GPU memory, more context
+                                 Next 2048; 4B / 9B / E4B 512, on a discrete card of 12 GB or more 4096; Gemma with
+                                 images at least 2048); smaller = less GPU memory, more context
   -SessionCacheGb <N>            save conversations to disk when switching sessions (GB, all models together; default 8, 0 = off)
   -NoMtp                         no speculative decoding
-  -Gpus <N>                      split the model over N GPUs (2-64, 1 = one GPU; Qwen3.5 / 3.6 / 3.8 dense, 35B-A3B):
-                                 each GPU holds 1 / N of the weights and the KV, the context is sized for that
-                                 share (docs/multi-gpu.md). Kept on a restart and a model switch, like -Slots
+  -Gpus <N>                      split the model over N GPUs (2-64, 1 = one GPU; Qwen3.5 / 3.6 / 3.8 dense, 35B-A3B,
+                                 Flash Next, DeepSeek-V4.1): each GPU holds 1 / N of the weights and the KV, the
+                                 context is sized for that share (docs/multi-gpu.md). Kept on a restart and a
+                                 model switch, like -Slots
   -Slots <N>                     hold N conversations at once (default 1): two Pi sessions each keep their own
                                  KV cache and states and take turns step by step (a prompt piece, a token), so
                                  neither waits for the other's whole answer; while both write, their next tokens
@@ -459,8 +460,8 @@ Options for start / restart:
   -Vision on|off                 image / audio input (default on). off: the projector (mmproj) is not loaded and
                                  --ctx auto keeps no GPU memory for it, so the context is longer
   -Port <N>                      port (default 8090; also for status / stop)
-  -MtpDrafts <1..7>              drafts per step (default: 7 for Qwen 27B-class and with DFlash2, 5
-                                 for Qwen MoE, 3 for 4B and Gemma 4 26B, 2 otherwise)
+  -MtpDrafts <2..7>              drafts per step (default: 7 for Qwen 27B-class (4 on B-series cards) and with
+                                 DFlash2, 5 for Qwen MoE, 3 for 4B, Flash Next and Gemma 4, 2 otherwise)
   -DriverReserveGb <N>           GPU memory left to the driver, GiB (default 0.5; 0 to 8)
   -DFlash <folder>|off           a DFlash2 drafter of your own: its snapshot folder (with config.json and
                                  model.safetensors), e.g. for a fine-tuned variant the model list does not

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-18: every doc and help text brought up to date; a guide for contributors
+
+- **CONTRIBUTING.md (new):** where the speed is still missing on each card, measured (the Arc 140T's prompt GEMM at
+  ~33 % of its XMX peak, a B70's prompt GEMMs and generation at ~62 %), how to measure a card with one script, how to
+  build, and the rules a change is checked against. Issue templates for hardware results and bugs.
+- **Help texts:** runz, serverz, gpu_bench, xw_peak, zero-server.ps1 and zero-pi.ps1 checked option by option against
+  their parsers: the Alchemist and B390 defaults, `--chunk`, `--mtp-drafts` (2..7, 4 on B-series cards), `--gpus`
+  for DeepSeek-V4.1, `--expert-ram-gb`'s caps on split models, `--mtp-model`; precise mode's KL as measured last
+  (0.0105 -> 0.0060 at 3.5K tokens; serverz and the scripts still said 0.0186 -> 0.0127, a measurement before PR #21).
+- **User docs** (README, USAGE, features, install, server, models, remote access, the website's text): Alchemist and
+  the B580 among the supported cards with their results, the B60 / B70 / 140T numbers of the latest releases, the
+  four-engine web search, the Docker and Kubernetes files (untested), BF16 MoE files refused, Flash Next's Q8_0 MTP
+  head and `--mtp-model`, the 35b-gsq conversion without Python.
+- **Hardware docs:** docs/xe2-tuning.md opens with a table of each switch's default per GPU kind (B-series, B390 /
+  Lunar Lake, 140T, Alchemist, the 125H), read from the code, with the switches it lacked; docs/multi-gpu.md a switch
+  table and the RAM tier's limits; docs/architecture.md's source layout and AGENTS.md's map rebuilt against the tree.
+- `runz`: the pipelined sums' count printed with the right format (a compiler warning).
 ## 2026-11-18: `ARC_IQ3S_TILE=1`, opt-in: the 27B's IQ3_S rows repacked for the one-token GEMV
 
 - **For a B70 generation A/B** (plan G5, docs/arc-plan-2026-11-17.md). A dense matrix's IQ3_S rows are repacked once

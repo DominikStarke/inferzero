@@ -23,7 +23,7 @@ and ["Quick setup"](docs/install.md#quick-setup). One model's files by hand, the
 Download a model by hand: see [docs/install.md, section 6](docs/install.md#6-download-models) (every model, its shortcut and the
 `hf download` command). `35b` in `setup.cmd` and `zero-pi 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP
 repository (MTP and images, 19 GB); `35b-gsq` downloads ISTA-DASLab's GSQ 2-bit version instead and converts it once
-with Python (no MTP; [docs/install.md, section 7](docs/install.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
+with `bin\convert_gsq.exe` (no Python; no MTP; [docs/install.md, section 7](docs/install.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
 Flash Next (`flash`) and the DFlash2 drafters are not downloaded by setup.
 
 ## 2. Using Pi
@@ -120,7 +120,8 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
   it stopped, also after the window was closed: Download again), a **speed limit** (1-50 MB/s, changed while it runs),
   and a cut connection is **tried again without end** (5 s, then up to 60 s between tries; Pause stops it). A repository
   that asks you to accept its terms (Gemma) needs a read token in `HF_TOKEN` or `hf auth login`. The files go into the
-  Hugging Face cache, where the server finds them;
+  Hugging Face cache, where the server finds them. Which models fit is counted from the RAM, and on a PC with a
+  discrete Arc card from the card's own memory too ("This PC has 16 GB of RAM and a GPU with 16 GB of its own");
 - **Speech to text only** (More): the server with Qwen3-ASR and no chat model (`zero-server start -Model none`;
   Whisper too when the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat
   loads it.
@@ -224,7 +225,9 @@ Chrome), the cache shrinks itself by 1 GB per step instead of crashing.
 On a GPU with memory of its own (Arc B580 / B60 / A770) the RAM is a second tier: each expert read from the SSD
 stays in RAM (up to the free RAM less 16 GiB) and the GPU copies it from there the next time it is missing from the
 GPU cache, so a large RAM saves most SSD reads. `--expert-ram-gb N` sets the size, `--expert-ram-gb 0` turns it off.
-Never on the iGPU, whose GPU memory is that RAM.
+Never on the iGPU, whose GPU memory is that RAM. A model split over several GPUs keeps at most 32 GiB per GPU there
+(and 128 GiB in all; `ARC_XRAM_GB=N` sets N GiB per GPU, 0 none): DeepSeek-V4.1-Flash over 4 Pro B60s generated
+9.25 tok/s with it, 3.55 without (issue #4).
 
 inferzero notes:
 - The SSD cache is only for MoE models (35B, Qwen3.8 Flash Next and Gemma 4 26B; the experts of the 35B's MTP
@@ -299,8 +302,9 @@ mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half t
 `-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). The model file has no MTP
 block, but its MTP head as a file of its own works: put `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (2.2 GB, from
 [SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF](https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF),
-the base model's head made for llama.cpp; the launcher's Get models takes the link) next to the model and MTP is on
-(`runz --mtp`, or `--mtp-model FILE` elsewhere): 3 drafts a step, 96 % accepted, +18 % on the laptop (its experts take
+the base model's head made for llama.cpp; the launcher's Get models takes the link; its Q8_0 head
+`mtp-Qwen3.8-Flash-Next-Q8_0.gguf` works too since 2026-11-17, taking about twice the GPU memory) next to the model
+and MTP is on (`runz --mtp`; a head elsewhere with `--mtp-model FILE`, in runz and serverz): 3 drafts a step, 96 % accepted, +18 % on the laptop (its experts take
 1.4 GiB of GPU memory from the expert cache); with the DFlash2 drafter too, the server picks one per step. It
 reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
 file in `%USERPROFILE%\.inferzero\zero\models` works too.
@@ -308,14 +312,17 @@ file in `%USERPROFILE%\.inferzero\zero\models` works too.
 Stop the server (`zero-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the inferzero folder.
 
-**Discrete Arc cards (experimental).** On a PC with Arc B-series cards (B580, Pro B60, Pro B70), the same server
-runs one model over several of them:
+**Discrete Arc cards (experimental).** The same server runs on Arc B-series cards (B580, Pro B60, Pro B70) and
+A-series cards (Alchemist: A770, A750, A580). A dense model that nearly fills the card keeps part of its weights in
+RAM, read over PCIe on every token, so generation slows with that share: an Arc B580 12 GB ran the 27B at 3.5 tok/s
+with 1.02 GiB of its weights in RAM, 7.1 with `ARC_HOST_KEEP_GB=0.75` (less room kept on the card, 0.49 GiB in RAM;
+issue #37). With several cards it runs one model over them:
 
 ```powershell
 .\bin\serverz.exe -m <model.gguf> --gpus 4 --slots 4
 ```
 
-- It supports Qwen dense models and the 35B-A3B.
+- It supports Qwen dense models, the 35B-A3B, Flash Next and DeepSeek-V4.1-Flash.
 - A model that cannot be split loads on one GPU.
 - MTP / DFlash2, images and the disk caches are off on a split model for now.
 - If a GPU hangs, `/health` answers 503 until a restart.
@@ -711,6 +718,8 @@ Only the `zero-pi` / `zero-server` shortcut commands store the folder location; 
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
 | `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `zero-server help errors`). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
 | Flash Next does not read images | Its image projector is not in the model's folder: `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf`, copied next to the model (or its package in `%USERPROFILE%\.inferzero\zero\models\<name>\`). |
+| A MoE model stops at once: "unsupported expert tensor ... the experts run in a quantized type only" | The GGUF's experts are BF16 or another float type, which the expert paths do not run. Use a quantized file of the model (Q8_0 is close to the unquantized one). The check runs before the expert file is written, so no disk is used. |
+| "h8.cl needs rot.cl in front of it: ... rebuild both" | `bin\runz.exe` / `bin\serverz.exe` are older than `zero\kernels`: rebuild both (section 9), or unpack a whole package. |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [docs/install.md, section 6](docs/install.md#6-download-models)). |
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.inferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an inferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
