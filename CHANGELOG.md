@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-18: `gpu_bench` says the clock each test ran at
+
+- **`bin\gpu_bench.exe` reads the GPU's actual clock and throttle reasons while each test runs** (Level Zero Sysman,
+  sampled every 5 ms) and gives each row's share at that clock too: `FP32 (vector) ... 46%   at 1,100 MHz: 96%, held by
+  average power`. An Arc A770 measured FP32 at 46 % of paper, XMX at 73 % (issue #35), where the same kernels give the
+  laptop 98 %; the compiler makes the same code for both, so the clock under load is the likely reason, which the
+  bench could not show. Where the driver gives no Sysman, the rows read as before. The laptop: 2,199-2,200 MHz in
+  every test, FP32 98 % at its clock.
+
 ## 2026-11-18: Alchemist cards take the Arc 140T preset for small models too
 
 - **On Arc A-series cards a dense Qwen model whose decoded weights would fit now runs the Arc 140T preset** (weights

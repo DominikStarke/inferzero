@@ -173,6 +173,65 @@ __kernel void probe(__global const uint4* x, int n4, __global int* out) {
 
 using clk = std::chrono::steady_clock;
 
+// ---- the clock each test actually ran at (2026-11-18): Level Zero Sysman, declared here (the calls and structures of
+// the spec that are used; our headers have none). An Arc A770 measured FP32 at 46 % of paper, DP4a at 80 % and XMX at
+// 73 % (issue #35) where the same kernels give the laptop 98 / 82 %: ocloc dg2 and mtl make the same code, so its
+// clock under load (a 225 W card at its power limit) is the likely reason, and the bench said nothing of it. Each
+// test is now sampled every 5 ms on a thread: the GPU frequency domain's actual clock and its throttle reasons. Where
+// the driver gives no Sysman (or nonsense) the rows read as before.
+namespace zes {
+struct FreqProps {  // zes_freq_properties_t
+  uint32_t stype = 0x9;  // ZES_STRUCTURE_TYPE_FREQ_PROPERTIES
+  const void* pNext = nullptr;
+  int32_t type = -1;  // zes_freq_domain_t: 0 GPU, 1 memory, 2 media
+  uint8_t onSubdevice = 0;
+  uint32_t subdeviceId = 0;
+  uint8_t canControl = 0, isThrottleEventSupported = 0;
+  double min = 0, max = 0;
+};
+struct FreqState {  // zes_freq_state_t
+  uint32_t stype = 0x1b;  // ZES_STRUCTURE_TYPE_FREQ_STATE
+  const void* pNext = nullptr;
+  double currentVoltage = 0, request = 0, tdp = 0, efficient = 0, actual = 0;
+  uint32_t throttleReasons = 0;  // zes_freq_throttle_reason_flags_t
+};
+using EnumFreq = int (*)(void* dev, uint32_t* count, void** domains);
+using GetProps = int (*)(void* dom, FreqProps* p);
+using GetState = int (*)(void* dom, FreqState* s);
+struct Clock {
+  GetState state = nullptr;
+  void* gpu = nullptr;  // the GPU frequency domain
+  bool ok() const { return state && gpu; }
+  // (zrt's device handle, a Sysman one too with ZES_ENABLE_SYSMAN=1 set before zeInit: main sets it)
+  void open(void* dev) {
+    void* lib = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
+    if (!lib || !dev) return;
+    auto en = (EnumFreq)plat::dl_sym(lib, "zesDeviceEnumFrequencyDomains");
+    auto pr = (GetProps)plat::dl_sym(lib, "zesFrequencyGetProperties");
+    state = (GetState)plat::dl_sym(lib, "zesFrequencyGetState");
+    uint32_t n = 0;
+    if (!en || !pr || !state || en(dev, &n, nullptr) != 0 || n == 0 || n > 16) { state = nullptr; return; }
+    std::vector<void*> d(n);
+    if (en(dev, &n, d.data()) != 0) { state = nullptr; return; }
+    for (void* h : d) {
+      FreqProps p;
+      if (pr(h, &p) == 0 && p.type == 0 && !p.onSubdevice) { gpu = h; break; }
+    }
+    FreqState s;
+    if (!gpu || state(gpu, &s) != 0 || !(s.actual >= 0 && s.actual < 10000)) gpu = nullptr;
+  }
+};
+// the reasons a clock was held down, in words (ZES_FREQ_THROTTLE_REASON_FLAG_*)
+inline std::string reasons(uint32_t f) {
+  static const char* names[] = {"average power", "burst power", "current", "temperature", "power supply",
+                                "software range", "hardware range"};
+  std::string s;
+  for (int i = 0; i < 7; ++i)
+    if (f & (1u << i)) s += (s.empty() ? "" : ", ") + std::string(names[i]);
+  return s;
+}
+}  // namespace zes
+
 struct Test {
   const char* id;       // JSON key
   const char* label;
@@ -184,6 +243,8 @@ struct Test {
   int per_eu;           // on paper: operations per EU and clock (0: none)
   double measured = 0, paper = 0;
   std::string note;
+  double run_mhz = 0;    // the mean actual clock while it ran (0: not known)
+  std::string held;      // what held the clock down, if anything
 };
 
 static std::string jstr(const std::string& s) {
@@ -304,6 +365,12 @@ int main(int argc, char** argv) {
   }
   std::error_code ec;
   fs::create_directories(out, ec);
+  // (Sysman through the device handles: before zeInit, which cl.init calls; a value the user set is kept)
+#ifdef _WIN32
+  if (!getenv("ZES_ENABLE_SYSMAN")) _putenv_s("ZES_ENABLE_SYSMAN", "1");
+#else
+  setenv("ZES_ENABLE_SYSMAN", "1", 0);
+#endif
   if (page_only) {
     write_page(out);
     printf("%s\n", (fs::path(out) / "gpu-benchmark.html").string().c_str());
@@ -370,6 +437,11 @@ int main(int argc, char** argv) {
   cl_mem bx = cl.buffer(CL_MEM_READ_WRITE, host.size() * 4), bo = cl.buffer(CL_MEM_READ_WRITE, (size_t)groups * 64 * 4);
   CL_CHECK(clEnqueueWriteBuffer(cl.queue, bx, CL_TRUE, 0, host.size() * 4, host.data(), 0, nullptr, nullptr));
   cl.soft_fail = true;
+  zes::Clock gclock;
+  gclock.open(zrt::D().dev);
+  // (the last test's clock: the mean of the samples taken while it ran, and every throttle reason seen)
+  double run_mhz = 0;
+  uint32_t run_held = 0;
   auto timed = [&](cl_kernel k, ze_group_count_t gc) {
     auto launch = [&] {
       const auto t0 = clk::now();
@@ -378,8 +450,25 @@ int main(int argc, char** argv) {
       return std::chrono::duration<double>(clk::now() - t0).count();
     };
     launch();  // (the binary's upload, the clocks ramping)
+    std::atomic<bool> stop{false};
+    double sum = 0;
+    int n = 0;
+    uint32_t held = 0;
+    std::thread sampler;
+    if (gclock.ok())
+      sampler = std::thread([&] {
+        while (!stop.load()) {
+          zes::FreqState s;
+          if (gclock.state(gclock.gpu, &s) == 0 && s.actual > 0 && s.actual < 10000) sum += s.actual, ++n, held |= s.throttleReasons;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      });
     double best = 1e30, spent = 0;
     while (spent < seconds) { const double t = launch(); best = std::min(best, t); spent += t; }
+    stop = true;
+    if (sampler.joinable()) sampler.join();
+    run_mhz = n ? sum / n : 0;
+    run_held = held;
     return best;
   };
   printf("\n%-22s %14s %14s %8s\n", "", "measured", "on paper", "share");
@@ -399,13 +488,20 @@ int main(int argc, char** argv) {
       const double best = timed(k, ze_group_count_t{(uint32_t)groups, 1, 1});
       // (groups x 4 sub-groups; ops_per_step per sub-group: a DPAS 2 * 8 * N * K, a vector instruction 2 * width * lanes)
       t.measured = (double)groups * 4 * t.ops_per_step * chains * iters / best / 1e12;
+      t.run_mhz = run_mhz;
+      t.held = zes::reasons(run_held);
     } catch (const std::exception& e) {
       t.note = "not available";
       printf("%-22s %14s  (%s)\n", t.label, "not available", e.what());
       continue;
     }
-    printf("%-22s %9.2f %-5s %9.2f %-5s %7.0f%%\n", t.label, t.measured, t.unit, t.paper, t.unit,
+    printf("%-22s %9.2f %-5s %9.2f %-5s %7.0f%%", t.label, t.measured, t.unit, t.paper, t.unit,
            t.paper > 0 ? 100.0 * t.measured / t.paper : 0.0);
+    // (the share at the clock it ran at: what the engines did per clock, apart from what held the clock down)
+    if (t.run_mhz > 0 && t.paper > 0)
+      printf("   at %4.0f MHz: %3.0f%%%s%s", t.run_mhz, 100.0 * t.measured / (t.paper * t.run_mhz / mhz),
+             t.held.empty() ? "" : ", held by ", t.held.c_str());
+    printf("\n");
   }
   // memory read bandwidth: a buffer larger than every cache, read over and over
   double gbs = 0;
@@ -468,7 +564,8 @@ int main(int argc, char** argv) {
     char b[64];
     js << (i ? "," : "") << "\"" << t.id << "\":{\"measured\":";
     snprintf(b, sizeof b, "%.4f", t.measured); js << b << ",\"paper\":";
-    snprintf(b, sizeof b, "%.4f", t.paper); js << b << ",\"unit\":" << jstr(t.unit) << ",\"note\":" << jstr(t.note) << "}";
+    snprintf(b, sizeof b, "%.4f", t.paper); js << b << ",\"unit\":" << jstr(t.unit) << ",\"note\":" << jstr(t.note);
+    snprintf(b, sizeof b, "%.0f", t.run_mhz); js << ",\"run_mhz\":" << b << ",\"held\":" << jstr(t.held) << "}";
   }
   char b[64];
   snprintf(b, sizeof b, "%.2f", gbs);
@@ -482,5 +579,10 @@ int main(int argc, char** argv) {
   }
   printf("\nOn paper: EUs x maximum clock x the per-EU rate of the GPU's kind (Intel's convention: a multiply-add is\n"
          "two operations). A share well below 100 %% means a clock held below its maximum, or fewer engines than paper.\n");
+  if (gclock.ok())
+    printf("\"at N MHz\": the GPU's mean actual clock while that test ran (Level Zero Sysman), the share at that clock,\n"
+           "and what held the clock down. A share near 100 %% there and well below it on paper is the clock, not the engines.\n");
+  else
+    printf("(the clock while each test ran is not known here: this driver gives no Level Zero Sysman frequency domain)\n");
   return 0;
 }
