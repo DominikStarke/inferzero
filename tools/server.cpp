@@ -1448,6 +1448,7 @@ int main(int argc, char** argv) {
     }
   ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
+  std::string catalog_fp = swap ? models_fingerprint() : std::string();  // (the files the catalog was scanned from)
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
   if (wh)  // (each Whisper step: with the loaded model's engine lock; a model switch can come between two)
     wh->gpu_turn = [&](const std::function<void()>& f) {
@@ -1483,12 +1484,19 @@ int main(int argc, char** argv) {
       return fs::exists(d / (stem + ".gguf"), ec) && fs::exists(d / (stem + ".experts"), ec);
     };
     for (int pass = 0; pass < 2; ++pass) {
+      bool was_stale = false;
       for (const ModelInfo& m : catalog)
         if (m.supported && (m.alias == want || m.name == want || m.file == want)) {
-          if (pass == 0 && stale(m)) break;
+          if (pass == 0 && stale(m)) { was_stale = true; break; }
           return &m;
         }
-      if (pass == 0) catalog = scan_models();
+      if (pass == 0) {  // (again only when the model files changed since, or the entry went stale: a download, a
+                        //  file added, removed or packed)
+        const std::string fp = models_fingerprint();
+        if (fp == catalog_fp && !was_stale) break;
+        catalog_fp = fp;
+        catalog = scan_models();
+      }
     }
     return nullptr;
   };

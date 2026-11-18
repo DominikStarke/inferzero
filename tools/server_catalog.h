@@ -211,6 +211,28 @@ static std::vector<std::filesystem::path> model_mmprojs(const std::filesystem::p
   return own;
 }
 
+// What scan_models would find, cheaply: every .gguf's path and size in the folders it reads (no GGUF opened). The
+// server rescans only when this changed (a download, a file deleted or added), not for every request naming a model
+// the list lacks: each rescan parsed every model's header, tokenizer arrays included (~1.3 s for a few models), and
+// the request waited for it (issue #39)
+static std::string models_fingerprint() {
+  namespace fs = std::filesystem;
+  std::string fp;
+  std::error_code ec;
+  auto walk = [&](const fs::path& d, int depth) {
+    if (d.empty()) return;
+    for (const auto& e : dir_list(d, depth > 1)) {
+      if (e.path().extension() != ".gguf") continue;
+      fp += e.path().string() + "|" + std::to_string(fs::file_size(e.path(), ec)) + "\n";
+    }
+  };
+  if (const std::string hub = hf_hub_dir(); !hub.empty()) walk(hub, 4);
+  for (const auto& d : extra_model_dirs())
+    if (folder_reachable(fs::path(d)) == 1) walk(fs::path(d), 4);
+  walk(fs::path(app_dir()) / "models", 1);
+  return fp;
+}
+
 static std::vector<ModelInfo> scan_models() {
   namespace fs = std::filesystem;
   const std::string hub = hf_hub_dir();
@@ -683,6 +705,26 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
                           (reserve ? "|r" + std::to_string(reserve >> 20) : std::string());
   AutoCtx r;
   if (cached_ctx(key, r)) return r;
+  // (the model list's figures kept for the process too, the ones ctx-auto.txt does not remember included (a model
+  //  that nearly fills the card): a rescan, run by a request naming a model the list does not have, repeated their dry
+  //  loads each time, and the request waited for them; a benchmark saw tens of seconds of "prompt" now and then,
+  //  issue #39. A real load still works its context out afresh)
+  static std::mutex list_mu;
+  static std::map<std::string, AutoCtx> list_memo;
+  if (g_ctx_listing) {
+    std::lock_guard<std::mutex> g(list_mu);
+    if (auto it = list_memo.find(key); it != list_memo.end()) return it->second;
+  }
+  struct Memo {
+    const std::string& k;
+    AutoCtx& r;
+    bool on;
+    ~Memo() {
+      if (!on || std::uncaught_exceptions()) return;
+      std::lock_guard<std::mutex> g(list_mu);
+      list_memo[k] = r;
+    }
+  } memo{key, r, g_ctx_listing};
   int trained = 0;
   {
     GgufFile g(model);

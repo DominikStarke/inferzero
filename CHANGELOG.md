@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-18: a request naming a model the server doesn't list no longer waits for a rescan
+
+- **serverz:** a request whose `model` is not in the list (a benchmark's or a client's own name, `gpt-4o`) rescanned
+  every model once a minute, and the request waited for it. The rescan parsed every GGUF header again and, for a
+  model that nearly fills the card, repeated its trial loads. A benchmark saw seconds of apparent prompt time now
+  and then (ThatGuy-Bob, issue #39). Now the folders are only listed (paths and sizes), and the models are scanned
+  again only when that changed (a download, a file added, removed or packed). The model list's context figures are
+  kept for the process. The laptop, 4B, a `gpt-4o` request: first 7.9 s, one a minute later 1.67 s; now 0.49 and
+  0.36 s, as any request.
+
 ## 2026-11-18: every doc and help text brought up to date; a guide for contributors
 
 - **CONTRIBUTING.md (new):** where the speed is still missing on each card, measured (the Arc 140T's prompt GEMM at
