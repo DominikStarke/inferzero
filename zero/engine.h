@@ -153,12 +153,29 @@ class Engine {
   int x_rows_ = 0;
   // weight bytes the GEMVs read (token generation; bin/runz.exe reports GB/s against read_gbs())
   uint64_t rd_bytes = 0;
-  // this GPU's read bandwidth in GB/s: the best of 5 streams of a 256 MB buffer (block reads, 16 lanes; this laptop's
-  // iGPU ~75, a discrete card several times that), so runz's "% of" fits the machine it runs on
+  // this GPU's read bandwidth in GB/s: the best of 5 streams of a 1 GiB buffer where it fits, else 256 MB (block
+  // reads, 4 of 512 bytes in flight per sub-group, the sub-groups side by side; this laptop's iGPU ~75, a discrete
+  // card several times that), so runz's "% of" fits the machine it runs on. (Before 2026-11-18: one 512-byte read at
+  // a time per sub-group over a 64 KB strip of a 256 MB buffer: an Arc A770 measured 273-293 GB/s against 560 on paper
+  // and gpu_bench's 406, issue #35, so its GEMVs' share looked twice what it was)
   double read_gbs() {
     static const char* src = R"CLC(
 __attribute__((intel_reqd_sub_group_size(16)))
-__kernel void rd_block(__global const uint* p, __global uint* out, int per_item) {
+__kernel void rd_block(__global const uint* x, __global uint* out, int n) {
+  const size_t sg = get_global_id(0) / 16, nsg = get_global_size(0) / 16;
+  uint8 a = (uint8)(0), b = (uint8)(0), c = (uint8)(0), d = (uint8)(0);
+  for (size_t i = sg * 512; i + 512 <= (size_t)n; i += nsg * 512) {
+    __global const uint* p = x + i;
+    a ^= intel_sub_group_block_read8(p);
+    b ^= intel_sub_group_block_read8(p + 128);
+    c ^= intel_sub_group_block_read8(p + 256);
+    d ^= intel_sub_group_block_read8(p + 384);
+  }
+  a ^= b ^ c ^ d;
+  if ((a.s0 ^ a.s1 ^ a.s2 ^ a.s3 ^ a.s4 ^ a.s5 ^ a.s6 ^ a.s7) == 0x12345678u) out[0] = 1;
+}
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void rd_strip(__global const uint* p, __global uint* out, int per_item) {  // (each sub-group its own 64 KB)
   __global const uint* q = p + get_global_id(0) / 16 * (size_t)per_item * 16;
   uint acc = 0;
   for (int i = 0; i < per_item; i += 8) {
@@ -167,11 +184,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
   if (acc == 0x12345678u) out[0] = acc;
 })CLC";
-    const size_t bytes = (size_t)256 << 20;
-    const int per_item = 1024;  // uints each sub-group lane strip covers: 64 KB per sub-group
     cl_program p = cl_.build(src, "-cl-std=CL3.0");
     progs_.push_back(p);
-    cl_kernel k = cl_.kernel(p, "rd_block");
+    // (both patterns, the faster counts: the laptop's iGPU reads 72-73 GB/s with the strips and 58-60 with the
+    //  interleaved reads; a discrete card's memory may want the other)
+    cl_kernel k = cl_.kernel(p, "rd_block"), ks = cl_.kernel(p, "rd_strip");
+    // (1 GiB where the GPU has room for it: at 560 GB/s a 256 MB read is ~0.5 ms, near a Windows launch's own cost)
+    size_t bytes = zrt::D().global_mem >= (8ull << 30) ? (size_t)1 << 30 : (size_t)256 << 20;
     // (an allocation that fails throws here instead of ending the process: a GPU share nearly full of a model left
     //  runz exiting instead of printing without the "% of" figure; its caller catches it. Audit 2026-11-12)
     cl_mem b = nullptr, o = nullptr;
@@ -179,11 +198,19 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       const bool was = zrt::oom_throws;
       zrt::oom_throws = true;
       try {
-        b = buf(bytes);
+        try {
+          b = buf(bytes);
+        } catch (...) {  // (no room for 1 GiB next to the model: 256 MB, as before)
+          if (bytes == ((size_t)256 << 20)) throw;
+          gpu_bytes -= bytes;
+          bytes = (size_t)256 << 20;
+          b = buf(bytes);
+        }
         o = buf(64);
       } catch (...) {
         zrt::oom_throws = was;
         clReleaseKernel(k);  // (before its module goes, in release_all, as below)
+        clReleaseKernel(ks);
         if (b) {
           free_buf(b);
           gpu_bytes -= 64;  // (buf counted o before it failed)
@@ -195,19 +222,27 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       zrt::oom_throws = was;
     }
     double best = 1e30;
-    for (int r = 0; r < 6; ++r) {
-      set_args(k, 0, b, o, per_item);
-      size_t gws[1] = {bytes / 4 / per_item}, lws[1] = {256};
-      clFinish(cl_.queue);
-      const auto t0 = std::chrono::steady_clock::now();
-      run("read_gbs", k, 1, gws, lws);
-      clFinish(cl_.queue);
-      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-      if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
+    // (4 sub-groups per hardware thread slot, so every slot has work; at least 64 work-groups)
+    const size_t groups = std::max<size_t>(64, (size_t)std::max<uint32_t>(zrt::hw_threads(), 1024) * 4 / 16);
+    int n = (int)(bytes / 4), per_item = 1024;  // (the strips: 1024 uints a lane, 64 KB a sub-group)
+    for (int way = 0; way < 2; ++way) {
+      cl_kernel kk = way == 0 ? k : ks;
+      for (int r = 0; r < 6; ++r) {
+        if (way == 0) set_args(kk, 0, b, o, n);
+        else set_args(kk, 0, b, o, per_item);
+        size_t gws[1] = {way == 0 ? groups * 256 : bytes / 4 / per_item}, lws[1] = {256};
+        clFinish(cl_.queue);
+        const auto t0 = std::chrono::steady_clock::now();
+        run("read_gbs", kk, 1, gws, lws);
+        clFinish(cl_.queue);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
+      }
     }
     free_buf(b);
     free_buf(o);
     clReleaseKernel(k);  // (before its module goes, in release_all)
+    clReleaseKernel(ks);
     return bytes / 1e6 / best;
   }
   static uint64_t raw_bytes(const GpuWeight& w) { return (uint64_t)w.N * (w.K / 256) * gguf_sb_bytes(w.type); }

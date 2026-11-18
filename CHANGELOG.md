@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-18: memory bandwidth measured closer to a fast card's peak
+
+- **The bandwidth runz compares generation against ("% of this GPU's measured N GB/s") is the best of two read
+  patterns over 1 GiB** (256 MB where that does not fit), not one pattern over 256 MB. An Arc A770 measured 273-293
+  GB/s against 560 on paper, so its generation looked at 52 % of the card when it read about a quarter of it
+  (issue #35): at its speed a 256 MB read lasts ~0.5 ms, near a Windows launch's own cost, and each sub-group had
+  one read in flight. The second pattern keeps 2 KB in flight per sub-group, the sub-groups side by side; the
+  laptop's iGPU still reads fastest with the first (72-73 GB/s against 58-60), so both are timed.
+- **`gpu_bench`'s memory row tries three ways** (16-byte loads, the same with 4 times the work-groups, sub-group block
+  reads with 2 KB in flight) and shows each and the best: on an A770 the 16-byte loads gave 406 GB/s of 560.
+
 ## 2026-11-18: the launcher's model list counts a discrete card's own memory
 
 - **Fixed: on a PC with a discrete Arc card, the launcher's "Get models" dialog refused models larger than the RAM**:

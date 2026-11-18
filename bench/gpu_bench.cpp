@@ -170,6 +170,24 @@ __kernel void probe(__global const uint4* x, int n4, __global int* out) {
   for (int u = 1; u < 8; ++u) a[0] += a[u];
   if ((a[0].x ^ a[0].y ^ a[0].z ^ a[0].w) == 0x9e3779b9u) out[0] = 1;
 }
+#elif defined(K_READ_B)
+// memory read bandwidth by sub-group block reads (2026-11-18): 4 reads of 512 bytes in flight per sub-group, each
+// step 2 KB contiguous, the sub-groups side by side over the buffer (n: uints). An Arc A770 read 406 GB/s with the
+// loads above, against 560 on paper
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void probe(__global const uint* x, int n, __global int* out) {
+  const size_t sg = get_global_id(0) / 16, nsg = get_global_size(0) / 16;
+  uint8 a = (uint8)(0), b = (uint8)(0), c = (uint8)(0), d = (uint8)(0);
+  for (size_t i = sg * 512; i + 512 <= (size_t)n; i += nsg * 512) {
+    __global const uint* p = x + i;
+    a ^= intel_sub_group_block_read8(p);
+    b ^= intel_sub_group_block_read8(p + 128);
+    c ^= intel_sub_group_block_read8(p + 256);
+    d ^= intel_sub_group_block_read8(p + 384);
+  }
+  a ^= b ^ c ^ d;
+  if ((a.s0 ^ a.s1 ^ a.s2 ^ a.s3 ^ a.s4 ^ a.s5 ^ a.s6 ^ a.s7) == 0x9e3779b9u) out[0] = 1;
+}
 #endif
 )CLC";
 
@@ -531,12 +549,31 @@ int main(int argc, char** argv) {
         }
       }
       clFinish(cl.queue);
-      int n4 = (int)(bytes / 16);
+      // (the best of three ways to read it, each named: one card's memory reaches its rate one way, another's another)
+      int n4 = (int)(bytes / 16), n1 = (int)(bytes / 4);
       set_args(k, 0, db, n4, bo);
       ZE_CHECK(zeKernelSetGroupSize(k->k, 256, 1, 1));
-      const double best = timed(k, ze_group_count_t{2048, 1, 1});
-      gbs = bytes / best / 1e9;
-      printf("%-22s %9.1f GB/s\n", "Memory read", gbs);
+      const uint32_t thr_all = std::max<uint32_t>(1024, eus * std::max<cl_uint>(thr, 8));  // (hardware threads)
+      struct Way { const char* name; double gbs; };
+      std::vector<Way> ways;
+      ways.push_back({"16-byte loads", bytes / timed(k, ze_group_count_t{2048, 1, 1}) / 1e9});
+      ways.push_back({"16-byte loads, 4x the work-groups", bytes / timed(k, ze_group_count_t{8192, 1, 1}) / 1e9});
+      try {
+        cl_program pb = cl.build(kSrc, "-cl-std=CL3.0 -DK_READ_B");
+        cl_kernel kb = cl.kernel(pb, "probe");
+        set_args(kb, 0, db, n1, bo);
+        ZE_CHECK(zeKernelSetGroupSize(kb->k, 256, 1, 1));
+        // (16 sub-groups of 16 lanes a work-group; 4 sub-groups per hardware thread slot, so every slot has work)
+        const uint32_t g = std::max<uint32_t>(256, thr_all * 4 / 16);
+        ways.push_back({"block reads, 2 KB in flight a sub-group", bytes / timed(kb, ze_group_count_t{g, 1, 1}) / 1e9});
+      } catch (const std::exception&) {}
+      const Way* top = &ways[0];
+      for (const Way& w : ways) {
+        printf("%-22s %9.1f GB/s   (%s)\n", &w == &ways[0] ? "Memory read" : "", w.gbs, w.name);
+        if (w.gbs > top->gbs) top = &w;
+      }
+      gbs = top->gbs;
+      printf("%-22s %9.1f GB/s   (the best: %s)\n", "", gbs, top->name);
     } catch (const std::exception& e) {
       printf("%-22s %14s  (%s)\n", "Memory read", "failed", e.what());
     }
