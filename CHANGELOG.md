@@ -8,8 +8,10 @@
   12.67 -> 21.58 tok/s (78.6 -> 46.1 ms a step, hansong80) and 14.33 -> 22.66 (69.4 -> 43.8 ms, TheUniKian, issue
   #45). The logits are the same bit for bit at 0, 16, 64 and 256. `ARC_BATCH=0` turns it off. Other GPUs are
   unchanged: a Pro B60 gained nothing from it (2026-11-12).
-- **Measured, not changed yet:** with batching on, MTP no longer pays on the A770 (21.36 plain, 20.44-20.47 with 3 or
-  7 drafts). Its passes wait on the host, and each wait restarts the lists at 4 kernels. To look into.
+- **MTP on top of it:** a code answer of 95 tokens, 21.71 / 23.06 tok/s plain, 30.14 / 31.31 with MTP (50 % of
+  the drafts accepted, 3.06 tokens a pass). In `--bench-pp`'s synthetic prompt few drafts are accepted, so MTP
+  loses there (21.32 plain, 20.47 MTP): that is the prompt, not the batching (855 launches and 5 host waits a token,
+  2.4 us a launch).
 - **Measured:** an Arc 140T's 27B 4K prompt 405 tok/s on release .07's defaults, `ARC_GEMM_XW_LOCK=1` 387 (stays
   off). An A770's `ARC_H8_NORM` off / on: 1,210 / 1,223 tok/s, it stays on.
 
