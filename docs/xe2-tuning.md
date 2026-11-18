@@ -987,3 +987,22 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
 - **To measure:** a B60 (T = 1,280: 5,120 rows at 4 rows, larger at 1; MTP `qkv` 4 rows, two full rounds there) and
   MoE models' attention and shared matrices (their expert GEMVs are untouched). `ARC_GEMV_WAVE=0` / `ARC_GEMV_WAVE_MT=0`
   for the A/B.
+
+## 15. The Arc B390 (Xe3) on release 2026.11.18.06: the defaults are its best (gee456, issue #1, 2026-11-18)
+
+The 27B IQ3_S 4K prompt, `--bench-pp 4096 --n 0`, one set of three runs for each line. The defaults (H8 on the
+wide-tile XMX GEMM, 16 GB of decoded weights resident) gave 613-637 tok/s over four sets.
+
+| Switch | Best of 3 | Against the default's set |
+|---|---:|---|
+| default | 634.5 / 633.6 / 622.7 / 636.5 | |
+| `ARC_H8_GRF=128` | 638.2; 268.0 in another set | the same logits (hashes equal); no gain beyond noise |
+| `ARC_GEMM_XW_2D=1` | 629.8 / 621.9 | its start-up check fails on this driver (1,834-9,445 values differ), so the plain form runs: the failsafe works |
+| `ARC_GEMM_XW_PF=3`, `ARC_GEMM_XW_PFD=2` | 567.7 (with 2D) / 563.7 | -11 % |
+| `ARC_GEMM_XW_WGX=4` | 595.7 / 613.2 | -4 % |
+| all of them | 540.9 / 618.9 | slower |
+
+Nothing changed: the B390 keeps the defaults. The 2D-block stores of `gemm_xw`'s output differ on Xe3's driver (the
+loads are fine), so the check that turns them off on any GPU where they differ stays. `ARC_H8_GRF=128` gave the same
+logits as 256, so it is safe there, but not faster. The 268 tok/s set was probably the GPU throttled by something else
+running.

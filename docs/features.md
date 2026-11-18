@@ -144,7 +144,7 @@ chat's folder (each command allowed by the user), chats search.
   generation (issue #37).
 - Xe2 / Xe3 iGPUs (Lunar Lake, Panther Lake) build the 8-lane kernels with 16 lanes; XMX engines are used after a
   start-up check where the GPU has them. Panther Lake's Arc B390 takes the discrete cards' H8 prompt path by default:
-  the 27B's 4K prompt at 583-592 tok/s (issue #1).
+  the 27B's 4K prompt at 634-637 tok/s (issue #1, release 2026.11.18.06).
 
 ## 11. Easy to start
 

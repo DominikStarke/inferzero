@@ -165,7 +165,7 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   390 tok/s (release 2026.11.17.07 with `ARC_GEMM_XW_WGX=2`, its preset's default since 2026.11.17.08; 357 on
   2026.11.15.11), generation 6.1 tok/s, 14.6 with MTP (at its memory's limit).
 - **Arc B390** (Panther Lake's Core Ultra X7 358H, Xe3, [issue #1](https://github.com/rizagp/inferzero/issues/1)): 4K
-  prompt 583-592 tok/s with H8 on the wide-tile XMX GEMM (the default for iGPUs with 16-lane XMX since 2026.11.17.01)
+  prompt 634-637 tok/s (release 2026.11.18.06) with H8 on the wide-tile XMX GEMM (the default for iGPUs with 16-lane XMX since 2026.11.17.01)
   and 16 GB of decoded weights kept resident (the default with a 64+ GiB GPU share since 2026.11.17.02; 546-560 without)
   (258-268 on the plain XMX path before; KL 0.0018 between the two), generation 5.9 tok/s, 16.8 with MTP. Qwen3.6
   35B-A3B: 4K prompt 1,370 tok/s, generation 26 tok/s, 46 with MTP.
