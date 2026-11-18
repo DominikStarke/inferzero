@@ -1041,3 +1041,6 @@ Generation is the GEMVs: `gemm_gate` / `gemm_up` / `gemm_down` 62 % of a step at
 against the B70's 256 (which reads ~66 %): decoding IQ3_S likely limits it. Other models, 4K prompt / generation / MTP:
 35B-A3B 3,512 / 82.0 / 99.8, 9B 5,226 / 49.2 / 79.0, 4B 7,774 / 81.2 / 115.5. Compute runtime 26.35 from Fedora's packages
 aborted at start-up (command_stream_receiver.cpp line 1205), so the 2D-store check stays failed on 26.05.
+`ARC_IQ3S_TILE=1` (v2, the loads ahead) on the same B65: 22.05 / 21.97 -> 20.65 / 20.72 tok/s, the same logits; the three
+GEMVs 5-8 % slower each. With the B70's 35.24 -> 32.7 (v1), the planar layout loses on both discrete cards measured:
+it stays an off-by-default test switch, and the B65's generation gap is not the codebook decode.
