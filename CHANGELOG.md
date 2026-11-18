@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-19: setup's 35B 2-bit GSQ install fixed
+
+- **`setup.cmd` with `35b-gsq` failed after its download** ("Cannot find drive. A drive with the name '@{key=4b; ...'",
+  gee456, issue #49). setup kept the models folder in `$arcModels`. PowerShell names ignore case, so the shared model
+  list's `$ArcModels`, loaded just after, replaced it, and the step before the conversion made a folder named after
+  the list. The folder now has a name of its own. The download is kept, so running setup again converts it.
+
 ## 2026-11-19: self audit of 2026-11-18's changes
 
 - **`ARC_HOST_KEEP_GB` decides again whether a dense model is tight on a discrete card**, as before 2026-11-18. The

@@ -185,8 +185,10 @@ if ($ciText -match "global mem: ([\d.]+) GiB") {
 # ---------------------------------------------------------------- 4. models
 Head 4 "Models"
 $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join-Path $env:HF_HOME "hub" } else { Join-Path $env:USERPROFILE ".cache\huggingface\hub" }
-$arcModels = Join-Path (Get-AppDir) "models"
-$gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
+# (not $arcModels: PowerShell names ignore case, and model-catalog.ps1 below sets $ArcModels, the list, over it; the
+#  35b-gsq step then made a folder named after a catalog row; gee456, issue #49)
+$modelDir = Join-Path (Get-AppDir) "models"
+$gsq35 = Join-Path $modelDir "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
 . (Join-Path $root "scripts\model-catalog.ps1")  # (the models, shared with the launcher; downloads without Python)
 # (35b-gsq: the 2-bit GSQ file, converted by bin\convert_gsq.exe: smaller, no MTP; setup's own step)
 $catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted)"
@@ -261,7 +263,7 @@ if ($todo) {
         $snap = Get-HfFiles $m.repo $files
       } catch { Bad "download failed: $($m.repo)" "$_" }
       $vocab = (Get-ChildItem $hub -Recurse -Filter "Qwen3.5-4B-UD-Q4_K_XL.gguf" | Select-Object -First 1).FullName
-      New-Item -ItemType Directory -Force $arcModels | Out-Null
+      New-Item -ItemType Directory -Force $modelDir | Out-Null
       Write-Host "  converting to $gsq35 (about 3 minutes)..."
       & $convert $snap $gsq35 --vocab-from $vocab
       if ($LASTEXITCODE -ne 0) { Bad "conversion failed" }
