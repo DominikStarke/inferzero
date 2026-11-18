@@ -10,9 +10,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Intel's GPU runtime from the kobuk-team PPA (Intel's GPU pages point to it): Battlemage (B580, Pro B60 / B70) and
 # Arrow Lake H need a newer compute runtime than Ubuntu 24.04 ships. OpenCL compiles the kernels, Level Zero runs them.
-RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common ca-certificates curl gpg-agent \
- && add-apt-repository -y ppa:kobuk-team/intel-graphics \
- && apt-get update && apt-get install -y --no-install-recommends \
+# (The PPA added by hand, not with add-apt-repository, which would bring Python into the image: its signing key's
+#  fingerprint from Launchpad, the key from Ubuntu's key server, both over HTTPS; apt checks the packages with it.)
+RUN set -e; apt-get update; apt-get install -y --no-install-recommends ca-certificates curl; \
+    fp=$(curl -fsSL https://api.launchpad.net/1.0/~kobuk-team/+archive/ubuntu/intel-graphics \
+         | grep -o '"signing_key_fingerprint": *"[0-9A-F]*"' | grep -o '[0-9A-F]\{40\}'); \
+    [ -n "$fp" ] || { echo "no signing key for the kobuk-team PPA"; exit 1; }; \
+    mkdir -p /etc/apt/keyrings; \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$fp" -o /etc/apt/keyrings/kobuk-team.asc; \
+    . /etc/os-release; \
+    printf 'Types: deb\nURIs: https://ppa.launchpadcontent.net/kobuk-team/intel-graphics/ubuntu\nSuites: %s\nComponents: main\nSigned-By: /etc/apt/keyrings/kobuk-team.asc\n' \
+      "$VERSION_CODENAME" > /etc/apt/sources.list.d/kobuk-team.sources; \
+    apt-get update && apt-get install -y --no-install-recommends \
       intel-opencl-icd libze-intel-gpu1 libze1 ocl-icd-libopencl1 libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 

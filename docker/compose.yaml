@@ -9,6 +9,7 @@ services:
         INFERZERO_RELEASE: latest   # or a release tag, e.g. 2026.11.18.05
     image: inferzero:latest
     restart: unless-stopped
+    init: true                      # (a small init as PID 1: `docker compose stop` also stops a download)
     devices:
       - /dev/dri:/dev/dri           # the GPU (all of them: GPUS picks how many the model is split over); the
                                     # container runs as root, which may open it without the render group
@@ -18,7 +19,7 @@ services:
       MODEL: 4b                     # a catalog key (4b, 9b, 27b, 35b, flash, g12, g31, e4b) or a .gguf path
       GPUS: "1"
       SERVER_ARGS: ""               # more serverz options, e.g. "--ctx 32768"
-    volumes:
+    volumes:   # (${HOME}: yours when you are in the docker group; under sudo it is root's, so the models go there)
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # the models (shared with a host install)
       - ${HOME}/.inferzero:/root/.inferzero                   # compiled kernels, expert files, settings
       # (files written there belong to root on the host; a folder missing on the host is made by Docker)

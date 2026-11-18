@@ -34,7 +34,7 @@ spec:
     spec:
       containers:
         - name: inferzero
-          image: inferzero:latest  # your registry's name for the image
+          image: inferzero:latest  # your registry's name for the image (a :latest tag is pulled at every start)
           env:
             - {name: MODEL, value: "4b"}       # a catalog key (4b, 9b, 27b, 35b, flash, g12, g31, e4b) or a .gguf path
             - {name: GPUS, value: "1"}         # GPUs to split the model over: ask for as many below
@@ -48,10 +48,10 @@ spec:
               gpu.intel.com/i915: 1
           volumeMounts:
             - {name: cache, mountPath: /cache}
-          startupProbe:          # (the first start downloads the model and compiles the kernels: up to an hour)
-            httpGet: {path: /health, port: http}
+          startupProbe:          # (the first start downloads the model and compiles the kernels: up to 3 hours
+            httpGet: {path: /health, port: http}   #  here; Flash Next's 141 GB may need more on a slow link)
             periodSeconds: 10
-            failureThreshold: 360
+            failureThreshold: 1080
           readinessProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 10
