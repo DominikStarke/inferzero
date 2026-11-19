@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-19: the wide-tile GEMM's 2D stores kept where a compiler fuses their add
+
+- **`gemm_xw`'s output in 2D blocks is no longer dropped when it misses the start check by a rounding** (hibagus,
+  PR #51). On a Data Center GPU Max 1550 (driver 25.18) the 2D form failed in the add and split-K modes only, by
+  1-6 ulp. That driver's compiler fuses the 2D epilogue's `product + old` into one multiply-add, and gemm.cl's not.
+  The check now tries the 2D form once more with the product rounded before the add (`-DXW_C_RND`), and keeps it if
+  it then matches gemm.cl bit for bit. Max 1550, the 27B: 4K prompt 2,460 -> 2,641 tok/s on one stack, 512 tokens
+  1,748 -> 1,939, `--gpus 2` 3,260 -> 3,375; logits identical. Where the 2D form passed already, nothing changes.
+  The Arc B390 and Pro B65 logs failed the same two modes, so they may gain too. `ARC_GEMM_XW_DIAG=1` prints the
+  first differences and their size; `ARC_GEMM_XW_C_RND=1` from the start, `=0` never.
+
 ## 2026-11-19: `ARC_HOST_CPU=1` (opt-in): weights kept in RAM computed by the CPU, not read over PCIe
 
 - **For cards too small for the whole model** (the 27B on a 12 GB B580): the matrices that stay in host memory are
