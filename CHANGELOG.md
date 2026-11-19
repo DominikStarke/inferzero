@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-19: `serverz --pack` refuses a package as its source
+
+- **`serverz --pack <a package's .gguf>` could destroy the package** (self review, B1). A package's expert tensors
+  have no data of their own, so the new GGUF lacked them, nothing was built, and the final rename replaced the
+  package's own GGUF with it. On Linux that succeeds even while the file is mapped, and if the original GGUF was
+  already removed, the model was lost. Only `zero-server.ps1` refused it; `serverz --pack` and the Linux launcher did
+  not. It now stops at once with "is already a package: pack the original GGUF instead", before anything is written
+  (checked on the laptop's Flash Next IQ4_XS package: exit 1, the package untouched).
+
 ## 2026-11-19: the expert file written from source rows read in order (`--pack`, a MoE model's first load)
 
 - **Why:** packing bartowski's Flash Next IQ4_XS from an external USB disk ran at ~17-80 MB/s, and that disk hangs

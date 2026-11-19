@@ -121,6 +121,13 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   namespace fs = std::filesystem;
   const auto t0 = std::chrono::steady_clock::now();
   GgufFile src(source);
+  // (a package as the source: its expert tensors are virtual (no data), so the new GGUF would lack them, nothing would
+  //  be built, and the rename below would replace the source package's own GGUF with it, on Linux even while it is
+  //  mapped: the model lost if the original was removed. zero-server.ps1 refused it, serverz --pack and the Linux
+  //  launcher did not. Self review 2026-11-19, B1)
+  if (src.has("inferzero.package"))
+    throw std::runtime_error(source + " is already a package (it has no expert data of its own to pack): pack the "
+                             "original GGUF instead");
   std::string name = fs::path(source).stem().string();
   const size_t sp = name.find("-00001-of-");
   if (sp != std::string::npos) name.resize(sp);
