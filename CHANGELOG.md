@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-19: ARC_XCPU, a token's expert-cache misses computed by the CPU (opt-in)
+
+- **`ARC_XCPU=1`: one token's MoE experts that miss the GPU's expert cache are computed by the CPU** from their records
+  in the RAM tier, while the GPU runs the cached ones and the shared expert, instead of being copied over PCIe and
+  waited for. Their outputs go into the slots `moe_combine` sums (a copy on the immediate list, no host wait); the
+  experts still enter the cache, copied from the RAM tier on a copy list of their own in the background and entered
+  once that copy is done. A miss not in the RAM tier yet is read and copied as before. The CPU kernels
+  (`zero/xe2/cpu_experts.h`) are ggml's AVX2 dot products (IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL; Q2_0 written in their
+  style) reading the expert file's layout, against the GPU's own int8 activations (`aq_` / `asc_`) and h quantized as
+  `moe_quant` does. Arc Pro B60 in a PCIe 3.0 x8 slot (Xeon W-2155, 10 cores), Qwen3.8 Flash Next (Swift 1.5 GSQ-RCO
+  IQ3_S), 4K prompt then 256 tokens: generation 22.55 / 22.54 -> 27.30 / 27.53 tok/s (+22 %); a miss cost ~0.36 ms over
+  the link, ~0.1 ms on the CPU. An A770 on PCIe 3.0 x16 gains nothing (Flash Next Coder: 20.0 / 20.6 -> 18.9 / 20.1),
+  so it stays opt-in, for cards on slow links. Not bit-identical (the CPU's sums): KL on 480 tokens through the decode
+  path 0.0134-0.0157 against 0.0141 without it; the default path's logits are unchanged. `ARC_XCPU_THREADS=n` (default:
+  the logical CPUs / 2).
+
 ## 2026-11-19: `serverz --pack` refuses a package as its source
 
 - **`serverz --pack <a package's .gguf>` could destroy the package** (self review, B1). A package's expert tensors

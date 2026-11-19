@@ -80,6 +80,15 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-19, `ARC_XCPU=1` (opt-in): expert-cache misses computed by the CPU:** an Arc Pro B60 on PCIe 3.0 x8
+  (Linux, Xeon W-2155), Qwen3.8 Flash Next Swift 1.5 GSQ-RCO IQ3_S, `runz --text-file` (a 4,200-token prompt) `--n 256`,
+  alternated: off 22.55 / 22.54 tok/s (89.7 % hits), on 27.30 / 27.53 (12,261 of ~123,000 expert lookups on the CPU,
+  0.094-0.098 ms each, 10 threads). Before: an expert-cache size sweep put a miss at 0.35-0.38 ms (6 / 10 / 13 / 15.8
+  GiB: 172 / 99 / 66 / 49 misses a token, 89.9 / 61.8 / 49.9 / 44.3 ms). Arc A770 on PCIe 3.0 x16, Flash Next Coder
+  IQ1_M: off 20.0 / 20.6, on 18.9 / 20.1 (no gain). KL against the f32 reference, 480 tokens of USAGE.md, `--kl-ref
+  --kl-decode`: off 0.01414 (max 0.32, top token 450 / 480), on 0.01336 (max 0.26, 449) and 0.01572 (max 0.53, 445) in
+  two cache states. Off: logits bit-identical to the unchanged build (Flash Next, 64 tokens).
+
 - **2026-11-18, `ARC_TP_EVSUM=1` (opt-in): generation's split sums on GPU events:** the laptop, Qwen3.5 4B over 2
   shards (`ARC_TP_SIM`, on 2 queues), logits of every generated token against the host sums: a 48-token answer 6 / 6
   runs 901D5D90... both ways; `USAGE.md` (18.6K tokens, the reduce-scatter, then event sums) + 8 tokens 52771C66... both
