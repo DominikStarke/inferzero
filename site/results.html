@@ -229,12 +229,13 @@
 <section id="s-max1550">
   <div class="wrap">
     <h2>Intel Data Center GPU Max 1550</h2>
-    <p class="setup">Ponte Vecchio (Xe-HPC), two stacks · Linux, driver 25.18 · hibagus, <a href="https://github.com/rizagp/inferzero/pull/51">pull request #51</a></p>
+    <p class="setup">Ponte Vecchio (Xe-HPC), two stacks a card · Linux, driver 25.18 · hibagus, <a href="https://github.com/rizagp/inferzero/pull/51">pull request #51</a>, <a href="https://github.com/rizagp/inferzero/pull/48">#48</a></p>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 512</th><th class="n">Prompt 4K</th><th>Release</th></tr></thead>
       <tbody>
         <tr><td>Qwen3.8 27B, one stack</td><td class="n">1,939</td><td class="n">2,642</td><td>main, 2026-11-19</td></tr>
         <tr><td>Qwen3.8 27B, both stacks (<code>--gpus 2</code>)</td><td class="n">–</td><td class="n">3,380</td><td>main, 2026-11-19</td></tr>
+        <tr><td>Qwen3.8 27B, 4 stacks on 2 cards (<code>--gpus 4</code>, Xe Link)</td><td class="n">2,676-2,697</td><td class="n">–</td><td>main at e2ae1d2 (2026.11.19.07's default)</td></tr>
       </tbody>
     </table></div>
   </div>
@@ -289,7 +290,7 @@
         <tr><td>Qwen3.6 35B-A3B</td><td class="n">66.3 / 20.4 (3.25x) <small>(76 % of its experts on the card)</small></td><td class="n">89.0 / 28.3 (3.18x) <small>(every expert on the cards)</small></td><td class="n">172.8 / 90.4 (2.01x)</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Every run bit-identical. On the two A770s the 35B-A3B is faster split than on one card (28.3 against 20.4 tok/s for one conversation): each card then holds all of its half's experts, so none comes from the SSD; the 4B and the 27B are slower split there (the sums go through host memory under Windows), and batching is what makes the split pay.</p>
+    <p class="note">Every run bit-identical. On the B65 Flash Next IQ3_S too: 65.0 tok/s for four, 32.3 alone (45 % of its experts on the card). On the two A770s the 35B-A3B is faster split than on one card (28.3 against 20.4 tok/s for one conversation): each card then holds all of its half's experts, so none comes from the SSD; the 4B and the 27B are slower split there (the sums go through host memory under Windows), and batching is what makes the split pay.</p>
   </div>
 </section>
 
