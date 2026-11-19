@@ -280,6 +280,16 @@
       </tbody>
     </table></div>
     <p class="note">Split over both cards, too, every conversation's tokens are bit for bit those it gets alone.</p>
+    <p class="setup">Two Arc A770s, Windows · hansong80, release 2026.11.19.06 · and one Pro B65 32 GB, Linux · teodortomas, release 2026.11.19.06 · <a href="https://github.com/rizagp/inferzero/issues/58">issue #58</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">A770: 4 together / 1 alone</th><th class="n">2 × A770: 4 together / 1 alone</th><th class="n">Pro B65: 4 together / 1 alone</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">189.1 / 74.9 (2.54x)</td><td class="n">144.2 / 41.5 (3.54x)</td><td class="n">225.8 / 84.5 (2.65x)</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">58.6 / 21.2 (2.77x)</td><td class="n">52.1 / 16.2 (3.21x)</td><td class="n">65.1 / 21.5 (3.03x)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">66.3 / 20.4 (3.25x) <small>(76 % of its experts on the card)</small></td><td class="n">89.0 / 28.3 (3.18x) <small>(every expert on the cards)</small></td><td class="n">172.8 / 90.4 (2.01x)</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Every run bit-identical. On the two A770s the 35B-A3B is faster split than on one card (28.3 against 20.4 tok/s for one conversation): each card then holds all of its half's experts, so none comes from the SSD; the 4B and the 27B are slower split there (the sums go through host memory under Windows), and batching is what makes the split pay.</p>
   </div>
 </section>
 
