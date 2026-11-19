@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-19: `runz --kl-ref` shows where the top token flips (`ARC_KL_FLIPS=1`)
+
+- **With `ARC_KL_FLIPS=1`, every KL path of `runz --kl-ref` prints each position whose top token is not the
+  reference's**: the reference's top two tokens, their margin in log-probability, and where our pick stands in the
+  reference. It works on one GPU and with `--gpus`, for prompts and `--kl-decode`. It shows whether a missed top token
+  is a near-tie or a real miss. Flash Next IQ3_S on the 3,584-token prose prompt, the laptop: default 239 / 256 (KL
+  0.0091, max 0.063), precise 240 / 256 (0.0060, max 0.069); most flips have margins under 0.1 (e.g. 11.75 % against
+  11.74 %), so precise mode's ~15-bit activations do not fix them.
+
 ## 2026-11-19: Alchemist's codebook GEMVs one row a sub-group
 
 - **The A770 / A750 / A580 run the one-token GEMV of the codebook and IQ4 / Q6 types with one row per sub-group**

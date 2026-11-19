@@ -21,6 +21,20 @@ static std::vector<int> parse_ids(const std::string& s) {
   return v;
 }
 
+// (ARC_KL_FLIPS=1, --kl-ref: a position whose top token is not the reference's, with the reference's top two, their
+//  margin in log-prob, and where our pick stands in the reference: a near-tie (margin ~0) or a real miss. 2026-11-19,
+//  for Flash Next's same-top-token rule on discrete cards)
+static void kl_flip(size_t pos, const float* l, const float* rr, size_t V) {
+  static const bool on = getenv("ARC_KL_FLIPS") && atoi(getenv("ARC_KL_FLIPS")) != 0;
+  if (!on) return;
+  const size_t te = std::max_element(l, l + V) - l, t1 = std::max_element(rr, rr + V) - rr;
+  if (te == t1) return;
+  size_t t2 = t1 == 0 ? 1 : 0;
+  for (size_t i = 0; i < V; ++i)
+    if (i != t1 && rr[i] > rr[t2]) t2 = i;
+  printf("flip pos %zu: ref top %zu (p %.4f), 2nd %zu (p %.4f), margin %.4f | inferzero top %zu (ref p %.4f)\n", pos, t1,
+         std::exp((double)rr[t1]), t2, std::exp((double)rr[t2]), (double)rr[t1] - rr[t2], te, std::exp((double)rr[te]));
+}
 static void top_k(const std::vector<float>& logits, int k, std::vector<std::pair<int, float>>& out) {
   std::vector<int> idx(logits.size());
   for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int)i;
@@ -197,7 +211,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
           if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
         sum += kl;
         mxk = std::max(mxk, kl);
-        agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
+        agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
       }
       printf("KL prompt path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
              sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
@@ -217,7 +231,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
         if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
       sum += kl;
       mxk = std::max(mxk, kl);
-      agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
+      agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
     }
     printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
            sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
@@ -343,6 +357,8 @@ static int run_main(int argc, char** argv) {
             "accuracy:\n"
             "  --kl-ref F            KL of the next-token distributions against an f32 reference (tools\\ref_forward)\n"
             "  --kl-decode           with --kl-ref: through the token-by-token generation path\n"
+            "  (ARC_KL_FLIPS=1 with --kl-ref: each position whose top token is not the reference's, with the reference's\n"
+            "   top two and their margin)\n"
             "  --slots-check         two conversations (the prompt's halves) alone, then held at once in slots 0 and 1\n"
             "                        with their steps interleaved and batched: every logit must be bit for bit the same\n"
             "  --bench-batch N       time of a batched decoding step over 1..N slots against one slot alone; with --gpus,\n"
@@ -1128,7 +1144,7 @@ static int run_main(int argc, char** argv) {
         sum += kl;
         if (getenv("ARC_KL_SHOW") && kl > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, kl);  // (ARC_KL_SHOW=x: positions above x)
         mxk = std::max(mxk, kl);
-        agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
+        agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
       }
       const size_t n = toks.size() - from;
       printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
@@ -1246,6 +1262,7 @@ static int run_main(int argc, char** argv) {
           sum += k;
           mx = std::max(mx, k);
           agree += std::max_element(l.begin(), l.end()) - l.begin() == std::max_element(rr, rr + V) - rr;
+          kl_flip(r, l.data(), rr, V);
         }
         const size_t n = toks.size() - kl_from;
         printf("\nKL(ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
