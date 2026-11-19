@@ -388,6 +388,23 @@ tokens one by one:
 | 3 | 0.0159 / 0.0176 | 424 / 419 | 0.0095 / 0.0084 | 431 / 427 |
 | 4 | 0.0165 / 0.0162 | 426 / 431 | 0.0083 / 0.0088 | 431 / 431 |
 
+Again on 2026-11-19 with today's more exact defaults (release 2026.11.19.03), on a Japanese answer (548 tokens of my
+own text in the chat template, a question about the Hongwu Emperor; manoreken2's video found typos in Flash Next's
+Japanese over 4 B60s), token by token against the f32 reference:
+
+| GPUs | Default: mean KL (max) | top-1 | `ARC_FN_PRECISE=1`: mean KL (max) | top-1 |
+|---|---|---|---|---|
+| 1 | 0.0022 (0.064) | 543 / 548 | 0.00075 (0.019) | 544 / 548 |
+| 2 | 0.0030 (0.109) | 540 | 0.0014 (0.058) | 541 |
+| 3 | 0.0030 (0.151) | 541 | 0.0013 (0.044) | 540 |
+| 4 | 0.0023 (0.068) | 539 | 0.0012 (0.030) | 542 |
+
+A split adds about 0.0006-0.0008, the same in both modes and the same with `ARC_TP_SUM=f32` (a generated token's sums
+are f32 anyway): the sums added in another order, as the 27B's 0.0007-0.001 against one GPU below. It shows now
+because one GPU's precise mode is down at 0.00075. Every top-token change, one GPU or split, is a near tie in the
+reference (top-2 margin 0.0004-0.12). Well inside the limits, and not the typos of a release from 11-14 or before
+(then one GPU's own KL was 0.015-0.017, as in the table above).
+
 The split lands inside one GPU's own spread (the same model on one GPU with chunks of 512 instead of 2,048 moves the
 last prompt position's KL by 0.014, a decode step's by up to 0.033), in both modes: the default within the ~0.02
 allowed for Flash Next's fast mode, precise under 0.015. Greedy text over 2 GPUs after a 1,830-token prompt: the same
