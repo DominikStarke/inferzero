@@ -106,7 +106,7 @@
         <tr><td>Qwen3.8 27B</td><td class="n">1,223</td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>2026.11.17.08 / .18.08</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">80.7-82.1</td><td class="n">105.7</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">51.2-51.6</td><td class="n">84.4</td><td>2026.11.18.08</td></tr>
-        <tr><td>Qwen3.8 27B, Linux</td><td class="n">–</td><td class="n">22.6-22.8</td><td class="n">40.4</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 27B, Linux</td><td class="n">–</td><td class="n">22.6-22.9</td><td class="n">40.4</td><td>2026.11.18.08</td></tr>
       </tbody>
     </table></div>
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 4,518 / 5,000 tok/s, 9B 2,794 / 3,249, 27B 1,131 / 1,205. Generation at a 128-token depth and a 256-token coding answer.</p>
@@ -150,7 +150,7 @@
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
       <tbody>
-        <tr><td>Qwen3.8 27B</td><td class="n">1,726</td><td class="n">22.7-23.3</td><td class="n">51.6</td><td>2026.11.17.08 (generation .14.09, drafting .13.11)</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">1,726</td><td class="n">22.7-23.7</td><td class="n">51.6</td><td>2026.11.17.08 (generation .14.09, drafting .13.11)</td></tr>
         <tr><td>Qwen3.6 35B-A3B</td><td class="n">3,536</td><td class="n">82.4</td><td class="n">111.9</td><td>2026.11.14.09 (generation .13.11)</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">84.7-86.3</td><td class="n">115.2</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">52.3-52.8</td><td class="n">82.9</td><td>2026.11.18.08</td></tr>
@@ -223,6 +223,23 @@
       </tbody>
     </table></div>
     <p class="note">Releases: the 27B's split prompts 2026.11.13.05 / .11 and its split generation a run of 2026-10-31, both older than the one-card figures; DeepSeek 2026.11.14.09 (machine with 1 TB of RAM). Long prompts over 4 cards (2026.11.14.05): 64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s for the 35B-A3B, 1,258 / 970 / 640 for the 27B and 948 / 778 / 526 for Flash Next; the 35B-A3B's 4K prompt 4,264 tok/s.</p>
+  </div>
+</section>
+
+<section id="s-batch">
+  <div class="wrap">
+    <h2>Several conversations at once</h2>
+    <p class="setup">Batched decoding (<code>serverz --slots</code>: several chats' next tokens in one pass), <code>runz --bench-batch 4</code> · Linux, one card at a time · skipzx-lab, <a href="https://github.com/rizagp/inferzero/issues/58">issue #58</a>, main at fd858b5</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Pro B60: 4 together / 1 alone</th><th class="n">A770: 4 together / 1 alone</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">235.2 / 90.9 (2.59x)</td><td class="n">203.2 / 86.3 (2.35x)</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">70.2 / 23.6 (2.97x)</td><td class="n">62.4 / 22.8 (2.74x)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">182.3 / 89.7 (2.03x)</td><td class="n">118.2 / 67.4 (1.76x) <small>(73 % of its experts on the card)</small></td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_S</td><td class="n">52.2 / 28.8 (1.81x) <small>(30 % of its experts on the card)</small></td><td class="n">–</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Tokens per second, all conversations together against one alone. Each conversation's tokens are the same, bit for bit, as when it runs alone. The two cards' runs overlapped in time, so the speeds may read a little low.</p>
   </div>
 </section>
 

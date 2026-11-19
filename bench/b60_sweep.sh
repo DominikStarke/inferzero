@@ -96,7 +96,7 @@ set_put() {  # set name value -> the set with name=value
   printf '%s' "${out:+$out }$2=$3"
 }
 desc() {  # "defaults", or the set's NAME=value sorted by name
-  if [ -z "$1" ]; then echo "defaults"; else tr ' ' '\n' <<< "$1" | LC_ALL=C sort -t= -k1,1 | paste -sd' ' -; fi
+  if [ -z "$1" ]; then echo "defaults"; else tr ' ' '\n' <<< "$1" | LC_ALL=C sort -t '=' -k1,1 | paste -sd' ' -; fi
 }
 # the environment of a setting set (name -> value as in the table above), one VAR=value per line
 env_of() {
