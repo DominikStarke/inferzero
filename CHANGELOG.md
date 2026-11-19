@@ -8,6 +8,9 @@
   too; docs/server.md and zero-pi's help say 8090. (The launcher review of 2026-11-19, docs/launcher-research.md
   section 7.)
 - zero-server's help lists the `g31` shortcut (the server knew it), and says `g26` is a file `pull` does not fetch.
+- **`serverz --help` is a short page:** the ten options most starts use, three examples, and where the rest is.
+  `serverz --help all` (or `--help-all`) prints the whole text as before (136 lines). Started without a model it
+  prints the short page and exits 1, as before.
 
 ## 2026-11-19: the wide-tile GEMM's 2D stores kept where a compiler fuses their add
 

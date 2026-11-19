@@ -6,7 +6,7 @@
 
 ```powershell
 .\bin\serverz.exe -m C:\path\to\model.gguf --port 8090 --ctx auto --mtp --alias qwen3.8-27b
-.\bin\serverz.exe --help           # every option with its default
+.\bin\serverz.exe --help all       # every option with its default (--help alone: the common ones)
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.inferzero\models, model-dirs.txt), as JSON
                                    # (--speech-reserve BYTES: each context as a running server with speech to text would size it,
                                    #  its /props speech_reserve_bytes; zero-server passes it for Pi's model list)

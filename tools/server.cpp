@@ -980,6 +980,7 @@ int main(int argc, char** argv) {
   zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;
   int port = 8090;  // (the port zero-server, both launchers and Docker use; 8080 before 2026-11-19, launcher review)
+  bool help_all = false;  // (--help all: every option; --help alone: the short page)
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   bool whisper_given = false;  // (--whisper on the command line; without it the cache's model is offered, not loaded)
@@ -1019,7 +1020,7 @@ int main(int argc, char** argv) {
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
       {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
       {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
-      {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""},
+      {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""}, {"--help-all", ""},
       {"--log-verbosity", "0 errors, 1 warnings, 2 info, 3 debug (or error / warn / info / debug)"},
       {"--log-timestamps", "on or off"}, {"--log-colors", "auto, on or off"}, {"--log-file", "a file"}, {"--log-disable", ""}};
   auto takes = [&](std::string o) {  // (what option o takes, as " (...)")
@@ -1149,7 +1150,11 @@ int main(int argc, char** argv) {
     else if (a == "--no-terminal") terminal = false;
     else if (a == "--no-prefix-cache") so.prefix_cache = false;
     else if (a == "--prefix-cache-gb") so.prefix_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
-    else if (a == "--help" || a == "-h") help = true;
+    else if (a == "--help" || a == "-h") {
+      help = true;
+      if (i + 1 < argc && std::string(argv[i + 1]) == "all") help_all = true, ++i;
+    }
+    else if (a == "--help-all") help = help_all = true;
     else {
       // (what was meant: a value without its option, one dash where two belong, or a typo)
       if (a.empty() || a[0] != '-')
@@ -1240,7 +1245,31 @@ int main(int argc, char** argv) {
     LOG_ERR("inferzero-server: %s\n", e.what());
     return 2;
   }
-  if (model.empty() || help) {
+  if ((model.empty() || help) && !help_all) {
+    zlog::raw(  // (the short page: the options most starts use and three examples; --help all for the rest)
+            "usage: serverz -m model.gguf [options]   OpenAI-compatible server: API at /v1, web UI at /\n"
+            "\n"
+            "  -m, --model FILE      the model (.gguf); an image projector and an MTP drafter next to it are found\n"
+            "  -c, --ctx N|auto      context in tokens (default 40960; auto: the largest that fits the GPU memory)\n"
+            "  --port P              port (default 8090);  --host H  address (default 127.0.0.1; 0.0.0.0: this network)\n"
+            "  --mtp                 faster answers with the model's own drafts, the same text\n"
+            "  --gpus N              one model over N GPUs\n"
+            "  --slots N             N conversations at once (1..8)\n"
+            "  --precise             Qwen3.8 Flash Next's most accurate mode (prompts about half as fast)\n"
+            "  --think-budget N      at most N reasoning tokens a reply\n"
+            "  --alias NAME          the model's id in the API (default: the file name)\n"
+            "  --list-models         the models it can load, as JSON, each with its automatic context\n"
+            "\n"
+            "examples:\n"
+            "  serverz -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --ctx auto --mtp\n"
+            "  serverz -m Qwen3.6-35B-A3B-UD-IQ4_XS.gguf --host 0.0.0.0 --port 8090\n"
+            "  serverz -m none                      speech to text only; a chat request naming a model loads it\n"
+            "\n"
+            "every option (memory, experts, speech, images, logs, sessions): serverz --help all\n"
+            "the usual way to start it: zero-server start (Windows) or ./zero-launcher.sh (Linux)\n");
+    return help ? 0 : 1;
+  }
+  if (help_all) {
     zlog::raw(  // (the usage text as it is, without the log's prefix; also to --log-file)
             "usage: inferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
             "       inferzero-server -m none [options]         speech to text only (Qwen3-ASR, --whisper auto for\n"
@@ -1375,10 +1404,10 @@ int main(int argc, char** argv) {
             "  --no-terminal         no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell, on Linux\n"
             "                        bash, in the chat's folder after the user allows it; default: on, this computer\n"
             "                        only)\n"
-            "  -h, --help            this text\n"
+            "  -h, --help [all]      the short page; with all, this text\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
-    return help ? 0 : 1;
+    return 0;
   }
   // locate kernels/ and webui/ next to the executable's parent (bin/..) unless given
   std::filesystem::path exe_dir = std::filesystem::path(argv[0]).parent_path();

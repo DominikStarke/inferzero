@@ -542,7 +542,7 @@ Copy the start command, Record, a doctor report, the update check).
 
 The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;
-its other options (bin\serverz.exe --help) keep their defaults.
+its other options (bin\serverz.exe --help all) keep their defaults.
 
 Log: $log (earlier starts': logs\server_<date>_<time>.log next to it, the newest 10; older ones .zip)
 Everything (Pi launcher, server options, files): zero-pi --help
