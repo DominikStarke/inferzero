@@ -14,10 +14,12 @@
   against 0.0578 without it (that model's own level: random routers with many near ties). No faster on the iGPU,
   which reads RAM directly (44.5 against 47.0 tok/s): it is for cards on a PCIe link. Off, the logits are byte for
   byte as before.
-- **Not yet:** one model over several GPUs. `ARC_XSPLIT_TP=1` (a test) lets a split model run a token's cached
-  experts before its missed ones arrive, which `ARC_XCPU` builds on; it was off there for logits that changed from
-  run to run (QUEUE F30). On the laptop (Flash Next over 2 with `ARC_TP_SIM`, 3 GiB caches) the logits were the same
-  run to run and the same as with it off, with the expert table in host memory or its GPU copy; real cards will say.
+- **One model over several GPUs: with `ARC_XSPLIT_TP=1` too** (a test switch). It lets a split model run a token's
+  cached experts before its missed ones arrive, which `ARC_XCPU` builds on; that was off for split models since logits
+  changed from run to run with it (QUEUE F30). On the laptop (`ARC_TP_SIM`) F30 did not come back: Flash Next over 2
+  with 3 GiB caches gave the same logits run to run and the same as with it off, with the expert table in host memory
+  or its GPU copy; the DeepSeek model over 2 the same KL with it on (0.05696), and 0.05735 with `ARC_XCPU=1` as well.
+  Real cards will say whether it holds there.
 
 ## 2026-11-19: `runz --bench-batch` checks batched decoding against each conversation alone on one GPU too
 
