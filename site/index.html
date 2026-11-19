@@ -2,648 +2,251 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>inferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
-<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows and Linux. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU and 5,647 tok/s on one Arc Pro B70, the 27B at 2,972 tok/s there. Every number measured, every model checked against an f32 reference.">
-<meta name="color-scheme" content="dark light">
-<meta property="og:title" content="inferzero">
-<meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inferzero: free, open-source AI on your Intel PC</title>
+<meta name="description" content="inferzero is a free, open-source program that runs large language models on Intel laptop graphics and Arc graphics cards, on Windows and Linux. A chat in your browser, an API for your tools, speech to text. No cloud, no account, no Python.">
+<meta name="color-scheme" content="light">
+<meta property="og:title" content="inferzero: free, open-source AI on your Intel PC">
+<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel laptop graphics and Arc cards. Free, open source, no cloud.">
 <meta property="og:type" content="website">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <style>
-/* Layout: one 1200 px column, hairline-separated sections, text left-aligned; numbers in tabular mono.
-   Dark first; a light palette for viewers who ask for it. System fonts only. */
 :root{
-  --canvas:#0b0d10; --surface:#12151a; --surface-2:#171b21; --surface-3:#1d2229;
-  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.16);
-  --ink:#eceef1; --body:#b6bcc5; --mute:#7d8691; --faint:#565e68;
-  --arc:#5ad1ff; --arc-soft:rgba(90,209,255,.14); --bar:#3a434e;
-  --ok:#4cc38a; --warn:#e6a04a;
-  --btn:#ffffff; --btn-ink:#000000;
-  --mark:#59a7e3; --mark-dim:#2b3440;
+  --bg:#fafaf8; --card:#ffffff; --soft:#f1f2ef; --line:#e2e3df;
+  --ink:#141414; --body:#3a3a3a; --mute:#6b6b6b;
+  --blue:#0060b8; --blue-soft:#e8f1fb; --green:#1d7a3e; --green-soft:#e7f4ec;
   --sans:system-ui,"Segoe UI Variable Text","Segoe UI",-apple-system,"Helvetica Neue",Roboto,sans-serif;
-  --mono:ui-monospace,"Cascadia Mono","Cascadia Code",Consolas,"SF Mono",Menlo,monospace;
-  color-scheme:dark;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
 }
-@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
-  --canvas:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4; --surface-3:#e4e8ec;
-  --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
-  --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
-  --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
-  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; --mark:#0078d4; --mark-dim:#c9d3de; color-scheme:light } }
-:root[data-theme="light"]{
-  --canvas:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4; --surface-3:#e4e8ec;
-  --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
-  --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
-  --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
-  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; --mark:#0078d4; --mark-dim:#c9d3de; color-scheme:light }
-
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
-@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
-body{margin:0;background:var(--canvas);color:var(--body);font-family:var(--sans);font-size:16px;line-height:1.6;
-  font-feature-settings:"kern","liga";-webkit-font-smoothing:antialiased}
-a{color:var(--arc);text-decoration:none}
-a:hover{text-decoration:underline;text-underline-offset:3px}
-:focus-visible{outline:2px solid var(--arc);outline-offset:3px;border-radius:4px}
-h1,h2,h3{color:var(--ink);font-weight:600;margin:0;text-wrap:balance}
-p{margin:0}
-code,kbd,pre,.mono{font-family:var(--mono)}
-.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
-.wrap{max-width:1200px;margin:0 auto;padding-left:max(24px,env(safe-area-inset-left,0px));padding-right:max(24px,env(safe-area-inset-right,0px))}
-@media (max-width:520px){.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}}
-.skip{position:absolute;left:-9999px}.skip:focus{left:16px;top:12px;z-index:50;background:var(--surface);padding:8px 12px;border-radius:6px}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--body);font:17px/1.6 var(--sans);-webkit-text-size-adjust:100%}
+a{color:var(--blue)}
+a:hover{text-decoration-thickness:2px}
+h1,h2,h3{color:var(--ink);line-height:1.2;margin:0}
+h1{font-size:clamp(2rem,5vw,3.1rem);letter-spacing:-.02em}
+h2{font-size:clamp(1.5rem,3.4vw,2rem);letter-spacing:-.01em;margin-bottom:.6rem}
+h3{font-size:1.08rem;margin-bottom:.35rem}
+p{margin:0 0 1rem}
+code,kbd,.mono{font-family:var(--mono);font-size:.88em}
+code{background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:.05em .35em}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+.skip{position:absolute;left:-999px}.skip:focus{left:12px;top:12px;background:#fff;padding:8px;z-index:9}
 
-/* ---------- nav ---------- */
-header.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--canvas) 86%,transparent);
-  backdrop-filter:saturate(1.2) blur(10px);-webkit-backdrop-filter:saturate(1.2) blur(10px);border-bottom:1px solid var(--hair)}
-.nav .wrap{display:flex;align-items:center;gap:28px;height:56px}
-.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-family:var(--sans);font-weight:600;font-size:16px;letter-spacing:-.005em}
-.brand:hover{text-decoration:none}
-.brand svg{flex:none}
-.mark .l{fill:var(--mark)}
-.mark .d{fill:var(--mark-dim)}
-.nav ul{display:flex;gap:22px;list-style:none;margin:0;padding:0;font-size:14px}
-.nav ul a{color:var(--body)} .nav ul a:hover{color:var(--ink);text-decoration:none}
-.nav .right{margin-left:auto;display:flex;align-items:center;gap:14px}
-.nav .gh{font-family:var(--mono);font-size:12.5px;color:var(--mute)}
-@media (max-width:860px){.nav ul{display:none}}
-@media (max-width:520px){.nav .gh{display:none}}
+header{position:sticky;top:0;z-index:5;background:rgba(250,250,248,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;gap:20px;height:60px}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-weight:700;font-size:1.1rem;text-decoration:none}
+.mark .l{fill:#0078d4}.mark .d{fill:#c9d3de}
+nav{display:flex;gap:18px;margin-left:auto}
+nav a{color:var(--body);text-decoration:none;font-size:.95rem}
+nav a:hover{color:var(--ink);text-decoration:underline}
+.gh{font-family:var(--mono);font-size:.82rem;color:var(--mute);text-decoration:none}
+@media (max-width:820px){nav{display:none}.gh{margin-left:auto}}
 
-/* ---------- buttons ---------- */
-.btn{display:inline-flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-radius:8px;font-size:14.5px;font-weight:500;border:1px solid transparent;white-space:nowrap;transition:background .15s,border-color .15s}
-.btn:hover{text-decoration:none}
-.btn.p{background:var(--btn);color:var(--btn-ink)}
-.btn.p:hover{background:color-mix(in srgb,var(--btn) 88%,var(--canvas))}
-.btn.s{color:var(--ink);border-color:var(--hair-2)}
-.btn.s:hover{background:var(--surface-2)}
-.btn.sm{height:32px;padding:0 12px;font-size:13px}
-.btn kbd{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid color-mix(in srgb,var(--btn-ink) 25%,transparent);color:color-mix(in srgb,var(--btn-ink) 70%,transparent)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:9px;font-weight:600;text-decoration:none;border:1px solid transparent;font-size:1rem}
+.btn kbd{font-weight:400;opacity:.8}
+.btn.p{background:var(--ink);color:#fff}
+.btn.p:hover{background:#000}
+.btn.s{background:var(--card);color:var(--ink);border-color:var(--line)}
+.btn.s:hover{border-color:#bdbdb8}
+.btns{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 
-/* ---------- section scaffolding ---------- */
-section{border-top:1px solid var(--hair);padding-block:96px}
-@media (max-width:860px){section{padding-block:64px}}
-.eb{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute)}
-.eb b{color:var(--arc);font-weight:500}
-.sh{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:24px 48px;align-items:end;margin-bottom:44px}
-.sh h2{font-size:clamp(26px,3.2vw,38px);line-height:1.12;letter-spacing:-.022em;font-weight:600;margin-top:14px}
-.sh h2 span{color:var(--mute)}
-.sh p{max-width:34rem;font-size:15.5px}
-@media (max-width:860px){.sh{grid-template-columns:1fr}}
-.src{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:20px;line-height:1.55}
-.src ul{margin:8px 0 0;padding-left:18px}.src li{margin-top:4px}
-.src a{color:var(--mute);text-decoration:underline;text-decoration-color:var(--hair-2);text-underline-offset:3px}
+.hero{padding:72px 0 56px}
+.hero .lead{font-size:1.2rem;max-width:720px;margin:20px 0 26px;color:var(--body)}
+.tags{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}
+.tag{font-size:.88rem;padding:5px 12px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--ink)}
+.tag.free{background:var(--green-soft);border-color:#b9dcc5;color:var(--green);font-weight:600}
+.after{margin-top:14px;color:var(--mute);font-size:.92rem}
 
-/* ---------- hero ---------- */
-.hero{padding-block:88px 72px;border-top:0}
-.hero .grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:56px;align-items:center}
-@media (max-width:980px){.hero .grid{grid-template-columns:1fr;gap:44px}.hero{padding-block:56px 56px}}
-.hero h1{font-size:clamp(36px,5.2vw,62px);line-height:1.03;letter-spacing:-.035em;font-weight:600;margin-top:22px}
-.hero h1 span{color:var(--mute)}
-.hero .lede{font-size:18px;line-height:1.55;max-width:35rem;margin-top:24px}
-.hero .cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:32px}
-.hero .req{font-family:var(--mono);font-size:12.5px;color:var(--mute);margin-top:18px;line-height:1.7}
+section{padding:56px 0;border-top:1px solid var(--line)}
+.intro{max-width:700px;margin-bottom:28px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media (max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:600px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
+.card p{margin:0;font-size:.97rem}
 
-.term{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-width:0;
-  box-shadow:0 0 0 1px rgba(0,0,0,.25),0 50px 90px -50px color-mix(in srgb,var(--arc) 45%,transparent)}
-.term .bar{display:flex;align-items:center;gap:7px;padding:10px 14px;border-bottom:1px solid var(--hair);font-family:var(--mono);font-size:11.5px;color:var(--mute)}
-.term .bar i{width:10px;height:10px;border-radius:50%;border:1px solid var(--hair-2);display:inline-block}
-.term .bar span{margin-left:auto;letter-spacing:.04em}
-.term pre{margin:0;padding:18px 20px 20px;font-size:12.8px;line-height:1.75;color:var(--body);overflow-x:auto;min-height:268px}
-.term .k{color:var(--mute)} .term .v{color:var(--ink)} .term .a{color:var(--arc)} .term .ok{color:var(--ok)}
-.term .cur{display:inline-block;width:7px;height:14px;background:var(--arc);vertical-align:-2px;animation:blink 1s steps(1) infinite}
-@keyframes blink{50%{opacity:0}}
-@media (prefers-reduced-motion: reduce){.term .cur{animation:none}}
+.need{display:grid;grid-template-columns:180px 1fr;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.need dt,.need dd{margin:0;padding:15px 20px;border-top:1px solid var(--line)}
+.need dt{font-weight:600;color:var(--ink);background:var(--soft)}
+.need dt:first-of-type,.need dt:first-of-type+dd{border-top:0}
+@media (max-width:600px){.need{grid-template-columns:1fr}.need dd{border-top:0;padding-top:0}.need dt{background:none;padding-bottom:4px}}
 
-.proof{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);border-radius:12px;margin-top:72px;background:var(--surface)}
-.proof > div{padding:22px 22px 24px;border-right:1px solid var(--hair);min-width:0}
-.proof > div:last-child{border-right:0}
-.proof .eb{font-size:11px}
-.proof b{display:block;font-family:var(--mono);font-weight:500;font-size:clamp(26px,2.6vw,34px);letter-spacing:-.03em;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.1;margin-top:12px}
-.proof b small{font-size:.5em;color:var(--mute);letter-spacing:0;margin-left:4px}
-.proof p{font-size:13px;color:var(--mute);margin-top:8px;line-height:1.5}
-@media (max-width:980px){.proof{grid-template-columns:1fr 1fr}.proof > div:nth-child(2){border-right:0}.proof > div:nth-child(-n+2){border-bottom:1px solid var(--hair)}}
-@media (max-width:520px){.proof{grid-template-columns:1fr}.proof > div{border-right:0;border-bottom:1px solid var(--hair)}.proof > div:last-child{border-bottom:0}}
+.steps{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+@media (max-width:760px){.steps{grid-template-columns:1fr}}
+ol.go{margin:0;padding-left:1.3rem}
+ol.go li{margin:.35rem 0}
+pre{background:#f4f5f2;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;font:14px/1.55 var(--mono);color:var(--ink);margin:12px 0 0}
 
-/* ---------- bars (ladder, llama.cpp) ---------- */
-.charts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px}
-@media (max-width:860px){.charts{grid-template-columns:1fr;gap:40px}}
-.cap{display:flex;justify-content:space-between;gap:12px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);padding-bottom:10px;border-bottom:1px solid var(--hair)}
-.row{display:grid;grid-template-columns:172px minmax(0,1fr) 84px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--hair);font-size:14px}
-.row .n{color:var(--ink);line-height:1.3}
-.row .n small{display:block;font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:2px}
-.row .t{height:12px;position:relative}
-.row .f{position:absolute;inset:0 auto 0 0;background:var(--bar);border-radius:0 3px 3px 0;min-width:2px}
-.row .f.d{background:repeating-linear-gradient(90deg,var(--bar) 0 4px,transparent 4px 7px)}
-.row.me .f{background:var(--arc)}
-.row .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--ink);white-space:nowrap}
-.row .v small{display:block;font-size:11px;color:var(--mute)}
-.row.me .v{color:var(--arc)}
-@media (max-width:520px){.row{grid-template-columns:118px minmax(0,1fr) 66px;gap:10px;font-size:13px}}
-.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:var(--mute);margin-top:14px}
-.legend i{display:inline-block;width:14px;height:8px;border-radius:0 2px 2px 0;background:var(--bar);margin-right:7px;vertical-align:1px}
-.legend i.me{background:var(--arc)} .legend i.d{background:repeating-linear-gradient(90deg,var(--bar) 0 4px,transparent 4px 7px)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:.97rem}
+th,td{text-align:left;padding:11px 16px;border-top:1px solid var(--line)}
+th{background:var(--soft);color:var(--ink);font-weight:600;border-top:0}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td small{color:var(--mute)}
+.tbl{overflow-x:auto}
+@media (max-width:760px){table{font-size:.9rem}th,td{padding:9px 10px}td small{display:block;white-space:normal}th.n{white-space:normal}td:first-child{min-width:9em}}
+.note{color:var(--mute);font-size:.92rem;margin-top:12px}
 
-.cmp{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px}
-@media (max-width:980px){.cmp{grid-template-columns:1fr}}
-.cmp h3{font-size:15px;font-weight:600;margin-bottom:4px}
-.cmp .note{font-size:13px;color:var(--mute);margin-bottom:12px}
-.cmp .row{grid-template-columns:120px minmax(0,1fr) 72px}
+.open{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:32px}
+.open .big{font-size:1.25rem;color:var(--ink);max-width:760px}
+.open ul{margin:0 0 1.2rem;padding-left:1.2rem}
+.open li{margin:.3rem 0}
 
-/* ---------- tables ---------- */
-.tbl{overflow-x:auto;border:1px solid var(--hair);border-radius:12px;background:var(--surface)}
-table{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
-th,td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:top}
-tr:last-child td{border-bottom:0}
-th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);font-weight:500;background:var(--surface-2)}
-td{color:var(--body)}
-td:first-child{color:var(--ink)}
-td.r,th.r{text-align:right}
-td.r{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);white-space:nowrap}
-td.r small{display:block;font-size:11px;color:var(--mute);margin-top:2px}
-td.hl{color:var(--arc)}
-td .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);border:1px solid var(--hair-2);border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:1px}
-.kl-ok{color:var(--ok)}
-
-/* ---------- features (bento) ---------- */
-.bento{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px}
-.card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:26px 26px 24px;min-width:0;display:flex;flex-direction:column;gap:12px}
-.card.w3{grid-column:span 3}.card.w2{grid-column:span 2}.card.w4{grid-column:span 4}.card.w6{grid-column:span 6}
-@media (max-width:980px){.bento{grid-template-columns:1fr 1fr}.card.w3,.card.w2,.card.w4,.card.w6{grid-column:span 1}}
-@media (max-width:620px){.bento{grid-template-columns:1fr}}
-.card h3{font-size:18px;letter-spacing:-.01em;line-height:1.3}
-.card p{font-size:14.5px}
-.card .fig{margin-top:auto;padding-top:10px}
-.stat{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-size:13px;display:flex;flex-direction:column;gap:6px}
-.stat div{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--hair);padding-top:7px}
-.stat span{color:var(--mute)}
-.stat .hi{color:var(--arc)}
-.mini{display:grid;grid-template-columns:repeat(32,minmax(0,1fr));gap:3px;max-width:520px}
-@media (max-width:520px){.mini{grid-template-columns:repeat(16,minmax(0,1fr))}}
-.mini i{aspect-ratio:1;border-radius:2px;background:var(--surface-3)}
-.mini i.c{background:color-mix(in srgb,var(--arc) 55%,var(--surface-3))}
-.mini i.h{background:var(--arc)}
-.draft{font-family:var(--mono);font-size:12.5px;line-height:2;color:var(--body);word-break:break-word}
-.draft u{text-decoration:none;border-bottom:2px solid var(--ok);color:var(--ink)}
-.draft s{text-decoration:none;border-bottom:2px solid var(--warn);color:var(--mute)}
-
-/* ---------- web UI mock ---------- */
-.ui{--w-side:#111b21;--w-head:#202c33;--w-chat:#0b141a;--w-in:#202c33;--w-out:#005c4b;--w-text:#e9edef;--w-muted:#8696a0;--w-line:#222d34;--w-acc:#00a884;--w-input:#2a3942;
-  display:grid;grid-template-columns:260px minmax(0,1fr);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-height:430px;font-size:13px;color:var(--w-text);color-scheme:dark;
-  box-shadow:0 60px 100px -60px rgba(0,0,0,.6)}
-.ui .side{background:var(--w-side);border-right:1px solid var(--w-line);display:flex;flex-direction:column;min-width:0}
-.ui .sh2{background:var(--w-head);padding:12px 14px;display:flex;align-items:center;justify-content:space-between;font-weight:600}
-.ui .sh2 span{font-family:var(--mono);font-weight:400;font-size:11px;color:var(--w-muted)}
-.ui .tabs{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--w-line);font-size:11.5px;flex-wrap:wrap}
-.ui .tabs b{font-weight:500;padding:3px 9px;border-radius:12px;background:var(--w-input);color:var(--w-muted)}
-.ui .tabs b.on{background:color-mix(in srgb,var(--w-acc) 25%,transparent);color:#d9fdd3}
-.ui .it{padding:11px 14px;border-bottom:1px solid var(--w-line);min-width:0}
-.ui .it.on{background:var(--w-input)}
-.ui .it b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ui .it span{display:block;color:var(--w-muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ui .main{background:var(--w-chat);display:flex;flex-direction:column;min-width:0}
-.ui .mh{background:var(--w-head);padding:10px 16px;display:flex;align-items:center;gap:10px}
-.ui .mh b{font-weight:500}
-.ui .mh span{font-family:var(--mono);font-size:11px;color:var(--w-muted);margin-left:auto}
-.ui .msgs{flex:1;padding:18px 18px 8px;display:flex;flex-direction:column;gap:10px}
-.ui .b{max-width:78%;padding:8px 11px 6px;border-radius:8px;line-height:1.5;box-shadow:0 1px .5px rgba(0,0,0,.25)}
-.ui .b.out{align-self:flex-end;background:var(--w-out)}
-.ui .b.in{align-self:flex-start;background:var(--w-in)}
-.ui .b small{display:block;text-align:right;font-size:10.5px;color:rgba(233,237,239,.6);margin-top:2px}
-.ui .tool{align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--w-muted);border:1px solid var(--w-line);border-radius:6px;padding:4px 8px;background:rgba(32,44,51,.6)}
-.ui .tool b{color:var(--w-acc);font-weight:500}
-.ui .file{display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px 8px;border-radius:6px;background:rgba(0,0,0,.18);font-size:12px}
-.ui .file i{width:22px;height:26px;border-radius:3px;background:#d0453f;flex:none}
-.ui .inp{margin:8px 14px 14px;background:var(--w-input);border-radius:8px;padding:10px 12px;color:var(--w-muted);display:flex;align-items:center;gap:10px}
-.ui .inp span{margin-left:auto;width:28px;height:28px;border-radius:50%;background:var(--w-acc);flex:none}
-@media (max-width:760px){.ui{grid-template-columns:1fr}.ui .side{display:none}}
-.uigrid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:48px;align-items:center}
-@media (max-width:980px){.uigrid{grid-template-columns:1fr}}
-.points{display:flex;flex-direction:column;gap:0}
-.points div{padding:16px 0;border-top:1px solid var(--hair)}
-.points div:last-child{border-bottom:1px solid var(--hair)}
-.points b{display:block;color:var(--ink);font-weight:600;font-size:15px}
-.points span{font-size:14px}
-
-/* ---------- code ---------- */
-.code{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-width:0}
-.code .chbar{display:flex;align-items:center;gap:4px;padding:6px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
-.code .ch{display:flex;gap:4px}
-.code .chbar button{font:inherit;font-family:var(--mono);font-size:12px;color:var(--mute);background:none;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
-.code .ch button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--hair)}
-.code .chbar .copy{margin-left:auto}
-.code pre{margin:0;padding:18px 20px;font-size:13px;line-height:1.7;overflow-x:auto;color:var(--body)}
-.code pre .c{color:var(--faint)} .code pre .s{color:var(--arc)}
-.agents{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:48px;align-items:start}
-@media (max-width:980px){.agents{grid-template-columns:1fr}}
-.apis{display:flex;flex-direction:column}
-.apis div{display:grid;grid-template-columns:110px 1fr;gap:12px;padding:12px 0;border-top:1px solid var(--hair);font-size:14px}
-.apis div:last-child{border-bottom:1px solid var(--hair)}
-.apis b{color:var(--ink);font-weight:600}
-.apis code{font-size:12.5px;color:var(--mute)}
-
-/* ---------- start ---------- */
-.steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;counter-reset:s}
-@media (max-width:860px){.steps{grid-template-columns:1fr}}
-.step{border:1px solid var(--hair);border-radius:12px;padding:24px;background:var(--surface);counter-increment:s;min-width:0}
-.step::before{content:counter(s);display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--hair-2);font-family:var(--mono);font-size:13px;color:var(--ink);margin-bottom:16px}
-.step h3{font-size:16.5px;margin-bottom:8px}
-.step p{font-size:14.5px}
-.step code{font-size:12.5px;background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--ink)}
-.need{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin-top:28px;border-top:1px solid var(--hair)}
-.need div{padding:16px 16px 0 0;font-size:14px}
-.need b{display:block;color:var(--ink);font-weight:600;font-size:13px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
-@media (max-width:860px){.need{grid-template-columns:1fr}}
-.endcta{display:flex;flex-wrap:wrap;gap:10px;margin-top:40px;align-items:center}
-.endcta .mono{font-size:12.5px;color:var(--mute);margin-left:6px}
-
-
-footer{border-top:1px solid var(--hair);padding-block:48px 64px;font-size:14px}
-footer .wrap{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr));gap:32px}
-@media (max-width:760px){footer .wrap{grid-template-columns:1fr 1fr}}
-footer h4{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);font-weight:500;margin:0 0 12px}
-footer ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-footer ul a{color:var(--body)}
-footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
+footer{border-top:1px solid var(--line);padding:32px 0 48px;color:var(--mute);font-size:.9rem}
+footer .wrap{display:flex;flex-wrap:wrap;gap:12px 28px;justify-content:space-between}
+footer a{color:var(--mute)}
 </style>
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
+<a class="skip" href="#main">Skip to the content</a>
 
-<header class="nav">
+<header>
   <div class="wrap">
-    <a class="brand" href="#top" aria-label="inferzero home">
-      <svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>
-      inferzero
-    </a>
-    <ul>
-      <li><a href="#hardware">Hardware</a></li>
-      <li><a href="#results">Results</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#agents">API</a></li>
-      <li><a href="#start">Get started</a></li>
-      <li><a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Docs</a></li>
-      <li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li>
-    </ul>
-    <div class="right">
-      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.19.01</a>
-      <a class="btn p sm" href="https://github.com/rizagp/inferzero/releases/latest">Download</a>
-    </div>
+    <a class="brand" href="#top" aria-label="inferzero, top of the page"><svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>inferzero</a>
+    <nav aria-label="Sections">
+      <a href="#what">What you get</a>
+      <a href="#need">What you need</a>
+      <a href="#start">Get started</a>
+      <a href="#speed">Speed</a>
+      <a href="#open">Open source</a>
+    </nav>
+    <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.19.01</a>
   </div>
 </header>
 
 <main id="main">
 
-<!-- ================= HERO ================= -->
-<section class="hero" id="top">
+<div class="wrap hero" id="top">
+  <div class="tags">
+    <span class="tag free">Free of charge</span>
+    <span class="tag">Open source · Apache 2.0</span>
+    <span class="tag">Windows and Linux</span>
+    <span class="tag">No cloud, no account</span>
+  </div>
+  <h1>Run AI models on your own Intel PC.</h1>
+  <p class="lead">inferzero is a free, open-source program that runs large language models (Qwen, Gemma 4, DeepSeek) on Intel's laptop graphics and Arc graphics cards. Chat with them in your browser, connect your own tools to them, and turn speech into text, all on your computer.</p>
+  <div class="btns">
+    <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>9 MB</kbd></a>
+    <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>6 MB</kbd></a>
+    <a class="btn s" href="https://github.com/rizagp/inferzero">Source code on GitHub</a>
+  </div>
+  <p class="after">The program is small; the models are downloaded separately, most of them 4 to 20 GB.</p>
+</div>
+
+<section id="what">
   <div class="wrap">
+    <div class="intro">
+      <h2>What you get</h2>
+      <p>One program, started from a small launcher window. It downloads a model for you and opens a chat in your browser.</p>
+    </div>
     <div class="grid">
-      <div>
-        <div class="eb"><b>●</b> Level Zero · Intel Arc · laptop iGPU to Pro B60</div>
-        <h1>A 35B model at 851 tok/s on the Intel laptop you already own. <span>No discrete GPU, no Python.</span></h1>
-        <p class="lede">An inference engine written from scratch for Intel Arc graphics. Qwen3.6 35B, Qwen3.8 27B and Flash Next's 52&nbsp;GB of experts run on a Core Ultra laptop with 32&nbsp;GB, and the same engine scales to four Arc Pro B60s. Every model is checked against an f32 reference, and the same prompt gives the same logits, bit for bit.</p>
-        <div class="cta">
-          <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>9 MB</kbd></a>
-          <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>6 MB</kbd></a>
-          <a class="btn s" href="#results">See the measurements</a>
-        </div>
-        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Linux: the headless server and a terminal launcher, <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md#linux">linux-x64 package</a> · <a href="#start">how to start</a> · Arc B580 / Pro B60 / Pro B70 and A770 / A750 / A580: experimental · Apache-2.0</p>
-      </div>
-      <div class="term" role="img" aria-label="A benchmark run: Qwen3.6 35B-A3B, 8,192-token prompt at 851 tok/s on a Core Ultra 5 125H, 38.1 tok/s generation with MTP and DFlash2, KL 0.0040 against f32, logits bit-identical to the previous run">
-        <div class="bar"><i></i><i></i><i></i><span>runz · Core Ultra 5 125H · 32 GB</span></div>
-        <pre id="term"></pre>
-      </div>
+      <div class="card"><h3>A chat in your browser</h3><p>Ask questions, attach images, PDFs and documents, let the model search the web, or talk to it out loud and hear it answer. Also from your phone, through a password-protected link.</p></div>
+      <div class="card"><h3>Big models on ordinary hardware</h3><p>Mixture-of-experts models larger than your memory read their parts from the SSD as needed: a 35B model runs on a laptop with 32 GB of RAM.</p></div>
+      <div class="card"><h3>Built for Intel graphics</h3><p>Made only for Intel GPUs, from the ground up. On the same laptop and the same model files, prompts are read 2.7 to 7.4 times faster than with llama.cpp.</p></div>
+      <div class="card"><h3>Works with your tools</h3><p>Speaks the OpenAI, Anthropic and Ollama APIs, so most AI apps and editors can use it. One command connects the <a href="https://pi.dev">Pi</a> coding agent.</p></div>
+      <div class="card"><h3>Speech and documents</h3><p>Transcripts of recordings and meetings (Me / Others), with summaries. PDFs and images read to text (OCR), tables kept as tables.</p></div>
+      <div class="card"><h3>Private and checked</h3><p>Everything runs on your computer. Every model is checked against an exact reference implementation, so you get the model's real quality, not a degraded copy.</p></div>
     </div>
-
-    <div class="proof">
-      <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
-      <div><div class="eb">Core Ultra X7 358H</div><b>~637<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt on Panther Lake's Arc B390, with the discrete cards' XMX path and 16 GB of decoded weights kept resident (the default since 2026.11.17.02; release 2026.11.18.06). The 285H's Arc 140T: 405.</p></div>
-      <div><div class="eb">1× Arc Pro B70</div><b>5,647<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt; it generates 95-98 tok/s. The 27B: 2,897 tok/s at 4K, 2,727 at 8K. One B60: 3,536 and 1,726. A Pro B65: 1,735. An Arc A770: 1,223.</p></div>
-      <div><div class="eb">4× Arc Pro B60</div><b>4,264<small>tok/s · 4K</small></b><b style="margin-top:4px">2,152<small>tok/s · 64K</small></b><p>Qwen3.6 35B-A3B, one model split over four cards: a 4K and a 64K-token prompt. 1,267 at 131K, 700 at 262K.</p></div>
-    </div>
-    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, commit 281b083, 2026-11-09. B390: a user on <a href="https://github.com/rizagp/inferzero/issues/1">issue #1</a>, release 2026.11.18.06 with its defaults (613-637 tok/s over four sets of three runs; 583-592 on 2026.11.16.07, 546-560 without the resident weights). 140T: <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a>, release 2026.11.18.07 with its defaults (390 on 2026.11.17.07 with <code>ARC_GEMM_XW_WGX=2</code>). B70: a user on <a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a>, native Linux: the 35B's 8K prompt on release 2026.11.17.04, its generation on 2026.11.16.15, the 27B's 4K best of 3 on main 1a7ac94 with the 2D GEMM and its prefetch (the defaults since 2026.11.17.06) and 8K on 2026.11.16.12. B580: <a href="https://github.com/rizagp/inferzero/issues/37">issue #37</a>, main 7703141, Linux, with <code>ARC_HOST_KEEP_GB=0.75</code>: 0.49 GiB of the 27B's weights in RAM on its 12 GB. A770: <a href="https://github.com/rizagp/inferzero/issues/36">issue #36</a>, release 2026.11.17.08 with <code>ARC_GEMM_SPLIT=17</code>, the default on Alchemist since 2026.11.18.02 (the Arc 140T preset); its generation on <a href="https://github.com/rizagp/inferzero/issues/45">issue #45</a>, release 2026.11.18.07 with <code>ARC_BATCH=64</code>, the default on Alchemist on Windows since 2026.11.18.08 (12.8 before). B65: <a href="https://github.com/rizagp/inferzero/issues/47">issue #47</a>, release 2026.11.18.08, Linux (bench/website_bench.sh). B60s: <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, release 2026.11.17.08 (one card, the 4K prompt; the 35B on 2026.11.14.09); four cards: the 4K prompt on 2026-11-02, the long prompts on release 2026.11.14.05.</p>
   </div>
 </section>
 
-<!-- ================= HARDWARE LADDER ================= -->
-<section id="hardware">
+<section id="need">
   <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Hardware</div>
-        <h2>One engine, from a laptop iGPU to four Pro B60s. <span>The same Qwen3.8 27B file on every machine.</span></h2>
-      </div>
-      <p>The engine was built and tuned on a Core Ultra 5 125H, which has no matrix engines. Where a GPU has XMX, the prompt's matrix products move onto it after a start-up check against the DP4a kernels. One model can be split over several cards with <code>--gpus N</code>; where the driver offers peer access (Linux) the sums go straight from GPU to GPU. Discrete cards are experimental, their defaults set from their owners' runs.</p>
+    <div class="intro">
+      <h2>What you need</h2>
+      <p>An Intel GPU from the last few years. Nothing else to install: no Python, no compiler, no account.</p>
     </div>
-    <div class="charts">
-      <div>
-        <div class="cap"><span>Prompt · tok/s</span><span>4K prompt unless noted</span></div>
-        <div class="row me"><span class="n">Core Ultra 5 125H<small>Xe-LPG · DP4a · 8K</small></span><span class="t"><span class="f" style="width:4.5%"></span></span><span class="v">135</span></div>
-        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · 2026.11.18.07 defaults</small></span><span class="t"><span class="f" style="width:13.6%"></span></span><span class="v">405</span></div>
-        <div class="row"><span class="n">Core Ultra X7 358H<small>Arc B390 · 2026.11.18.06</small></span><span class="t"><span class="f" style="width:21.4%"></span></span><span class="v">637</span></div>
-        <div class="row"><span class="n">1× Arc Pro B60<small>Windows · 2026.11.17.08</small></span><span class="t"><span class="f" style="width:58.1%"></span></span><span class="v">1,726</span></div>
-        <div class="row"><span class="n">1× Arc B580<small>12 GB · PCIe 3.0 · Linux · ARC_HOST_KEEP_GB=0.75</small></span><span class="t"><span class="f" style="width:63.2%"></span></span><span class="v">1,877</span></div>
-        <div class="row"><span class="n">1× Arc Pro B65<small>32 GB · Linux · 2026.11.18.08</small></span><span class="t"><span class="f" style="width:58.4%"></span></span><span class="v">1,735</span></div>
-        <div class="row"><span class="n">1× Arc A770<small>Alchemist · 2026.11.18.02 defaults</small></span><span class="t"><span class="f" style="width:41.2%"></span></span><span class="v">1,223</span></div>
-        <div class="row"><span class="n">1× Arc Pro B70<small>Linux · main 7368768, ARC_H8_NORM</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,972</span></div>
-        <div class="row"><span class="n">2× Arc Pro B60<small>Windows · 2026.11.13.05</small></span><span class="t"><span class="f" style="width:53.7%"></span></span><span class="v">1,597</span></div>
-        <div class="row"><span class="n">3× Arc Pro B60<small>Windows · 2026.11.13.11</small></span><span class="t"><span class="f" style="width:58.0%"></span></span><span class="v">1,724</span></div>
-        <div class="row"><span class="n">4× Arc Pro B60<small>Windows · 2026.11.13.05</small></span><span class="t"><span class="f" style="width:63.5%"></span></span><span class="v">1,888</span></div>
-      </div>
-      <div>
-        <div class="cap"><span>Generation · tok/s</span><span>plain decoding</span></div>
-        <div class="row me"><span class="n">Core Ultra 5 125H<small>12.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:9.6%"></span></span><span class="v">5.1</span></div>
-        <div class="row"><span class="n">Core Ultra 9 285H<small>16.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:11.3%"></span></span><span class="v">6.0</span></div>
-        <div class="row"><span class="n">1× Arc B580<small>12 GB · 0.49 GiB of weights in RAM over PCIe 3.0</small></span><span class="t"><span class="f" style="width:13.4%"></span></span><span class="v">7.1</span></div>
-        <div class="row"><span class="n">1× Arc Pro B65<small>46.7 with MTP · Linux · 2026.11.18.08</small></span><span class="t"><span class="f" style="width:40.8%"></span></span><span class="v">21.6</span></div>
-        <div class="row"><span class="n">1× Arc A770<small>31.3 with MTP · ARC_BATCH=64, the default since 2026.11.18.08</small></span><span class="t"><span class="f" style="width:42.9%"></span></span><span class="v">22.7</span></div>
-        <div class="row"><span class="n">1× Arc Pro B60<small>2026.11.14.09</small></span><span class="t"><span class="f" style="width:42.8%"></span></span><span class="v">22.7</span></div>
-        <div class="row"><span class="n">1× Arc Pro B70<small>70.6 with MTP · Linux · 2026.11.16.02</small></span><span class="t"><span class="f" style="width:66.4%"></span></span><span class="v">35.2</span></div>
-        <div class="row"><span class="n">2× Arc Pro B60<small>Linux, GPU to GPU · 11-14</small></span><span class="t"><span class="f" style="width:71.3%"></span></span><span class="v">37.8</span></div>
-        <div class="row"><span class="n">3× Arc Pro B60<small>Windows · run of 2026-10-31</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
-        <div class="row"><span class="n">4× Arc Pro B60<small>Windows · run of 2026-10-31</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
-      </div>
-    </div>
-    <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
-    <div class="src">Qwen3.8 27B GSQ-RCO IQ3_S; the laptop's prompt is 8K, the others 4K. Each bar is one user's run, with its release. The B70's prompt is a Pro B70 on native Linux (<a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a>, main 7368768 with <code>ARC_H8_NORM=1</code>, the norm and the H8 rotation in one kernel, the default on discrete cards since 2026-11-18 (2,890 without it); with the flash attention of PR #29, the decoded weights kept resident, the H8 GEMM in 2D messages with its prefetch; 2,105 tok/s on another B70 under Windows before the weight prefetch, <a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>); its generation bar is the same Linux B70 with the GEMV rows of joshdev-de's branch (the MTP figure through serverz, 4 drafts). The B580 (<a href="https://github.com/rizagp/inferzero/issues/37">issue #37</a>, commit 7703141, PCIe 3.0) cannot hold all of the 27B's weights beside its buffers: with <code>ARC_HOST_KEEP_GB=0.75</code> 0.49 GiB of them stay in RAM (1.94 tok/s generation with the old 2.24 GiB there). The several-B60 bars (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>) are from before the weight prefetch that took one B60 from 1,322 to 1,522 tok/s, and newer runs are coming.
-      <ul>
-        <li>One Pro B70 (<a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a>, Linux), long prompts with main 7368768: the 27B 64K at 2,131 tok/s, 131K 1,614 (attention 31 / 48 % of the time), generation after them 30.1 / 26.3 tok/s; the 35B-A3B 64K 4,337. Qwen3.6 35B-A3B: an 8K prompt at 5,647 tok/s (2026.11.17.04), 4K 5,177 and 16K 5,445 (2026.11.17.03 / .04); generation 95.3-97.6 tok/s once its kernels are cached (2026.11.16.15). Qwen3.8 Flash Next on the same card, 46 % of its 52 GB of experts in the card's memory: 4K prompt 1,414 (2026.11.17.04, the expert gate / up through the XMX GEMM), 16K 1,145 (before it); generation 38.6 tok/s over 256 tokens after a README prompt, when the expert cache holds what the text uses (6.6 in the 64-token benchmark, which starts with it cold; the rest of the experts come from RAM).</li>
-        <li>One Arc B580 12 GB (<a href="https://github.com/rizagp/inferzero/issues/37">issue #37</a>, Linux, PCIe 3.0, commit 7703141), 4K prompts: Qwen3.5 4B 7,915 tok/s and generation 92.6, Qwen3.5 9B 5,341 and 56.5, Qwen3.6 35B-A3B 2,469 and 84.7. The 27B by default (commit 438dfc4, 1.02 GiB of its weights in RAM): 1,783 and 3.53 tok/s.</li>
-        <li>One Arc A770 16 GB (<a href="https://github.com/rizagp/inferzero/issues/35">issue #35</a>, Windows): Qwen3.5 4B's 4K prompt 4,821 tok/s through the Arc 140T preset (release 2026.11.18.02, the default since 2026.11.18.03), Qwen3.5 9B 2,969-3,017 (2026.11.17.08). Two A770s, no peer access: the 27B's prompt 1,126 against one card's 1,169 and generation 12.2 against 12.6-12.8, the sums' host round trips 73.5 ms of an 81 ms token (<code>ARC_TP_EVSUM=1</code>, opt-in since 2026.11.18.05, is for that).</li>
-        <li>One B60 with MTP: the 27B generates 51.6 tok/s, the 35B 82.4 and 111.9 (release 2026.11.13.11). The 35B's 4K prompt: 3,536 tok/s (2026.11.14.09).</li>
-        <li>On Windows the B60s have no peer access, so several cards add their sums through host memory. On Linux two B60s (<a href="https://github.com/rizagp/inferzero/issues/17">issue #17</a>, PCIe 4.0 x8 each) sum straight from GPU to GPU: a 4K prompt at 1,630 tok/s against 1,442 through host memory, generation 37.8 against 36.1, the same logits.</li>
-        <li>A card on a slow link sets the pace: one in an x4 slot (2.4 GB/s, <a href="https://github.com/rizagp/inferzero/issues/19">issue #19</a>, another 27B file) makes two cards half as fast as one on the prompt (620 against 1,223 tok/s).</li>
-        <li>Qwen3.8 Flash Next (52 GB of experts) over 1 / 2 / 4 B60s: a 4K prompt at 665 / 1,202 / 1,491 tok/s, generation 5.7 / 34.4 / 32.7 (2026-11-13).</li>
-        <li>DeepSeek-V4.1-Flash (ISTA's IQ2_XS) next to 1 TB of RAM: generation 10.3 / 18.0 / 16.6 / 17.6 tok/s over 1 / 2 / 3 / 4 B60s (release 2026.11.14.09). Unsloth's UD-Q8_K_XL over 4 B60s with 32 GiB of its experts per card kept in RAM (the default since 2026.11.16.16): a 512-token prompt at 24.0 tok/s, generation 9.25 (3.55 without).</li>
-        <li>Panther Lake's Arc B390 (<a href="https://github.com/rizagp/inferzero/issues/1">issue #1</a>, Core Ultra X7 358H, 128 GB of DDR5-5600): the 27B's 4K prompt 258-268 tok/s on the plain XMX path, 546-560 with H8 on the wide-tile GEMM (the default since 2026.11.17.01), KL 0.0018 between the two, 583-592 with 16 GB of decoded weights resident as well (the default since 2026.11.17.02), 634-637 on release 2026.11.18.06; the 35B's 4K prompt 1,370 and generation 26 tok/s, 46 with MTP.</li>
-      </ul>
-      Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>. Have a card? <code>bench\website_bench.ps1</code> and <code>bench\decode_try.ps1</code> print everything needed; post the output on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>.</div>
-    <div class="tbl" style="margin-top:40px">
-      <table>
-        <tr><th>4× Arc Pro B60, long prompts</th><th class="r">64K prompt</th><th class="r">131K prompt</th><th class="r">262K prompt</th><th class="r">Generation after 131K</th><th class="r">after 262K</th></tr>
-        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">2,152<small>30 s</small></td><td class="r">1,267<small>1.7 min</small></td><td class="r">700<small>6.2 min</small></td><td class="r">44.5</td><td class="r">37.0</td></tr>
-        <tr><td>Qwen3.8 27B</td><td class="r">1,258<small>52 s</small></td><td class="r">970<small>2.3 min</small></td><td class="r">640<small>6.8 min</small></td><td class="r">32.2</td><td class="r">29.0</td></tr>
-        <tr><td>Qwen3.8 Flash Next <span class="tag">MoE</span></td><td class="r">948<small>69 s</small></td><td class="r">778<small>2.8 min</small></td><td class="r">526<small>8.3 min</small></td><td class="r">26.9</td><td class="r">22.4</td></tr>
-      </table>
-    </div>
-    <p class="src">One run per model and length on a user's four Arc Pro B60s (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, Windows, sums through host memory), release 2026.11.14.05, 2026-11-14: <code>runz --gpus 4 --bench-pp N --n 32</code>. Prompt in tok/s, the middle of three passes, with the time it took; the passes spread most for the 35B at 64K (1,857-2,187, the first pass the slowest) and 131K (1,230-1,360), and for the 27B at 262K (634-662). Generation is 32 tokens right after the prompt. Files: 35B UD-IQ4_XS, 27B and Flash Next GSQ-RCO IQ3_S.</p>
+    <dl class="need">
+      <dt>System</dt>
+      <dd>Windows 11 (64-bit), or Linux (Ubuntu 24.04 or newer; other distributions work too).</dd>
+      <dt>Intel graphics</dt>
+      <dd>A laptop or PC with <b>Core Ultra and Arc graphics</b> (Meteor Lake, Lunar Lake, Arrow Lake H, Panther Lake), or an <b>Arc graphics card</b>: A-series (A770, A750, A580) or B-series (B580, Pro B60, Pro B65, Pro B70). One model can also be split over several cards.</dd>
+      <dt>Memory</dt>
+      <dd>16 GB of RAM for the small models (Qwen3.5 4B and 9B, Gemma 4 E4B); 32 GB for the 12B to 35B ones and Qwen3.8 Flash Next. A graphics card's own memory counts too.</dd>
+      <dt>Disk</dt>
+      <dd>4 to 20 GB per model (Flash Next, the largest: about 85 GB); an SSD for the mixture-of-experts models.</dd>
+      <dt>Driver</dt>
+      <dd>Intel's graphics driver on Windows; on Linux, Intel's compute runtime and Level Zero loader.</dd>
+    </dl>
   </div>
 </section>
 
-<!-- ================= VS LLAMA.CPP ================= -->
-<section id="compare">
+<section id="start">
   <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Against llama.cpp</div>
-        <h2>2.7 to 7.4 times faster prompts on the same file. <span>And a lower perplexity.</span></h2>
-      </div>
-      <p>Same GGUF files, same laptop, llama.cpp's Vulkan and SYCL back ends. Every matrix product of a prompt runs on the iGPU's int8 DP4a units, with activations quantized per row and checked against an f32 reference.</p>
+    <div class="intro">
+      <h2>Get started</h2>
+      <p>About five minutes, plus the model's download.</p>
     </div>
-    <div class="cmp">
-      <div>
-        <h3>Qwen3.8 27B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
-        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">113</span></div>
-        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:22.1%"></span></span><span class="v">25</span></div>
-        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:20.4%"></span></span><span class="v">23</span></div>
+    <div class="steps">
+      <div class="card">
+        <h3>Windows</h3>
+        <ol class="go">
+          <li>Download <code>inferzero-…-win64.zip</code> from the <a href="https://github.com/rizagp/inferzero/releases/latest">latest release</a> and unpack it anywhere.</li>
+          <li>Double-click <code>zero-launcher.cmd</code>. (Windows may ask once: "More info", then "Run anyway".)</li>
+          <li>Pick a model (the one that suits your RAM is ticked) and press <b>Download and start</b>. The chat opens in your browser.</li>
+        </ol>
       </div>
-      <div>
-        <h3>Qwen3.8 27B, 34K-token code prompt</h3><p class="note">seconds to the first token, lower is better</p>
-        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:13.5%"></span></span><span class="v">327 s</span></div>
-        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:67.2%"></span></span><span class="v">1,624 s</span></div>
-        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,418 s</span></div>
-      </div>
-      <div>
-        <h3>Qwen3.5 4B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
-        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">911</span></div>
-        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:37%"></span></span><span class="v">337</span></div>
-        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:26.6%"></span></span><span class="v">242</span></div>
+      <div class="card">
+        <h3>Linux</h3>
+        <ol class="go">
+          <li>Download <code>inferzero-…-linux-x64.tar.gz</code> from the <a href="https://github.com/rizagp/inferzero/releases/latest">latest release</a> and unpack it.</li>
+          <li>Run <code>./zero-launcher.sh</code>: a menu in the terminal.</li>
+          <li>Pick a model; it downloads it and starts the server. Open the address it shows in your browser.</li>
+        </ol>
       </div>
     </div>
-    <div class="tbl" style="margin-top:40px">
-      <table>
-        <tr><th>Perplexity, same file, lower is better</th><th class="r">inferzero</th><th class="r">llama.cpp Vulkan</th><th class="r">llama.cpp SYCL</th></tr>
-        <tr><td>Qwen3.5 4B</td><td class="r hl">6.056</td><td class="r">6.141</td><td class="r">6.138</td></tr>
-        <tr><td>Qwen3.5 9B</td><td class="r hl">5.417</td><td class="r">5.499</td><td class="r">5.497</td></tr>
-        <tr><td>Qwen3.8 27B</td><td class="r hl">4.274</td><td class="r">4.311</td><td class="r">4.310</td></tr>
-      </table>
+    <div class="card" style="margin-top:16px">
+      <h3>From your own apps</h3>
+      <p>While it runs, the server answers at <code>http://127.0.0.1:8090</code> like the OpenAI API:</p>
+<pre>curl http://127.0.0.1:8090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'</pre>
+      <p class="note">Step by step, with every option: the <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">usage guide</a>. Building from source: <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">install and build</a>.</p>
     </div>
-    <p class="src">Core Ultra 5 125H, 32 GB, 2026-10-25. After the 34K prompt the 27B generates 3.7 tok/s, against 2.1 (Vulkan) and 1.1 (SYCL). How each number was measured: <a href="https://github.com/rizagp/inferzero/blob/main/docs/before-after.md">docs/before-after.md</a>.</p>
   </div>
 </section>
 
-<!-- ================= RESULTS ================= -->
-<section id="results">
+<section id="speed">
   <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Results</div>
-        <h2>Every model on one laptop, from 128 tokens to 131K. <span>With its error against f32.</span></h2>
-      </div>
-      <p>One script measures it all, <code>bench/website_bench.ps1</code>: prompt speed and time to the first token at each size, generation at that depth, the drafting modes, and the KL divergence of the next-token distribution from an independent f32 CPU implementation. The limit is 0.015 for every model, and about 0.02 for Flash Next's fast mode.</p>
+    <div class="intro">
+      <h2>How fast</h2>
+      <p>The same model (Qwen3.8 27B) on each kind of hardware, measured by the people who own it. Tokens per second: higher is faster; a word is about 1.3 tokens.</p>
     </div>
     <div class="tbl">
       <table>
-        <tr><th>Model</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
-        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">851<small>9.6 s</small></td><td class="r">637<small>51 s</small></td><td class="r">324<small>6.7 min</small></td><td class="r">21.6</td><td class="r hl">38.1<small>MTP + DFlash2</small></td><td class="r kl-ok">0.0040</td></tr>
-        <tr><td>Qwen3.8 Flash Next <span class="tag">MoE</span></td><td class="r">205<small>40 s</small></td><td class="r">174<small>3.1 min</small></td><td class="r">146<small>15 min</small></td><td class="r">6.3</td><td class="r hl">7.6<small>DFlash2</small></td><td class="r kl-ok">0.0117<small>limit ~0.02</small></td></tr>
-        <tr><td>Qwen3.8 27B</td><td class="r">135<small>61 s</small></td><td class="r">125<small>4.4 min</small></td><td class="r">81<small>27 min</small></td><td class="r">5.1</td><td class="r hl">12.9<small>MTP + DFlash2</small></td><td class="r kl-ok">0.0005</td></tr>
-        <tr><td>Gemma 4 26B-A4B <span class="tag">MoE</span></td><td class="r">232<small>35 s</small></td><td class="r">124<small>4.4 min</small></td><td class="r">44<small>50 min</small></td><td class="r">19.8</td><td class="r">–</td><td class="r kl-ok">0.0048</td></tr>
-        <tr><td>Qwen3.5 9B</td><td class="r">487<small>17 s</small></td><td class="r">435<small>75 s</small></td><td class="r">278<small>7.8 min</small></td><td class="r">11.8</td><td class="r hl">21.6<small>MTP</small></td><td class="r kl-ok">0.0014</td></tr>
-        <tr><td>Gemma 4 E4B</td><td class="r">707<small>12 s</small></td><td class="r">494<small>66 s</small></td><td class="r">222<small>9.8 min</small></td><td class="r">19.1</td><td class="r hl">41.8<small>drafter</small></td><td class="r kl-ok">0.0027</td></tr>
-        <tr><td>Qwen3.5 4B</td><td class="r">896<small>9.2 s</small></td><td class="r">705<small>47 s</small></td><td class="r">366<small>6.0 min</small></td><td class="r">21.0</td><td class="r hl">35.8<small>MTP</small></td><td class="r kl-ok">0.0010</td></tr>
+        <thead><tr><th>Hardware</th><th class="n">Reading a prompt</th><th class="n">Writing an answer</th></tr></thead>
+        <tbody>
+          <tr><td>Core Ultra 5 125H laptop <small>(where it started)</small></td><td class="n">135</td><td class="n">5.1 <small>(12.9 with drafting)</small></td></tr>
+          <tr><td>Core Ultra 9 285H laptop <small>(Arc 140T)</small></td><td class="n">405</td><td class="n">6.0 <small>(16.9 with drafting)</small></td></tr>
+          <tr><td>Core Ultra X7 358H laptop <small>(Arc B390)</small></td><td class="n">637</td><td class="n">–</td></tr>
+          <tr><td>Arc A770 16 GB</td><td class="n">1,223</td><td class="n">22.7 <small>(31.3 with drafting)</small></td></tr>
+          <tr><td>Arc Pro B60</td><td class="n">1,726</td><td class="n">22.7</td></tr>
+          <tr><td>Arc Pro B65</td><td class="n">1,735</td><td class="n">21.6 <small>(46.7 with drafting)</small></td></tr>
+          <tr><td>Arc B580 12 GB</td><td class="n">1,877</td><td class="n">7.1 <small>(the model barely fits)</small></td></tr>
+          <tr><td>Arc Pro B70</td><td class="n">2,972</td><td class="n">35.2 <small>(70.6 with drafting)</small></td></tr>
+          <tr><td>4 × Arc Pro B60, one model split</td><td class="n">1,888</td><td class="n">53</td></tr>
+        </tbody>
       </table>
     </div>
-    <p class="src">Core Ultra 5 125H, 32 GB, Windows 11; commit 281b083, 2026-11-09 (the 27B's 131K row and Gemma's KL measured again 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for a 256-token coding answer; KL over 480 tokens of USAGE.md. Drafting never changes the text: the drafts are checked by the full model, so the answer is the one plain decoding gives.</p>
-    <div class="tbl" style="margin-top:40px">
-      <table>
-        <tr><th>1× Arc Pro B60, a user's run of 2026-11-10</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
-        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">3,652<small>2.2 s</small></td><td class="r">2,710<small>12 s</small></td><td class="r">1,302<small>1.7 min</small></td><td class="r">56.9</td><td class="r hl">109.0<small>MTP</small></td><td class="r kl-ok">0.0056</td></tr>
-        <tr><td>Qwen3.8 27B</td><td class="r">1,022<small>8.0 s</small></td><td class="r">809<small>41 s</small></td><td class="r">420<small>5.2 min</small></td><td class="r">23.7</td><td class="r hl">52.0<small>MTP</small></td><td class="r kl-ok">0.0011</td></tr>
-        <tr><td>Gemma 4 12B</td><td class="r">644<small>13 s</small></td><td class="r">377<small>87 s</small></td><td class="r">144<small>15 min</small></td><td class="r">38.0</td><td class="r hl">73.1<small>drafter</small></td><td class="r">–</td></tr>
-        <tr><td>Qwen3.5 9B</td><td class="r">3,095<small>2.6 s</small></td><td class="r">2,569<small>13 s</small></td><td class="r">1,425<small>1.5 min</small></td><td class="r">52.1</td><td class="r hl">83.3<small>MTP</small></td><td class="r kl-ok">0.0025</td></tr>
-        <tr><td>Qwen3.5 4B</td><td class="r">4,630<small>1.8 s</small></td><td class="r">3,196<small>10 s</small></td><td class="r">1,430<small>1.5 min</small></td><td class="r">64.2</td><td class="r hl">128.9<small>MTP</small></td><td class="r kl-ok">0.0020</td></tr>
-      </table>
-    </div>
-    <p class="src">Arc Pro B60 (24 GB), the same <code>bench/website_bench.ps1</code> run by a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>; commit 97d225b, 2026-11-10. <b>Older than the card's speed now:</b> it predates the weight prefetch, on by default since release 2026.11.14.09, and a run on release 2026.11.14.12 has been asked for; this table will be replaced by it as a whole. The 35B is the UD-IQ4_XS file. Gemma 4 12B's KL is left out: that day's check read the wrong rows for it (fixed 2026-11-11).</p>
-    <div class="tbl" style="margin-top:28px">
-      <table>
-        <tr><th>1× Arc Pro B60, release 2026.11.14.09</th><th class="r">4K prompt</th><th class="r">16K prompt</th><th class="r">Generation</th></tr>
-        <tr><td>Qwen3.8 27B</td><td class="r">1,522<small>2.7 s</small></td><td class="r">1,359<small>12 s</small></td><td class="r">22.7</td></tr>
-        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">3,536<small>1.2 s</small></td><td class="r">–</td><td class="r">73.8</td></tr>
-      </table>
-    </div>
-    <p class="src">The same user's card, 2026-11-14 (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>): each row's 4K prompt and generation from one <code>runz --bench-pp 4096 --n 128</code>, the 27B's 16K from <code>--bench-pp 16384 --n 0</code> in the same session. A second 27B run gave 1,524 and 23.3. Generation is 128 tokens after a 4K prompt, so it does not compare with the 256-token column above. The prefetch took the 27B's 4K prompt from 1,322 tok/s (release 2026.11.14.05) to 1,522.</p>
+    <p class="note">Prompts of 4,000 tokens (8,000 on the 125H). Smaller models are several times faster: the Qwen3.5 4B reads 7,900 tokens a second on an Arc B580. Every result, with its release and how it was measured: <a href="https://github.com/rizagp/inferzero/blob/main/docs/before-after.md">measured results</a>.</p>
   </div>
 </section>
 
-<!-- ================= FEATURES ================= -->
-<section id="features">
+<section id="open">
   <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">What it does</div>
-        <h2>Built for long documents and coding agents. <span>On hardware that was never meant for it.</span></h2>
+    <div class="open">
+      <h2>Free and open source</h2>
+      <p class="big">inferzero costs nothing and never will. Its source code is public under the Apache 2.0 license: use it, change it, share it, at home or at work.</p>
+      <ul>
+        <li>No account, no subscription, no ads, no telemetry.</li>
+        <li>Your conversations stay on your computer. It goes online only to download models, and to search the web when you turn that on.</li>
+        <li>Built in the open, and still far from what Intel's chips can do. You can help: run one benchmark on your hardware and share it, report a problem, or improve the code.</li>
+      </ul>
+      <div class="btns">
+        <a class="btn p" href="https://github.com/rizagp/inferzero/blob/main/CONTRIBUTING.md">How to help</a>
+        <a class="btn s" href="https://github.com/rizagp/inferzero/issues">Report a problem</a>
+        <a class="btn s" href="https://github.com/rizagp/inferzero">Source code</a>
       </div>
-      <p>An OpenAI-, Anthropic- and Ollama-compatible server with a web UI, in one 8 MB download. No compiler, no Python, no CUDA.</p>
-    </div>
-    <div class="bento">
-      <article class="card w3">
-        <div class="eb">Mixture of experts</div>
-        <h3>Models larger than the GPU's memory</h3>
-        <p>Only the experts in use stay in GPU memory. The next layer's missing experts are read from the SSD while the GPU computes the current one, so Flash Next's 52 GB of experts run on a 32 GB laptop. The launcher can pack such a model so its experts are stored once, not twice: Gemma 4 26B takes 14.8 GB instead of 27.7.</p>
-        <div class="fig" aria-hidden="true">
-          <div class="mini" id="mini"></div>
-        </div>
-        <div class="stat"><div><span>Qwen3.6 35B-A3B experts cached on the laptop</span><b>83 %</b></div><div><span>context with the automatic setting</span><b class="hi">131,072 tokens</b></div></div>
-      </article>
-      <article class="card w3">
-        <div class="eb">Speculative decoding</div>
-        <h3>Faster generation, the same answer</h3>
-        <p>The model's own MTP block and a DFlash2 drafter guess up to 7 tokens; the full model checks them in one pass. Accepted drafts are the tokens plain decoding would have picked.</p>
-        <div class="fig draft" role="img" aria-label="Example: drafted tokens, accepted ones underlined in green, a rejected one in orange">
-          def <u>get</u><u>(self,</u> <u>key):</u> <u>node</u> <u>=</u> <s>self.cache</s> self._map.get(key)
-        </div>
-        <div class="stat"><div><span>35B, coding answer</span><b class="hi">21.6 → 38.1 tok/s</b></div><div><span>27B on one B60</span><b class="hi">23.2 → 49.3 tok/s</b></div></div>
-      </article>
-      <article class="card w2">
-        <div class="eb">Deterministic</div>
-        <h3>The same logits, bit for bit</h3>
-        <p>Run after run, whatever the expert cache size. Every speed change is held to that, or to a measured KL below 0.015.</p>
-      </article>
-      <article class="card w2">
-        <div class="eb">Caches</div>
-        <h3>Conversations that do not start over</h3>
-        <p>A new message only processes itself. After a 20K-token tool result, a one-line follow-up on Gemma 4 E4B takes 0.8 s instead of 38 s.</p>
-      </article>
-      <article class="card w2">
-        <div class="eb">Documents</div>
-        <h3>Long files, read properly</h3>
-        <p>Whole when the context takes it, else by outline, pages or search. OCR turns scanned PDFs into Markdown, tables as tables. Answers name their page.</p>
-      </article>
-      <article class="card w6">
-        <div class="eb">NPU</div>
-        <h3>The laptop's NPU reads part of the prompt</h3>
-        <p>With <code>--npu on</code>, the Core Ultra's NPU (Intel AI Boost) computes part of each long prompt chunk's matrix products while the GPU computes the rest, through Level Zero, without OpenVINO. Dense models gain; mixture-of-experts and small models gain nothing, so they leave it off by themselves. Generation does not change. Measured on a Core Ultra 5 125H; newer NPUs (Lunar Lake, Panther Lake) are untested: <code>bench\npu_try.ps1</code> measures yours.</p>
-        <div class="stat"><div><span>Qwen3.8 27B, 4K prompt</span><b class="hi">133 → 153-162 tok/s</b></div><div><span>Gemma 4 12B, 4K prompt</span><b class="hi">+10 %</b></div><div><span>27B, KL against f32</span><b>0.0028-0.0031</b></div></div>
-      </article>
-    </div>
-  </div>
-</section>
-
-<!-- ================= WEB UI ================= -->
-<section id="webui">
-  <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Web UI</div>
-        <h2>A chat that searches, reads and listens. <span>At 127.0.0.1:8090, or from your phone.</span></h2>
-      </div>
-      <p>The server ships its own web UI: chats with files and projects, web search, a voice conversation, and tabs for transcripts and meetings. Through a Cloudflare Tunnel with a password it works from anywhere, installable as an app.</p>
-    </div>
-    <div class="uigrid">
-      <div class="ui" role="img" aria-label="The inferzero web UI: a list of chats on the left, a conversation on the right where the model searches the web and reads an attached PDF">
-        <div class="side">
-          <div class="sh2">inferzero <span>35B-A3B</span></div>
-          <div class="tabs"><b class="on">Chats</b><b>Transcripts</b><b>Meetings</b><b>Projects</b></div>
-          <div class="it on"><b>Q3 report: revenue by region</b><span>The PDF's table on page 14 shows…</span></div>
-          <div class="it"><b>LRU cache in Python</b><span>Here is a module with unit tests…</span></div>
-          <div class="it"><b>Weekly meeting, 4 Nov</b><span>Minutes: three decisions, two owners…</span></div>
-          <div class="it"><b>Level Zero events</b><span>An event pool needs the host-visible…</span></div>
-        </div>
-        <div class="main">
-          <div class="mh"><b>Q3 report: revenue by region</b><span>ctx 131,072 · 20.4 tok/s</span></div>
-          <div class="msgs">
-            <div class="b out">Which region grew fastest, and how does that compare with the analysts' forecast?<div class="file"><i></i>q3-report.pdf · 48 pages</div><small>09:41</small></div>
-            <div class="tool"><b>read_file</b> q3-report.pdf, pages 12-15 · <b>web_search</b> "Q3 regional forecast"</div>
-            <div class="b in">Asia-Pacific grew fastest at 18.4 % year on year (page 14, table 3). Two analyst notes from October had forecast 12-14 %, so it beat the forecast by about 5 points.<small>09:42</small></div>
-          </div>
-          <div class="inp">Message, or hold the microphone to talk<span></span></div>
-        </div>
-      </div>
-      <div class="points">
-        <div><b>Web search and pages</b><span>The model searches and reads pages itself; the server asks Brave, Bing, DuckDuckGo and Wikipedia at once and merges their results, public addresses only.</span></div>
-        <div><b>Voice conversation</b><span>The microphone stays open; it answers aloud sentence by sentence and can be interrupted.</span></div>
-        <div><b>Transcripts and meetings</b><span>Qwen3-ASR or Whisper large-v3 write recordings down, with speakers and summaries.</span></div>
-        <div><b>Projects</b><span>Folders with their AGENTS.md, memory and MCP servers.</span></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ================= AGENTS / API ================= -->
-<section id="agents">
-  <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">For agents</div>
-        <h2>Speaks the APIs your tools already use. <span>Plugs into Pi with one command.</span></h2>
-      </div>
-      <p>Prompt and session caches mean an agent's growing context is processed once. Tool calls are constrained to their JSON schema while they are sampled, so they stay well formed. Two sessions can share one model, their tokens computed in the same pass.</p>
-    </div>
-    <div class="agents">
-      <div class="apis">
-        <div><b>OpenAI</b><code>POST /v1/chat/completions · /v1/completions · /v1/models · /v1/audio/transcriptions</code></div>
-        <div><b>Anthropic</b><code>POST /v1/messages · /v1/messages/count_tokens</code></div>
-        <div><b>Ollama</b><code>POST /api/chat · /api/generate · GET /api/tags</code></div>
-        <div><b>Tools</b><code>web_search · web_fetch · web_view · remember · forget</code></div>
-      </div>
-      <div class="code">
-        <div class="chbar">
-        <div class="ch" role="tablist" aria-label="Examples">
-          <button role="tab" aria-selected="true" aria-controls="code-curl" data-k="curl" id="tab-curl">curl</button>
-          <button role="tab" aria-selected="false" aria-controls="code-pi" data-k="pi" id="tab-pi" tabindex="-1">Pi</button>
-          <button role="tab" aria-selected="false" aria-controls="code-server" data-k="server" id="tab-server" tabindex="-1">server</button>
-        </div>
-        <button class="copy" type="button" id="copy">Copy</button>
-        </div>
-        <pre id="code-curl" role="tabpanel" aria-labelledby="tab-curl" tabindex="0"><span class="c"># any OpenAI client works the same way</span>
-curl http://127.0.0.1:8090/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "35b", "stream": true,
-       "messages": [{"role": "user",
-                     "content": <span class="s">"Summarize docs/architecture.md"</span>}]}'</pre>
-        <pre id="code-pi" role="tabpanel" aria-labelledby="tab-pi" tabindex="0" hidden><span class="c"># starts the server in the background if needed,</span>
-<span class="c"># then opens the Pi coding agent on it</span>
-zero-pi 35b
-
-<span class="c"># switch models from inside Pi, or run two sessions at once</span>
-zero-server start -Model 27b -Slots 2</pre>
-        <pre id="code-server" role="tabpanel" aria-labelledby="tab-server" tabindex="0" hidden><span class="c"># the server on its own, any GGUF</span>
-.\bin\serverz.exe --model C:\hf\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf `
-  --ctx auto --port 8090
-
-<span class="c"># the web UI: http://127.0.0.1:8090/</span></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ================= START ================= -->
-<section id="start">
-  <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Get started</div>
-        <h2>Three steps, about five minutes. <span>Plus the model download.</span></h2>
-      </div>
-      <p>The launcher ticks the model that suits your RAM, downloads it with resume and a checksum, and opens the web UI when the server is ready.</p>
-    </div>
-    <div class="steps">
-      <div class="step"><h3>Download</h3><p>From the latest release, <code>inferzero-&lt;version&gt;-win64.zip</code> for Windows or <code>inferzero-&lt;version&gt;-linux-x64.tar.gz</code> for Linux. Unpack it anywhere.</p></div>
-      <div class="step"><h3>Start</h3><p>Windows: double-click <code>zero-launcher.cmd</code> (Windows may ask once: "More info", then "Run anyway"). Linux: run <code>./zero-launcher.sh</code> in a terminal.</p></div>
-      <div class="step"><h3>Pick a model</h3><p>Choose one and download it; the server starts when it is ready. The web UI is at <code>127.0.0.1:8090</code>.</p></div>
-    </div>
-    <div class="need">
-      <div><b>System</b>Windows 11, 64-bit, with Intel's graphics driver. Or Linux (Ubuntu 24.04 and newer; users run CachyOS too) with Intel's compute runtime (nothing else: no Python): unpack <code>inferzero-&lt;version&gt;-linux-x64.tar.gz</code> and run <code>./zero-launcher.sh</code> (a terminal menu, no window), or build from source with <code>./build.sh</code>. Docker and Kubernetes files are in <code>docker/</code> (not tested yet). The headless server only: no speech recording or desktop window there yet.</div>
-      <div><b>GPU</b>Core Ultra with Arc graphics (Meteor Lake, Lunar Lake, Arrow Lake H, Panther Lake), or an Arc B-series or A-series card.</div>
-      <div><b>Memory</b>16 GB for the 4B and E4B, 32 GB for the 12B to 35B models.</div>
-    </div>
-    <div class="endcta">
-      <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>9 MB</kbd></a>
-      <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
-      <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>6 MB</kbd></a>
-      <span class="mono">release 2026.11.19.01</span>
     </div>
   </div>
 </section>
@@ -652,89 +255,9 @@ zero-server start -Model 27b -Slots 2</pre>
 
 <footer>
   <div class="wrap">
-    <div>
-      <a class="brand" href="#top"><svg class="mark" width="24" height="24" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>inferzero</a>
-      <p class="fine">Built and tuned on a Core Ultra 5 125H with 32 GB of RAM. Apache-2.0. Formerly arcinferzero. An independent project, not made or endorsed by Intel; Intel and Arc are trademarks of Intel Corporation or its subsidiaries.</p>
-    </div>
-    <div><h4>Project</h4><ul><li><a href="https://github.com/rizagp/inferzero">GitHub</a></li><li><a href="https://github.com/rizagp/inferzero/releases">Releases</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li></ul></div>
-    <div><h4>Docs</h4><ul><li><a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/features.md">Features</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/models.md">Models</a></li></ul></div>
-    <div><h4>Results</h4><ul><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/before-after.md">Before and after</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">Multi-GPU</a></li><li><a href="https://github.com/rizagp/inferzero/issues/4">B60 runs</a></li></ul></div>
+    <div>inferzero · Apache 2.0 · <span class="mono">release 2026.11.19.01</span><br>An independent project, not made or endorsed by Intel. Intel and Arc are trademarks of Intel Corporation or its subsidiaries.</div>
+    <div><a href="https://github.com/rizagp/inferzero">GitHub</a> · <a href="https://github.com/rizagp/inferzero/releases">Releases</a> · <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a> · <a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></div>
   </div>
 </footer>
-
-<script>
-(function(){
-  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  /* terminal replay: one real run (laptop, website_bench 2026-11-09) */
-  var out = document.getElementById('term');
-  var lines = [
-    ['<span class="k">PS&gt;</span> runz Qwen3.6-35B-A3B.gguf --bench-pp 8192', 0],
-    ['<span class="k">device</span>    <span class="v">Intel(R) Arc(TM) Graphics</span> · 112 EU · DP4a', 0],
-    ['<span class="k">experts</span>   cache <span class="v">83 %</span> · the rest streamed from the SSD', 0],
-    ['<span class="k">prompt</span>    8192 tokens ......... <span class="a" data-n="851" data-u=" tok/s">851 tok/s</span>', 851],
-    ['<span class="k">first</span>     token after ......... <span class="v" data-n="9.6" data-u=" s">9.6 s</span>', 9.6],
-    ['<span class="k">decode</span>    MTP + DFlash2 ....... <span class="v" data-n="38.1" data-u=" tok/s">38.1 tok/s</span>', 38.1],
-    ['<span class="k">KL</span>        vs f32 reference .... <span class="v">0.0040</span>', 0],
-    ['<span class="k">logits</span>    vs previous run ..... <span class="ok">bit-identical ✓</span>', 0],
-    ['<span class="k">PS&gt;</span> <span class="cur"></span>', 0]
-  ];
-  if (out) {
-    if (reduce) { out.innerHTML = lines.map(function(l){ return l[0]; }).join('\n'); }
-    else {
-      var i = 0;
-      var next = function(){
-        if (i >= lines.length) return;
-        var d = document.createElement('div'); d.innerHTML = lines[i][0]; out.appendChild(d);
-        var target = lines[i][1];
-        if (target) {
-          var el = d.querySelector('[data-n]'), unit = el.getAttribute('data-u'), dec = String(target).indexOf('.') >= 0 ? 1 : 0, t0 = performance.now();
-          (function tick(now){ var p = Math.min(1, (now - t0) / 900); p = 1 - Math.pow(1 - p, 3);
-            el.textContent = (target * p).toFixed(dec) + unit; if (p < 1) requestAnimationFrame(tick); })(t0);
-        }
-        i++; setTimeout(next, i === 1 ? 600 : (target ? 1000 : 360));
-      };
-      setTimeout(next, 300);
-    }
-  }
-
-  /* expert cache grid: 128 slots, 83 % cached, the active 8 highlighted */
-  var mini = document.getElementById('mini');
-  if (mini) {
-    var seed = 7, rnd = function(){ seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    var cells = [];
-    for (var k = 0; k < 128; k++) { var c = document.createElement('i'); if (rnd() < 0.83) c.className = 'c'; mini.appendChild(c); cells.push(c); }
-    var pick = function(){
-      cells.forEach(function(c){ if (c.classList.contains('h')) c.classList.remove('h'); });
-      var cached = cells.filter(function(c){ return c.classList.contains('c'); });
-      for (var n = 0; n < 8; n++) { cached[Math.floor(rnd() * cached.length)].classList.add('h'); }
-    };
-    pick();
-    if (!reduce) setInterval(pick, 900);
-  }
-
-  /* code tabs + copy */
-  var tabs = document.querySelectorAll('.code [role=tab]');
-  tabs.forEach(function(t){
-    t.addEventListener('click', function(){
-      tabs.forEach(function(o){ var on = o === t; o.setAttribute('aria-selected', on ? 'true' : 'false'); o.tabIndex = on ? 0 : -1;
-        document.getElementById('code-' + o.dataset.k).hidden = !on; });
-    });
-    t.addEventListener('keydown', function(e){
-      var list = Array.prototype.slice.call(tabs), i = list.indexOf(t);
-      var j = e.key === 'ArrowRight' ? (i + 1) % list.length : e.key === 'ArrowLeft' ? (i + list.length - 1) % list.length : -1;
-      if (j >= 0) { e.preventDefault(); list[j].click(); list[j].focus(); }
-    });
-  });
-  var copy = document.getElementById('copy');
-  if (copy) copy.addEventListener('click', function(){
-    var shown = document.querySelector('.code pre:not([hidden])');
-    var text = shown ? shown.innerText : '';
-    var done = function(){ copy.textContent = 'Copied'; setTimeout(function(){ copy.textContent = 'Copy'; }, 1400); };
-    var pick = function(){ if (!shown) return; var r = document.createRange(); r.selectNodeContents(shown); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); copy.textContent = 'Press Ctrl+C'; setTimeout(function(){ copy.textContent = 'Copy'; }, 2400); };
-    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, pick); else pick();
-  });
-})();
-</script>
 </body>
 </html>
