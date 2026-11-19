@@ -37,13 +37,19 @@
 
 - **The A770 / A750 / A580 run the one-token GEMV of the codebook and IQ4 / Q6 types with one row per sub-group**
   (ARC_GVROWS=1's choice; 2 or 4 before, by type). An A770, the 27B's `--prof-gen` over 32 tokens: `gemm_down`
-  395.7 -> 321.2 ms, gate 284.4 -> 273.0, up 280.5 -> 272.7, qkv 109.7 -> 104.4. That is ~3 ms of a ~46 ms token,
-  roughly +7 % generation; 2 rows and 4 rows were slower (TheUniKian, issue #45). Bit-identical: a row's sums do not
+  395.7 -> 321.2 ms, gate 284.4 -> 273.0, up 280.5 -> 272.7, qkv 109.7 -> 104.4; 2 rows and 4 rows were slower
+  (TheUniKian, issue #45). **Only where the kernels are not batched** (Alchemist on Linux): a second A770, two
+  rounds, unbatched 12.62 -> 13.20 tok/s (+4.8 %), with `ARC_BATCH=64` (the Windows default) 21.40 -> 21.19 (-0.6 %).
+  With batching the step is not bound by the kernels' time, and the profiled kernel times (which run unbatched)
+  overstated it (hansong80). So on Windows the A770 keeps the rows it had. Bit-identical: a row's sums do not
   depend on its sub-group (the laptop's 8-lane GEMV gives the 27B's logits unchanged with ARC_GVROWS=1). iGPUs and the
   B-series are unchanged. `ARC_GVROWS=N` still sets it.
 - **Measured on the same A770, not changed yet:** its XMX probe with the data in L1 reaches 37 % of the 231 TOPS peak
   with the 32 x 16 tile its preset uses (38 % with the DPAS alone), and 54 % with 32 x 32. Its FFN prompt GEMMs run at
-  the same 37 %. A 32 x 32 A/B in the model is asked for (A5 / A7).
+  the same 37 %. But in the model 32 x 32 is slower: the 27B 4K 1,227 -> 965 tok/s (TheUniKian), and the full
+  sweep (hansong80) has 32 x 16 near the best at 4K / 16K (WGX 4 +0.8 %), 16 x 16 at 128 registers +3.9 % at 512
+  tokens only. The tile stays. At 16K, attention is 13.6 % of the A770's prompt: the 8-lane XMX attention (A6) is
+  worth more there than any tile.
 
 ## 2026-11-19: `runz --bench-pp` warms the generation kernels up before timing them
 
