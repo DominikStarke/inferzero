@@ -121,9 +121,10 @@
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">80.7-82.1</td><td class="n">105.7</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">51.2-51.6</td><td class="n">84.4</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.8 27B, Linux</td><td class="n">–</td><td class="n">22.6-22.9</td><td class="n">40.4</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.6 35B-A3B, Linux <small>(73 % of its experts on the card)</small></td><td class="n">–</td><td class="n">52.4-70.0</td><td class="n">97.6</td><td>main at fd858b5 (the #56 fix)</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 4,518 / 5,000 tok/s, 9B 2,794 / 3,249, 27B 1,131 / 1,205. Generation at a 128-token depth and a 256-token coding answer.</p>
+    <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 4,518 / 5,000 tok/s, 9B 2,794 / 3,249, 27B 1,131 / 1,205, 35B-A3B 1,830 / 2,966 (131K: 1,133, generation 35.4; its whole 262K context: 709 tok/s, then 32.3). Generation at a 128-token depth and a 256-token coding answer.</p>
     <p class="note">The 27B's generation is with kernels sent in recorded lists (<code>ARC_BATCH=64</code>), the default on Alchemist under Windows since 2026.11.18.08; 12.6-12.8 tok/s before. With it, the 27B's drafting no longer adds speed (20.4 tok/s against 21.4 plain on a 512-token prompt).</p>
   </div>
 </section>
@@ -275,7 +276,7 @@
       <tbody>
         <tr><td>Qwen3.8 27B</td><td class="n">70.1 / 23.7 (2.96x)</td><td class="n">92.9 / 37.5 (2.48x)</td></tr>
         <tr><td>Qwen3.6 35B-A3B Q4_K_M</td><td class="n">159.3 / 81.7 (1.95x)</td><td class="n">202.5 / 104.9 (1.96x)</td></tr>
-        <tr><td>Qwen3.8 Flash Next IQ3_XXS</td><td class="n">–</td><td class="n">68.3 / 32.8 (2.08x)</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_XXS</td><td class="n">40.3 / 23.3 (1.72x) <small>(37 % of its experts on the card)</small></td><td class="n">68.3 / 32.8 (2.08x)</td></tr>
       </tbody>
     </table></div>
     <p class="note">Split over both cards, too, every conversation's tokens are bit for bit those it gets alone.</p>
