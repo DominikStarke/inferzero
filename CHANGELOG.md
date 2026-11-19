@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-19: `runz --bench-pp` warms the generation kernels up before timing them
+
+- **`--bench-pp`'s `tg` line no longer includes the generation kernels' first-use cost.** Its warm-up ran a prompt
+  pass only, so the first generated token compiled the one-token kernels inside the timed run. On a dense model that
+  was tens of ms. On the 35B it was seconds: a B580's step 0 took 4,225 ms against a 12.6 ms median, tg128 21.5 tok/s
+  for a ~79 tok/s steady state (tenken, issue #53). The bench now runs the server's warm-up first. The laptop's 35B:
+  the first step 55.8 ms against a 51.9 median. Earlier MoE `tg` figures from `--bench-pp` read low by that one step;
+  the `tg steps` median was right all along.
+
 ## 2026-11-19: serverz listens on 8090 by default, as everything else
 
 - **`serverz` started without `--port` now listens on 8090** (8080 before), the port zero-server, both launchers,

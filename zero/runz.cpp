@@ -1044,6 +1044,11 @@ static int run_main(int argc, char** argv) {
     std::vector<int> bt(bench_pp);
     for (int i = 0; i < bench_pp; ++i) bt[i] = 1000 + (i * 7919) % 50000;
     eng.forward(bt.data(), std::min(bench_pp, 64));  // warm-up (kernel JIT, page-in)
+    // (the one-token kernels too, as the server warms up before serving: the prompt pass above builds only the prompt
+    //  path, so a first generated token paid their compilation inside tg: a B580's 35B, step 0 4,224.9 ms against a
+    //  12.6 ms median, tg128 21.5 tok/s for a ~79 tok/s steady state; tenken, issue #53. warm_up_once leaves the
+    //  engine reset, and every prompt run below resets it too)
+    if (n_gen > 0) eng.warm_up_once(bt[0], false);
     // (ARC_BENCH_RUNS: prompt runs, default 3; long prompts: 1)
     const int runs = getenv("ARC_BENCH_RUNS") ? std::max(1, atoi(getenv("ARC_BENCH_RUNS"))) : 3;
     for (int r = 0; r < runs; ++r) {
