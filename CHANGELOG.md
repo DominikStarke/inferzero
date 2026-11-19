@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-19: `runz --bench-batch` checks batched decoding against each conversation alone on one GPU too
+
+- **What:** `runz --bench-batch N` (several conversations' next tokens in one pass, as `serverz --slots` does) only
+  timed it on one GPU; the split-model form also checked the logits. Now both do: 8 greedy steps of every slot in
+  one pass against each slot alone, compared byte for byte; where they differ, the number of rows, the largest
+  difference and how often the top token agrees. It also says so when a model has no batched decoding.
+- **The laptop's iGPU, 4 slots, all bit-identical:** together against one slot alone, 4B 58.8 against 20.8 tok/s
+  (2.83x), 27B 17.0 against 5.3 (3.19x), Flash Next IQ3_S (experts streamed) 15.1 against 8.2 (1.84x), Gemma 4 26B
+  38.9 against 19.2 (2.02x). No discrete card has run it yet: the testers are asked to.
+
 ## 2026-11-19: A770: a 35B-A3B token's missed experts read their table from the GPU (issue #56)
 
 - **On an A770 the 35B-A3B wrote corrupted text when its experts were streamed** (skipzx-lab, issue #56, Linux): its

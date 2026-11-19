@@ -789,10 +789,60 @@ static int run_main(int argc, char** argv) {
   }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;
-    if ((int)toks.size() < NS) { zlog::eprintf("--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS); return 1; }
+    if ((int)toks.size() < NS + 8) { zlog::eprintf("--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS + 8); return 1; }
     eng.add_slots(NS);
+    if (!eng.batch_ok()) { zlog::eprintf("--bench-batch: no batched decoding for this model\n"); return 1; }
+    {  // (2026-11-19) the check the split model's form has: K greedy steps of every slot in one pass against each
+       // slot alone, logits compared bit for bit; where they differ, the largest difference and the top tokens
+      const int K = 8;
+      std::vector<std::vector<std::vector<float>>> alone(NS);
+      std::vector<int> sl(NS), tk(NS);
+      auto argmax = [](const std::vector<float>& l, size_t off, size_t V) {
+        return (int)(std::max_element(l.begin() + off, l.begin() + off + V) - (l.begin() + off));
+      };
+      // slot s: the prompt less its last s tokens (each slot its own conversation)
+      auto feed = [&](int s) -> const std::vector<float>& {
+        eng.bind(s);
+        eng.reset();
+        return eng.forward(toks.data(), (int)toks.size() - s);
+      };
+      size_t V = 0;
+      for (int s = 0; s < NS; ++s) {
+        const std::vector<float>& l0 = feed(s);
+        V = l0.size();
+        int t = argmax(l0, 0, V);
+        for (int k = 0; k < K; ++k) {
+          const std::vector<float>& l = eng.forward(&t, 1);
+          alone[s].push_back(l);
+          t = argmax(l, 0, V);
+        }
+      }
+      for (int s = 0; s < NS; ++s) {
+        sl[s] = s;
+        tk[s] = argmax(feed(s), 0, V);
+      }
+      int diff_rows = 0, top_same = 0;
+      double max_d = 0;
+      for (int k = 0; k < K; ++k) {
+        const std::vector<float>& l = eng.forward_batch(sl, tk);
+        for (int s = 0; s < NS; ++s) {
+          const float* b = l.data() + (size_t)s * V;
+          const std::vector<float>& a = alone[s][k];
+          if (memcmp(a.data(), b, V * 4)) ++diff_rows;
+          for (size_t i = 0; i < V; ++i) max_d = std::max(max_d, (double)std::fabs(a[i] - b[i]));
+          tk[s] = argmax(l, (size_t)s * V, V);
+          top_same += tk[s] == argmax(a, 0, V);
+        }
+      }
+      if (!diff_rows)
+        printf("batched vs each slot alone, %d slots x %d steps: logits bit-identical\n", NS, K);
+      else
+        printf("batched vs each slot alone, %d slots x %d steps: logits DIFFER in %d of %d rows (largest difference "
+               "%.4f), top token the same in %d / %d\n", NS, K, diff_rows, NS * K, max_d, top_same, NS * K);
+    }
     for (int s = 0; s < NS; ++s) {
       eng.bind(s);
+      eng.reset();
       eng.forward(toks.data(), (int)toks.size());
     }
     eng.bind(0);
