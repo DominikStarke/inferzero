@@ -522,12 +522,11 @@
     return env || fn_precise_hold_.on;
   }
   // (each of precise mode's parts alone, for measuring which one carries the default mode's error (the plan's F1,
-  //  2026-11-18); off unless set, so the default and precise modes are unchanged: ARC_FN_HCBF16=1 the HC mixers'
-  //  rows as the file has them, ARC_FN_AB32=1 DeltaNet's alpha / beta in f32)
-  bool hc_bf16() const {
-    static const bool env = getenv("ARC_FN_HCBF16") && atoi(getenv("ARC_FN_HCBF16")) != 0;
-    return fn_precise() || env;
-  }
+  //  2026-11-18). The HC mixers' rows as the file has them (BF16) are the default since 2026-11-19 (the user's
+  //  choice): the default mode's KL against f32 0.0153 / 0.0283 / 0.0105 -> 0.0046 / 0.0083 / 0.0091 (160 code tokens,
+  //  token by token, 3,584 of prose), at -16 % prompt and -6 % generation on the laptop (0.73 GiB more read a token,
+  //  out of the expert cache). ARC_FN_HCBF16=0: the Q8_0 rows of before. ARC_FN_AB32=1 DeltaNet's alpha / beta in f32)
+  bool hc_bf16() const { return fn_precise() || hc_bf16_env(); }
   bool fn_ab32() const {
     static const bool env = getenv("ARC_FN_AB32") && atoi(getenv("ARC_FN_AB32")) != 0;
     return fn_precise() || env;

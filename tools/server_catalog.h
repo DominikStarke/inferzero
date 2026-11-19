@@ -613,6 +613,17 @@ static bool precise_model(const std::string& model) {
     return false;
   }
 }
+// (Flash Next's HC mixer rows, BF16 by default since 2026-11-19 (0.73 GiB more than the Q8_0 rows of before): in its
+//  context key, so a size worked out with the smaller rows is not reused; the other models' keys are unchanged)
+static std::string hc_rows_tag(const std::string& model) {
+  try {
+    const GgufFile g(model);
+    if (g.get_str("general.architecture", "") != "qwen4exp") return std::string();
+  } catch (const std::exception&) {
+    return std::string();
+  }
+  return Engine::hc_bf16_env() ? "|hcb" : "|hcq";
+}
 static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -629,7 +640,7 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.tp_size > 1 ? "|tp" + std::to_string(eo.tp_size) + (getenv("ARC_TP_SIM") ? "sim" : "") : std::string()) +  // (a split model: shard 0's memory)
          "|kf" + std::string(getenv("ARC_G4_KF16") ? getenv("ARC_G4_KF16") : "") + "/" +
          std::string(getenv("ARC_Q3_KF32") ? getenv("ARC_Q3_KF32") : "") +  // (the float K rows' size)
-         "|m26";  // engine memory layout version (m26: a dense model larger than a discrete card keeps weights in RAM,
+         hc_rows_tag(model) + "|m26";  // engine memory layout version (m26: a dense model larger than a discrete card keeps weights in RAM,
                   // 2026-11-16: a cached 0 from before must not keep it refused; m25: Gemma 4's K rows in f16, 2026-11-11; m24: 0 when nothing fits, not raised to 4096) (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
                  // for 27B, m6: MoE prompt GEMM staging, m7: MoE buffers shared, m8: MoE MTP 1 draft, Q3_K experts, m9: memory parts in the cache,
                  // m12: streamed MoE reserves 128K of context before the expert cache, m13: streamed MoE chunk 8192, m14: slot_bytes with every

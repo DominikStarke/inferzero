@@ -157,6 +157,12 @@
   // GPU share bytes left to the driver (the user's choice): 0.5 GiB by default on iGPUs and discrete cards alike (1.2 GiB
   // until 2026-11-08); ARC_DRIVER_RESERVE_GB=N, or serverz / runz --driver-reserve-gb N (zero-server -DriverReserveGb N),
   // sets it, 0 to 8 GiB. Read once per process
+  // (Flash Next's HC mixer rows in BF16, the default since 2026-11-19; ARC_FN_HCBF16=0: Q8_0. engine_load.h hc_bf16,
+  //  and the --ctx auto key, tools/server_catalog.h)
+  static bool hc_bf16_env() {
+    static const bool on = !getenv("ARC_FN_HCBF16") || atoi(getenv("ARC_FN_HCBF16")) != 0;
+    return on;
+  }
   static double driver_slack() {
     static const double v = [] {
       const char* e = getenv("ARC_DRIVER_RESERVE_GB");

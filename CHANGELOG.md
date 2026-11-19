@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-19: Flash Next's default mode at KL under 0.01
+
+- **Flash Next keeps its hyper-connection mixer rows in BF16 by default**, as the file has them, instead of
+  requantizing them to Q8_0 (the user's choice). The default mode's KL against f32 on the laptop: 160 code tokens
+  0.0153 -> 0.0046 (same top token 95.0 -> 96.9 %), token by token 0.0283 -> 0.0083 (95.6 -> 98.8 %), 3,584 tokens of
+  prose 0.0105 -> 0.0091. The cost: 0.73 GiB more read each token, taken from the expert cache (14.50 -> 13.76 GiB on
+  the laptop); a 2,048 prompt 138 -> 116 tok/s, generation 7.7-8.0 -> 7.4 tok/s here. On a B70 the extra read is about
+  3 % of a step; F2 (the mixers on XMX) is to take back the prompt cost on discrete cards. `ARC_FN_HCBF16=0` gives
+  the Q8_0 rows of before. Precise mode is unchanged (KL 0.0017 / 0.0022 / 0.0060). `--ctx auto` works Flash Next's
+  context out again (its key now says which rows); other models keep theirs.
+
 ## 2026-11-19: Linux builds for CPUs without AVX2
 
 - **`build.sh` on a CPU without AVX2 / FMA builds for that CPU** (`-march=native`) and says so, instead of a build
