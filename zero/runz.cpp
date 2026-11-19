@@ -21,6 +21,69 @@ static std::vector<int> parse_ids(const std::string& s) {
   return v;
 }
 
+// --kl-ref's reference: either every position's log-probs over the vocabulary (f32, tools/ref_forward REF_ALL), or the
+// compact form (2026-11-19, bench/prompts/refs): "IZKL", version 1, V, positions, K (uint32 each), then per position K
+// token ids (int32), their log-probs (f32) and the log of the probability left to the other tokens (f32). The compact
+// form is read into full rows with the tokens outside the top K at a sentinel (-1e37, which the KL loops skip as they
+// skip a log-prob of -inf), and the rest's mass kept per row: kl_tail adds it as one bucket against the model's own
+// probability outside those K tokens. The top token and the margins are exact; the KL is the full one's with the tail
+// taken as one bucket (a lower bound: the tail's own spread is not seen; 2 % low at K = 512). ~1 MB a prompt instead of ~250 MB.
+// Empty on a read error.
+static std::vector<float> g_ref_tail;  // (the compact reference's log rest mass per position; empty for a full one)
+static const float* g_ref_base = nullptr;
+static size_t g_ref_v = 0;
+static double kl_tail(const float* l, const float* rr) {
+  if (g_ref_tail.empty() || !g_ref_base) return 0.0;
+  const size_t r = (size_t)(rr - g_ref_base) / g_ref_v;
+  if (r >= g_ref_tail.size() || !(g_ref_tail[r] > -1e30f)) return 0.0;
+  double mx = l[0];
+  for (size_t i = 1; i < g_ref_v; ++i) mx = std::max(mx, (double)l[i]);
+  double z = 0, qtop = 0;
+  for (size_t i = 0; i < g_ref_v; ++i) {
+    const double e = std::exp((double)l[i] - mx);
+    z += e;
+    if (rr[i] > -1e36f) qtop += e;
+  }
+  const double pt = std::exp((double)g_ref_tail[r]), qt = std::max(1.0 - qtop / z, 1e-30);
+  return pt * ((double)g_ref_tail[r] - std::log(qt));
+}
+static std::vector<float> read_kl_ref(const std::string& path, size_t V) {
+  std::vector<float> ref;
+  FILE* fi = fopen(path.c_str(), "rb");
+  if (!fi) return ref;
+  char magic[4] = {};
+  uint32_t h[4] = {};
+  if (fread(magic, 1, 4, fi) == 4 && memcmp(magic, "IZKL", 4) == 0) {
+    if (fread(h, 4, 4, fi) != 4 || h[0] != 1 || h[1] != V || h[3] == 0 || h[3] >= V) { fclose(fi); return ref; }
+    g_ref_tail.clear();
+    const size_t npos = h[2], K = h[3];
+    ref.resize(npos * V);
+    std::vector<int32_t> ids(K);
+    std::vector<float> lp(K);
+    for (size_t r = 0; r < npos; ++r) {
+      float tail = 0;
+      if (fread(ids.data(), 4, K, fi) != K || fread(lp.data(), 4, K, fi) != K || fread(&tail, 4, 1, fi) != 1) {
+        ref.clear();
+        break;
+      }
+      float* row = ref.data() + r * V;
+      std::fill(row, row + V, -1e37f);
+      g_ref_tail.push_back(tail);
+      for (size_t k = 0; k < K; ++k)
+        if (ids[k] >= 0 && (size_t)ids[k] < V) row[ids[k]] = lp[k];
+    }
+    fclose(fi);
+    if (ref.empty()) g_ref_tail.clear();
+    g_ref_base = ref.data(), g_ref_v = V;  // (kl_tail's rows: the vector's buffer moves with it, not copied)
+    return ref;
+  }
+  plat::fseek64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
+  ref.resize((size_t)plat::ftell64(fi) / 4);
+  plat::fseek64(fi, 0, SEEK_SET);
+  if (fread(ref.data(), 4, ref.size(), fi) != ref.size()) ref.clear();
+  fclose(fi);
+  return ref;
+}
 // (ARC_KL_FLIPS=1, --kl-ref: a position whose top token is not the reference's, with the reference's top two, their
 //  margin in log-prob, and where our pick stands in the reference: a near-tie (margin ~0) or a real miss. 2026-11-19,
 //  for Flash Next's same-top-token rule on discrete cards)
@@ -184,15 +247,10 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     return same ? 0 : 1;
   }
   if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
-    FILE* fi = fopen(kl_ref.c_str(), "rb");
-    if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
-    plat::fseek64(fi, 0, SEEK_END);
-    std::vector<float> ref((size_t)plat::ftell64(fi) / 4);
-    plat::fseek64(fi, 0, SEEK_SET);
-    const size_t got = fread(ref.data(), 4, ref.size(), fi);
-    fclose(fi);
     const size_t V = (size_t)tp.vocab();
-    if (got != ref.size() || ref.size() != V * prompt.size()) { zlog::eprintf("reference must hold every position\n"); return 1; }
+    const std::vector<float> ref = read_kl_ref(kl_ref, V);
+    if (ref.empty()) { zlog::eprintf("cannot read %s\n", kl_ref.c_str()); return 1; }
+    if (ref.size() != V * prompt.size()) { zlog::eprintf("reference must hold every position\n"); return 1; }
     double sum = 0, mxk = 0;
     int agree = 0;
     // the prompt path first (a prompt of one chunk: every row's logits from the rows the pass left, keep_rows), then
@@ -209,6 +267,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
         double kl = 0;
         for (size_t i = 0; i < V; ++i)
           if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
+        kl += kl_tail(l.data(), rr);  // (a compact reference's rest, read_kl_ref)
         sum += kl;
         mxk = std::max(mxk, kl);
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
@@ -229,6 +288,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
       double kl = 0;
       for (size_t i = 0; i < V; ++i)
         if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
+      kl += kl_tail(l.data(), rr);  // (a compact reference's rest, read_kl_ref)
       sum += kl;
       mxk = std::max(mxk, kl);
       agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
@@ -492,6 +552,41 @@ static int run_main(int argc, char** argv) {
   if (!ppl_file.empty() && chunk == 0) chunk = std::min(ppl_ctx, 8192);  // (longer chunks: fed in pieces of 8192)
   eo.ctx = std::max(ctx, need);
   eo.chunk = chunk;
+  // (ARC_KL_PACK=OUT [ARC_KL_PACK_K=128] with --kl-ref FULL: the full reference written as the compact one, read_kl_ref,
+  //  the vocabulary's size from the model's token_embd; nothing run on the GPU. 512: Flash Next's prose KL 0.00894 against the
+  //  full reference's 0.00914 (128: 0.00860), 1 MB a prompt)
+  if (const char* pack = getenv("ARC_KL_PACK")) {
+    const GgufFile g(model);
+    const GgufTensor* te = g.find("token_embd.weight");
+    if (!te || kl_ref.empty()) { zlog::eprintf("ARC_KL_PACK: needs --kl-ref and a model with token_embd\n"); return 1; }
+    const size_t V = (size_t)te->dims[1], K = getenv("ARC_KL_PACK_K") ? std::clamp(atoi(getenv("ARC_KL_PACK_K")), 2, 4096) : 512;
+    const std::vector<float> ref = read_kl_ref(kl_ref, V);
+    if (ref.empty() || ref.size() % V) { zlog::eprintf("ARC_KL_PACK: %s is not a reference of %zu-token rows\n", kl_ref.c_str(), V); return 1; }
+    FILE* fo = fopen(pack, "wb");
+    if (!fo) { zlog::eprintf("cannot write %s\n", pack); return 1; }
+    const uint32_t h[4] = {1u, (uint32_t)V, (uint32_t)(ref.size() / V), (uint32_t)K};
+    fwrite("IZKL", 1, 4, fo);
+    fwrite(h, 4, 4, fo);
+    std::vector<int32_t> idx(V);
+    double worst_tail = 0;
+    for (size_t r = 0; r < ref.size() / V; ++r) {
+      const float* row = ref.data() + r * V;
+      for (size_t i = 0; i < V; ++i) idx[i] = (int32_t)i;
+      std::partial_sort(idx.begin(), idx.begin() + K, idx.end(), [&](int32_t a, int32_t b) { return row[a] > row[b]; });
+      std::vector<float> lp(K);
+      double top = 0;
+      for (size_t k = 0; k < K; ++k) lp[k] = row[idx[k]], top += std::exp((double)lp[k]);
+      const double rest = std::max(0.0, 1.0 - top);
+      const float tail = rest > 0 ? (float)std::log(rest) : -1e38f;
+      worst_tail = std::max(worst_tail, rest);
+      fwrite(idx.data(), 4, K, fo);
+      fwrite(lp.data(), 4, K, fo);
+      fwrite(&tail, 4, 1, fo);
+    }
+    fclose(fo);
+    printf("ARC_KL_PACK: %zu positions, top %zu each, the most probability left outside them %.4f\n", ref.size() / V, K, worst_tail);
+    return 0;
+  }
   warn_gpu_neighbours();
   if (gpus > 1) {
     if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);  // (a split model's slots: made at load)
@@ -1117,14 +1212,10 @@ static int run_main(int argc, char** argv) {
     if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
     if (kl_decode) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
-      FILE* fi = fopen(kl_ref.c_str(), "rb");
-      if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
-      plat::fseek64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
-      std::vector<float> ref((size_t)plat::ftell64(fi) / 4);
-      plat::fseek64(fi, 0, SEEK_SET);
-      const size_t got = fread(ref.data(), 4, ref.size(), fi);
-      fclose(fi);
       const size_t V = eng.hp.n_vocab;
+      const std::vector<float> ref = read_kl_ref(kl_ref, V);
+      if (ref.empty()) { zlog::eprintf("cannot read %s\n", kl_ref.c_str()); return 1; }
+      const size_t got = ref.size();
       // (ARC_KL_FROM=N: the reference holds positions N.. only (tools/ref_forward REF_ALL_FROM); the tokens before N go
       //  in as a prompt, the rest one by one)
       const size_t from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0;
@@ -1141,6 +1232,7 @@ static int run_main(int argc, char** argv) {
         double kl = 0;
         for (size_t i = 0; i < V; ++i)  // (a reference log-prob of -inf adds nothing)
           if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
+        kl += kl_tail(l.data(), rr);  // (a compact reference's rest, read_kl_ref)
         sum += kl;
         if (getenv("ARC_KL_SHOW") && kl > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, kl);  // (ARC_KL_SHOW=x: positions above x)
         mxk = std::max(mxk, kl);
@@ -1199,17 +1291,9 @@ static int run_main(int argc, char** argv) {
         double kl = 0;
         for (size_t i = 0; i < V; ++i)  // (a reference log-prob of -inf adds nothing)
           if (ref[i] > -1e30f) kl += std::exp((double)ref[i]) * (ref[i] - (l[i] - mx - std::log(z)));
-        return kl;
+        return kl + kl_tail(l.data(), ref);
       };
-      FILE* fi = fopen(kl_ref.c_str(), "rb");
-      std::vector<float> ref;
-      if (fi) {
-        plat::fseek64(fi, 0, SEEK_END);
-        ref.resize((size_t)plat::ftell64(fi) / 4);
-        plat::fseek64(fi, 0, SEEK_SET);
-        if (fread(ref.data(), 4, ref.size(), fi) != ref.size()) ref.clear();
-        fclose(fi);
-      }
+      const std::vector<float> ref = read_kl_ref(kl_ref, (size_t)eng.hp.n_vocab);
       // (ARC_KL_FROM=N: the reference holds positions N.. only; they must lie in the last chunk, which x_ holds)
       // (kl_c0: the first position whose logits the last forward() left: the last call starts at rest0 (--feed-step),
       //  and of its rows x_ holds the last chunk. It was the chunk's start counted from 0, so with --feed-step the rows
@@ -1267,8 +1351,9 @@ static int run_main(int argc, char** argv) {
         const size_t n = toks.size() - kl_from;
         printf("\nKL(ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
                sum / n, n, mx, agree, n);
-        printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
-               100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);
+        if (g_ref_tail.empty())  // (a compact reference has no full rows to compare: read_kl_ref)
+          printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
+                 100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);
         std::copy(last.begin(), last.end(), const_cast<float*>(lg.data()));
       } else if (ref.size() == V * (toks.size() - kl_from)) {
         printf("\n--kl-ref: the reference starts at position %zu, but only positions %zu.. are left to read (the last "

@@ -29,3 +29,22 @@ predict a different token; `qwen-prose-3584` measures 0.0105 (default) / 0.0060 
 (2026-11-14). `ARC_KL_SHOW=x` (runz) lists the positions above x with both sides' probability of the text's next token.
 For a long prompt, `REF_ALL_FROM=N` (ref_forward) writes the reference only from position N on and `ARC_KL_FROM=N`
 (runz) compares from there, so the reference of a 3.5K-token prompt does not need every position.
+
+## Compact f32 references (`refs/`, 2026-11-19)
+
+Each position's top 512 log-probs of `tools\ref_forward` (f32 on the CPU) and the probability left to the other tokens,
+about 1 MB a prompt instead of ~250 MB. `runz --kl-ref` reads them as it reads a full reference: the top token and the
+margins are exact, the KL comes out ~2 % low (the tail as one bucket). Made from a full one with
+`ARC_KL_PACK=out.izkl bin\runz.exe <model> --kl-ref full.bin` (`ARC_KL_PACK_K`: tokens kept, default 512).
+
+| File | Model file (the reference is for these exact bytes) | Prompt | Positions |
+|---|---|---|---|
+| `flash-next-iq3s-prose3584.izkl` | ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF, IQ3_S, snapshot ed59f92 | `qwen-prose-3584.ids.txt` | 3,328-3,583 (`ARC_KL_FROM=3328`) |
+
+```powershell
+$env:ARC_KL_FROM = 3328; $env:ARC_KL_FLIPS = 1
+.\bin\runz.exe <Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf> --tokens-file bench\prompts\qwen-prose-3584.ids.txt --kl-ref bench\prompts\refs\flash-next-iq3s-prose3584.izkl
+```
+
+The laptop (2026-11-19): default KL 0.0089 (max 0.062), same top token 239 / 256; precise 0.0060 / 240 / 256 (full
+reference). Most flips are near-ties in the reference (`ARC_KL_FLIPS`: top-two margins 0.0005-0.45 log-prob).

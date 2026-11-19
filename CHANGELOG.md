@@ -8,6 +8,12 @@
   is a near-tie or a real miss. Flash Next IQ3_S on the 3,584-token prose prompt, the laptop: default 239 / 256 (KL
   0.0091, max 0.063), precise 240 / 256 (0.0060, max 0.069); most flips have margins under 0.1 (e.g. 11.75 % against
   11.74 %), so precise mode's ~15-bit activations do not fix them.
+- **Compact f32 references for `--kl-ref`** (`bench/prompts/refs/`, `.izkl`): each position's top 512 log-probs and the
+  probability left over, ~1 MB a prompt instead of ~250 MB, so they ship in the repository and the packages. The top
+  token and the margins are exact; the KL is ~2 % low (the rest taken as one bucket: Flash Next's prose 0.00894
+  against the full reference's 0.00914). `ARC_KL_PACK=out.izkl runz <model> --kl-ref full.bin` makes one. The first:
+  Flash Next GSQ-RCO IQ3_S on `qwen-prose-3584.ids.txt`, so a card owner can measure Flash Next's accuracy without
+  the hours of the 125B's CPU reference.
 
 ## 2026-11-19: Alchemist's codebook GEMVs one row a sub-group
 
