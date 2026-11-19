@@ -8,7 +8,9 @@
   difference and how often the top token agrees. It also says so when a model has no batched decoding.
 - **The laptop's iGPU, 4 slots, all bit-identical:** together against one slot alone, 4B 58.8 against 20.8 tok/s
   (2.83x), 27B 17.0 against 5.3 (3.19x), Flash Next IQ3_S (experts streamed) 15.1 against 8.2 (1.84x), Gemma 4 26B
-  38.9 against 19.2 (2.02x). No discrete card has run it yet: the testers are asked to.
+  38.9 against 19.2 (2.02x). Split over 2 / 3 / 4 "GPUs" on the one iGPU (`ARC_TP_SIM=1`, correctness only): the 4B,
+  the 27B and Flash Next bit-identical at every count (the 27B's 4 slots 3.18x / 3.15x / 3.04x; Gemma 4 cannot be
+  split yet). No discrete card has run it yet: the testers are asked to.
 
 ## 2026-11-19: A770: a 35B-A3B token's missed experts read their table from the GPU (issue #56)
 
