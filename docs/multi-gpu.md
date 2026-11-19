@@ -282,6 +282,13 @@ next chunk's attention work.
 
 ## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
 
+**A MoE model that fits on one card is faster unsplit when the cards have no peer access.** Two Arc Pro B50s whose
+driver gives no direct copies between them (the sums through host memory, ~22.5 µs a small copy) ran a 35B-A3B
+fine-tune at 40-46 tok/s on one card and 8.16 split over both (catduckgnaf, issue #59, release 2026.11.16.16): a
+token pays 80 sums, and the split turns off the step that runs a token's cached experts before its missed ones
+arrive (`ARC_XSPLIT`, see F30). One model per card is the fast setup there. With peer access and every expert
+resident, two B60s beat one (35B generation 70.1 -> 91.2 tok/s).
+
 The MoE layers are divided by expert instead of by FFN column: GPU r of N holds the routed experts [e0, e1) (256
 experts over 2: 0-127 and 128-255). Every GPU routes every token itself (the router and its input are the same on
 all of them), then only its own (token, expert) pairs get slots and tiles (`tp_moe_mask` / `tp_moe_scatter` after
