@@ -16,7 +16,9 @@ spec:
   accessModes: [ReadWriteOnce]
   resources:
     requests:
-      storage: 60Gi              # the models (the 4B ~4 GB, the 27B ~14 GB, the 35B ~20 GB; Flash Next ~141 GB)
+      storage: 60Gi              # the models AND a MoE model's expert file, written next to it on its first load,
+                                 # plus ~1 GB of compiled kernels: the 4B ~4 GB, the 27B ~14 GB (dense: no expert
+                                 # file), the 35B ~18 + ~16 GB, Flash Next IQ3_S ~84 + ~56 GB (ask 160Gi for it)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -32,6 +34,8 @@ spec:
     metadata:
       labels: {app: inferzero}
     spec:
+      terminationGracePeriodSeconds: 60   # (a stop sends SIGTERM, SIGKILL after this: the default 30 s can cut a
+                                          #  MoE model's first load while it writes its expert file)
       containers:
         - name: inferzero
           image: inferzero:latest  # your registry's name for the image (a :latest tag is pulled at every start)
