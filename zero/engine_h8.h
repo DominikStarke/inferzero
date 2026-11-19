@@ -321,7 +321,7 @@
   // stays the weight, so a layer's next chunks find it converted)
   // (packed: a staged weight in gemm_xw8's packed order, ARC_GEMM_XW_PACK; resident weights stay in the plain one)
   void h8_prepare(const GpuWeight& w, cl_mem& wq, cl_mem& hh, bool packed = false) {
-    if (w.wq && h8_row()) {
+    if (w.wq && h8_row() && !p140_res_) {  // (p140_res_: the resident copy stays unrotated for the short chunks)
       if (packed) throw std::logic_error("h8_prepare: a resident weight in the packed order");
       auto it = h8_col_.find(&w);
       hh = it != h8_col_.end() ? it->second : h8r_weights(w, w.wq, w.wh);

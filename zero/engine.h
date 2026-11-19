@@ -454,8 +454,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     }
     if (p140_) {
       static std::once_flag said;
-      std::call_once(said, [] {
-        zlog::eprintf("inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
+      const bool res = p140_res_;
+      std::call_once(said, [res] {
+        zlog::eprintf("inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, %s DP4a below (ARC_140T=0: off)\n",
+                      p140_min(res), res ? "resident" : "just-in-time");
       });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)

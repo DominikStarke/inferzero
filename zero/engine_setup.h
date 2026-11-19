@@ -316,6 +316,12 @@
     //  time, rather than resident weights on DP4a, unless --budget was given. An A770's 4B 4K prompt 3,600 -> 4,821
     //  tok/s with 3.98 GiB of buffers against 7.40, generation the same (hansong80, issue #35, release .02); the
     //  laptop's 4B, the preset emulated against resident DP4a: KL 0.0039 over 2 x 4,096 tokens)
+    // (ARC_140T_RES=1: both, resident for the short chunks, just in time for the long ones; zero/xe2/engine_xe2.h)
+    static const bool res = getenv("ARC_140T_RES") && atoi(getenv("ARC_140T_RES")) != 0;
+    if (res && w8_resident && !tp_on() && !zrt::integrated() && p140_off_resident()) {
+      p140_res_ = true;
+      return;
+    }
     if (w8_resident && !opt.w8_budget_set && !tp_on() && !zrt::integrated() && p140_off_resident()) {
       w8_resident = false;
       if (!opt.dry)
