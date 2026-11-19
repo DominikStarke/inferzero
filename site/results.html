@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>inferzero results: prompt and generation speed on every tested setup</title>
+<meta name="description" content="Prompt processing and generation speed of inferzero on every setup tested: Core Ultra laptops, Arc A-series and B-series cards, Data Center GPU Max, several GPUs, model by model.">
+<meta name="color-scheme" content="light">
+<meta property="og:title" content="inferzero: free, open-source AI on your Intel PC">
+<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel laptop graphics and Arc cards. Free, open source, no cloud.">
+<meta property="og:type" content="website">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="inferzero, home page"><svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>inferzero</a>
+    <nav aria-label="Sections">
+      <a href="index.html#what">What you get</a>
+      <a href="index.html#need">What you need</a>
+      <a href="index.html#start">Get started</a>
+      <a href="index.html#speed">Speed</a>
+      <a href="results.html" aria-current="page">All results</a>
+      <a href="index.html#open">Open source</a>
+    </nav>
+    <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.19.01</a>
+  </div>
+</header>
+
+<main id="main">
+
+<div class="wrap hero small" id="top">
+  <h1>Measured results, setup by setup</h1>
+  <p class="lead">Every number below was measured on a real machine, most of them by the people who own it, and posted on GitHub with its log. Each table is one setup: its GPU (or GPUs), the system it ran on, and the models tried there.</p>
+  <dl class="legend">
+    <dt>Prompt</dt><dd>prompt processing (pp): how fast a prompt is read, in tokens a second, at the prompt length shown.</dd>
+    <dt>Generation</dt><dd>token generation (tg): how fast the answer is written, in tokens a second; one token is about three quarters of a word.</dd>
+    <dt>With drafting</dt><dd>generation with the model's draft head (MTP, DFlash2 or Gemma's drafter), which gives exactly the same text.</dd>
+  </dl>
+  <p class="after">Models are Qwen3.8 27B GSQ-RCO IQ3_S unless named; the others are the files the launcher downloads. Numbers move with each release, so every row says which one. Setups we have not measured are the most useful thing you can add: <a href="https://github.com/rizagp/inferzero/blob/main/CONTRIBUTING.md">how to measure yours</a>.</p>
+  <nav class="jump" aria-label="Setups">
+    <a href="#s-125h">Core Ultra 5 125H</a><a href="#s-140t">Arc 140T</a><a href="#s-b390">Arc B390</a><a href="#s-a770">Arc A770</a><a href="#s-b580">Arc B580</a><a href="#s-b60">Arc Pro B60</a><a href="#s-b65">Arc Pro B65</a><a href="#s-b70">Arc Pro B70</a><a href="#s-max1550">Data Center GPU Max</a><a href="#s-multi-b60">2-4 × Pro B60</a><a href="#s-multi-other">Other multi-GPU</a>
+  </nav>
+</div>
+
+<section id="s-125h">
+  <div class="wrap">
+    <h2>Core Ultra 5 125H laptop</h2>
+    <p class="setup">Arc graphics (Xe-LPG, 8 Xe-cores, DP4a, no XMX) · 32 GB RAM · Windows 11 · the laptop inferzero was built on · <code>bench/website_bench.ps1</code>, 2026-11-09</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 8K</th><th class="n">32K</th><th class="n">131K</th><th class="n">Generation</th><th class="n">With drafting</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">896</td><td class="n">705</td><td class="n">366</td><td class="n">21.0</td><td class="n">35.8</td></tr>
+        <tr><td>Gemma 4 E4B</td><td class="n">707</td><td class="n">494</td><td class="n">222</td><td class="n">19.1</td><td class="n">41.8</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="n">487</td><td class="n">435</td><td class="n">278</td><td class="n">11.8</td><td class="n">21.6</td></tr>
+        <tr><td>Qwen3.6 35B-A3B <small>experts on the SSD</small></td><td class="n">851</td><td class="n">637</td><td class="n">324</td><td class="n">21.6</td><td class="n">38.1</td></tr>
+        <tr><td>Gemma 4 26B-A4B <small>experts on the SSD</small></td><td class="n">232</td><td class="n">124</td><td class="n">44</td><td class="n">19.8</td><td class="n">–</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">135</td><td class="n">125</td><td class="n">81</td><td class="n">5.1</td><td class="n">12.9</td></tr>
+        <tr><td>Qwen3.8 Flash Next <small>52 GB of experts on the SSD</small></td><td class="n">205</td><td class="n">174</td><td class="n">146</td><td class="n">6.3</td><td class="n">7.6</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Generation over 256 tokens. Against llama.cpp on the same laptop and files (2026-10-25): the 4B's 2K prompt 911 tok/s against 242 (Vulkan) and 337 (SYCL); the 27B's 113 against 23 and 25. Flash Next's default is more accurate since 2026-11-19 (KL against f32 0.0153 -> 0.0046 on code) and a little slower: a 2K prompt 116 tok/s, generation 7.4.</p>
+  </div>
+</section>
+
+<section id="s-140t">
+  <div class="wrap">
+    <h2>Core Ultra 9 285H laptop (Arc 140T)</h2>
+    <p class="setup">Arc 140T (Xe-LPG Plus, 8-lane XMX) · 64 GB RAM, DDR5-5600 · Windows · PascalSoftwares, <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">405</td><td class="n">6.1</td><td class="n">14.6</td><td>2026.11.18.07</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Generation reads its weights at ~84 % of what this machine's memory delivers, near its limit.</p>
+  </div>
+</section>
+
+<section id="s-b390">
+  <div class="wrap">
+    <h2>Core Ultra X7 358H laptop (Arc B390)</h2>
+    <p class="setup">Arc B390 (Panther Lake, Xe3, 16-lane XMX) · a 64 GB+ GPU share · <a href="https://github.com/rizagp/inferzero/issues/1">issue #1</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">637</td><td class="n">5.9</td><td class="n">16.8</td><td>2026.11.18.06</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">1,370</td><td class="n">26</td><td class="n">46</td><td>2026.11.18.06</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="s-a770">
+  <div class="wrap">
+    <h2>Arc A770 16 GB</h2>
+    <p class="setup">Alchemist (Xe-HPG) · Windows 11 · hansong80 and TheUniKian, <a href="https://github.com/rizagp/inferzero/issues/35">issues #35</a>, <a href="https://github.com/rizagp/inferzero/issues/36">#36</a>, <a href="https://github.com/rizagp/inferzero/issues/45">#45</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">4,821</td><td class="n">37.6-38.3</td><td class="n">63.9</td><td>2026.11.18.02 (generation .18.07)</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="n">2,969-3,017</td><td class="n">29.7-30.4</td><td class="n">51.5</td><td>2026.11.17.08 (generation .18.07)</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">1,223</td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>2026.11.17.08 / .18.08</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">The 27B's generation is with kernels sent in recorded lists (<code>ARC_BATCH=64</code>), the default on Alchemist under Windows since 2026.11.18.08; 12.6-12.8 tok/s before. With it, the 27B's drafting no longer adds speed (20.4 tok/s against 21.4 plain on a 512-token prompt).</p>
+  </div>
+</section>
+
+<section id="s-b580">
+  <div class="wrap">
+    <h2>Arc B580 12 GB</h2>
+    <p class="setup">Battlemage (Xe2) · PCIe 3.0 slot · Linux (NixOS) · d-dorok, <a href="https://github.com/rizagp/inferzero/issues/37">issue #37</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">7,915</td><td class="n">92.6</td><td>commit 7703141</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="n">5,455</td><td class="n">56.2</td><td>commit 651efd8</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">2,469</td><td class="n">84.7</td><td>commit 7703141</td></tr>
+        <tr><td>Qwen3.8 27B <small>with <code>ARC_HOST_KEEP_GB=0.75</code>: 0.49 GiB of it in RAM</small></td><td class="n">1,877</td><td class="n">7.1</td><td>commit 438dfc4</td></tr>
+        <tr><td>Qwen3.8 27B <small>default: 1.02 GiB of it in RAM</small></td><td class="n">1,783</td><td class="n">3.5</td><td>commit 438dfc4</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">The 27B is a little larger than this card can hold beside its buffers, so part of it is read from RAM over PCIe for every token.</p>
+    <h3 class="sub">The same files with llama.cpp on this card</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">inferzero</th><th class="n">llama.cpp SYCL</th><th class="n">llama.cpp Vulkan</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B Q4_K_M</td><td class="n">7,915 / 92.6</td><td class="n">1,520 / 95.4</td><td class="n">2,411 / 79.7</td></tr>
+        <tr><td>Qwen3.5 9B Q4_K_M</td><td class="n">5,455 / 56.2</td><td class="n">864 / 61.1</td><td class="n">1,703 / 53.0</td></tr>
+        <tr><td>Qwen3.6 35B-A3B UD-IQ4_XS</td><td class="n">2,469 / 84.7</td><td class="n">535 / 41.9</td><td class="n">225 / 29.1</td></tr>
+        <tr><td>Qwen3.8 27B IQ3_S</td><td class="n">1,877 / 7.1</td><td class="n">213 / 11.4</td><td class="n">486 / 4.9-5.3</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">4K prompt / generation, tok/s; d-dorok, llama.cpp b1b770d (<code>llama-bench -p 4096 -n 64 -fa 1</code>, the experts or layers that do not fit on the CPU). llama.cpp is ahead on the small models' generation and on the 27B's, where it runs the layers that do not fit on the CPU instead of reading them over PCIe; <code>ARC_HOST_CPU=1</code> (opt-in) does the same, not yet measured on this card.</p>
+  </div>
+</section>
+
+<section id="s-b60">
+  <div class="wrap">
+    <h2>Arc Pro B60 24 GB</h2>
+    <p class="setup">Battlemage (Xe2) · Windows · manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">1,726</td><td class="n">22.7-23.3</td><td class="n">51.6</td><td>2026.11.17.08 (generation .14.09, drafting .13.11)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">3,536</td><td class="n">82.4</td><td class="n">111.9</td><td>2026.11.14.09 (generation .13.11)</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="s-b65">
+  <div class="wrap">
+    <h2>Arc Pro B65 32 GB</h2>
+    <p class="setup">Battlemage (Xe2) · Linux (TUXEDO OS) · teodortomas, <a href="https://github.com/rizagp/inferzero/issues/47">issue #47</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B UD-Q4_K_XL</td><td class="n">7,774</td><td class="n">81.2</td><td class="n">115.5</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.5 9B UD-Q4_K_XL</td><td class="n">5,226</td><td class="n">49.2</td><td class="n">79.0</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.6 35B-A3B UD-IQ4_XS</td><td class="n">3,512</td><td class="n">82.0</td><td class="n">99.8</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">1,735</td><td class="n">21.6-22.0</td><td class="n">46.7</td><td>2026.11.18.08</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">At 131K tokens: the 4B's prompt 2,960 tok/s and generation 57.8, the 9B's 2,474 and 39.1, the 35B-A3B's 1,830 and 60.3.</p>
+  </div>
+</section>
+
+<section id="s-b70">
+  <div class="wrap">
+    <h2>Arc Pro B70 32 GB</h2>
+    <p class="setup">Battlemage (Xe2) · Linux (Fedora 45) · joshdev-de, <a href="https://github.com/rizagp/inferzero/issues/27">issue #27</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">2,972 <small>4K</small><br>2,727 <small>8K</small></td><td class="n">35.2</td><td class="n">70.6</td><td>main 7368768 (8K .16.12, generation .16.02)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">5,177 <small>4K</small><br>5,647 <small>8K</small><br>5,445 <small>16K</small></td><td class="n">95-98</td><td class="n">–</td><td>2026.11.17.04 (generation .16.15)</td></tr>
+        <tr><td>Qwen3.8 Flash Next <small>46 % of its experts on the card</small></td><td class="n">1,414 <small>4K</small><br>1,145 <small>16K</small></td><td class="n">38.6 <small>warm cache</small><br>6.6 <small>cold</small></td><td class="n">–</td><td>2026.11.17.04</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Another Pro B70 under Windows (<a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>, release 2026.11.13.06, before several prompt changes): the 27B's 4K prompt 2,105 tok/s, generation 32.2, 75.2 with drafting.</p>
+  </div>
+</section>
+
+<section id="s-max1550">
+  <div class="wrap">
+    <h2>Intel Data Center GPU Max 1550</h2>
+    <p class="setup">Ponte Vecchio (Xe-HPC), two stacks · Linux, driver 25.18 · hibagus, <a href="https://github.com/rizagp/inferzero/pull/51">pull request #51</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 512</th><th class="n">Prompt 4K</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B, one stack</td><td class="n">1,939</td><td class="n">2,642</td><td>main, 2026-11-19</td></tr>
+        <tr><td>Qwen3.8 27B, both stacks (<code>--gpus 2</code>)</td><td class="n">–</td><td class="n">3,380</td><td>main, 2026-11-19</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="s-multi-b60">
+  <div class="wrap">
+    <h2>2, 3 and 4 × Arc Pro B60: one model split</h2>
+    <p class="setup">One model's layers divided over the cards (<code>--gpus N</code>) · Windows (no direct GPU-to-GPU copies there: the sums go through host memory) · manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B, prompt 4K</td><td class="n">1,726</td><td class="n">1,597</td><td class="n">1,724</td><td class="n">1,888</td></tr>
+        <tr><td>Qwen3.8 27B, generation</td><td class="n">22.7</td><td class="n">35.7</td><td class="n">43</td><td class="n">53</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash IQ2_XS, generation</td><td class="n">10.3</td><td class="n">18.0</td><td class="n">16.6</td><td class="n">17.6</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Releases: the 27B's split prompts 2026.11.13.05 / .11 and its split generation a run of 2026-10-31, both older than the one-card figures; DeepSeek 2026.11.14.09 (machine with 1 TB of RAM). Long prompts over 4 cards (2026.11.14.05): 64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s for the 35B-A3B, 1,258 / 970 / 640 for the 27B and 948 / 778 / 526 for Flash Next; the 35B-A3B's 4K prompt 4,264 tok/s.</p>
+  </div>
+</section>
+
+<section id="s-multi-other">
+  <div class="wrap">
+    <h2>Other multi-GPU setups</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Setup</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>2 × Arc Pro B60, Linux, PCIe 4.0 x8 each <small>scenic6942, <a href="https://github.com/rizagp/inferzero/issues/17">#17</a></small></td><td class="n">1,630</td><td class="n">37.8</td><td>the sums straight from GPU to GPU (1,442 through host memory)</td></tr>
+        <tr><td>2 × Arc A770, Windows <small>hansong80, <a href="https://github.com/rizagp/inferzero/issues/35">#35</a></small></td><td class="n">1,126</td><td class="n">12.2</td><td>no faster than one card yet: every sum waits on a host round trip</td></tr>
+        <tr><td>2 × Arc Pro B60, one in a PCIe x4 slot <small>MaineTim, <a href="https://github.com/rizagp/inferzero/issues/19">#19</a></small></td><td class="n">620</td><td class="n">–</td><td>the 27B UD-Q5_K_XL; one card alone 1,223: a slow link halves a split model's prompt</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+</main>
+
+
+<footer>
+  <div class="wrap">
+    <div>inferzero · Apache 2.0 · <span class="mono">release 2026.11.19.01</span><br>An independent project, not made or endorsed by Intel. Intel and Arc are trademarks of Intel Corporation or its subsidiaries.</div>
+    <div><a href="https://github.com/rizagp/inferzero">GitHub</a> · <a href="https://github.com/rizagp/inferzero/releases">Releases</a> · <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a> · <a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></div>
+  </div>
+</footer>
+</body>
+</html>
