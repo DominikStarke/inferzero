@@ -817,6 +817,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     }
     std::vector<int> t(nwarm, tok);
     forward(t.data(), (int)t.size());
+    // (2 .. 8 rows: the multi-token GEMVs (TB = 2 / 4 / 7 / 8) of every weight type, which short prompts and the
+    //  server's batched steps of several slots run. Without them a Pro B70's serverz, 27B, after an update: a first
+    //  22-token request 35 s for 128 tokens (70 kernels compiled) against 3.9 s, the first round of 4 at once 19 s
+    //  (26 more) against 8.6; issue #54)
+    for (int n = 2; n <= 8 && pos + n + 1 < ctx; ++n) forward(t.data(), n);
     forward(&tok, 1);
     // (Gemma 4's drafter too, through the same calls, its code unchanged: an E4B first request after an update
     //  generated at 3.7 tok/s, its drafter and verification kernels compiling, the next ones at 26)
