@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-19: Lunar Lake / Panther Lake: H8 from 256 tokens, not 1,024 (a correction to release .05)
+
+- **Why:** a1ex4's crossover runs on the Arc 140V (issue #60, release .05, `--bench-pp` best of 3) put it at ~140
+  tokens: H8 / without it 128 tokens 86 / 89-93 tok/s, 256 156 / 96, 512 252 / 176, 1K 339 / 185, 4K 384 / 170. The
+  1,024 of release .05 came from one cold prompt each and made prompts of 256-1,023 tokens 1.4-1.8x slower.
+- **What:** `ARC_H8_MIN`'s default on iGPUs with 16-lane XMX is now 256: only chunks under 256 tokens skip H8.
+- **Accuracy:** on a 480-token prompt, KL against f32 0.00117 (max 0.029, the top token 470 / 480) with H8 against
+  0.00057 (473 / 480) without, both far inside 0.015; generation never runs H8. `ARC_H8_MIN=100000` keeps every
+  prompt off H8 for those who want the second.
+
 ## 2026-11-19: `ARC_TP_P2P=prompt`: a split model's prompt sums direct, its generated tokens' through host memory
 
 - **Why:** on hibagus's 4 stacks of Data Center GPU Max 1550s (Xe Link between the cards, issue #48), the links'

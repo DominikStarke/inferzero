@@ -229,13 +229,15 @@
     return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp)) && h8_igpu_rows_ok(Mp);
   }
   // (2026-11-19) iGPUs with 16-lane XMX (Lunar Lake's Arc 140V, Panther Lake's B390) take the default H8 from chunks
-  // of ARC_H8_MIN rows (default 1024), shorter chunks the plain XMX GEMM. a1ex4's 140V (issue #60), the 27B on a
-  // 480-token prompt: H8 126 tok/s and KL against f32 0.00117 (max 0.029, the top token 470 / 480), without it 147 tok/s
-  // and 0.00057 (max 0.007, 473 / 480); a 128-token prompt spent 70 % of its time decoding weights for H8. At 4K H8
-  // stays well ahead (444 against 324 tok/s). Discrete cards and ARC_H8=1 as before; the 125H never runs H8
+  // of ARC_H8_MIN rows (default 256), shorter chunks the plain XMX GEMM. a1ex4's 140V (issue #60), the 27B, --bench-pp
+  // best of 3, H8 / without: 128 tokens 86 / 89-93 tok/s, 256 156 / 96, 512 252 / 176, 1K 339 / 185, 4K 384 / 170: the
+  // lines cross at ~140 tokens (a 128-token prompt spends 59 % of its time decoding weights for H8). Accuracy: KL against
+  // f32 on 480 tokens 0.00117 (max 0.029, top token 470 / 480) with H8, 0.00057 (473 / 480) without: both far inside
+  // 0.015, and generation never runs H8. (The first threshold, 1,024, came from cold one-shot runs and made 256-1,023
+  // tokens 1.4-1.8x slower: release .05.) Discrete cards and ARC_H8=1 as before; the 125H never runs H8
   bool h8_igpu_rows_ok(int Mp) const {
     if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;
-    static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 1024;
+    static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 256;
     return Mp >= min_rows;
   }
   bool h8_swi_ok(const GpuWeight& down, int Mp) const {
