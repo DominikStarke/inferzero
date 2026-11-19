@@ -320,6 +320,93 @@ WPF / WinUI 3 for now: the runtime they add to the zip is larger than every othe
 also bring a second toolchain, for a window with one list and a few fields. Revisit only if the launcher grows into
 a full app with chat, which the web UI already covers.
 
+## 7. Review of 2026-11-19: the launchers and every help text (queued)
+
+The user asked whether the launcher's design and submenus are already the best. A read of `origin/main` (no
+screenshots: how the window looks is inferred from the code). Abbreviations: L `scripts/zero-launcher.ps1`, FR
+`launcher-firstrun.ps1`, DL `launcher-downloads.ps1`, SU `setup.ps1`, SH `zero-launcher.sh`, ZS
+`scripts/zero-server.ps1`, SV `tools/server.cpp`, RZ `zero/runz.cpp`. Line numbers as of that day.
+
+**Keep:**
+- one-click first run ending in the browser;
+- the GPU-memory fit label and the auto-context arithmetic;
+- errors in a message bar with Show log / Copy details and exit-code wording;
+- the loading bar fed by the server's `progress:` lines;
+- "Copy for an issue" with paths redacted;
+- Copy the start command, and presets shared with the CLI;
+- the downloads' retry and pause;
+- the tray, with the server outliving the window;
+- Linux's port check, its exposure warning, its systemd writer and its exit codes;
+- `zero-server help`'s short default with sections (the model for the other helps).
+
+### The launchers
+
+| # | Rank | Finding | Fix |
+|---|---|---|---|
+| 1 | high | The window is 1240 x 820 times the DPI factor (L186): taller than a 1080p / 1200p laptop's work area at 150 %, so Start / Stop can sit below the edge | size clamped to `Screen.WorkingArea`; Start / Stop in the header beside the status |
+| 2 | high | CLI names and engine terms in the basic view: "(-Whisper)", "(-Asr)", "-Precise ... KL 0.0105 -> 0.0060" (L337), "MTP drafts", "Id (Pi /model) [shortcut]", "Variant"; advanced: "Resident W8 weights", "--no-swap", "-NoStream", "f32 attention (tests)" | plain labels, the CLI name in a tooltip; Accuracy and MTP drafts to advanced; the test-only switch removed |
+| 3 | high | Downloads are modal and stop when their dialog closes (DL313, FR219): the launcher is unusable during a multi-GB download | the download runs in the main window's message bar (or a Downloads tab); the dialog only chooses |
+| 4 | high | An update leaves the desktop shortcut (FR130 makes one only if none exists) and the PATH entry (SU304) on the old folder | on the first run from a new folder, offer to point the shortcut (and PATH) here |
+| 5 | high | "Reachable from other computers" (0.0.0.0) still shows 127.0.0.1 and no warning (L329, L384) | show the LAN address(es) and a "no password" warning bar, as SH271 does |
+| 6 | medium | No "restart to apply" cue when the options differ from the running server's (`server.json`) | a line "Options changed: Start restarts with them", Start relabelled Restart |
+| 7 | medium | Two first-download dialogs that behave differently (FR73 vs DL53): only Downloads retries and pauses, only Welcome auto-starts | one dialog: Welcome's plain descriptions and RAM fit, Downloads' retry / pause / links, auto-start after any download |
+| 8 | medium | "needs a laptop with an Intel Core Ultra" (FR27, SU101, SU103) excludes A-series / B-series cards | "an Intel Arc GPU (a Core Ultra laptop, or an Arc A / B card)" |
+| 9 | medium | Keyboard and accessibility: no AcceptButton / CancelButton on the main window, Esc does nothing in Welcome / Downloads (FR145, DL116), no mnemonics, tabs without a selected state, the x without a name, changed fields shown by colour alone (L467) | Enter on the grid starts, Esc / CancelButton on every dialog, `&Start` mnemonics, F5 refreshes, `AccessibleName`s, a "(changed)" mark |
+| 10 | medium | The first model list takes up to a minute per model with an empty grid (L855) | rows appear as each is counted, or "model 3 of 8" |
+| 11 | medium | Open web UI is enabled with the server off (L1377) | disabled while off |
+| 12 | medium | GPUs (one model split) caps at 8 (L411) while serverz takes 64 (SV1018), and shows no count of the GPUs found | the GPUs found next to the field, the cap at that count, which models split |
+| 13 | medium | Linux: no `--ctx`, `--stop`, `--status`, `--version` or update check; `--list` ignores models outside the catalog; no fit estimate; no `/v1` address printed (SH284); without a terminal and `--yes` the download prompt fails with exit 1 and no message (SH226) | print "API: url/v1 (key: anything)" at ready; `--ctx`; "not a terminal: add --yes" when `read` fails |
+| 14 | low | Three ways to report for an issue (Log tab, doctor, benchmark) | one "Copy report for an issue" (doctor + log + start command) in More and on error bars |
+| 15 | low | More has 17 items | a Tools submenu for Pack, Benchmark, Record |
+| 16 | low | The theme is read once; the tray menu is not themed (L60, L1300) | as section 5 says, a full dark theme is effort L |
+| 17 | low | System-aware DPI only; unscaled paddings at FR94, FR117 | per-monitor awareness when the launcher moves to WebView2 |
+| 18 | low | The no-driver error twice, as a box and a bar (FR26, L1512) | the bar only, with a "Driver page" action |
+| 19 | low | `tests/test_zero_launcher.sh` covers only the service writer | tests of the argument parsing and the menu |
+
+### The help texts
+
+| Help | Rank | Finding | Fix |
+|---|---|---|---|
+| serverz `--help` | high | The default port is 8080 (SV982, SV1254) where zero-server, both launchers, README and USAGE say 8090 | 8090 as serverz's default too |
+| serverz `--help` | high | ~135 lines, no examples; the common options under `--list-models` / `--speech-reserve` details (SV1248-1252) | a short default (10 common options, 3 examples), the rest behind `--help all`, as zero-server does |
+| serverz `--help` | medium | Engine internals (SV1329-1337: H8 GEMM, 2D block loads, `ARC_W8_PARTIAL_GB`, `ARC_GEMV_WAVE`); `--budget` explained through "decoded copy / Arc 140T preset" (SV1303-1307) | internals to docs/xe2-tuning.md; `--budget` in plain words |
+| serverz `--help` | medium | Defaults that differ from the wrappers' without saying so: `--think-budget` none vs 8192, `--ctx` 40960 vs auto, `--session-cache-gb` 0 vs 8 (only the last is said); the usage names it `inferzero-server` | "(zero-server / launcher: X)" for each; the program's own name |
+| serverz `--help` | low | `--speech-reserve` only with `--list-models` and missing from the option table (SV974, SV1007-1024) | in the table |
+| runz `--help` | medium | 14 lines of dated `ARC_*` test switches (RZ358-371); no examples | `runz --help env` for the switches; three example lines (bench, KL, `--dump-logits` before / after) |
+| runz `--help` | low | `--help` only as the first argument (RZ297); no "did you mean" (RZ450); help on stderr | anywhere in the arguments; did-you-mean as serverz has |
+| zero-server help | high | The model shortcuts disagree: `-Model ... g26` (ZS348, ZS403) cannot be pulled, `pull` offers g31 (ZS343) which `-Model` omits though it runs (server_catalog.h:373); "35b-s" vs setup's "35b-gsq" | one list generated from the catalog and server_catalog.h |
+| zero-server help | medium | `-MtpDrafts` "(4 on B-series cards)" (ZS463) vs serverz / runz 3 (SV1270, RZ315); `-ImageMaxTokens` Gemma 4 12B "1120..2048" (ZS471) vs serverz 1120 (SV1299); `-Gpus 2-64` vs the launcher's 8 | one figure each, from the code |
+| zero-server help | medium | An unknown command (`zero-server stat`) hits PowerShell's ValidateSet error (ZS36-37) instead of the did-you-mean the options get (ZS118) | `$Action` a plain string checked the same way |
+| zero-server help | low | Ends with "Everything: zero-pi --help" (ZS547), which exists only with Pi | say so, or point at USAGE.md |
+| setup `-Help` | medium | Stale sizes: 4b 3.0 / 9b 6.1 / 27b 12.1 GB (SU58-64) vs the catalog's 3.7 / 7.1 / 13.1 (model-catalog.ps1:8-17); the no-GPU text excludes discrete cards (SU101-103) | the table printed from `$ArcModels`; finding 8's wording |
+| zero-launcher.sh `--help` | medium | No exit codes; not said that `-- --ctx N` sets a context, that it starts serverz directly (zero-server's names do not apply), or that it passes no `--session-cache-gb` (Windows 8, Linux 0) | those lines; the same session-cache default as Windows |
+| zero-launcher.sh menu | low | No "h" entry; a choice ends the program instead of returning to the menu | an h entry; back to the menu after a download |
+| hf-get.ps1 / get-models.ps1 | medium | No `-Help`; wrong use prints nothing and exits 0 (hf-get:135, get-models:40-52); the speed limit only as `$env:ARC_HF_RATE` | the header's usage and exit 2; a `-Rate` flag |
+| gemv_bench | medium | No `--help`, 7 positional arguments | a help line with one example, or "developer tool" |
+| mgpu_probe | medium | Unknown options are ignored | rejected with exit 2 |
+| gpu_bench, xw_peak, ref_forward | low | gpu_bench does not name a bad option; xw_peak's `--wgx 2\|4` text omits 1; ref_forward has no example tied to `runz --kl-ref` | as said |
+| Windows launcher | medium | No tooltips at all (0 ToolTip controls); hints are cut-down CLI help ("-Slots: each its own KV cache", L410); no About / version | a ToolTip per field in plain words with the flag; the version in the header or More |
+| Web UI | medium | L486 "start it with --whisper auto" names serverz's flag | the launcher field and `zero-server -Whisper auto` too |
+| Web UI | low | L487 "(one menu since 2026-11-04)", changelog text in a tooltip; L701 shows `%USERPROFILE%` on Linux | removed; the platform's path |
+| README / USAGE | medium | The precise mode's KL: USAGE:300 "0.0127 at 3.5K" vs the helps' "0.0105 -> 0.0060" (SV1327, ZS439, L337) | one measured figure everywhere, linked to before-after.md |
+| README | low | README:72 says the RAM-suited model is ticked: true for the Welcome dialog only | say which dialog |
+
+**The same setting under different names:**
+- resident weights: `--budget` / `-BudgetGb` / "Resident W8 weights (GB)";
+- images: `--no-mmproj` / `-Vision off` / "Images / audio";
+- drafting: `--mtp`, `--draft` / `-NoMtp`, `-Drafter` / "no speculative decoding";
+- saved conversations: "Session cache" / "saved conversations";
+- the host: `--host` / `-Host`, `-ListenHost`.
+Fix: "= serverz --x" next to each zero-server option in `help options`, and the launcher tooltips showing both.
+
+**Order:**
+1. The high rows: launcher 1-5; serverz's port; the serverz help split; zero-server's shortcut list.
+2. The medium wording and consistency fixes (driver text, numbers that disagree, names, scripts' usage and exit codes).
+3. Keyboard and accessibility.
+4. The rest.
+
+These are stage 0 of section 6 ("polish WinForms first"), and every fix should carry into the WebView2 launcher's page.
+
 ## Sources
 
 Local:
