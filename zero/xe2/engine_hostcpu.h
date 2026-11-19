@@ -25,9 +25,14 @@ std::vector<float> hcpu_y_, hcpu_sc_;
 uint64_t hcpu_n_ = 0;
 double hcpu_ms_ = 0;
 
-static bool host_cpu_on() {
-  static const bool on = getenv("ARC_HOST_CPU") && atoi(getenv("ARC_HOST_CPU")) != 0;
-  return on;
+// (on by default on discrete cards since 2026-11-19: d-dorok's B580 (PCIe 3.0, i9-9900KF), the 27B, two rounds each:
+//  0.49 GiB in RAM (ARC_HOST_KEEP_GB=0.75) 7.11 -> 13.70 tok/s (a step 140.6 -> 72.6 ms), the default 0.85 GiB 4.54 ->
+//  11.88, 1.02 GiB at a 4K context 3.90 -> 10.27; the prompt the same or faster (836 -> 1,022 tok/s at 512); issue #37.
+//  llama.cpp SYCL on that card: 11.4. Off on iGPUs, whose GPU reads RAM at full speed (the laptop's 27B with 0.5 GiB
+//  forced there 5.03 -> 4.22). ARC_HOST_CPU=0 / 1 decides)
+bool host_cpu_on() const {
+  static const int e = getenv("ARC_HOST_CPU") ? (atoi(getenv("ARC_HOST_CPU")) != 0 ? 1 : 0) : -1;
+  return e < 0 ? !zrt::integrated() : e == 1;
 }
 // (upload_padded: a matrix it put in host memory; its rows are `data` (nbytes of GGUF `type`), valid during the call)
 void host_src_note(cl_mem m, uint32_t type, const uint8_t* data, size_t nbytes, size_t nsb) {

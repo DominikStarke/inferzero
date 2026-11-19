@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-19: a 12 GB card's 27B nearly twice as fast: the weights in RAM computed by the CPU, by default
+
+- **`ARC_HOST_CPU` is on by default on discrete cards.** When a model doesn't fit the card (the 27B on a 12 GB B580),
+  the matrices kept in RAM are now computed by the CPU for each generated token, instead of being read by the GPU
+  over PCIe. d-dorok's B580 (PCIe 3.0, an i9-9900KF), the 27B, two rounds each:
+  - 0.49 GiB in RAM (`ARC_HOST_KEEP_GB=0.75`): 7.11 -> 13.70 tok/s (a step 140.6 -> 72.6 ms);
+  - the default room (0.85 GiB in RAM): 4.54 -> 11.88;
+  - a 4K context (1.02 GiB in RAM): 3.90 -> 10.27.
+
+  The prompt is the same or faster (the 512 prompt 836 -> 1,022 tok/s). llama.cpp SYCL on the same card: 11.4. The
+  cost is RAM: ~1.1 bytes per weight of those matrices (~0.55 GiB at 0.49 GiB in RAM). The KL is the GPU path's or
+  lower (the laptop's 4B: 0.0014-0.0017 against 0.0034). iGPUs keep it off: their GPU reads RAM at full speed.
+  `ARC_HOST_CPU=0` turns it off; `=1` forces it. Issue #37.
+- **Measured, not changed:** `ARC_BATCH=64` on that B580 under Linux, the 4B 93.57 -> 92.87 and the 9B 56.80 -> 56.47
+  tok/s. It stays an Alchemist-on-Windows default. The 9B's GEMVs on that card: with the reads alone
+  (`ARC_GV_PROBE=1`) as slow as the real kernels, with the decode alone (`=2`) 20-30 % faster. Its access pattern is
+  the limit (plan item G6).
+
 ## 2026-11-19: `runz --kl-ref` shows where the top token flips (`ARC_KL_FLIPS=1`)
 
 - **With `ARC_KL_FLIPS=1`, every KL path of `runz --kl-ref` prints each position whose top token is not the
