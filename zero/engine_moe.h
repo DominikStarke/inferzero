@@ -207,6 +207,9 @@
     const bool use_gemm_gu = use_gemm || (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
                                           !hp.ds41 && tm == 16 && T >= gemm_min);
     const std::string xdef = xc_ ? " -DXCACHE" : "";
+    // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
+    // of a split token (ARC_XSPLIT_TAB below)
+    cl_mem xtab_l = xc_ ? xc_->xtab[L.il] : nullptr;
     // standard expert types, per tile (zero/kernels/decode.cl moe_gateup_q / moe_down_q): the tiles in `tiles`
     auto gateup_q = [&](cl_mem tiles) {
       const int grows = gr_gu;
@@ -231,7 +234,7 @@
         sc = asct_;
       }
       if (xc_) {
-        set_args(k, 0, xc_->xtab[L.il], xc_->xtab[L.il], FF, K, tabs_, aq_, sc, M, tiles, stok_, mh_, xc_->xtab[L.il],
+        set_args(k, 0, xtab_l, xtab_l, FF, K, tabs_, aq_, sc, M, tiles, stok_, mh_, xtab_l,
                  xoff(L, 0), xoff(L, 1));
       } else {
         set_args(k, 0, L.ex_q[0], L.ex_q[1], FF, K, tabs_, aq_, sc, M, tiles, stok_, mh_);
@@ -258,7 +261,7 @@
                                          (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd, "moe_down_q");
       int NN = E, K = Fp, S = slots_;
       if (xc_)
-        set_args(k, 0, xc_->xtab[L.il], NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xc_->xtab[L.il], xoff(L, 2));
+        set_args(k, 0, xtab_l, NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xtab_l, xoff(L, 2));
       else
         set_args(k, 0, L.ex_q[2], NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_);
       size_t gws[2] = {((size_t)(E + grows - 1) / grows * 16 + 255) / 256 * 256, max_tiles}, lws[2] = {256, 1};
@@ -316,6 +319,27 @@
     }
     // (decode + GEMM decodes every expert of a group: the layer's experts all resident first)
     if (xc_ && !skip_x) stream_layer(L, T, use_gemm_gu, tl1.empty() ? nullptr : tl1.data());
+    // ---- (2026-11-19, issue #56) a split token's missed experts read their table from the GPU. Their entries are
+    //      written by the host in ensure() just after the cached experts' kernels read that same row of host memory;
+    //      on an A770 the missed experts' kernels then read wrong addresses (the 35B's text corrupted, logits changing
+    //      from run to run, ARC_XSPLIT=0 right; skipzx-lab). Here the finished row is copied into a GPU buffer,
+    //      which the missed experts' kernels read instead: the same addresses, the same results bit for bit; one
+    //      host wait more a split layer. ARC_XSPLIT_TAB=1: this; 2: only that wait (the row in host memory, a test);
+    //      0: as before. Default 1 on Alchemist (8-lane discrete cards), 0 elsewhere (Battlemage and the iGPUs gave
+    //      the right text)
+    if (tiles == xt_miss_ && xt_miss_) {
+      static const int xs_tab = getenv("ARC_XSPLIT_TAB") ? atoi(getenv("ARC_XSPLIT_TAB"))
+                                                         : (!zrt::integrated() && cl_.sg8 ? 1 : 0);
+      if (xs_tab == 1) {
+        const size_t nb = (size_t)hp.n_expert * 8;
+        if (!xt_tab_) xt_tab_ = buf(nb);
+        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_tab_, CL_TRUE, 0, nb, xc_->xaddr + (size_t)L.il * hp.n_expert, 0,
+                                      nullptr, nullptr));
+        xtab_l = xt_tab_;
+      } else if (xs_tab == 2) {
+        zrt::sync();
+      }
+    }
     if (use_rg) {
       moe_rg(L, 0, Mp, max_tiles);
     } else if (use_gemm_gu) {

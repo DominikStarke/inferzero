@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-11-19: A770: a 35B-A3B token's missed experts read their table from the GPU (issue #56)
+
+- **On an A770 the 35B-A3B wrote corrupted text when its experts were streamed** (skipzx-lab, issue #56, Linux): its
+  logits changed from run to run from the 6th-12th token on, `ARC_XSPLIT=0` gave the right text, and a B60 with
+  the same binary was right either way. A token whose experts are partly missing runs the cached ones first, while
+  the others are copied in (`ARC_XSPLIT`); the missed experts' entries in the expert table, which lives in host
+  memory, are written just after the cached experts' kernels read the same row. The missed experts' kernels now read
+  a copy of that finished row in GPU memory (`ARC_XSPLIT_TAB`, `zero/engine_moe.h`): the same addresses, so the same
+  results bit for bit, for one host wait more per split layer.
+- **Default on Alchemist** (8-lane discrete cards); Battlemage and the iGPUs keep the row in host memory, as before.
+  `ARC_XSPLIT_TAB=1` / `0` force it on / off; `2` only adds the wait, keeping the row in host memory (a test of which
+  part matters).
+- **Checked:** not on an A770 yet (skipzx-lab is asked to). On the laptop with it forced, Flash Next IQ3_S streamed
+  (the split runs at 87 % hits): logits with `=1` and `=2` byte for byte equal to `=0`, the speed the same (6.9-7.0
+  tok/s).
+
+## 2026-11-19: pack and expert-file failsafes: a same-named package, Ctrl+C / SIGTERM, a full disk, sleep, stale .tmp
+
+- **A package of the same name made from another file is no longer overwritten** (B2). Two folders' GGUFs of the
+  same file name make the same package folder; `--pack` now reads its `package-source.txt` and refuses, naming both
+  files, when it records another one. A folder that records none is packed as before, with a line saying so.
+- **Ctrl+C and SIGTERM stop a pack or an expert-file build cleanly** (D1): between two batches, the half-written
+  `.tmp` removed, then the signal does what it did before. `docker compose stop` and a pod's deletion send SIGTERM;
+  their 60 s grace periods (2026-11-19) now let that cleanup run instead of leaving tens of GB for the next start.
+- **A drive without room is refused before anything is written** (S3): the expert file and the package GGUF each
+  check their drive's free space (their size + 256 MB), naming both numbers; before, a full disk stopped a build
+  after tens of minutes.
+- **A `.tmp` left by a build that was killed** (a power cut, SIGKILL) is removed first, with a line giving its size
+  (S7).
+- **Windows does not sleep while a pack or an expert-file build runs** (S11, `SetThreadExecutionState`).
+- **Linux: the source pages a build has copied leave the process at once** (B6, `madvise(MADV_DONTNEED)` per batch
+  and per package tensor), instead of staying mapped until the whole GGUF was read, which counted against a
+  container's memory limit. Windows already trimmed them per layer.
+- **Checked:** Gemma 4 26B Q4_0 packed three times: the expert file and the package GGUF byte for byte the same as
+  before these changes (SHA-256); stale `.tmp` files removed and logged; another source under the same name refused,
+  the package unchanged. Flash Next IQ3_S (83.6 GB) packed through it in 809 s. Linux: compiled, not run.
+
 ## 2026-11-19: `serverz --pack` refuses a package as its source
 
 - **`serverz --pack <a package's .gguf>` could destroy the package** (self review, B1). A package's expert tensors

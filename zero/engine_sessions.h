@@ -731,6 +731,7 @@
   cl_mem moe_wq_ = nullptr, moe_wh_ = nullptr;
   // one token, streamed experts: the tiles of its cached and of its missing experts (layer_moe, ARC_XSPLIT)
   cl_mem xt_hit_ = nullptr, xt_miss_ = nullptr;
+  cl_mem xt_tab_ = nullptr;  // (a split token's expert-table row on the GPU, ARC_XSPLIT_TAB; layer_moe)
   std::vector<int> xt_hit_h_, xt_miss_h_;
   int moe_group_ = 0;
   // residual stream of a prompt segment (up to lm_seg_ tokens) for layer-major prefill, and its per-chunk views

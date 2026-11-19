@@ -8,6 +8,7 @@
 // and reused otherwise; it can be deleted at any time.
 #pragma once
 #include <atomic>
+#include <csignal>
 #include "../src/app_dir.h"
 #include "../src/gguf.h"
 #include "../src/autoround_revision.h"
@@ -26,6 +27,63 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+// ---- a stop (SIGTERM: docker compose stop, a pod deleted; SIGINT: Ctrl+C) while an expert file or a package is
+// written: the work stops between batches, its .tmp files are removed, and the signal then does what it did before
+// (by default it ends the process). Before (self review 2026-11-19, D1), SIGTERM ended serverz at once mid-build: a
+// .tmp of tens of GB left behind, and the next start began again from zero. The handler only sets a flag.
+inline std::atomic<int> g_xbuild_sig{0};
+extern "C" inline void xbuild_on_signal(int sig) { g_xbuild_sig.store(sig); }
+// A .tmp left by a build that was killed (power cut, SIGKILL, a crash): as large as the file it was to become. Removed
+// with a line saying so before a new build writes it again (it was truncated silently before, its space taken until
+// then; S7).
+inline void drop_stale_tmp(const std::string& tmp) {
+  std::error_code e;
+  const auto st = std::filesystem::status(std::filesystem::path(tmp), e);
+  if (e || !std::filesystem::is_regular_file(st)) return;
+  const uintmax_t n = std::filesystem::file_size(std::filesystem::path(tmp), e);
+  zlog::eprintf("inferzero: removing %s (%.1f GB) left by an earlier build that did not finish\n", tmp.c_str(),
+                e ? 0.0 : n / 1e9);
+  std::filesystem::remove(std::filesystem::path(tmp), e);
+}
+// Refuses to start writing `bytes` next to `path` when its drive has less free (plus 256 MB of room): a full disk
+// stopped a build after tens of minutes, with the numbers nowhere (S3). A drive whose free space cannot be read: no
+// check.
+inline void need_free_space(const std::string& path, uint64_t bytes, const char* what) {
+  std::error_code e;
+  const auto dir = std::filesystem::path(path).parent_path();
+  const auto sp = std::filesystem::space(dir.empty() ? std::filesystem::path(".") : dir, e);
+  if (e) return;
+  const uint64_t need = bytes + (256ull << 20);
+  if (sp.available < need) {
+    char msg[160];
+    snprintf(msg, sizeof msg, " needs %.1f GB on its drive, %.1f GB are free: ", need / 1e9, sp.available / 1e9);
+    throw std::runtime_error(std::string(what) + " " + path + msg + "free some space, or put the models on another drive");
+  }
+}
+struct XBuildStopGuard {
+  void (*old_int)(int) = SIG_DFL;
+  void (*old_term)(int) = SIG_DFL;
+  XBuildStopGuard() {
+    old_int = std::signal(SIGINT, xbuild_on_signal);
+    old_term = std::signal(SIGTERM, xbuild_on_signal);
+  }
+  ~XBuildStopGuard() {
+    std::signal(SIGINT, old_int == SIG_ERR ? SIG_DFL : old_int);
+    std::signal(SIGTERM, old_term == SIG_ERR ? SIG_DFL : old_term);
+    // (the outermost guard hands the signal on, once the .tmp files are gone: an inner one would only set the flag
+    //  again through the outer guard's handler)
+    if (old_int != xbuild_on_signal && old_term != xbuild_on_signal) {
+      const int sig = g_xbuild_sig.exchange(0);
+      if (sig) std::raise(sig);
+    }
+  }
+  static void check(const std::string& what) {
+    if (g_xbuild_sig.load())
+      throw std::runtime_error("stopped by " + std::string(g_xbuild_sig.load() == SIGTERM ? "SIGTERM" : "Ctrl+C / SIGINT") +
+                               " while writing " + what + ": its .tmp removed, the next start begins it again");
+  }
+};
 
 struct ExpertStore {
   struct LayerInfo {
@@ -414,9 +472,13 @@ struct ExpertStore {
     return same;
   }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
+    XBuildStopGuard stop_guard;  // (before the .tmp's owner: it unwinds after the .tmp is removed; D1)
     const auto t0 = std::chrono::steady_clock::now();
     zlog::eprintf("inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
     const std::string tmp = path + ".tmp";
+    plat::KeepAwake awake;  // (S11: a laptop left alone slept mid-build)
+    drop_stale_tmp(tmp);    // (S7)
+    need_free_space(path, file_bytes, "the expert file");  // (S3: before anything is written)
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop
     // (the .tmp file goes away if the build fails half way: it is as large as the expert file)
@@ -523,6 +585,7 @@ struct ExpertStore {
       if (pool_on && !pb.p) zlog::eprintf("inferzero: no %.0f MB for the expert file's read buffer: reading in place\n", pool_n / 1e6);
       if (pool) prefetch_batch(0);
       for (int e0 = 0; e0 < n_expert; e0 += G) {
+        XBuildStopGuard::check("the expert file " + path);
         const int ne = std::min(G, n_expert - e0);
         memset(buf, 0, (size_t)ne * L.rec);
         // where matrix i's rows are read from: the mapping from row 0, or this batch's copy from row lo_row[i]
@@ -533,6 +596,8 @@ struct ExpertStore {
             uint64_t lo, hi;
             span_rows(k, e0, ne, lo, hi);
             memcpy(pb.p + sp[k].at, sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
+            // (copied: on Linux those pages leave the process now, not at the end of the pass; B6)
+            plat::release_mapped(sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
             for (int i = 0; i < 3; ++i)
               if (sp_of[i] == k) base[i] = pb.p + sp[k].at, lo_row[i] = lo;
           }

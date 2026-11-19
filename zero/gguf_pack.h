@@ -119,6 +119,7 @@ struct Result {
 // Writes the package of `source` (the first part of a split model, or the only file) under packages_dir().
 inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   namespace fs = std::filesystem;
+  XBuildStopGuard stop_guard;  // (a stop: the .tmp files removed, then the signal goes on; D1)
   const auto t0 = std::chrono::steady_clock::now();
   GgufFile src(source);
   // (a package as the source: its expert tensors are virtual (no data), so the new GGUF would lack them, nothing would
@@ -132,6 +133,51 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   const size_t sp = name.find("-00001-of-");
   if (sp != std::string::npos) name.resize(sp);
   const std::string dir = packages_dir() + PLAT_SEP + name;
+  // (a package folder of the same name made from another file, e.g. the same model name in two folders: its GGUF
+  //  and expert file were rebuilt and renamed over it without a word. Refused, naming both; a re-pack of the same
+  //  source goes on and reuses its expert file. A package from before package-source.txt (2026-11-15) says only the
+  //  file name, which matches by construction: it goes on, with a line. Self review 2026-11-19, B2)
+  {
+    std::error_code e;
+    const fs::path rec = fs::path(dir) / "package-source.txt";
+    if (fs::exists(fs::path(dir) / (name + ".gguf"), e) && fs::exists(rec, e)) {
+      std::string prev;
+      if (FILE* f = plat::fopen_path(rec, "rb")) {
+        std::vector<char> b(4096);
+        const size_t n = fread(b.data(), 1, b.size(), f);
+        fclose(f);
+#ifdef _WIN32
+        if (n >= 2 && (unsigned char)b[0] == 0xFF && (unsigned char)b[1] == 0xFE) {  // (UTF-16 with its BOM)
+          std::wstring w((const wchar_t*)(b.data() + 2), (n - 2) / sizeof(wchar_t));
+          while (!w.empty() && (w.back() == L'\r' || w.back() == L'\n')) w.pop_back();
+          prev = fs::path(w).string();
+        } else
+#endif
+        {
+          prev.assign(b.data(), n);
+          while (!prev.empty() && (prev.back() == '\r' || prev.back() == '\n')) prev.pop_back();
+        }
+      }
+      if (!prev.empty()) {
+        const fs::path now = fs::absolute(fs::path(source), e);
+        bool same = fs::exists(prev, e) && fs::equivalent(prev, now, e);
+        if (!same) {  // (the earlier source gone or moved: compared as paths, case-blind on Windows)
+          std::string a = fs::path(prev).lexically_normal().string(), c = now.lexically_normal().string();
+#ifdef _WIN32
+          for (auto& ch : a) ch = (char)tolower((unsigned char)ch);
+          for (auto& ch : c) ch = (char)tolower((unsigned char)ch);
+#endif
+          same = a == c;
+        }
+        if (!same)
+          throw std::runtime_error("a package of the same name, made from another file, is already in " + dir +
+                                   " (from " + prev + "; this one is " + now.string() +
+                                   "): remove that package first (zero-server, or delete the folder), or rename this file");
+      } else {
+        zlog::eprintf("inferzero: %s holds a package whose source is not recorded: taken as this file's\n", dir.c_str());
+      }
+    }
+  }
   fs::create_directories(dir);
   Result r;
   r.gguf = dir + PLAT_SEP + name + ".gguf";
@@ -171,6 +217,13 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   const uint64_t align = (uint64_t)src.get_int("general.alignment", 32);
   const std::string tmp = r.gguf + ".tmp";
   auto drop_tmp = [&] { std::error_code e; fs::remove(tmp, e); };
+  plat::KeepAwake awake;  // (S11)
+  drop_stale_tmp(tmp);    // (S7)
+  {  // (S3: the package GGUF's room first; the expert file's is checked when it is written)
+    uint64_t rest = 1ull << 20;
+    for (const GgufTensor* t : keep) rest += (t->nbytes + align - 1) / align * align;
+    need_free_space(r.gguf, rest, "the package");
+  }
   try {
     Writer w(tmp);
     std::vector<std::string> keys;
@@ -201,7 +254,9 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     }
     w.pad(align);
     for (const GgufTensor* t : keep) {
+      XBuildStopGuard::check("the package " + tmp);
       w.put(t->data, t->nbytes);
+      plat::release_mapped(t->data, (size_t)t->nbytes);  // (written: its pages leave the process on Linux; B6)
       w.pad(align);
     }
     r.rest_bytes = w.pos();

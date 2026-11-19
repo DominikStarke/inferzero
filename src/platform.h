@@ -533,6 +533,38 @@ inline void prefetch_mapped(const void* p, size_t n) {
   madvise((void*)a, n + ((uintptr_t)p - a), MADV_WILLNEED);
 #endif
 }
+// [p, p + n) of a read-only file mapping, already copied out, leaves this process (Linux madvise MADV_DONTNEED on the
+// whole pages inside the range; a later read faults them in again from the file). A pass over a whole GGUF otherwise
+// kept every page it touched mapped until the pass ended, which counts against a container's memory limit.
+// Windows: nothing (trim_working_set does it per layer). Only a hint: a failure changes nothing.
+inline void release_mapped(const void* p, size_t n) {
+#ifdef _WIN32
+  (void)p, (void)n;
+#else
+  if (!p || !n) return;
+  const uintptr_t pg = 4096, a = ((uintptr_t)p + pg - 1) & ~(pg - 1), b = ((uintptr_t)p + n) & ~(pg - 1);
+  if (b > a) madvise((void*)a, b - a, MADV_DONTNEED);
+#endif
+}
+// While one lives, Windows does not sleep for being idle (SetThreadExecutionState): a pack or an expert-file build of
+// tens of minutes on a laptop with nobody at it stopped when the laptop slept. Nested ones are fine (the state is the
+// thread's; the outermost one clears it). Linux: nothing (a desktop's idle sleep goes through its session;
+// `systemd-inhibit` around the command).
+struct KeepAwake {
+  KeepAwake() {
+#ifdef _WIN32
+    if (depth()++ == 0) SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+#endif
+  }
+  ~KeepAwake() {
+#ifdef _WIN32
+    if (--depth() == 0) SetThreadExecutionState(ES_CONTINUOUS);
+#endif
+  }
+  KeepAwake(const KeepAwake&) = delete;
+  KeepAwake& operator=(const KeepAwake&) = delete;
+  static int& depth() { thread_local int d = 0; return d; }
+};
 // `from` renamed to `to`, an existing `to` replaced: false on failure (last_error() says why)
 inline bool replace_file(const char* from, const char* to) {
 #ifdef _WIN32
