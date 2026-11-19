@@ -300,6 +300,70 @@ template <bool G> float dot_q2_0(int n, const void* vx, const int8_t* aq, const 
   }
   return hsum8(acc);
 }
+// ---- (2026-11-19) DeepSeek-V4.1's expert types: Unsloth's UD-Q8_K_XL has MXFP4 experts (some down projections Q5_1),
+// other builds Q8_0. Each against the GPU's int8 activations, one scale per 32, as the types above.
+// MXFP4 (blocks of 32: an E8M0 scale, then 16 bytes of E2M1 codes, low nibbles elements 0..15; the GPU raw form puts a
+// superblock's 8 scale bytes first, then its 8 x 16 code bytes): IQ4_NL's form with the MXFP4 table and the scale
+// 2^(e - 128) (e8m0_to_f32_half, the table's values being twice the E2M1 ones)
+template <bool G> inline const uint8_t* mx_e(const uint8_t* x, int b) { return G ? x + (b >> 3) * 136 + (b & 7) : x + 17 * b; }
+template <bool G> inline const uint8_t* mx_q(const uint8_t* x, int b) { return G ? x + (b >> 3) * 136 + 8 + 16 * (b & 7) : x + 17 * b + 1; }
+template <bool G> float dot_mxfp4(int n, const void* vx, const int8_t* aq, const float* as) {
+  const uint8_t* x = (const uint8_t*)vx;
+  const int nb = n / 32;
+  const __m128i values128 = _mm_loadu_si128((const __m128i*)kvalues_mxfp4), m4b = _mm_set1_epi8(0x0f);
+  const __m256i mone = _mm256_set1_epi16(1);
+  __m256 acc = _mm256_setzero_ps();
+  for (int ib = 0; ib < nb; ++ib) {
+    const __m128i q4 = _mm_loadu_si128((const __m128i*)mx_q<G>(x, ib));
+    const __m256i w = CPUX_SET_M128I(_mm_shuffle_epi8(values128, _mm_and_si128(_mm_srli_epi16(q4, 4), m4b)),
+                                     _mm_shuffle_epi8(values128, _mm_and_si128(q4, m4b)));
+    const __m256i p = _mm256_madd_epi16(mul_add_epi8(w, _mm256_loadu_si256((const __m256i*)(aq + 32 * ib))), mone);
+    acc = _mm256_fmadd_ps(_mm256_set1_ps(as[ib] * e8m0_to_f32_half(*mx_e<G>(x, ib))), _mm256_cvtepi32_ps(p), acc);
+  }
+  return hsum8(acc);
+}
+// Q8_0 (blocks of 32: f16 d + 32 int8; the GPU raw form: a superblock's 8 scales, then its 8 x 32 quants)
+template <bool G> inline const uint8_t* q8_d(const uint8_t* x, int b) { return G ? x + (b >> 3) * 272 + 2 * (b & 7) : x + 34 * b; }
+template <bool G> inline const uint8_t* q8_q(const uint8_t* x, int b) { return G ? x + (b >> 3) * 272 + 16 + 32 * (b & 7) : x + 34 * b + 2; }
+template <bool G> float dot_q8_0(int n, const void* vx, const int8_t* aq, const float* as) {
+  const uint8_t* x = (const uint8_t*)vx;
+  const __m256i mone = _mm256_set1_epi16(1);
+  __m256 acc = _mm256_setzero_ps();
+  for (int ib = 0; ib < n / 32; ++ib) {
+    const __m256i w = _mm256_loadu_si256((const __m256i*)q8_q<G>(x, ib));
+    const __m256i p = _mm256_madd_epi16(mul_add_epi8(w, _mm256_loadu_si256((const __m256i*)(aq + 32 * ib))), mone);
+    acc = _mm256_fmadd_ps(_mm256_set1_ps(as[ib] * d16(q8_d<G>(x, ib))), _mm256_cvtepi32_ps(p), acc);
+  }
+  return hsum8(acc);
+}
+// Q5_1 (blocks of 32 in 24 bytes: f16 d, f16 m, 32 high bits, 16 bytes of low nibbles; value d q + m, q in 0..31).
+// The expert file keeps the GGUF layout (G alike). sum(d q a) + m sum(a), each block's int sums exact
+template <bool G> float dot_q5_1(int n, const void* vx, const int8_t* aq, const float* as) {
+  const uint8_t* x = (const uint8_t*)vx;
+  const __m128i m4b = _mm_set1_epi8(0x0f);
+  const __m256i mone = _mm256_set1_epi16(1), one8 = _mm256_set1_epi8(1), b5 = _mm256_set1_epi8(0x10);
+  const __m256i shuf = _mm256_set_epi64x(0x0303030303030303, 0x0202020202020202, 0x0101010101010101, 0x0000000000000000);
+  const __m256i bitm = _mm256_set1_epi64x(0x7fbfdfeff7fbfdfe);
+  __m256 acc = _mm256_setzero_ps();
+  for (int ib = 0; ib < n / 32; ++ib) {
+    const uint8_t* p = x + 24 * ib;
+    const __m128i lo = _mm_loadu_si128((const __m128i*)(p + 8));
+    __m256i q = CPUX_SET_M128I(_mm_and_si128(_mm_srli_epi16(lo, 4), m4b), _mm_and_si128(lo, m4b));  // elements 0..31
+    uint32_t hb;
+    memcpy(&hb, p + 4, 4);
+    // (bit j of hb -> byte j all ones, then the 5th bit of element j)
+    const __m256i hi = _mm256_cmpeq_epi8(_mm256_or_si256(_mm256_shuffle_epi8(_mm256_set1_epi32((int)hb), shuf), bitm),
+                                         _mm256_set1_epi64x(-1));
+    q = _mm256_or_si256(q, _mm256_and_si256(hi, b5));
+    const __m256i a = _mm256_loadu_si256((const __m256i*)(aq + 32 * ib));
+    const __m256i pq = _mm256_madd_epi16(_mm256_maddubs_epi16(q, a), mone);      // sum q a (q unsigned, a signed)
+    const __m256i pa = _mm256_madd_epi16(_mm256_maddubs_epi16(one8, a), mone);   // sum a
+    const float d = d16(p), m = d16(p + 2);
+    acc = _mm256_fmadd_ps(_mm256_set1_ps(as[ib] * d), _mm256_cvtepi32_ps(pq), acc);
+    acc = _mm256_fmadd_ps(_mm256_set1_ps(as[ib] * m), _mm256_cvtepi32_ps(pa), acc);
+  }
+  return hsum8(acc);
+}
 #endif  // __AVX2__
 
 // a row kernel for a GGUF type and a layout (gpu: the expert file's GPU raw form): its dot, the values a block holds,
@@ -318,6 +382,9 @@ inline Kern kern(uint32_t t, bool gpu) {
     case GGML_IQ4_XS: return {dot_iq4_xs, 256, 136};
     case GGML_IQ4_NL: return {gpu ? dot_iq4_nl<true> : dot_iq4_nl<false>, 32, 144};
     case GGML_Q2_0: return {gpu ? dot_q2_0<true> : dot_q2_0<false>, 64, 72};
+    case GGML_MXFP4: return {gpu ? dot_mxfp4<true> : dot_mxfp4<false>, 32, 136};
+    case GGML_Q8_0: return {gpu ? dot_q8_0<true> : dot_q8_0<false>, 32, 272};
+    case GGML_Q5_1: return {dot_q5_1<false>, 32, 192};
   }
 #else
   (void)t, (void)gpu;

@@ -293,7 +293,7 @@
     }
     std::vector<std::pair<int, int>> xmiss;  // (ARC_XCPU: the misses (expert, slot) the CPU computes, zero/xe2/engine_xcpu.h)
     if (skip_x) {
-    } else if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && !tp_moe()) {
+    } else if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && (!tp_moe() || xsplit_tp())) {
       tl1.resize(1 + 3 * (size_t)NU);
       const bool xcpu = xcpu_layer_ok(L);
       if (xcpu)  // (with the CPU's inputs, one wait: zero/xe2/engine_xcpu.h)
@@ -441,6 +441,14 @@
     }
   }
 
+  // ARC_XSPLIT_TP=1 (2026-11-19, a test): the split above on a split model too. It was turned off there for logits that
+  // changed from run to run (QUEUE F30), much like issue #56's on an A770, whose cause was the missed experts reading
+  // their table row in host memory just after the hits' kernels read it (ARC_XSPLIT_TAB); this tests whether the
+  // table's GPU copy settles F30 as well, before the split comes back for split models
+  static bool xsplit_tp() {
+    static const bool on = getenv("ARC_XSPLIT_TP") && atoi(getenv("ARC_XSPLIT_TP")) != 0;
+    return on;
+  }
   static bool moe_gemm_part_ok(const Layer& L, int i) {
     // (the per-tile GEMM has no min term and no native Q8_0 form)
     return is_w8_type(L.ex_type[i]) && L.ex_type[i] != GGML_Q8_0 && L.ex_type[i] != GGML_Q4_0 && w8_variant(L.ex_type[i]) < 2;

@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-19: `ARC_XCPU=1` for DeepSeek-V4.1 (opt-in)
+
+- **What:** the CPU now also computes DeepSeek-V4.1's experts missing from the GPU's cache: kernels for MXFP4 (the
+  experts of Unsloth's UD-Q8_K_XL), Q5_1 (some of its down projections) and Q8_0, and DeepSeek's clamped SwiGLU
+  (`zero/xe2/cpu_experts.h`, `zero/xe2/engine_xcpu.h`). Each kernel gives the exact dequantized values' sums to
+  ~1e-8 of the sum of its terms, in the GGUF layout and the expert file's (a test of random rows of 2,304 and 5,120
+  values).
+- **Checked on the laptop** with a DeepSeek-V4.1 of the real widths and Unsloth's types (random weights,
+  `tools/make_tiny_deepseek41.py --real --unsloth --q5_1-down`), its experts streamed through a 0.75 GiB cache with
+  the RAM tier on: the CPU computed 1,067 of the generated tokens' experts at 0.135 ms each, the copies in the
+  background raised the cache's hits from 25 % to 84 %, and KL against the f32 reference over 160 tokens was 0.0572
+  against 0.0578 without it (that model's own level: random routers with many near ties). No faster on the iGPU,
+  which reads RAM directly (44.5 against 47.0 tok/s): it is for cards on a PCIe link. Off, the logits are byte for
+  byte as before.
+- **Not yet:** one model over several GPUs. `ARC_XSPLIT_TP=1` (a test) lets a split model run a token's cached
+  experts before its missed ones arrive, which `ARC_XCPU` builds on; it was off there for logits that changed from
+  run to run (QUEUE F30). On the laptop (Flash Next over 2 with `ARC_TP_SIM`, 3 GiB caches) the logits were the same
+  run to run and the same as with it off, with the expert table in host memory or its GPU copy; real cards will say.
+
 ## 2026-11-19: `runz --bench-batch` checks batched decoding against each conversation alone on one GPU too
 
 - **What:** `runz --bench-batch N` (several conversations' next tokens in one pass, as `serverz --slots` does) only

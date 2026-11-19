@@ -41,7 +41,8 @@ static int xcpu_threads() {
 }
 // (this layer's experts all have CPU kernels, separate gate / up, a down width the activations' blocks divide)
 bool xcpu_layer_ok(const Layer& L) {
-  if (!xcpu_on() || !hp.moe_std || hp.gemma || hp.ds41) return false;
+  // (DeepSeek-V4.1 since 2026-11-19: its MXFP4 / Q5_1 / Q8_0 experts and its SwiGLU clamp; Gemma 4 not: gate_up fused)
+  if (!xcpu_on() || !hp.moe_std || hp.gemma) return false;
   if (xcpu_l_.empty()) xcpu_l_.resize(hp.n_layer + 1);
   if (L.il < 0 || L.il >= (int)xcpu_l_.size()) return false;
   XcpuLayer& X = xcpu_l_[L.il];
@@ -122,6 +123,7 @@ void xcpu_run(const Layer& L, const std::vector<std::pair<int, int>>& miss, int 
   xcpu_hs_.resize((size_t)NM * Fp / 32);
   if (!xcpu_y_) xcpu_y_ = (float*)zrt::host_alloc((size_t)hp.n_expert_used * E * 4);
   const int8_t* xq = xcpu_aq_.data();
+  const float L_clamp = hp.ds41 ? ds_.clamp : 0.0f;  // (DeepSeek-V4.1's SwiGLU clamp, ds_swi_defs; 0: none)
   const float* xs = xcpu_as_.data();
 #pragma omp parallel num_threads(xcpu_threads())
   {
@@ -135,7 +137,14 @@ void xcpu_run(const Layer& L, const std::vector<std::pair<int, int>>& miss, int 
     for (int m = 0; m < NM; ++m) {
       const float* gu = &xcpu_gu_[(size_t)m * 2 * F];
       float* h = &xcpu_h_[(size_t)m * Fp];
-      for (int j = 0; j < F; ++j) h[j] = gu[j] / (1.0f + std::exp(-gu[j])) * gu[F + j];
+      if (L_clamp > 0.0f) {  // (DeepSeek-V4.1: the gate clamped from above, the up both ways, as moe_gateup_q's SWI_CLAMP)
+        for (int j = 0; j < F; ++j) {
+          const float gc = std::min(gu[j], L_clamp), uc = std::clamp(gu[F + j], -L_clamp, L_clamp);
+          h[j] = gc / (1.0f + std::exp(-gc)) * uc;
+        }
+      } else {
+        for (int j = 0; j < F; ++j) h[j] = gu[j] / (1.0f + std::exp(-gu[j])) * gu[F + j];
+      }
       cpux::quant_act32(h, xcpu_hq_.data() + (size_t)m * Fp, xcpu_hs_.data() + (size_t)m * Fp / 32, Fp);
     }
 #pragma omp for schedule(static)
