@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-19: Alchemist's codebook GEMVs one row a sub-group
+
+- **The A770 / A750 / A580 run the one-token GEMV of the codebook and IQ4 / Q6 types with one row per sub-group**
+  (ARC_GVROWS=1's choice; 2 or 4 before, by type). An A770, the 27B's `--prof-gen` over 32 tokens: `gemm_down`
+  395.7 -> 321.2 ms, gate 284.4 -> 273.0, up 280.5 -> 272.7, qkv 109.7 -> 104.4. That is ~3 ms of a ~46 ms token,
+  roughly +7 % generation; 2 rows and 4 rows were slower (TheUniKian, issue #45). Bit-identical: a row's sums do not
+  depend on its sub-group (the laptop's 8-lane GEMV gives the 27B's logits unchanged with ARC_GVROWS=1). iGPUs and the
+  B-series are unchanged. `ARC_GVROWS=N` still sets it.
+- **Measured on the same A770, not changed yet:** its XMX probe with the data in L1 reaches 37 % of the 231 TOPS peak
+  with the 32 x 16 tile its preset uses (38 % with the DPAS alone), and 54 % with 32 x 32. Its FFN prompt GEMMs run at
+  the same 37 %. A 32 x 32 A/B in the model is asked for (A5 / A7).
+
 ## 2026-11-19: `runz --bench-pp` warms the generation kernels up before timing them
 
 - **`--bench-pp`'s `tg` line no longer includes the generation kernels' first-use cost.** Its warm-up ran a prompt

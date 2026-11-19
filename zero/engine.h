@@ -1187,6 +1187,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
     vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S && !w.iq3t);  // (tiled IQ3_S: gemv only, IQ3T)
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
+    // (Alchemist, a discrete card with 8-lane sub-groups: gemv_v's types one row a sub-group, as ARC_GVROWS=1. An A770,
+    //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
+    //  109.7 -> 104.4; 2 rows slower, 4 slower still (TheUniKian, issue #45, 2026-11-19). Bit-identical: a row's sums do
+    //  not depend on its sub-group (the laptop's 8-lane path, the 27B's logits equal). ARC_GVROWS=N sets it)
+    static const bool gvrows_env = getenv("ARC_GVROWS") != nullptr;
+    if (vk && !gvrows_env && cl_.sg8 && cl_.xmx && !zrt::integrated()) return 1;
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
