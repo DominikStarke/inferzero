@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-19: the expert file written from source rows read in order (`--pack`, a MoE model's first load)
+
+- **Why:** packing bartowski's Flash Next IQ4_XS from an external USB disk ran at ~17-80 MB/s, and that disk hangs
+  under scattered reads. The expert file's build (`zero/expert_store.h`) converted 32 experts at once, each thread
+  reading its expert's rows from the mapped GGUF itself: ~96 small reads at a time across three tensors.
+- **What:** a batch's 32 experts are one contiguous range of rows in each expert tensor (gate, up, down; Gemma 4's
+  gate_up holds both halves). The build now copies those ranges out of the mapping in one pass, prefetching the next
+  batch's ranges while this one converts (`plat::prefetch_mapped`: `PrefetchVirtualMemory`, `madvise` on Linux), then
+  converts from RAM on the same threads as before. RAM: one batch of source rows (~85 MB for Flash Next IQ4_XS),
+  freed after each layer; if it cannot be had, the build reads in place as before. `ARC_XBUILD_POOL=0`: the old reads.
+- **Checked:** `serverz --pack` of Gemma 4 26B Q4_0 from the laptop's SSD, main's build against this one: the expert
+  file (12.33 GB) and the package GGUF byte-identical (SHA-256). Time 120 -> 102 s (the second run from a warmer
+  cache), then with both warm 102 -> 73 s. The same code writes a MoE model's expert file at its first load, so that
+  is faster too.
+
 ## 2026-11-19: a 12 GB card's 27B nearly twice as fast: the weights in RAM computed by the CPU, by default
 
 - **`ARC_HOST_CPU` is on by default on discrete cards.** When a model doesn't fit the card (the 27B on a 12 GB B580),

@@ -520,6 +520,19 @@ inline void trim_working_set() {
   SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 #endif
 }
+// [p, p + n) of a mapped file read in now, in large requests and without waiting (PrefetchVirtualMemory; Linux
+// madvise MADV_WILLNEED): a copy out of the mapping then finds the pages there instead of faulting them in one by one.
+// Only a hint: a failure changes nothing but the speed.
+inline void prefetch_mapped(const void* p, size_t n) {
+  if (!p || !n) return;
+#ifdef _WIN32
+  WIN32_MEMORY_RANGE_ENTRY r{const_cast<void*>(p), n};
+  PrefetchVirtualMemory(GetCurrentProcess(), 1, &r, 0);
+#else
+  const uintptr_t pg = 4096, a = (uintptr_t)p & ~(pg - 1);
+  madvise((void*)a, n + ((uintptr_t)p - a), MADV_WILLNEED);
+#endif
+}
 // `from` renamed to `to`, an existing `to` replaced: false on failure (last_error() says why)
 inline bool replace_file(const char* from, const char* to) {
 #ifdef _WIN32

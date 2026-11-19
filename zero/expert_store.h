@@ -14,8 +14,10 @@
 #include "../src/load_progress.h"
 #include "../src/quants.h"
 #include "io_beat.h"
+#include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -462,9 +464,80 @@ struct ExpertStore {
       struct Buf { uint8_t* p; size_t n; ~Buf() { plat::page_free(p, n); } } bb{(uint8_t*)plat::page_alloc((size_t)L.rec * G), (size_t)L.rec * G};
       uint8_t* buf = bb.p;
       if (!buf) throw std::runtime_error("out of memory writing the expert file");
+      // ---- (2026-11-19) a batch's source rows read in order before the threads convert them. A batch's G experts
+      //      are one contiguous range of rows in each expert tensor (gate, up, down; Gemma 4's gate_up holds both
+      //      halves of each expert), so the source is read as up to three large ranges a batch: big sequential
+      //      reads, where the threads reading the mapping themselves made ~3 x G small scattered ones (an external
+      //      USB disk ran at ~17 MB/s, and hung under them). The next batch's ranges are prefetched while this one
+      //      converts. The same bytes go through the same conversion: the expert file is the same, bit for bit.
+      //      RAM: one batch of source rows (~85 MB for Flash Next IQ4_XS). ARC_XBUILD_POOL=0: as before.
+      static const bool pool_on = !getenv("ARC_XBUILD_POOL") || atoi(getenv("ARC_XBUILD_POOL")) != 0;
+      struct Span { const GgufTensor* t = nullptr; uint64_t lo_off = 0, rowb = 0; size_t at = 0; };
+      Span sp[3];       // the distinct source tensors of this layer (one for gate and up when they share one)
+      int sp_of[3] = {0, 0, 0}, n_sp = 0;
+      for (int i = 0; i < 3; ++i) {
+        int k = 0;
+        while (k < n_sp && sp[k].t != t[i]) ++k;
+        if (k == n_sp) {
+          sp[k].t = t[i];
+          const uint32_t ty = L.type[i];
+          const uint64_t K = t[i]->dims[0];
+          int blk = 0, bytes = 0;
+          if (K % 256) ggml_block_info(ty, blk, bytes);
+          sp[k].rowb = K % 256 ? (K / blk) * bytes : (K / 256) * gguf_sb_bytes(ty);  // (the offsets used below)
+          ++n_sp;
+        }
+        sp_of[i] = k;
+      }
+      // the rows [lo, hi) of tensor k a batch of experts e0 .. e0 + ne - 1 reads (each i using it: row0 .. row0 + rows of
+      // its experts' `per` rows)
+      auto span_rows = [&](int k, int e0, int ne, uint64_t& lo, uint64_t& hi) {
+        lo = UINT64_MAX, hi = 0;
+        for (int i = 0; i < 3; ++i)
+          if (sp_of[i] == k) {
+            lo = std::min(lo, (uint64_t)e0 * m[i].per + m[i].row0);
+            hi = std::max(hi, (uint64_t)(e0 + ne - 1) * m[i].per + m[i].row0 + m[i].rows);
+          }
+      };
+      auto prefetch_batch = [&](int e0) {
+        if (e0 >= n_expert) return;
+        const int ne = std::min(G, n_expert - e0);
+        for (int k = 0; k < n_sp; ++k) {
+          uint64_t lo, hi;
+          span_rows(k, e0, ne, lo, hi);
+          plat::prefetch_mapped(sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
+        }
+      };
+      size_t pool_n = 0;
+      if (pool_on)
+        for (int k = 0; k < n_sp; ++k) {
+          uint64_t lo, hi;
+          span_rows(k, 0, std::min(G, n_expert), lo, hi);
+          sp[k].at = pool_n;
+          pool_n += (size_t)((hi - lo) * sp[k].rowb + 4095) / 4096 * 4096;
+        }
+      struct Pool { uint8_t* p; size_t n; ~Pool() { plat::page_free(p, n); } } pb{
+          pool_n ? (uint8_t*)plat::page_alloc(pool_n) : nullptr, pool_n};
+      // (no room for the batch copy: the threads read the mapping as before, slower but the same bytes)
+      const bool pool = pool_on && pb.p;
+      if (pool_on && !pb.p) zlog::eprintf("inferzero: no %.0f MB for the expert file's read buffer: reading in place\n", pool_n / 1e6);
+      if (pool) prefetch_batch(0);
       for (int e0 = 0; e0 < n_expert; e0 += G) {
         const int ne = std::min(G, n_expert - e0);
         memset(buf, 0, (size_t)ne * L.rec);
+        // where matrix i's rows are read from: the mapping from row 0, or this batch's copy from row lo_row[i]
+        const uint8_t* base[3] = {t[0]->data, t[1]->data, t[2]->data};
+        uint64_t lo_row[3] = {0, 0, 0};
+        if (pool) {
+          for (int k = 0; k < n_sp; ++k) {
+            uint64_t lo, hi;
+            span_rows(k, e0, ne, lo, hi);
+            memcpy(pb.p + sp[k].at, sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
+            for (int i = 0; i < 3; ++i)
+              if (sp_of[i] == k) base[i] = pb.p + sp[k].at, lo_row[i] = lo;
+          }
+          prefetch_batch(e0 + G);  // (the next batch's reads go on while this one converts)
+        }
 #pragma omp parallel for
         for (int j = 0; j < ne; ++j) {
           uint8_t* dst = buf + (size_t)j * L.rec;
@@ -473,17 +546,18 @@ struct ExpertStore {
             const size_t sbb = gguf_sb_bytes(ty), bp = raw_padded_sb_bytes(ty);
             const size_t nsb = L.part[i] / bp;  // superblocks of one expert matrix
             const int K = (int)t[i]->dims[0], rows = (int)m[i].rows;
-            const size_t row1 = (size_t)(e0 + j) * m[i].per + m[i].row0;  // the expert's first row of this matrix
+            // the expert's first row of this matrix, counted from the first row `base[i]` holds
+            const size_t row1 = (size_t)(e0 + j) * m[i].per + m[i].row0 - lo_row[i];
             const uint8_t* src;
             std::vector<uint8_t> padded;
             if (K % 256) {  // rows padded to whole superblocks first
               int blk = 0, bytes = 0;
               ggml_block_info(ty, blk, bytes);
               padded.resize(nsb * sbb);
-              pad_small_block_rows(ty, t[i]->data + row1 * (K / blk) * bytes, rows, K, padded.data());
+              pad_small_block_rows(ty, base[i] + row1 * (K / blk) * bytes, rows, K, padded.data());
               src = padded.data();
             } else {
-              src = t[i]->data + row1 * (K / 256) * sbb;
+              src = base[i] + row1 * (K / 256) * sbb;
             }
             for (size_t s = 0; s < nsb; ++s) gpu_raw_sb(ty, src + s * sbb, dst + s * bp);
             dst += L.part[i];
