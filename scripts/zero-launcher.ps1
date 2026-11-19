@@ -183,8 +183,11 @@ Set-Splash "Building the window..."
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "inferzero"
 $form.AutoScaleMode = "None"  # (sizes are scaled by S here)
-$form.Size = New-Object System.Drawing.Size((S 1240), (S 820))
-$form.MinimumSize = New-Object System.Drawing.Size((S 960), (S 620))
+# (clamped to the screen's work area, the taskbar left out: at 150 % 1240 x 820 is 1860 x 1230, taller than a 1080p or
+#  1200p laptop's, and Start / Stop sat below its edge; launcher review 2026-11-19, docs/launcher-research.md section 7)
+$wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$form.Size = New-Object System.Drawing.Size([Math]::Min((S 1240), $wa.Width), [Math]::Min((S 820), $wa.Height))
+$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min((S 960), $wa.Width), [Math]::Min((S 620), $wa.Height))
 $form.StartPosition = "CenterScreen"
 $form.Font = Font 9
 $form.BackColor = $Pal.bg; $form.ForeColor = $Pal.text
@@ -305,7 +308,7 @@ $grid.RowTemplate.Height = S 30
 foreach ($c in @(
     @("model", "Model", 30), @("variant", "Variant", 11), @("mtp", "MTP", 5), @("vision", "Images", 6),
     @("ctx", "Auto context", 10), @("vram", "VRAM (full context)", 11), @("size", "File", 7),
-    @("id", "Id (Pi /model)  [shortcut]", 20), @("compat", "Supported", 11))) {
+    @("id", "Model id  [shortcut]", 20), @("compat", "Supported", 11))) {
   $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
   $col.Name = $c[0]; $col.HeaderText = $c[1]; $col.FillWeight = $c[2]
   [void]$grid.Columns.Add($col)
@@ -325,17 +328,17 @@ $sessBox = New-Num 0 512 0 0 70
 $sessDirBox = New-Text 170
 $prefixBox = New-Num 0 512 8 0 70
 $noPrefixChk = New-Check "no prefix cache"
-$noSwapChk = New-Check "keep the loaded model (--no-swap: requests do not switch models)"
+$noSwapChk = New-Check "keep the loaded model (requests do not switch models)"
 $netChk = New-Check "reachable from other computers (0.0.0.0)"
 $f32Chk = New-Check "f32 attention (tests)"
-$noMtpChk = New-Check "no speculative decoding (-NoMtp)"
+$noMtpChk = New-Check "no speculative decoding"
 $visionBox = New-Combo @("on", "off") 60
 $slotsBox = New-Num 1 8 1 0 60
 $gpusBox = New-Num 1 8 1 0 60
 $npuBox = New-Combo @("off", "on") 60
-$noStreamChk = New-Check "every expert on the GPU (-NoStream: no SSD reads, smaller context)"
-$preciseChk = New-Check "precise mode (-Precise: Flash Next; KL on prose 0.0105 -> 0.0060, prompts about half as fast; AutoRound: always)"
-$keepThinkChk = New-Check "earlier turns keep their reasoning (-PreserveThinking)"
+$noStreamChk = New-Check "every expert on the GPU (no SSD reads, smaller context)"
+$preciseChk = New-Check "precise mode (Flash Next: closest to the full-precision model, prompts about half as fast; AutoRound: always)"
+$keepThinkChk = New-Check "earlier turns keep their reasoning"
 $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
 $whDevBox = New-Combo @("gpu", "npu") 60
@@ -388,18 +391,47 @@ $apiCopy.Add_Click({ Update-Api; [System.Windows.Forms.Clipboard]::SetText($apiB
 [void]$apiPanel.Controls.Add($apiFmt); [void]$apiPanel.Controls.Add($apiBox); [void]$apiPanel.Controls.Add($apiCopy)
 Update-Api
 [void](Add-Opt "API address" $apiPanel "for other apps; API key: anything; model: the id in the list")
-[void](Add-Opt "MTP drafts per step" $draftBox)
+[void](Add-Opt "MTP drafts per step" $draftBox -Advanced)
 [void](Add-Opt "Thinking budget (tokens)" $thinkBox)
 [void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; all models together (default 8); 0 = off")
 [void](Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart")
-[void](Add-Opt "Accuracy" $preciseChk)
-[void](Add-Opt "" $netChk)
+[void](Add-Opt "Accuracy" $preciseChk -Advanced)
+$netPanel = Add-Opt "" $netChk
+# (the command-line names in tooltips, for zero-server / serverz users; the labels say what each does)
+$tips = New-Object System.Windows.Forms.ToolTip; $tips.AutoPopDelay = 15000
+foreach ($tp in @(@($noSwapChk, "zero-server -NoSwap (serverz --no-swap)"), @($noMtpChk, "zero-server -NoMtp"),
+    @($noStreamChk, "zero-server -NoStream (serverz --no-stream)"),
+    @($preciseChk, "zero-server -Precise (serverz --precise). Flash Next's KL against f32 on prose 0.0091 by default, 0.0060 precise"),
+    @($keepThinkChk, "zero-server -PreserveThinking"), @($netChk, "zero-server -ListenHost 0.0.0.0 (serverz --host 0.0.0.0)"),
+    @($whisperBox, "zero-server -Whisper"), @($asrBox, "zero-server -Asr"), @($draftBox, "zero-server -MtpDrafts (serverz --mtp-drafts)"),
+    @($budgetBox, "zero-server -BudgetGb (serverz --budget): decoded W8 weights kept on the GPU"))) {
+  $tips.SetToolTip($tp[0], $tp[1])
+}
+# (ticked: the addresses other computers use, and that anyone on the network can use it; the API box and the page keep
+#  127.0.0.1 for this computer. As zero-launcher.sh says on Linux; launcher review 2026-11-19, finding 5)
+$netWarn = New-Label ""
+$netWarn.ForeColor = $Pal.warn; $netWarn.Visible = $false
+[void]$netPanel.Controls.Add($netWarn)
+function Update-NetWarn {
+  if (-not $netChk.Checked) { $netWarn.Visible = $false; return }
+  $ips = @()
+  try {
+    $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+        $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.PrefixOrigin -ne "WellKnown" } |
+      ForEach-Object { "http://$($_.IPAddress):$([int]$portBox.Value)" })
+  } catch {}
+  $where = if ($ips.Count) { "other computers: " + ($ips -join ", ") } else { "other computers: this computer's network address" }
+  $netWarn.Text = "$where. No password: anyone on this network can use it."
+  $netWarn.Visible = $true
+}
+$netChk.Add_CheckedChanged({ Update-NetWarn })
+$portBox.Add_ValueChanged({ Update-NetWarn })
 # ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
 $speechHead = New-Label "Speech to text" $true
 $speechHead.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 2))
 $opt.Controls.Add($speechHead); $opt.SetColumnSpan($speechHead, 2)
-[void](Add-Opt "Speech (-Whisper)" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart")
-[void](Add-Opt "Qwen3-ASR (-Asr)" $asrBox "auto | off (Whisper alone) | a .gguf file")
+[void](Add-Opt "Whisper" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart")
+[void](Add-Opt "Qwen3-ASR" $asrBox "auto | off (Whisper alone) | a .gguf file")
 [void](Add-Opt "Whisper encoder on" $whDevBox -Advanced)
 [void](Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced)
 $advChk = New-Check "Show advanced options"
@@ -412,7 +444,7 @@ $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
 [void](Add-Opt "Images / audio" $visionBox "off: no mmproj, a longer context" -Advanced)
 [void](Add-Opt "Image tokens min / max" $imgMinBox -Advanced)
 [void](Add-Opt "" $imgMaxBox -Advanced)
-[void](Add-Opt "Resident W8 weights (GB)" $budgetBox "0 = chosen with the context" -Advanced)
+[void](Add-Opt "Decoded weights kept (GB)" $budgetBox "0 = chosen with the context" -Advanced)
 [void](Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.inferzero\zero\sessions" -Advanced)
 [void](Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced)
 [void](Add-Opt "" $noPrefixChk -Advanced)
@@ -420,7 +452,7 @@ $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
 [void](Add-Opt "" $noMtpChk -Advanced)
 [void](Add-Opt "" $noStreamChk -Advanced)
 [void](Add-Opt "" $keepThinkChk -Advanced)
-[void](Add-Opt "" $f32Chk -Advanced)
+# (f32 attention: a test switch, out of the window since 2026-11-19 (launcher review); a preset that sets it still does)
 function Show-Advanced([bool]$on) { foreach ($r in $script:advRows) { $r[0].Visible = $on; $r[1].Visible = $on } }
 $advChk.Add_CheckedChanged({ Show-Advanced $advChk.Checked })
 Show-Advanced $false

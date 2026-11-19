@@ -11,6 +11,16 @@
 - **`serverz --help` is a short page:** the ten options most starts use, three examples, and where the rest is.
   `serverz --help all` (or `--help-all`) prints the whole text as before (136 lines). Started without a model it
   prints the short page and exits 1, as before.
+- **The Windows launcher (`zero-launcher.cmd`):**
+  - The window fits the screen: its size is clamped to the work area, so at 150 % on a 1080p or 1200p laptop Start /
+    Stop no longer sit below the edge.
+  - Ticking "reachable from other computers" shows the addresses other computers use and that the server has no
+    password.
+  - Plain labels: the command-line names (`-NoMtp`, `-NoStream`, `-Precise`, `-Whisper`, `-Asr`, `--no-swap`) moved
+    into tooltips, "Id (Pi /model)" became "Model id", "Resident W8 weights" became "Decoded weights kept".
+  - MTP drafts and Accuracy moved to the advanced view; the test-only "f32 attention" left the window (a preset
+    that sets it still does).
+  - Precise mode's tooltip has Flash Next's current default KL (0.0091 on prose, not 0.0105).
 
 ## 2026-11-19: the wide-tile GEMM's 2D stores kept where a compiler fuses their add
 
