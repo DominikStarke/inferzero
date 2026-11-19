@@ -44,6 +44,8 @@ struct TpComm {
   // memory), or the one-step f32 sum's parts packed (k * rows * E floats). The f32 failsafe and the flags stay in host
   // memory. Off (empty) when the sums go through host memory.
   bool p2p = false;
+  bool p2p_prompt_only = false;  // (ARC_TP_P2P=prompt: the prompt chunks' reduce-scatter direct, the one-step sums of
+                                 //  generated tokens through host memory; TpEngine::choose_sums)
   std::vector<char*> inbox;
   size_t half_b = 0;
   std::vector<int> half;   // per shard: the half its next part goes to
@@ -350,7 +352,7 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   const int h = c.half[r];
   // (direct: the part to every GPU's inbox, its own included, packed; a part too large for a half, which only
   //  ARC_TP_SUM=f32 makes, goes through host memory as before; every GPU decides alike, from the same rows)
-  const bool p2p = c.p2p && !a.bg && (size_t)c.n * n * 4 <= c.half_b;
+  const bool p2p = c.p2p && !c.p2p_prompt_only && !a.bg && (size_t)c.n * n * 4 <= c.half_b;
   cl_ulong off = (cl_ulong)h * c.n * c.slot_floats, stride = c.slot_floats;
   if (p2p) {
     off = (cl_ulong)(h * c.half_b / 4);
@@ -1263,6 +1265,7 @@ class TpEngine {
       if (p) zrt::mem_free(zrt::ctx, p);
     comm_.inbox.clear();
     comm_.p2p = false;
+    comm_.p2p_prompt_only = false;
     comm_.flags = nullptr;
     comm_.host = nullptr;
   }
@@ -1301,7 +1304,12 @@ class TpEngine {
   void choose_sums(bool sim) {
     const int n = n_;
     const char* e = getenv("ARC_TP_P2P");
-    const int want = e && *e ? atoi(e) : -1;  // (-1: by the links)
+    // (-1: by the links. "prompt" (2026-11-19): direct for the prompt's reduce-scatter only, generated tokens' sums
+    //  through host memory. hibagus's 4 stacks of Max 1550s (Xe Link between cards, issue #48): peer access made the
+    //  512-token prompt 2,137-2,161 -> 2,548-2,573 tok/s but a generated token's step 19.7-20.0 -> 20.4-20.9 ms, and
+    //  the links' timing (31 GB/s direct against 46 through host memory) chose host memory for both)
+    const bool prompt_only = e && std::string(e) == "prompt";
+    const int want = prompt_only ? 1 : e && *e ? atoi(e) : -1;
     std::vector<int> all;
     for (int r = 0; r < n; ++r) all.push_back(r);
     bool peer = sim || zeDeviceCanAccessPeer != nullptr;
@@ -1410,7 +1418,11 @@ class TpEngine {
       }
     }
     comm_.p2p = use;
-    zlog::eprintf("inferzero: the GPUs' sums go %s (%s)\n", use ? "straight from GPU to GPU" : "through host memory", why.c_str());
+    comm_.p2p_prompt_only = use && prompt_only;
+    if (use && prompt_only) why = "ARC_TP_P2P=prompt: generated tokens' sums through host memory";
+    zlog::eprintf("inferzero: the GPUs' sums go %s (%s)\n",
+                  use ? (prompt_only ? "straight from GPU to GPU for prompt chunks" : "straight from GPU to GPU")
+                      : "through host memory", why.c_str());
     // (a slow link: the prompt's sums wait on it; docs/multi-gpu.md says what helps)
     const double eff = use ? direct : host;
     if (timed && eff < 4.0)

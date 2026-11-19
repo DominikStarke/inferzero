@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-19: `ARC_TP_P2P=prompt`: a split model's prompt sums direct, its generated tokens' through host memory
+
+- **Why:** on hibagus's 4 stacks of Data Center GPU Max 1550s (Xe Link between the cards, issue #48), the links'
+  timing (31 GB/s direct across cards against 46 through host memory) rightly puts generated tokens' sums in host
+  memory (a step 19.7-20.0 ms against 20.4-20.9 direct), but the prompt was 19 % faster direct (512 tokens 2,137-2,161
+  -> 2,548-2,573 tok/s): one switch chose for both.
+- **What:** `ARC_TP_P2P=prompt` sends the prompt chunks' sums (the reduce-scatter, 64 rows and more) straight from
+  GPU to GPU and keeps the one-step sums of generated tokens in host memory. Opt-in: `=1` / `=0` and the timed
+  choice are unchanged.
+- **Checked:** the laptop (`ARC_TP_SIM`, the 4B over 2): `=prompt`, `=1` and `=0` give byte for byte the same logits.
+  hibagus is asked to time it.
+
 ## 2026-11-19: Lunar Lake and Panther Lake laptops: short prompts without H8 (`ARC_H8_MIN`)
 
 - **Why:** on a1ex4's Core Ultra 7 258V (Arc 140V, issue #60), the 27B on a 480-token prompt ran at 126 tok/s with
