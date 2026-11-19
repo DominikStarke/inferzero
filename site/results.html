@@ -269,6 +269,16 @@
       </tbody>
     </table></div>
     <p class="note">Tokens per second, all conversations together against one alone. Each conversation's tokens are the same, bit for bit, as when it runs alone. The two cards' runs overlapped in time, so the speeds may read a little low.</p>
+    <p class="setup">One model split over 2 Pro B60s (<code>--gpus 2</code>, PCIe x16 + x4, the sums through host memory) · MaineTim, <a href="https://github.com/rizagp/inferzero/issues/58">issue #58</a>, main at f3174f2</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">1 card: 4 together / 1 alone</th><th class="n">2 cards: 4 together / 1 alone</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">70.1 / 23.7 (2.96x)</td><td class="n">92.9 / 37.5 (2.48x)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B Q4_K_M</td><td class="n">159.3 / 81.7 (1.95x)</td><td class="n">202.5 / 104.9 (1.96x)</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_XXS</td><td class="n">–</td><td class="n">68.3 / 32.8 (2.08x)</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Split over both cards, too, every conversation's tokens are bit for bit those it gets alone.</p>
   </div>
 </section>
 
@@ -279,6 +289,7 @@
       <thead><tr><th>Setup</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Notes</th></tr></thead>
       <tbody>
         <tr><td>2 × Arc Pro B60, Linux, PCIe 4.0 x8 each <small>scenic6942, <a href="https://github.com/rizagp/inferzero/issues/17">#17</a></small></td><td class="n">1,630</td><td class="n">37.8</td><td>the sums straight from GPU to GPU (1,442 through host memory)</td></tr>
+        <tr><td>2 × Arc Pro B60, PCIe x16 + x4 <small>MaineTim, <a href="https://github.com/rizagp/inferzero/issues/58">#58</a></small></td><td class="n">–</td><td class="n">37.5</td><td>one conversation; the 35B-A3B 104.9 tok/s (81.7 on one card), 4 conversations together 202.5</td></tr>
         <tr><td>2 × Arc Pro B50, Linux, PCIe 3.0 x8 each, no peer access <small>catduckgnaf, <a href="https://github.com/rizagp/inferzero/issues/59">#59</a></small></td><td class="n">975 <small>(16.5K)</small></td><td class="n">19.3-19.6</td><td>the 27B Heretic Q4_K_M; llama.cpp SYCL's layer split ~290 / ~11. A MoE that fits one card is faster unsplit here (35B-A3B 40-46 alone, 8.2 split)</td></tr>
         <tr><td>2 × Arc A770, Windows <small>hansong80, <a href="https://github.com/rizagp/inferzero/issues/35">#35</a></small></td><td class="n">1,126</td><td class="n">12.2</td><td>no faster than one card yet: every sum waits on a host round trip</td></tr>
         <tr><td>2 × Arc Pro B60, one in a PCIe x4 slot <small>MaineTim, <a href="https://github.com/rizagp/inferzero/issues/19">#19</a></small></td><td class="n">620</td><td class="n">–</td><td>the 27B UD-Q5_K_XL; one card alone 1,223: a slow link halves a split model's prompt</td></tr>
