@@ -100,7 +100,13 @@ if ($Group) {  # (8 lanes too since 2026-11-17: the 140T's / Alchemist's gemm_xw
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"
 $res = @{}
 $base = $null
+# (a progress line on the console for each set: the table comes only at the end, and the whole sweep takes ~40
+#  minutes on an A770, which looked dead with the output redirected to a file; Write-Host is not redirected by 2>&1)
+$i = 0
+$t0 = Get-Date
 foreach ($name in $sets.Keys) {
+  $i++
+  Write-Host ("xw_sweep: set {0} of {1}: {2} ({3:N0} min so far)" -f $i, $sets.Count, $name, ((Get-Date) - $t0).TotalMinutes)
   $e = $sets[$name]
   # (the logits of a real prompt: every row of a 4-token answer, against the default's)
   $d = Join-Path $tmp ("logits_" + ($name -replace '\W', '_') + ".bin")
