@@ -24,6 +24,11 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <cstdlib>
+#include <cstring>
+#ifndef _WIN32
+extern char** environ;  // (the ARC_* switches in the warm-up marker: Engine::warm_key_extra)
+#endif
 
 struct GpuWeight {
   uint32_t type = 0;  // GGUF type of the raw rows (BF16/F16/F32 matrices are requantized to Q8_0)
@@ -787,6 +792,25 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   std::function<bool()> cancel;
   struct Cancelled {};
 
+  // What else picks the kernels a warm-up builds, for its marker (warm_up_once): every ARC_* switch, sorted (many
+  // choose kernel variants: ARC_GEMV_WAVE_MT=0 builds other GEMVs, which a run after the default one's warm-up then
+  // compiled in its generation, a Pro B70's first Flash Next verification pass 543 ms against 128; issue #54), and the
+  // MTP head or drafter file (another head, other weight types: other kernels).
+  std::string warm_key_extra() const {
+#ifdef _WIN32
+    char** const env = _environ;
+#else
+    char** const env = environ;
+#endif
+    std::vector<std::string> arc;
+    for (char** e = env; e && *e; ++e)
+      if (std::strncmp(*e, "ARC_", 4) == 0) arc.emplace_back(*e);
+    std::sort(arc.begin(), arc.end());
+    std::string s = "|head=" + (mtp_file_ ? mtp_file_->path : opt.mtp_model);
+    for (const auto& kv : arc) s += "|" + kv;
+    return s;
+  }
+
   const GgufFile& gguf() const { return f_; }
   // Runs the generation kernels once so that a first request does not wait for their just-in-time compilation: a
   // short prompt and a token, then with MTP / DFlash2 drafts and a verification pass of every row count (DFlash2 and
@@ -797,7 +821,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const std::string& dir = cl_.cache_dir;
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx",
-             (unsigned long long)ClRt::fnv1a(gemm_src_ + "\x01" + ops_.all() + "\x01" + dec_.all() + "\x01" + moe_src_ + "\x01" + f_.path +
+             (unsigned long long)ClRt::fnv1a(gemm_src_ + "\x01" + ops_.all() + "\x01" + dec_.all() + "\x01" + moe_src_ + "\x01" + f_.path + warm_key_extra() +
                                              "|" + std::to_string(opt.mtp) + "|" + opt.dflash + (opt.mtp_block ? "" : "|nomtp") +
                                              "|" + std::to_string(opt.mtp_drafts) +
                                              "|" + std::to_string(max_chunk) + "|" + cl_.device_id + "|w2"));
