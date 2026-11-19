@@ -80,6 +80,20 @@
   </div>
 </section>
 
+<section id="s-140v">
+  <div class="wrap">
+    <h2>Core Ultra 7 258V laptop (Arc 140V)</h2>
+    <p class="setup">Arc 140V (Lunar Lake, Xe2, 16-lane XMX) · LPDDR5X-8533, 31 GB · Windows 11 · a1ex4, <a href="https://github.com/rizagp/inferzero/issues/60">issue #60</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B</td><td class="n">401-444</td><td class="n">5.9-6.5</td><td class="n">13.9</td><td>2026.11.19.02</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">A thin-and-light laptop: the prompt slows over three passes (444, 416, 401 tok/s) as its clocks drop. Generation reads 73-81 GB/s of the 104-108 GB/s its memory gives. KL against the f32 reference 0.00117 (top token 97.9 %). 2K prompt 389 tok/s, 32K 268. The NPU runs on Lunar Lake, but the GPU alone is faster (4K 324 against 175 tok/s with it).</p>
+  </div>
+</section>
+
 <section id="s-b390">
   <div class="wrap">
     <h2>Core Ultra X7 358H laptop (Arc B390)</h2>
@@ -140,6 +154,21 @@
       </tbody>
     </table></div>
     <p class="note">4K prompt / generation, tok/s; d-dorok, llama.cpp b1b770d (<code>llama-bench -p 4096 -n 64 -fa 1</code>, the experts or layers that do not fit on the CPU). llama.cpp is 3-9 % ahead on the small models' generation. On the 27B, inferzero now does what llama.cpp does with the layers that do not fit: the CPU computes the part kept in RAM (the default on discrete cards since 2026-11-19), and generation went from 7.1 to 13.7 tok/s, against llama.cpp SYCL's 11.4.</p>
+  </div>
+</section>
+
+<section id="s-b50">
+  <div class="wrap">
+    <h2>Arc Pro B50 16 GB</h2>
+    <p class="setup">Battlemage (Xe2) · PCIe 3.0 x8 · Linux (Unraid, Docker) · catduckgnaf, <a href="https://github.com/rizagp/inferzero/issues/59">issue #59</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt</th><th class="n">Generation</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Ornith 1.5 35B-A3B Q4_K_M (a Qwen3.6 35B-A3B fine-tune)</td><td class="n">~1,670</td><td class="n">40-46</td><td>2026.11.16.16</td></tr>
+        <tr><td>Gemma 4 26B-A4B QAT Q4_0</td><td class="n">~660</td><td class="n">33-38</td><td>2026.11.16.16</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">serverz answers of 400 tokens, prompts of a chat's size.</p>
   </div>
 </section>
 
@@ -250,6 +279,7 @@
       <thead><tr><th>Setup</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Notes</th></tr></thead>
       <tbody>
         <tr><td>2 × Arc Pro B60, Linux, PCIe 4.0 x8 each <small>scenic6942, <a href="https://github.com/rizagp/inferzero/issues/17">#17</a></small></td><td class="n">1,630</td><td class="n">37.8</td><td>the sums straight from GPU to GPU (1,442 through host memory)</td></tr>
+        <tr><td>2 × Arc Pro B50, Linux, PCIe 3.0 x8 each, no peer access <small>catduckgnaf, <a href="https://github.com/rizagp/inferzero/issues/59">#59</a></small></td><td class="n">975 <small>(16.5K)</small></td><td class="n">19.3-19.6</td><td>the 27B Heretic Q4_K_M; llama.cpp SYCL's layer split ~290 / ~11. A MoE that fits one card is faster unsplit here (35B-A3B 40-46 alone, 8.2 split)</td></tr>
         <tr><td>2 × Arc A770, Windows <small>hansong80, <a href="https://github.com/rizagp/inferzero/issues/35">#35</a></small></td><td class="n">1,126</td><td class="n">12.2</td><td>no faster than one card yet: every sum waits on a host round trip</td></tr>
         <tr><td>2 × Arc Pro B60, one in a PCIe x4 slot <small>MaineTim, <a href="https://github.com/rizagp/inferzero/issues/19">#19</a></small></td><td class="n">620</td><td class="n">–</td><td>the 27B UD-Q5_K_XL; one card alone 1,223: a slow link halves a split model's prompt</td></tr>
       </tbody>
