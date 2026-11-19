@@ -1385,6 +1385,12 @@ class TpEngine {
       zlog::eprintf("%s\n", line.c_str());
     }
     bool use = want == 1 ? peer : want == 0 ? false : (peer && timed && direct >= 0.8 * host);
+    // (by the links, 2026-11-19: direct between 0.5 and 0.8 of host memory takes the prompt's sums direct and leaves
+    //  generated tokens' in host memory, ARC_TP_P2P=prompt's split. hibagus's 4 Max 1550 stacks, 31 GB/s direct
+    //  against 46 (0.67), 27B, 5 rounds: 512-token prompt 2,204-2,239 (host) -> 2,676-2,697 tok/s, generation 47.0-47.2
+    //  -> 46.8-47.3 (=1 had 44.8-45.1); the logits the same either way. Below 0.5 of host memory: host memory, as before)
+    bool prompt_auto = false;
+    if (want < 0 && !use && peer && timed && direct >= 0.5 * host) use = prompt_auto = true;
     std::string why;
     char b[160];
     if (want == 0) why = "ARC_TP_P2P=0";
@@ -1418,10 +1424,15 @@ class TpEngine {
       }
     }
     comm_.p2p = use;
-    comm_.p2p_prompt_only = use && prompt_only;
+    comm_.p2p_prompt_only = use && (prompt_only || prompt_auto);
     if (use && prompt_only) why = "ARC_TP_P2P=prompt: generated tokens' sums through host memory";
+    if (use && prompt_auto) {
+      snprintf(b, sizeof b, "%.1f GB/s directly against %.1f through host memory: generated tokens' sums through host "
+               "memory", direct, host);
+      why = b;
+    }
     zlog::eprintf("inferzero: the GPUs' sums go %s (%s)\n",
-                  use ? (prompt_only ? "straight from GPU to GPU for prompt chunks" : "straight from GPU to GPU")
+                  use ? (comm_.p2p_prompt_only ? "straight from GPU to GPU for prompt chunks" : "straight from GPU to GPU")
                       : "through host memory", why.c_str());
     // (a slow link: the prompt's sums wait on it; docs/multi-gpu.md says what helps)
     const double eff = use ? direct : host;

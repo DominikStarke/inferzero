@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-19: split models: the prompt's sums direct by themselves where the direct links are a little slower
+
+- **Measured:** hibagus's 4 stacks of Max 1550s (issue #48), the 27B, 5 rounds of the three settings: host memory
+  (the timed choice there) 512-token prompt 2,204-2,239 tok/s, generation 47.0-47.2; `ARC_TP_P2P=1` 2,666-2,688 and
+  44.8-45.1; `ARC_TP_P2P=prompt` 2,676-2,697 and 46.8-47.3: both best ones.
+- **What:** when the links' timing finds the direct path at 0.5-0.8 of host memory's speed (hibagus: 31 against 46
+  GB/s), a split model now takes `=prompt`'s split by itself: the prompt's sums straight from GPU to GPU, a generated
+  token's through host memory. At 0.8 or more both go direct, below 0.5 both through host memory, as before; the
+  load line says which. The logits are the same on every path.
+
 ## 2026-11-19: Lunar Lake / Panther Lake: H8 from 256 tokens, not 1,024 (a correction to release .05)
 
 - **Why:** a1ex4's crossover runs on the Arc 140V (issue #60, release .05, `--bench-pp` best of 3) put it at ~140
