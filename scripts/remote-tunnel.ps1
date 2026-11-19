@@ -4,7 +4,7 @@
 #                                               (no Cloudflare account; host name *.trycloudflare.com in Settings)
 #   .\scripts\remote-tunnel.ps1 -Name chat      a named tunnel of your Cloudflare account ("cloudflared tunnel login",
 #                                               "cloudflared tunnel create chat", a DNS route to it first)
-#   -Port 8080                                  the server's port (default: server.json's, else 8080)
+#   -Port 8080                                  the server's port (default: server.json's, else 8090)
 # Needs cloudflared (winget install --id Cloudflare.cloudflared). Ctrl+C closes the tunnel.
 param([string]$Name = "", [int]$Port = 0)
 $ErrorActionPreference = "Stop"
@@ -16,7 +16,7 @@ if (-not $cf) {
   exit 1
 }
 if ($Port -le 0) {
-  $Port = 8080
+  $Port = 8090
   $sj = Join-Path $data "server.json"
   if (Test-Path -LiteralPath $sj) {
     try { $p = (Get-Content -LiteralPath $sj -Raw | ConvertFrom-Json).port; if ($p) { $Port = [int]$p } } catch {}

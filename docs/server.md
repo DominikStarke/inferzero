@@ -5,7 +5,7 @@
 ## Run the server by hand
 
 ```powershell
-.\bin\serverz.exe -m C:\path\to\model.gguf --port 8080 --ctx auto --mtp --alias qwen3.8-27b
+.\bin\serverz.exe -m C:\path\to\model.gguf --port 8090 --ctx auto --mtp --alias qwen3.8-27b
 .\bin\serverz.exe --help           # every option with its default
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.inferzero\models, model-dirs.txt), as JSON
                                    # (--speech-reserve BYTES: each context as a running server with speech to text would size it,
@@ -15,7 +15,7 @@
 - **Speech to text only**: `serverz -m none` (`zero-server start -Model none`, the launcher's More >
   **Start speech to text only**) loads Qwen3-ASR alone (~3.2 GB of GPU memory; `--whisper auto` adds Whisper) for the Transcripts tab and
   `POST /v1/audio/transcriptions`. A chat model loads later, when a chat asks for one.
-- Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
+- Web UI: http://127.0.0.1:8090/: chats with images, audio and files (one folder per chat, kept by the server),
   voice messages and **Talk**, web search, documents the model reads and writes, a terminal, and with `--whisper` the
   **Transcripts** menu (files, recordings and meetings in one list): [USAGE.md, section 4](../USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are

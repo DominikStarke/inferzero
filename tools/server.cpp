@@ -1,6 +1,6 @@
 // inferzero-server: OpenAI-compatible HTTP server (chat completions with streaming, reasoning and tool calls),
 // prefix reuse across requests, and a built-in web UI.
-// usage: inferzero-server -m model.gguf [--host 127.0.0.1] [--port 8080] [--ctx 40960] [--alias name] [--webui dir]
+// usage: inferzero-server -m model.gguf [--host 127.0.0.1] [--port 8090] [--ctx 40960] [--alias name] [--webui dir]
 //                       [--chunk N] [--budget GB] [--mtp] [--think-budget N] [--attn-f32] [--kernels dir]
 //                       [--session-cache-gb N] [--session-dir dir]   (saved conversations; default 0 = off)
 // Built as bin\serverz.exe (zero/serverz.cpp includes this file): the inferzero engine, zero/engine.h (Level Zero,
@@ -979,7 +979,7 @@ int main(int argc, char** argv) {
     }
   zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;
-  int port = 8080;
+  int port = 8090;  // (the port zero-server, both launchers and Docker use; 8080 before 2026-11-19, launcher review)
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   bool whisper_given = false;  // (--whisper on the command line; without it the cache's model is offered, not loaded)
@@ -1251,7 +1251,7 @@ int main(int argc, char** argv) {
             "                         /props speech_reserve_bytes, as its model switches keep it; --gpus N: as a split\n"
             "                         over N GPUs, shard 0's memory)\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
-            "  --host H, --port P    listen address (default 127.0.0.1:8080). A browser page of another origin (another\n"
+            "  --host H, --port P    listen address (default 127.0.0.1:8090). A browser page of another origin (another\n"
             "                        site, or another port of this computer) reaches only the model endpoints: not the\n"
             "                        tools, files, chats, transcripts, live recording, slots or sessions (changing the\n"
             "                        slots and the session cache: this computer only, also with --host 0.0.0.0)\n"

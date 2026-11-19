@@ -210,7 +210,7 @@ SERVER COMMANDS (zero-server)
 
 SERVER DIRECTLY (bin\serverz.exe; zero-server passes these for you; details:
 bin\serverz.exe --help)
-  -m, --model <model.gguf>       model file              --port <N>          port (default 8080)
+  -m, --model <model.gguf>       model file              --port <N>          port (default 8090)
   -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
   --alias <name>                 model id in the API     --mtp               speculative decoding
   --mtp-drafts <N>               drafts per step (27B 7, on B-series cards 3; 35B 5; 4B, Flash Next and Gemma 4

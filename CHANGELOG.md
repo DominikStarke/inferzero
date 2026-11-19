@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-19: serverz listens on 8090 by default, as everything else
+
+- **`serverz` started without `--port` now listens on 8090** (8080 before), the port zero-server, both launchers,
+  Docker, the README and USAGE already used. The launchers always pass the port, so they are unchanged; only a bare
+  `bin\serverz.exe -m ...` moves. `--port 8080` keeps the old one. `scripts\remote-tunnel.ps1` falls back to 8090
+  too; docs/server.md and zero-pi's help say 8090. (The launcher review of 2026-11-19, docs/launcher-research.md
+  section 7.)
+- zero-server's help lists the `g31` shortcut (the server knew it), and says `g26` is a file `pull` does not fetch.
+
 ## 2026-11-19: the wide-tile GEMM's 2D stores kept where a compiler fuses their add
 
 - **`gemm_xw`'s output in 2D blocks is no longer dropped when it misses the start check by a rounding** (hibagus,

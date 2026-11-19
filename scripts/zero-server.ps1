@@ -3,7 +3,7 @@
 #   zero-server start                  asks which model to load: every supported GGUF model in the Hugging Face cache
 #                                     (and %USERPROFILE%\.inferzero\models), listed by its full name; Enter keeps the
 #                                     running one. Waits until the server is ready.
-#   zero-server start -Model 27b       the same without asking: a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26,
+#   zero-server start -Model 27b       the same without asking: a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31,
 #                                     with -mtp / -vision / -std / -nodf / -df for a variant), a model id, part of a model's
 #                                     name (e.g. swift) or a path to a .gguf file
 #        [-SessionCacheGb N]          save conversations to disk when switching (N GB, all models together; default 8, 0 = off)
@@ -345,7 +345,8 @@ clients. Options take one dash or two, any case.
   zero-server clear-cache           delete saved conversations;  record / record-stop / record-status: meetings
 
 Common options for start / restart:
-  -Model 27b | 35b | 9b | 4b | g12 | e4b | g26 | flash | none    (zero-server list: every id and shortcut)
+  -Model 27b | 35b | 9b | 4b | g12 | e4b | g26 | g31 | flash | none    (zero-server list: every id and shortcut;
+                                 g26: a file you downloaded yourself, pull does not fetch it)
   -Ctx <N|auto>      context in tokens (auto: the largest that fits)
   -Preset <name>     the options of a saved preset (an option on the command line wins)
   -Drafter auto|mtp|dflash|off|<folder>    speculative decoding: which drafter, or none
@@ -400,7 +401,7 @@ values and paths, WHEN IT FAILS what an error means.
   zero-server help [options|writing|errors|all]   help (also --help, -h)
 
 Options for start / restart:
-  -Model <shortcut|text|path>    27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26; a variant with -mtp (MTP, no images),
+  -Model <shortcut|text|path>    27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31 (g26: your own file); a variant with -mtp (MTP, no images),
                                  -vision (images, no MTP) or -std (neither), e.g. 9b-std, 27b-std; a model id
                                  (as in Pi's /model), part of a model's name (e.g. swift) or a .gguf path.
                                  none: speech to text only (Qwen3-ASR; -Whisper auto adds Whisper), the web UI's
