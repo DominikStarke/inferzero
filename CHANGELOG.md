@@ -9,6 +9,9 @@
   GB/s), a split model now takes `=prompt`'s split by itself: the prompt's sums straight from GPU to GPU, a generated
   token's through host memory. At 0.8 or more both go direct, below 0.5 both through host memory, as before; the
   load line says which. The logits are the same on every path.
+- **Confirmed on release .07** (hibagus, 5 rounds, the default against `=prompt`): the default picked the split by
+  itself every time (31.0-31.1 against 45.6-46.6 GB/s), prompt 2,670-2,686 tok/s and generation 45.9-47.2, the same
+  as `=prompt`; the two stacks of one card still go direct for both.
 
 ## 2026-11-19: Lunar Lake / Panther Lake: H8 from 256 tokens, not 1,024 (a correction to release .05)
 
