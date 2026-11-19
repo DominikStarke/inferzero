@@ -183,6 +183,16 @@ class GgufFile {
     return it == kv.end() ? nullptr : std::get_if<std::vector<double>>(&it->second);
   }
 
+  // (whether [p, p + n) lies in this file's mapping or one of its parts': zero/xe2/engine_hostcpu.h reads such rows
+  //  for as long as the file is open)
+  bool maps(const void* p, size_t n) const {
+    const uint8_t* q = (const uint8_t*)p;
+    if (base_ && q >= base_ && n <= size_ && (uint64_t)(q - base_) <= size_ - n) return true;
+    for (const auto& f : parts_)
+      if (f && f->maps(p, n)) return true;
+    return false;
+  }
+
  private:
   plat::FileMap fm_;  // (the file and its read-only mapping, src/platform.h)
   const uint8_t* base_ = nullptr;

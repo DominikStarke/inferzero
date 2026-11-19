@@ -160,6 +160,7 @@
     }
     memset(dst + nsb * bp, 0, kRawSlack);
     if (!host) CL_CHECK(clEnqueueUnmapMemObject(cl_.queue, m, dst, 0, nullptr, nullptr));
+    else host_src_note(m, type, data, nbytes, nsb);  // (ARC_HOST_CPU: the CPU's GEMV of it, zero/xe2/engine_hostcpu.h)
     return m;
   }
 

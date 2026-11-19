@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-19: `ARC_HOST_CPU=1` (opt-in): weights kept in RAM computed by the CPU, not read over PCIe
+
+- **For cards too small for the whole model** (the 27B on a 12 GB B580): the matrices that stay in host memory are
+  read by the GPU over PCIe on every generated token. On d-dorok's B580 (PCIe 3.0, 0.49 GiB in RAM) that gives 7.1
+  tok/s, where llama.cpp runs the layers it cannot fit on the CPU and makes 11.4 (issue #37). With `ARC_HOST_CPU=1`
+  the CPU computes those matrices for one token instead (`zero/xe2/engine_hostcpu.h`). Each is converted once at
+  load to int8 with a scale per 32 values, ~1.1 bytes a weight of extra RAM. Its GEMV runs on the CPU's cores
+  against the GPU's int8 activations; only the vectors cross the bus. One kernel for every weight type: AVX2,
+  SSSE3 (Ivy Bridge, older AMD, built with `build.sh` there), or plain C.
+- **Accuracy:** KL-checked, not bit-identical. The laptop's 4B token by token against f32: 0.00138 / 0.00156 /
+  0.00174 with 1 / 2 / 4 GiB on the CPU, against 0.00336 all on the GPU. The 27B with 0.5 GiB gives the same 48 greedy
+  tokens.
+- **Speed:** to be measured on a B580. On the laptop the GPU reads host memory at full speed, so the CPU can only be
+  slower there (27B 5.03 -> 4.22 tok/s). Prompts and 2-8 row passes (MTP) still read those weights on the GPU.
+
 ## 2026-11-19: Flash Next's default mode at KL under 0.01
 
 - **Flash Next keeps its hyper-connection mixer rows in BF16 by default**, as the file has them, instead of

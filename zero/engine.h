@@ -1222,6 +1222,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       const int grows = gemv1_rows(w, vk);
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
+      if (act32 && host_cpu_gemv(w, M, C, c_off, a)) return;  // (a matrix in host memory, ARC_HOST_CPU=1: zero/xe2)
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
       // (ARC_GV_PROBE=1 / 2: a measurement, not for use, the output is wrong. 1: gemv reads the weights and skips the
       //  decode (bandwidth of the access pattern); 2: it decodes the row's first superblocks again and again, no
@@ -1671,6 +1672,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
 #include "xe2/engine_xe2.h"  // (tuning switches for GPUs with XMX, zero/xe2/; off on the iGPUs)
 #include "engine_h8.h"  // (H8 prompt GEMMs, QUEUE 31.12: Hadamard-rotated int8, ARC_H8=1)
+#include "xe2/engine_hostcpu.h"  // (the weights in host memory computed by the CPU for one token, ARC_HOST_CPU=1)
 #include "xe2/engine_xw.h"  // (the H8R GEMM on XMX with wider tiles, QUEUE 33.4: by default with h8_auto_ / the 140T preset; ARC_GEMM_XW)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
