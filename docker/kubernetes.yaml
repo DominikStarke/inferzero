@@ -34,8 +34,9 @@ spec:
     metadata:
       labels: {app: inferzero}
     spec:
-      terminationGracePeriodSeconds: 60   # (a stop sends SIGTERM, SIGKILL after this: the default 30 s can cut a
-                                          #  MoE model's first load while it writes its expert file)
+      terminationGracePeriodSeconds: 60   # (a stop sends SIGTERM, SIGKILL after this. With serverz handling SIGTERM
+                                          #  (QUEUE D1, not yet: today it ends at once), a stop during a MoE model's
+                                          #  first load lets it clean up its expert file's .tmp)
       containers:
         - name: inferzero
           image: inferzero:latest  # your registry's name for the image (a :latest tag is pulled at every start)
