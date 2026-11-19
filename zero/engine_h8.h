@@ -226,7 +226,17 @@
   // rotation reads big_ itself and swiglu_quant is left out. Bit-identical; ARC_H8_SWI=0 as before.
   // h8_takes: matmul1's prompt path takes the H8 GEMM for w (its first branch past the GEMVs)
   bool h8_takes(const GpuWeight& w, int Mp) const {
-    return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp));
+    return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp)) && h8_igpu_rows_ok(Mp);
+  }
+  // (2026-11-19) iGPUs with 16-lane XMX (Lunar Lake's Arc 140V, Panther Lake's B390) take the default H8 from chunks
+  // of ARC_H8_MIN rows (default 1024), shorter chunks the plain XMX GEMM. a1ex4's 140V (issue #60), the 27B on a
+  // 480-token prompt: H8 126 tok/s and KL against f32 0.00117 (max 0.029, the top token 470 / 480), without it 147 tok/s
+  // and 0.00057 (max 0.007, 473 / 480); a 128-token prompt spent 70 % of its time decoding weights for H8. At 4K H8
+  // stays well ahead (444 against 324 tok/s). Discrete cards and ARC_H8=1 as before; the 125H never runs H8
+  bool h8_igpu_rows_ok(int Mp) const {
+    if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;
+    static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 1024;
+    return Mp >= min_rows;
   }
   bool h8_swi_ok(const GpuWeight& down, int Mp) const {
     static const bool on = !getenv("ARC_H8_SWI") || atoi(getenv("ARC_H8_SWI")) != 0;

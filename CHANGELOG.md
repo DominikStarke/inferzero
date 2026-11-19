@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-19: Lunar Lake and Panther Lake laptops: short prompts without H8 (`ARC_H8_MIN`)
+
+- **Why:** on a1ex4's Core Ultra 7 258V (Arc 140V, issue #60), the 27B on a 480-token prompt ran at 126 tok/s with
+  H8 (the Hadamard-rotated int8 prompt GEMMs) and 147 without, and H8 cost accuracy there: KL against f32 0.00117
+  (max 0.029, the top token 470 / 480, under 98 %) against 0.00057 (max 0.007, 473 / 480). A 128-token prompt spent
+  70 % of its 1.5 s decoding weights for H8. At 4K, H8 stays well ahead (444 against 324 tok/s).
+- **What:** on iGPUs with 16-lane XMX (Arc 140V, Arc B390), prompt chunks shorter than 1,024 tokens take the plain
+  XMX GEMM; longer ones keep H8. `ARC_H8_MIN=N` moves the threshold (0: H8 at every length, as before); `ARC_H8=1`
+  forces H8 everywhere. Discrete cards, the Arc 140T's preset and the 125H (no XMX) are unchanged.
+- **Checked:** not on a 140V or B390 here: the numbers above are a1ex4's runs with H8 on and off, which this
+  threshold picks between by chunk size. On the laptop's 125H nothing changes (no H8 there). The owners are asked
+  for the crossover.
+
 ## 2026-11-19: `ARC_XCPU=1` for DeepSeek-V4.1 (opt-in)
 
 - **What:** the CPU now also computes DeepSeek-V4.1's experts missing from the GPU's cache: kernels for MXFP4 (the
