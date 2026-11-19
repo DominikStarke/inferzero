@@ -15,6 +15,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <vector>
 
@@ -580,6 +581,103 @@ struct XCache {
     }
     loadp::step(what, fill, fill);
     warm_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  }
+
+  // ---- background fills (ARC_XCPU, zero/xe2/engine_xcpu.h): one token's misses computed by the CPU still enter the
+  // cache, copied from the RAM tier on a copy list of their own while the compute list runs on, so no kernel waits
+  // for them. A batch waits on the compute list's event at the point it was queued (no kernel queued before still
+  // reads a victim slot), then signals its own; its slots stay out of the LRU list and its experts uncached (the CPU
+  // takes them) until fill_commit sees that event, and the compute list waits on it before the next kernels (the
+  // device-scope wait has the compute side see the copied memory, as for copy_event).
+  struct Fill { std::vector<std::pair<int, int>> ent; ze_event_handle_t start = nullptr, done = nullptr; };
+  std::deque<Fill> fills_;
+  std::vector<uint8_t> fill_pend_;  // key -> in a batch not committed yet
+  ze_command_list_handle_t fill_list_ = nullptr;
+  std::vector<ze_event_handle_t> fill_ev_;
+  size_t fill_ev_next_ = 0;
+  uint64_t fills_done = 0, fills_dropped = 0;
+  static constexpr size_t kFillEvents = 512, kFillMax = 128;  // (events in the ring; batches in flight at most)
+  ze_event_handle_t fill_event() {
+    if (fill_ev_.empty()) {
+      ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)kFillEvents};
+      ze_event_pool_handle_t pool = nullptr;
+      ZE_CHECK(zeEventPoolCreate(zrt::ctx, &pd, 1, &zrt::D().dev, &pool));
+      fill_ev_.resize(kFillEvents);
+      for (uint32_t k = 0; k < kFillEvents; ++k) {
+        ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
+        ZE_CHECK(zeEventCreate(pool, &ed, &fill_ev_[k]));
+      }
+    }
+    // (reused 256 batches later at the soonest, 2 events a batch and at most kFillMax in flight: long passed)
+    ze_event_handle_t e = fill_ev_[fill_ev_next_++ % kFillEvents];
+    ZE_CHECK(zeEventHostReset(e));
+    return e;
+  }
+  // layer l's experts ids[0..n): those in the RAM tier copied into victim slots in the background
+  void fill(int l, const int* ids, size_t n) {
+    if (pool_of.empty() || pool_of[l] < 0 || fills_.size() >= kFillMax) return;
+    if (fill_pend_.empty()) fill_pend_.assign((size_t)NL * NE, 0);
+    Pool& P = pools[pool_of[l]];
+    Fill F;
+    std::vector<std::pair<char*, const void*>> cp;
+    for (size_t i = 0; i < n; ++i) {
+      const int e = ids[i];
+      const size_t key = (size_t)l * NE + e;
+      if (!mine(e) || where[key] >= 0 || fill_pend_[key]) continue;
+      const void* src = st.ram_src(l, e);
+      if (!src) continue;
+      int s;
+      if (P.used < P.n) {
+        s = P.used++;
+      } else {  // (the least recent slot not holding this layer's experts: this layer's hits are queued)
+        s = P.tail;
+        while (s >= 0 && P.key[s] >= 0 && P.key[s] / NE == l) s = P.prev[s];
+        if (s < 0) break;
+        unlink(P, s);
+        if (P.key[s] >= 0) where[P.key[s]] = -1, fresh_[P.key[s]] = 0;
+      }
+      P.key[s] = -1;
+      fill_pend_[key] = 1;
+      F.ent.push_back({(int)key, s});
+      cp.push_back({P.addr[s], src});
+    }
+    if (F.ent.empty()) return;
+    if (!fill_list_) {
+      const char* kind = "";
+      int ord = 0, idx = 0;
+      fill_list_ = zrt::new_copy_list(&kind, &ord, &idx);
+    }
+    F.start = fill_event();
+    F.done = fill_event();
+    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), F.start, 0, nullptr));  // (signalled where the compute list is now)
+    ZE_CHECK(zeCommandListAppendBarrier(fill_list_, nullptr, 1, &F.start));
+    const uint64_t rec = st.layers[l].rec;
+    for (auto& [dst, src] : cp) ZE_CHECK(zeCommandListAppendMemoryCopy(fill_list_, dst, src, rec, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendBarrier(fill_list_, F.done, 0, nullptr));
+    fills_.push_back(std::move(F));
+  }
+  // the finished batches' experts entered as cached (most recent), the compute list waiting on their events first
+  void fill_commit() {
+    while (!fills_.empty() && zeEventHostSynchronize(fills_.front().done, 0) == ZE_RESULT_SUCCESS) {  // (timeout 0: a query)
+      Fill& F = fills_.front();
+      ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), nullptr, 1, &F.done));
+      for (auto [key, s] : F.ent) {
+        Pool& P = pools[pool_of[key / NE]];
+        fill_pend_[key] = 0;
+        if (where[key] >= 0) {  // (cached meanwhile by ensure, a prompt's miss: this slot goes back free)
+          P.key[s] = -1;
+          push_back(P, s);
+          ++fills_dropped;
+          continue;
+        }
+        P.key[s] = key;
+        where[key] = s;
+        push_front(P, s);
+        xaddr[key] = (uint64_t)P.addr[s];
+        ++fills_done;
+      }
+      fills_.pop_front();
+    }
   }
 
   // ---- prefetch: up to S experts of layer X not in the cache, into stage[X % 2], on a thread

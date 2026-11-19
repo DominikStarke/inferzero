@@ -37,6 +37,22 @@
   before these changes (SHA-256); stale `.tmp` files removed and logged; another source under the same name refused,
   the package unchanged. Flash Next IQ3_S (83.6 GB) packed through it in 809 s. Linux: compiled, not run.
 
+## 2026-11-19: Flash Next on a card in a slow slot: the experts missing from the GPU computed by the CPU (`ARC_XCPU=1`, opt-in)
+
+- **Why:** a Pro B60 in a PCIe 3.0 x8 slot spent ~17 ms of each ~44 ms Flash Next token waiting for experts missing
+  from its cache: each one is ~2.3 MB copied over the link, ~0.36 ms (skipzx-lab, pull request #55).
+- **What:** with `ARC_XCPU=1`, a generated token's missing experts whose records are already in RAM are computed by
+  the CPU while the GPU runs the cached ones. The CPU uses the GPU's own int8 inputs, and its results go straight into
+  the rows the GPU sums, with no wait for them. The missing experts are still copied into the cache in the background
+  for the next tokens; without that the hit rate fell from ~90 % to 38 %. An expert not in RAM yet goes to the GPU as
+  before. The CPU code (`zero/xe2/cpu_experts.h`, `zero/xe2/engine_xcpu.h`) is AVX2, for IQ2_S, IQ3_XXS, IQ3_S,
+  IQ4_XS, IQ4_NL and Q2_0; a CPU without AVX2, or another type, keeps the GPU path. `ARC_XCPU_THREADS=n` sets its threads (half the logical CPUs by
+  default). Not for Gemma 4, DeepSeek-V4.1 or one model over several GPUs.
+- **Speed:** that B60, Flash Next IQ3_S, 4K prompt then 256 tokens: 22.5 -> 27.3-28.2 tok/s (+22 %). An A770 in a
+  PCIe 3.0 x16 slot gains nothing (Flash Next Coder IQ1_M: 20.0-20.6 -> 18.9-20.1), so it stays opt-in.
+- **Accuracy:** not bit-identical when on (the CPU adds in another order): KL over 480 generated tokens 0.0134-0.0157,
+  against 0.0141 off. Off, the logits are the same as before, byte for byte.
+
 ## 2026-11-19: `serverz --pack` refuses a package as its source
 
 - **`serverz --pack <a package's .gguf>` could destroy the package** (self review, B1). A package's expert tensors

@@ -212,6 +212,13 @@
     snprintf(h, sizeof h, "\nhost: routing reads %.0f ms (waiting for the GPU), ensure %.0f ms, PLE rows %.0f ms",
              hst_sync_ms_, hst_ensure_ms_, hst_ple_ms_);
     std::string out = r + h;
+    if (xcpu_n_) {  // (ARC_XCPU, zero/xe2/engine_xcpu.h)
+      char c[260];
+      snprintf(c, sizeof c, "\nCPU experts (ARC_XCPU): %llu computed (%llu from RAM), %.0f ms (%.3f ms an expert, %d threads); cache fills %llu (%llu dropped); host: input reads %.0f ms, fills %.0f ms",
+               (unsigned long long)xcpu_n_, (unsigned long long)xcpu_ram_, xcpu_ms_, xcpu_ms_ / xcpu_n_, xcpu_threads(), (unsigned long long)x.fills_done,
+               (unsigned long long)x.fills_dropped, xcpu_rd_ms_, xcpu_fill_ms_);
+      out += c;
+    }
     if (gen_waits_) {  // (one-token steps alone: plain decoding)
       char g[224];
       snprintf(g, sizeof g, "\nhost, one-token steps: %llu layer waits, routing reads %.0f ms (%.3f ms a wait), ensure %.0f ms (%.3f ms a wait)",

@@ -291,18 +291,37 @@
       skip_x = xc_->all_in_ok;
       if (skip_x) xc_->skip_layer(L.il, NU);
     }
+    std::vector<std::pair<int, int>> xmiss;  // (ARC_XCPU: the misses (expert, slot) the CPU computes, zero/xe2/engine_xcpu.h)
     if (skip_x) {
     } else if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && !tp_moe()) {
       tl1.resize(1 + 3 * (size_t)NU);
-      CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
+      const bool xcpu = xcpu_layer_ok(L);
+      if (xcpu)  // (with the CPU's inputs, one wait: zero/xe2/engine_xcpu.h)
+        xcpu_read_tiles(Mp, tl1);
+      else
+        CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
       xt_hit_h_.assign(1, 0);
       xt_miss_h_.assign(1, 0);
+      if (xcpu) {  // (the background fills that finished: cached from here on)
+        const auto tf = std::chrono::steady_clock::now();
+        xc_->fill_commit();
+        xcpu_fill_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf).count();
+      }
       for (int t = 0; t < tl1[0] && t < NU; ++t) {
-        auto& v = xc_->cached(L.il, tl1[1 + 3 * t]) ? xt_hit_h_ : xt_miss_h_;
+        const int e = tl1[1 + 3 * t];
+        const bool hit = xc_->cached(L.il, e);
+        // (ARC_XCPU: a miss whose record is in the RAM tier goes to the CPU; one that is not is read and copied as
+        //  before, which puts it in the tier for the next time)
+        if (xcpu && !hit && xc_->st.ram_src(L.il, e)) {
+          xmiss.emplace_back(e, tl1[2 + 3 * t]);
+          continue;
+        }
+        auto& v = hit ? xt_hit_h_ : xt_miss_h_;
         v.insert(v.end(), tl1.begin() + 1 + 3 * t, tl1.begin() + 4 + 3 * t);
         ++v[0];
       }
-      if (xt_hit_h_[0] > 0 && xt_miss_h_[0] > 0) {
+      const int nh = xt_hit_h_[0], ng = xt_miss_h_[0];
+      auto write_lists = [&] {
         if (!xt_hit_) {
           xt_hit_ = buf((1 + 3 * (size_t)NU) * 4);
           xt_miss_ = buf((1 + 3 * (size_t)NU) * 4);
@@ -311,14 +330,29 @@
                                       nullptr));
         CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_miss_, CL_TRUE, 0, xt_miss_h_.size() * 4, xt_miss_h_.data(), 0,
                                       nullptr, nullptr));
+      };
+      if (nh > 0 && ng > 0) {
+        write_lists();
         gateup_q(xt_hit_);
         quant_h();
         down_q(xt_hit_);
         tiles = xt_miss_;
+      } else if (!xmiss.empty() && nh + ng > 0) {  // (the GPU's experts are the hits alone, or the copied misses alone)
+        write_lists();
+        tiles = nh > 0 ? xt_hit_ : xt_miss_;
       }
     }
     // (decode + GEMM decodes every expert of a group: the layer's experts all resident first)
-    if (xc_ && !skip_x) stream_layer(L, T, use_gemm_gu, tl1.empty() ? nullptr : tl1.data());
+    // (ARC_XCPU: the GPU's experts, hits and the misses not in the RAM tier, through ensure; the CPU's are not copied)
+    const bool xgpu = xmiss.empty() || xt_hit_h_[0] + xt_miss_h_[0] > 0;
+    if (!xmiss.empty()) {
+      std::vector<int> ids;
+      for (const auto* v : {&xt_hit_h_, &xt_miss_h_})
+        for (int t = 0; t < (*v)[0]; ++t) ids.push_back((*v)[1 + 3 * t]);
+      if (!ids.empty()) xc_->ensure(L.il, ids.data(), ids.size(), false, false);
+    } else if (xc_ && !skip_x) {
+      stream_layer(L, T, use_gemm_gu, tl1.empty() ? nullptr : tl1.data());
+    }
     // ---- (2026-11-19, issue #56) a split token's missed experts read their table from the GPU. Their entries are
     //      written by the host in ensure() just after the cached experts' kernels read that same row of host memory;
     //      on an A770 the missed experts' kernels then read wrong addresses (the 35B's text corrupted, logits changing
@@ -345,7 +379,7 @@
     } else if (use_gemm_gu) {
       moe_gemm(L, 0, Mp);
     } else if (hp.moe_std) {
-      gateup_q(tiles);
+      if (xgpu) gateup_q(tiles);  // (ARC_XCPU: none when the CPU takes all of the layer's experts)
     } else {
       cl_kernel k = kernel("moe", defs, "moe_gateup");
       int M = Mp, K = E;
@@ -353,7 +387,7 @@
       size_t gws[2] = {(size_t)F, max_tiles}, lws[2] = {16, 1};
       run("moe_gateup", k, 2, gws, lws);
     }
-    quant_h();
+    if (xgpu) quant_h();
     // shared expert down: its quantized input replaces the FFN input in aq_ (the expert GEMM above has read it)
     if (!g4) {
       int a32 = 1, gelu = 0;
@@ -368,13 +402,14 @@
     } else if (use_gemm) {
       moe_gemm(L, 2, Mp);
     } else if (hp.moe_std) {
-      down_q(tiles);
+      if (xgpu) down_q(tiles);
     } else {
       cl_kernel k = kernel("moe", defs, "moe_down");
       set_args(k, 0, L.ex_q[2], L.ex_s[2], mhq_, mhsc_, slots_, F, E, mtiles_, swt_, my_);
       size_t gws[2] = {(size_t)E, max_tiles}, lws[2] = {16, 1};
       run("moe_down", k, 2, gws, lws);
     }
+    if (!xmiss.empty()) xcpu_run(L, xmiss, Mp);  // (the CPU's slots copied into my_ ahead of moe_combine)
     if (tp_moe()) {
       tp_moe_combine(T);  // (this GPU's experts + the shared expert on GPU 0, summed over the GPUs)
     } else {
@@ -385,6 +420,13 @@
       set_args(k, 0, g4 ? gmoe_ : hp.hc || hp.ds41 ? hco_ : x_, msh_, sgate_, my_, minv_, E);
       size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};  // (moe_combine checks c < N)
       run("moe_combine", k, 2, gws, lws);
+    }
+    if (!xmiss.empty()) {  // (the CPU's experts into the cache in the background, for the next tokens)
+      const auto tf = std::chrono::steady_clock::now();
+      std::vector<int> ids;
+      for (auto& m : xmiss) ids.push_back(m.first);
+      xc_->fill(L.il, ids.data(), ids.size());
+      xcpu_fill_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf).count();
     }
     // (debug, ARC_DBG_MOE=layer: that layer's shared-expert output, its gate and the FFN output of the last row)
     static const int dbg_moe = getenv("ARC_DBG_MOE") ? atoi(getenv("ARC_DBG_MOE")) : -1;

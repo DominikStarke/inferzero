@@ -319,6 +319,12 @@ struct ExpertStore {
     return ram_used_;
   }
   std::atomic<uint64_t> ram_hits{0};
+  // (expert e of layer l's record in the RAM tier, or null: not there, or being read; ARC_XCPU's cache fills)
+  const void* ram_src(int l, int e) const {
+    if (!ram_rec_ || l < 0 || (size_t)l >= layers.size() || e < 0 || e >= n_expert) return nullptr;
+    char* m = ram_rec_[(size_t)l * n_expert + e].load(std::memory_order_acquire);
+    return m && m != kPending ? m : nullptr;
+  }
 
   // ---- reads: up to kQD unbuffered reads in flight. dst must be 4 KB aligned (host USM is). set: which of the two
   // sets of read slots (0: the caller's thread, 1: the expert cache's prefetch thread; two threads may read at once).
