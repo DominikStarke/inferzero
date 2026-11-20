@@ -1086,6 +1086,26 @@ struct ClRt {
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102B, sizeof(name) - 1, name, nullptr);  // CL_DEVICE_NAME
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102D, sizeof(drv) - 1, drv, nullptr);   // CL_DRIVER_VERSION
     device_id = std::string(name) + "|" + drv;  // (the same key as the OpenCL engine's kernel cache)
+#ifdef _WIN32
+    {  // (2026-11-20: a Windows Update put a February 2024 Intel driver, 31.0.101.5328, in place of 32.0.101.9150 on
+       //  the laptop; on it Flash Next's logits were wrong (KL 1.5-5 against f32, 0.0022 on 32.0.101.9175) and a run
+       //  ended in a device lost. Said once: the 32.0.101 drivers are the ones measured)
+      // (the oldest driver measured right: docs/install.md's 32.0.101.9033)
+      static std::atomic<bool> said_drv{false};
+      unsigned v[4] = {0, 0, 0, 0};
+      // (ARC_TEST_DRIVER=x.y.z.w: checked as if the driver were that one, a test of this warning)
+      const char* dv = getenv("ARC_TEST_DRIVER") ? getenv("ARC_TEST_DRIVER") : drv;
+      const bool parsed = sscanf(dv, "%u.%u.%u.%u", &v[0], &v[1], &v[2], &v[3]) == 4;
+      const unsigned ok[4] = {32, 0, 101, 9033};
+      bool older = false;
+      for (int i = 0; parsed && i < 4; ++i)
+        if (v[i] != ok[i]) { older = v[i] < ok[i]; break; }
+      if (older && !said_drv.exchange(true))
+        LOG_WRN("inferzero: the Intel graphics driver is %s, older than 32.0.101.9033, the oldest measured right: "
+                "answers may be wrong (Windows Update can install an old driver over a newer one). Install Intel's "
+                "current Arc / Core Ultra graphics driver\n", dv);
+    }
+#endif
     {  // CL_DEVICE_SUB_GROUP_SIZES_INTEL; ARC_NO_SG8=1 takes the 16-lane kernels anyway (tests)
       size_t sz[8] = {}, ret = 0;
       if (zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x4108, sizeof sz, sz, &ret) == 0 && ret >= sizeof(size_t)) {

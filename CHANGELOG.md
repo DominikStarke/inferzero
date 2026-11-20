@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-11-20: a warning when Windows has put an old Intel graphics driver in place
+
+- **Why:** a Windows Update put a February 2024 Intel driver (31.0.101.5328) in place of 32.0.101.9150 on the laptop.
+  On it, Flash Next's logits were wrong (KL against f32 1.5-5, against 0.0022 on 32.0.101.9175) and a run ended in a
+  device lost, with nothing to say why.
+- **What:** on Windows, runz and serverz compare the driver with 32.0.101.9033 (the oldest docs/install.md lists) and,
+  when it is older, log once: the version, that answers may be wrong, and to install Intel's current driver. They still
+  start. (`ARC_TEST_DRIVER=x.y.z.w` checks a given version, a test of the warning.) The launcher and web UI showing it,
+  and a start-up self-check of the GPU's results, are next (QUEUE).
+
+## 2026-11-20: prompt chunks of 4,096 tokens for Flash Next and the streamed MoE models
+
+- **The user's choice:** 4,096 is the prompt chunk, and the largest. Flash Next goes 2,048 -> 4,096 on GPUs with 15 GiB
+  or more (smaller cards keep 2,048); the other streamed MoE models (the 35B-A3B when its experts are streamed) 8,192 ->
+  4,096. Gemma 4 keeps 2,048, which was faster for it.
+- **Flash Next:** a Pro B70 (joshdev-de, issue #27): 4K / 16K prompt 1,150 / 1,110 -> 1,257 / 1,216 tok/s (+9 %), its
+  expert cache 23.35 -> 22.53 GiB; the laptop: 4K 156 -> 164 tok/s, generation after it 5.3 -> 5.8. KL against f32 on
+  3,584 tokens the same at both sizes (default 0.00894, precise 0.00583).
+- **The streamed 35B-A3B:** from the laptop's earlier sweep, a 32K prompt 604 -> 533 tok/s (-12 %), its expert cache
+  77 -> 81 %, generation at 128K 12.6 -> 12.8 tok/s. `--chunk 8192` gives the old speed back.
+
 ## 2026-11-20: a fix for Lunar Lake / Panther Lake: wrong answers after a short follow-up with a resident model
 
 - **The bug** (self audit, A1; releases 2026.11.19.05-.07): on iGPUs with 16-lane XMX (Arc 140V, Arc B390), a

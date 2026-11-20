@@ -364,7 +364,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  reports ~11.3 GiB (a B580: 11.33), so the line is 11 GiB; it was 12 GiB until the self audit of 2026-11-19, which
     //  left the 12 GB cards at 512)
     const bool res_long = !zrt::integrated() && zrt::D().global_mem >= (11ull << 30);
-    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
+    // (2026-11-20, the user: "i want to chunk size to keep it at 4096 so no bigger chunk size": 4096 the streamed MoE
+    //  models' chunk and the ceiling. Flash Next 2048 -> 4096 where the GPU has 15 GiB or more: a Pro B70's 4K / 16K
+    //  prompt 1,150 / 1,110 -> 1,257 / 1,216 tok/s (+9 %), its expert cache 23.35 -> 22.53 GiB (joshdev-de, issue #27);
+    //  the laptop's 4K 156 -> 164, generation after 5.3 -> 5.8; KL against f32 on 3,584 tokens the same at both (default
+    //  0.00894, precise 0.00583). The other streamed MoE models 8192 -> 4096 (the laptop's 35B at 32K: 604 -> 533 tok/s in
+    //  QUEUE 19.4's sweep, its cache 77 -> 81 %). Gemma 4 keeps 2048 (its 4096 measured slower above))
+    const bool fn_4k = zrt::D().global_mem >= (15ull << 30);
+    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
