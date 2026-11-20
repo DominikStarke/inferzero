@@ -94,17 +94,31 @@ function Show-Progress([string]$what) {
   Write-Host $msg -ForegroundColor DarkGray
 }
 
-# --- one runz call: settings "NAME=value ..." (and --chunk=N), then runz's arguments; returns the output lines
+# --- one runz call: settings "NAME=value ..." (and --chunk=N), then runz's arguments; returns the output lines.
+# The first time a model meets a set of settings (and drafting flags), an untimed warm-up run comes first (a 512-token
+# prompt and 16 tokens with the same switches): a new setting builds new kernels, and a build inside a timed run would
+# count against it. The kernels then come from the cache, so every timed run measures the kernels, not their build.
+$warmed = @{}
 function Invoke-Runz([string]$m, [string]$sset, [string[]]$a) {
-  Show-Progress ($(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
   foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
-  $extra = @()
+  $extra = @(); $draft = @()
+  for ($i = 0; $i -lt $a.Count; $i++) {  # (the drafting flags: their kernels are built only with them)
+    if ($a[$i] -eq "--mtp") { $draft += "--mtp" }
+    elseif ($a[$i] -in "--mtp-drafts", "--dflash", "--draft" -and $i + 1 -lt $a.Count) { $draft += @($a[$i], $a[$i + 1]); $i++ }
+  }
   $eap = $ErrorActionPreference
   try {
     $ErrorActionPreference = "Continue"
     foreach ($kv in ($sset -split ' ' | Where-Object { $_ })) {
       if ($kv -like "--chunk=*") { $extra += @("--chunk", $kv.Substring(8)) } else { $p = $kv -split '=', 2; Set-Item "Env:$($p[0])" $p[1] }
     }
+    $key = "$m|$sset|$($draft -join ' ')"
+    if (-not $script:warmed.ContainsKey($key)) {
+      $script:warmed[$key] = $true
+      Write-Host ("[{0}] warm-up: {1} {2}" -f $script:ph.name, $(if ($sset) { $sset } else { "defaults" }), ($draft -join ' ')) -ForegroundColor DarkGray
+      $null = & $runz $m --bench-pp 512 --n 16 @draft @extra 2>&1
+    }
+    Show-Progress ($(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
     return (& $runz $m @a @extra 2>&1 | ForEach-Object { "$_" })
   } finally {
     $ErrorActionPreference = $eap

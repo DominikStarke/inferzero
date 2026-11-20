@@ -161,14 +161,31 @@ progress() {  # what this run is
 }
 progress_done() { [ -t 2 ] && printf '\r\033[K' >&2; return 0; }
 
-# runs runz on model $1 with settings "NAME=value ..." ($2) and the arguments after; its output in $OUT
+# runs runz on model $1 with settings "NAME=value ..." ($2) and the arguments after; its output in $OUT.
+# The first time a model meets a set of settings (and drafting flags), an untimed warm-up run comes first (a 512-token
+# prompt and 16 tokens with the same switches): a new setting builds new kernels, and a build inside a timed run would
+# count against it. The kernels then come from the cache, so every timed run measures the kernels, not their build.
+declare -A WARMED
 run() {
   local model="$1" sset="$2"; shift 2
-  progress "${sset:-defaults} ${*:1:4}"
-  local -a e=() a=() kv
+  local -a e=() a=() d=() kv args=("$@")
   for kv in $sset; do
     if [[ "$kv" == --chunk=* ]]; then a+=(--chunk "${kv#*=}"); else e+=("$kv"); fi
   done
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do  # (the drafting flags: their kernels are built only with them)
+    case "${args[$i]}" in
+      --mtp) d+=(--mtp) ;;
+      --mtp-drafts|--dflash|--draft) d+=("${args[$i]}" "${args[$((i + 1))]:-}"); i=$((i + 1)) ;;
+    esac
+  done
+  local key="$model|$sset|${d[*]}"
+  if [ -z "${WARMED[$key]:-}" ]; then
+    WARMED[$key]=1
+    if [ -t 2 ]; then printf '\r\033[K[%s] warm-up: %s' "$PH_NAME" "${sset:-defaults} ${d[*]}" >&2; fi
+    env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" --bench-pp 512 --n 16 "${d[@]}" "${a[@]}" > /dev/null 2>&1
+  fi
+  progress "${sset:-defaults} ${*:1:4}"
   env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" "$@" "${a[@]}" > "$OUT" 2>&1
   progress_done
 }
