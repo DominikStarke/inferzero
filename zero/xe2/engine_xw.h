@@ -188,16 +188,26 @@
   }
   bool xw_2d() const { return xw_2d_level() != 0 && xw_2d_fb_ < 2; }     // (the loads in 2D blocks)
   bool xw_2d_c() const { return xw_2d_level() == 1 && xw_2d_fb_ == 0; }  // (and C's reads / writes)
+  // ARC_GEMM_XW_GU=1 (opt-in, 2026-11-20; the B70's 3,000 plan): the FFN's gate and up GEMMs as one gemm_xw launch
+  // (gemm_xw.cl -DXW_GU), its epilogue writing silu(gate) * up: the gate's f32 values (285 MB a layer for a 4K prompt
+  // of the 27B) are neither written to big_ nor read back by the up GEMM. 16 lanes, NC 2 / 4 / 8; the same results bit
+  // for bit as the two launches (xw_gu_check at start; a difference or a failed build keeps the two launches)
+  static bool xw_gu_env() {
+    static const bool on = getenv("ARC_GEMM_XW_GU") && atoi(getenv("ARC_GEMM_XW_GU")) != 0;
+    return on;
+  }
+  int xw_gu_ok_ = -1;  // (-1 not checked yet, 0 differs / fails, 1 checked)
+  bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
-  //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group)
-  cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1) {
+  //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group; gu: -DXW_GU)
+  cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1, bool gu = false) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
                              (xw_emu_ ? " -DXW_EMU" : "") + xw_pf_defs() +
                              (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
-                             (xw_lock() ? " -DXW_LOCK" : "");
+                             (xw_lock() ? " -DXW_LOCK" : "") + (gu ? " -DXW_GU" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
     const bool d2 = (nc ? nc : xw_nc()) != 6;
@@ -221,6 +231,110 @@
     if (ln == 8) set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1);
     else set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1, g_base);
     run(name, k, 2, gws, lws);
+  }
+  // gate and up in one launch (-DXW_GU): N output columns, the sub-grid of xw_run with NC / 2 output groups a sub-group
+  void xw_gu_run(const char* name, cl_mem wqg, cl_mem whg, cl_mem wqu, cl_mem whu, cl_mem aq, cl_mem asc, int M, int N,
+                 int K, cl_mem C, int ldc, int c_off, int rgroup, int wgy) {
+    const int nc = xw_nc(), tm = xw_tm(), nb = N / (16 * (nc / 2));
+    int wgx = xw_wgx();
+    while (wgx > 1 && nb % wgx) wgx /= 2;
+    const int cap = xw_grf256() ? 32 : 64;
+    while (wgx * wgy > cap && wgy > 1) wgy /= 2;
+    cl_kernel k = xw_kernel(nc, 0, wgx, true);
+    size_t gws[2] = {(size_t)16 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)16 * wgx, (size_t)wgy};
+    int a = 2, s0 = 0, s1 = K / 256, gb = 0;
+    set_args(k, 0, wqg, whg, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1, gb, wqu, whu);
+    run(name, k, 2, gws, lws);
+  }
+  // the FFN's gate and up (H8, prompt chunks) in one gemm_xw launch into C = big_ (row stride ldc): true when taken;
+  // false: the caller runs the two GEMMs as before
+  bool xw_gu_matmul(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
+    if (!xw_gu_env() || !xw_ || xw_lanes() != 16 || !xw_gu_shape(xw_nc()) || !h8_row()) return false;
+    if (gw.N != uw.N || gw.K != uw.K || Mp % xw_tm() || gw.K % 256 || gw.N % (16 * (xw_nc() / 2))) return false;
+    if (!h8_takes(gw, Mp) || !h8_takes(uw, Mp) || p140_take(gw, Mp) || p140_take(uw, Mp)) return false;
+    if (xw_gu_ok_ < 0) {
+      xw_gu_ok_ = xw_gu_check() ? 1 : 0;
+      zlog::eprintf(xw_gu_ok_ ? "inferzero: the FFN's gate and up in one gemm_xw launch (ARC_GEMM_XW_GU, results checked bit for bit)\n"
+                              : "inferzero: ARC_GEMM_XW_GU: the fused gate / up GEMM differs or does not build: two launches as before\n");
+    }
+    if (!xw_gu_ok_) return false;
+    cl_mem wqg = nullptr, whg = nullptr, wqu = nullptr, whu = nullptr;
+    h8_prepare(gw, wqg, whg);
+    h8_prepare(uw, wqu, whu);
+    h8_act(Mp, gw.K, act32);
+    static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
+    static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
+    int wgy = 1;
+    while (wgy < wgy_max && (Mp / xw_tm()) % (wgy * 2) == 0) wgy *= 2;
+    xw_gu_run("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, rg_env, wgy);
+    return true;
+  }
+  // the fused launch against the two it replaces (gate stored, then up with the fused SwiGLU), both through gemm_xw,
+  // on random H8R data: two shapes, work-groups of 1 and 2 token sub-groups; bit for bit
+  bool xw_gu_check() {
+    // (widths in the two-launch path's tiles, 16 * NC: the fused one's half-width tiles cover them too)
+    const int K = 2048, nsb = K / 256, tm = xw_tm(), cols = 16 * xw_nc();
+    uint32_t seed = 4242;
+    auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
+    auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
+    std::vector<cl_mem> bufs;
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
+    cl_.soft_fail = true;
+    bool ok = true;
+    try {
+      std::vector<std::pair<int, int>> shapes = {{3 * tm, 2 * cols}, {2 * tm, 3 * cols}};
+      if (xw_wgx() > 1) shapes.push_back({2 * tm, 2 * xw_wgx() * cols});
+      for (auto [M, N] : shapes) {
+        const int ng = N / 16, ldc = N + 32;
+        std::vector<uint32_t> wg((size_t)ng * nsb * 4 * 256), wu(wg.size()), hg((size_t)ng * 16), hu(hg.size());
+        for (auto* v : {&wg, &wu}) for (auto& x : *v) x = rnd();
+        for (auto* v : {&hg, &hu})
+          for (auto& x : *v) { const float f = rndf(0.001f, 0.01f); memcpy(&x, &f, 4); }
+        std::vector<int8_t> aq((size_t)M * K);
+        for (auto& v : aq) v = (int8_t)(rnd() >> 24);
+        std::vector<float> asc((size_t)M), c0((size_t)M * ldc, 0.0f);
+        for (auto& v : asc) v = 0.02f * std::pow(10.0f, -rndf(0.0f, 3.0f));
+        cl_mem bg = buf(wg.size() * 4, wg.data()), bu = buf(wu.size() * 4, wu.data()), bhg = buf(hg.size() * 4, hg.data()),
+               bhu = buf(hu.size() * 4, hu.data()), ba = buf(aq.size(), aq.data()), bs = buf(asc.size() * 4, asc.data()),
+               bc = buf(c0.size() * 4);
+        bufs.insert(bufs.end(), {bg, bu, bhg, bhu, ba, bs, bc});
+        for (int wgy : {1, 2}) {
+          if ((M / tm) % wgy) continue;
+          std::vector<float> out[2];
+          for (int x = 0; x < 2; ++x) {
+            CL_CHECK(clEnqueueWriteBuffer(cl_.queue, bc, CL_TRUE, 0, c0.size() * 4, c0.data(), 0, nullptr, nullptr));
+            if (x == 0) {
+              xw_piece("xw_gu_check", bg, bhg, ba, bs, M, N, K, bc, ldc, 0, 0, 2, 0, nsb, wgy);
+              xw_piece("xw_gu_check", bu, bhu, ba, bs, M, N, K, bc, ldc, 0, 2, 2, 0, nsb, wgy);
+            } else {
+              xw_gu_run("xw_gu_check", bg, bhg, bu, bhu, ba, bs, M, N, K, bc, ldc, 0, 2, wgy);
+            }
+            out[x].resize(c0.size());
+            CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, out[x].size() * 4, out[x].data(), 0, nullptr, nullptr));
+          }
+          bool sane = false;
+          for (size_t i = 0; i < c0.size(); ++i) {
+            if (!std::isfinite(out[0][i])) { sane = false; break; }
+            sane = sane || out[0][i] != 0.0f;
+          }
+          size_t diff = 0;
+          for (size_t i = 0; i < c0.size(); ++i) diff += memcmp(&out[0][i], &out[1][i], 4) != 0;
+          if (!sane || diff) {
+            zlog::eprintf("inferzero: ARC_GEMM_XW_GU check %dx%d wgy %d: %zu of %zu values differ%s\n", M, N, wgy, diff,
+                          c0.size(), sane ? "" : " (or no output)");
+            ok = false;
+          }
+        }
+      }
+    } catch (const zrt::GpuWaitError&) {
+      for (cl_mem& b : bufs) free_buf(b);
+      throw;
+    } catch (const std::exception& e) {
+      zlog::eprintf("inferzero: ARC_GEMM_XW_GU: %s\n", e.what());
+      ok = false;
+    }
+    for (cl_mem& b : bufs) free_buf(b);
+    return ok;
   }
   // ARC_GEMM_XW_NC=6 (96 columns, 16 lanes): N's first columns in 96-wide tiles, as many as leave a multiple of 64 for
   // the NC 4 kernel (the 27B's widths 1024, 5120, 17408 are not multiples of 96); -1: N has no such split

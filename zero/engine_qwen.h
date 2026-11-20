@@ -436,8 +436,11 @@
     } else if (fused) {
       H8Share sh(this);  // (one rotation of the input for both, engine_h8.h; with ARC_H8_NORM made by the norm)
       rmsnorm_h8(x_, 0, L.post_norm, E, Mp, T, a_in, L.gate);
-      matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
-      matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
+      // (ARC_GEMM_XW_GU=1: both in one gemm_xw launch, the same values; zero/xe2/engine_xw.h)
+      if (!xw_gu_matmul(L.gate, L.up, Mp, big_, F, a_in)) {
+        matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
+        matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
+      }
     } else if (gemv_gu(L.gate, L.up, Mp, big_)) {  // (one token, ARC_GEMV_GU=1: both in one launch, the same rows)
     } else {
       H8Share sh(this);

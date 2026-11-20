@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-20: the FFN's gate and up GEMMs in one launch on 16-lane XMX, opt-in (`ARC_GEMM_XW_GU=1`)
+
+- **Why:** on a Pro B70 the 27B's 4K prompt takes 1,378 ms (2,962-2,972 tok/s); 3,000 needs 1,365. `gemm_up` takes
+  219 ms against `gemm_gate`'s 170 on the same shape: the gate GEMM writes its f32 result to `big_` and the up GEMM's
+  fused SwiGLU reads it back, 285 MB a layer each way (18 GB per 4K prompt).
+- **What:** `gemm_xw.cl -DXW_GU`: one launch computes both. A sub-group's first half of column groups reads the gate
+  weights, the second half the up weights of the same 32 columns, and its epilogue writes silu(gate) * up. The gate
+  value is computed as the gate GEMM stores it and the product as the fused SwiGLU computes it, so the results are the
+  same bit for bit. ocloc for a B70 (32 x 64, 2D loads and stores, prefetch, WGX 4, 256 registers): the same 128 DPAS
+  a chunk, first-to-last DPAS 285 -> 237 instructions, the kernel 4,683 -> 2,253 instructions, sends 93 -> 70, no
+  spills.
+- **Opt-in** on 16-lane XMX (discrete Battlemage, the 140V / B390); checked at start against the two launches on
+  random data, and off with a line if it differs. Without the switch nothing changes.
+- **Checked here** (the laptop, `gemm_xw`'s DPAS emulated): the 27B's 480-token prompt + 16 tokens, logits byte for
+  byte with and without it. The speed is for a B70 owner to measure (with and without resident weights).
+- **Not built:** moving part of `h8_act`'s rotation into this epilogue. In H8's stage order only the two lowest index
+  bits could move there and stay bit-identical; that is a few ms at most, less than it would add to the epilogue.
+
 ## 2026-11-20: the expert cache's background fills: four races and a leak (self audit A3-A6)
 
 These are the copies `ARC_XCPU=1` queues so that a token's CPU-computed experts enter the GPU cache for the next tokens.

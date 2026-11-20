@@ -14,6 +14,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off | 1 / off | 2 / off | 2 / off | – |
 | `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form, 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |
+| `ARC_GEMM_XW_GU` (gate + up in one launch, 2026-11-20) | 0 (opt-in, to be measured) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |
 | `ARC_H8_NORM` | on | off | on | on | off |
 | `ARC_H8_GRF` | 128 | 256 | 256 (128 ignored: spills) | 256 (128 ignored) | 256 |
