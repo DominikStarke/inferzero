@@ -134,7 +134,97 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int h = 0; h < XW_NH; ++h) xacc[t][h] = (int8)(0);
 
-#if defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
+#if defined(XW_SLM)
+  // ---- -DXW_SLM (2026-11-21, opt-in; the A770 plan: its H8 GEMMs at ~28 % of the measured XMX peak, where the 140T's
+  //      loop reached 85 % with its operands already in L1, xw_peak --probe, issue #5: the operands arrive late). The
+  //      work-group's packed chunk (its XW_WGY x XW_TG token groups' A, its XW_WGX x XW_NC column groups' B) is copied
+  //      to local memory by all its sub-groups together, one 64-word block read each unit, and double-buffered: the next
+  //      chunk's global reads are issued before this chunk's DPAS and stored after them, one barrier a chunk. Each
+  //      sub-group's DPAS then read their operands from local memory. Every byte of A and B is read from L2 once per
+  //      work-group, not once per sub-group. The local copy is the global layout word for word, so the same words reach
+  //      the same DPAS in the same order: bit for bit the plain loop's (integer sums, the one epilogue).
+  //      The host gives an explicit local size (8 * XW_WGX, XW_WGY): get_local_size(1) must be XW_WGY.
+#if !defined(XW_PACKA) || !defined(XW_PACKW) || !defined(XW_WGY)
+#error "XW_SLM needs XW_PACKA, XW_PACKW and XW_WGY"
+#endif
+#ifdef XW_GU
+#error "XW_SLM is not for the fused gate + up GEMM"
+#endif
+#define XS_AW (XW_WGY * XW_TG * 128)  // words of A a chunk (token group t's: 2 halves x 64 words)
+#define XS_BW (XW_WGX * XW_NC * 256)  // words of B a chunk (column group c's: lo0, lo1, hi0, hi1 x 64 words)
+#define XS_UA (XS_AW / 64)
+#define XS_U ((XS_AW + XS_BW) / 64)   // 64-word units a chunk
+#define XS_NS (XW_WGX * XW_WGY)       // sub-groups a work-group
+#define XS_UPS ((XS_U + XS_NS - 1) / XS_NS)
+  __local uint xs[2][XS_AW + XS_BW];
+  const int nch = K / 64, lane = (int)get_sub_group_local_id();
+  const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
+  // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
+  __global const uint* apw = (__global const uint*)aq + (size_t)(row * XW_WGY * XW_TG) * nch * 128;
+  __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NC) * nsb * 4 * 256;
+  const int ch0 = s_begin * 4, ch1 = s_end * 4;
+  int8 st[XS_UPS];
+  // unit u of chunk ch: A (u < XS_UA) of the work-group's token group u / 2, half u % 2; B of its column group
+  // (u - XS_UA) / 4, part (u - XS_UA) % 4; in local memory at u * 64 either way
+#define XS_SRC(u, ch)                                                                         \
+  ((u) < XS_UA ? apw + ((size_t)((u) >> 1) * nch + (ch)) * 128 + ((u) & 1) * 64             \
+               : wpw + ((size_t)(((u) - XS_UA) >> 2) * nsb * 4 + (ch)) * 256 + (((u) - XS_UA) & 3) * 64)
+#define XS_LOAD(ch)                                                                          \
+  _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
+    const int u = sid + i * XS_NS;                                                            \
+    if (u < XS_U) st[i] = as_int8(intel_sub_group_block_read8(XS_SRC(u, ch)));                \
+  }
+#define XS_STORE(b)                                                                          \
+  _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
+    const int u = sid + i * XS_NS;                                                            \
+    if (u < XS_U) {                                                                           \
+      XS_WR(xs[b] + u * 64, st[i]);                                                           \
+    }                                                                                         \
+  }
+#ifdef XS_SCALAR  // (the local reads and writes a word a lane: for a driver without cl_intel_subgroup_local_block_io)
+#define XS_RD(p) as_int8((uint8)((p)[lane], (p)[8 + lane], (p)[16 + lane], (p)[24 + lane], (p)[32 + lane], \
+                                 (p)[40 + lane], (p)[48 + lane], (p)[56 + lane]))
+#define XS_WR(p, x)                                                                                         \
+  {                                                                                                         \
+    __local uint* d_ = (p) + lane;                                                                          \
+    const uint8 v_ = as_uint8(x);                                                                           \
+    d_[0] = v_.s0, d_[8] = v_.s1, d_[16] = v_.s2, d_[24] = v_.s3, d_[32] = v_.s4, d_[40] = v_.s5;           \
+    d_[48] = v_.s6, d_[56] = v_.s7;                                                                         \
+  }
+#else  // (one block message each: component w of lane l = word 8 w + l, as the global block reads)
+#define XS_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
+#define XS_WR(p, x) intel_sub_group_block_write8((__local uint*)(p), as_uint8(x))
+#endif
+  if (ch0 < ch1) {  // (s_begin / s_end are the same for the whole work-group: its barriers stay uniform)
+    XS_LOAD(ch0)
+    XS_STORE(0)
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  for (int ch = ch0; ch < ch1; ++ch) {
+    const int cur = (ch - ch0) & 1;
+    const bool more = ch + 1 < ch1;
+    if (more) { XS_LOAD(ch + 1) }
+    __local const uint* xa = xs[cur] + sy * XW_TG * 128;
+    __local const uint* xb = xs[cur] + XS_AW + sx * XW_NC * 256;
+    int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+#pragma unroll
+    for (int c = 0; c < XW_NC; ++c) {
+      lo0[c] = XS_RD(xb + c * 256), lo1[c] = XS_RD(xb + c * 256 + 64);
+      hi0[c] = XS_RD(xb + c * 256 + 128), hi1[c] = XS_RD(xb + c * 256 + 192);
+    }
+#pragma unroll
+    for (int t = 0; t < XW_TG; ++t) {
+      const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+        xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
+        xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+      }
+    }
+    if (more) { XS_STORE(cur ^ 1) }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+#elif defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
   // ---- -DXW_DB (ARC_GEMM_XW_DB, 2026-11-20, the A770 row's G3; the Alchemist default for 32-token tiles since 2026-11-21): the packed loop with its loads one step ahead. The
   //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B
   //      operands too, so a load's latency is covered by the DPAS before it is needed (the plain loop waits on each

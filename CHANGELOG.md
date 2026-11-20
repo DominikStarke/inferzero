@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-21: `ARC_GEMM_XW_SLM` (opt-in, 8-lane XMX): the prompt GEMM's operands through local memory
+
+- **Why:** an A770's H8 prompt GEMMs take 1.5-2x a Pro B60's (skipzx-lab, issue #45: the 27B's 4K prompt 1,289
+  against 1,866 tok/s) although it measures more int8 XMX (232 against 196 TOPS); its GEMMs run at ~28 % of that.
+  The Arc 140T's `xw_peak --probe` (issue #5) reached 85 % with the loop's operands already in L1, so they arrive
+  late. No tile, column sub-group, prefetch or lock setting closed it.
+- **New:** `ARC_GEMM_XW_SLM=1` (or `=2` / `=4` / `=8`: token sub-groups a work-group, `=1` means 4).
+  - `gemm_xw8.cl -DXW_SLM`: all a work-group's sub-groups copy its packed chunk (A and B) into local memory together,
+    one block read each, and double-buffer it, so the next chunk's reads go out before this chunk's DPAS. Every byte
+    is read from L2 once a work-group instead of once a sub-group.
+  - Only where both operands are packed (the Alchemist / 140T preset) and the token tiles divide; elsewhere the
+    kernel as before.
+  - The same integer sums in the same order: bit for bit. Checked at start (a new check shape that runs it), and with
+    `xw_peak --emu` on the 125H (store, fused SwiGLU and split-K shapes: identical).
+  - ocloc dg2-g10 at 256 registers, 32 x 16 tiles with 4 x 4 sub-groups: no spill, 24 KB of local memory, 249
+    memory messages against 299 for the default; 32 x 32 with 4 x 4: no spill, 32 KB.
+- `bench/xw_peak`: the engine's Alchemist default (`A770 32x16 w4 DB`) and three `slm` variants, to measure on an
+  A770 in a minute. Speed to be measured (asked on #45).
+
 ## 2026-11-21: streamed MoE in a server: later prompts up to 44 % faster (the start-up fill out of the RAM tier by default)
 
 - **Measured** by teodortomas (a Pro B65 32 GB, Linux, issue #47, main 8c02980): Flash Next IQ3_S (52 GB of experts),

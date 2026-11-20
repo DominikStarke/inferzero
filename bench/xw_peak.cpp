@@ -145,7 +145,8 @@ __kernel void ldprobe(__global const uint* ap, __global const uint* wp, int nch,
 using clk = std::chrono::steady_clock;
 
 struct Shape { int N, K, a; const char* name; };
-struct Variant { std::string name; const char* defs; int tm, nc; bool pa, pw; int wgx = 1; bool lock = false; };
+// (wgy: token sub-groups a work-group, fixed; 0 = the engine's choice. The XW_SLM variants need it fixed: -DXW_WGY)
+struct Variant { std::string name; const char* defs; int tm, nc; bool pa, pw; int wgx = 1; bool lock = false; int wgy = 0; };
 
 static uint32_t g_seed = 12345;
 static uint32_t rnd() { g_seed = g_seed * 1664525u + 1013904223u; return g_seed; }
@@ -329,10 +330,18 @@ int main(int argc, char** argv) {
       {"plain 16x64", "", 16, 4, false, false},  {"packAW 16x64", "-DXW_PACKA -DXW_PACKW", 16, 4, true, true},
       {"plain 64x16", "", 64, 1, false, false},  {"packAW 64x16", "-DXW_PACKA -DXW_PACKW", 64, 1, true, true},
       {"plain 32x64", "", 32, 4, false, false},  {"packAW 64x32", "-DXW_PACKA -DXW_PACKW", 64, 2, true, true},
+      // (2026-11-21, the A770 plan) the engine's Alchemist default for the big GEMMs (32 x 16, 4 column sub-groups,
+      //  the read-ahead loop), then -DXW_SLM: the work-group's chunk copied to local memory, double-buffered (" 4x4":
+      //  4 column x 4 token sub-groups a work-group). ocloc dg2-g10, 256 registers: no spill for these four
+      {"A770 32x16 w4 DB", "-DXW_PACKA -DXW_PACKW -DXW_DB", 32, 1, true, true, 4},
+      {"slm 32x16 4x4", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 1, true, true, 4, false, 4},
+      {"slm 32x16 2x8", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 1, true, true, 2, false, 8},
+      {"slm 32x32 4x4", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 2, true, true, 4, false, 4},
   };
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")
     for (Variant v : all) {
+      if (v.wgy || v.wgx > 1) continue;  // (the fixed work-groups above keep theirs)
       v.wgx = wgx, v.lock = lock;
       v.name += std::string(" ") + (wgx > 1 ? "w" + std::to_string(wgx) : std::string()) + (lock ? "L" : "");
       cand.push_back(v);
@@ -348,7 +357,8 @@ int main(int argc, char** argv) {
     const std::string opts = std::string("-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread -DXW_TM=") +
                              std::to_string(vs[v].tm) + " -DXW_NC=" + std::to_string(vs[v].nc) + " " + vs[v].defs +
                              (vs[v].wgx > 1 ? " -DXW_WGX=" + std::to_string(vs[v].wgx) : std::string()) +
-                             (vs[v].lock ? " -DXW_LOCK" : "") + (emu ? " -DXW_EMU" : "");
+                             (vs[v].lock ? " -DXW_LOCK" : "") + (vs[v].wgy ? " -DXW_WGY=" + std::to_string(vs[v].wgy) : std::string()) +
+                             (emu ? " -DXW_EMU" : "");
     try {
       ks[v] = cl.kernel(cl.build(src, opts), "gemm_xw8");
       ze_kernel_properties_t kp{};
@@ -403,6 +413,10 @@ int main(int argc, char** argv) {
       int wgy = 1;
       while (wgy < 8 && (M / tm) % (wgy * 2) == 0) wgy *= 2;
       while (va.wgx * wgy > 32 && wgy > 1) wgy /= 2;
+      if (va.wgy) {
+        if ((M / tm) % va.wgy) continue;  // (the fixed work-group does not divide these tokens)
+        wgy = va.wgy;
+      }
       size_t gws[2] = {(size_t)8 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)8 * va.wgx, (size_t)wgy};
       cl_kernel k = ks[v];
       auto launch = [&] {
