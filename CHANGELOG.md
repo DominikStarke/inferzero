@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-20: 4,096-token chunks for MoE models fully on the card too; the driver warning's threshold; a warm-up fix
+
+- **The 35B-A3B (and other MoE models) with every expert on the GPU: chunk 2,048 -> 4,096** (the user: "Yes, 4096
+  for all", "gemma4 2048 then"). Gemma 4 keeps 2,048. Speed and KL to be measured on a B70 / B60 (asked; the laptop
+  streams the 35B's experts, so it can't run this case): not in a release until that's back.
+- **The old-driver warning** (self audit F1): from 32.0.101.8976, the oldest driver users measured right
+  (manoreken2's B60s; a1ex4's 140V ran 8991), instead of 9033, which warned those. Checked with `ARC_TEST_DRIVER`:
+  8976 and 8991 silent, 31.0.101.5328 warns.
+- **The warm-up's 2-8-row passes** read past their token list when a context was under 20 tokens (self audit F4): the
+  list now holds at least 8.
+
 ## 2026-11-20: `bench/xehpc_sweep.sh`: every kernel and tile setting swept on one GPU
 
 - For the Data Center GPU Max 1550 (issue #48), whose settings were never tuned (the defaults are the B-series ones), and any discrete card: each generation and prompt setting changed alone from the defaults, from the smallest value to the largest (prompt chunks at most 4,096), a winner at +2 %; each winner's logits then hashed against the defaults (`same`, or `differs`: a KL check before it could be a default), and a phase's winners run together at tg128 / pp512 / pp4096 / pp16384. `--moe-model` adds the MoE settings, `--quick` takes fewer values. Linux, bash only. Written by the Researcher session; not run on a GPU yet.

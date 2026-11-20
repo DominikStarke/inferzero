@@ -371,7 +371,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  0.00894, precise 0.00583). The other streamed MoE models 8192 -> 4096 (the laptop's 35B at 32K: 604 -> 533 tok/s in
     //  QUEUE 19.4's sweep, its cache 77 -> 81 %). Gemma 4 keeps 2048 (its 4096 measured slower above))
     const bool fn_4k = zrt::D().global_mem >= (15ull << 30);
-    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
+    // (the user, 2026-11-20: "Yes, 4096 for all", then "gemma4 2048 then": a MoE model with every expert on the GPU
+    //  (the 35B-A3B on a B60 / B70) 2048 -> 4096 too, Gemma 4 2048 either way)
+    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
@@ -848,7 +850,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       reset();
       return false;
     }
-    std::vector<int> t(nwarm, tok);
+    std::vector<int> t(std::max(nwarm, 8), tok);  // (the 2-8 row passes below read up to 8: a context under 20 made nwarm < 8)
     forward(t.data(), (int)t.size());
     // (2 .. 8 rows: the multi-token GEMVs (TB = 2 / 4 / 7 / 8) of every weight type, which short prompts and the
     //  server's batched steps of several slots run. Without them a Pro B70's serverz, 27B, after an update: a first

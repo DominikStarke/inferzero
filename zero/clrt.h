@@ -1096,12 +1096,14 @@ struct ClRt {
       // (ARC_TEST_DRIVER=x.y.z.w: checked as if the driver were that one, a test of this warning)
       const char* dv = getenv("ARC_TEST_DRIVER") ? getenv("ARC_TEST_DRIVER") : drv;
       const bool parsed = sscanf(dv, "%u.%u.%u.%u", &v[0], &v[1], &v[2], &v[3]) == 4;
-      const unsigned ok[4] = {32, 0, 101, 9033};
+      // (the oldest measured right on any card: manoreken2's B60s on 32.0.101.8976 (issue #3), a1ex4's 140V on 8991 (#60);
+      //  docs/install.md's 9033 was the iGPUs' minimum and warned those. Self audit 2026-11-20, F1)
+      const unsigned ok[4] = {32, 0, 101, 8976};
       bool older = false;
       for (int i = 0; parsed && i < 4; ++i)
         if (v[i] != ok[i]) { older = v[i] < ok[i]; break; }
       if (older && !said_drv.exchange(true))
-        LOG_WRN("inferzero: the Intel graphics driver is %s, older than 32.0.101.9033, the oldest measured right: "
+        LOG_WRN("inferzero: the Intel graphics driver is %s, older than 32.0.101.8976, the oldest measured right: "
                 "answers may be wrong (Windows Update can install an old driver over a newer one). Install Intel's "
                 "current Arc / Core Ultra graphics driver\n", dv);
     }
