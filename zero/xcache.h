@@ -200,10 +200,18 @@ struct XCache {
     // (a split model's GPU that does not finish: GpuWaitError from a destructor ended the process; its memory is left
     //  instead, as a stuck shard's. Audit 2026-11-14)
     try {
+      // (self audit 2026-11-20 A5: the background fills' copy list waited for, then it and its events destroyed: one
+      //  list and 512 events were left behind at every model switch)
+      for (const Fill& F : fills_) ZE_CHECK(zeEventHostSynchronize(F.done, UINT64_MAX));
+      fills_.clear();
       zrt::sync();
     } catch (const std::exception&) {
       return;
     }
+    if (fill_list_) { zeCommandListDestroy(fill_list_); fill_list_ = nullptr; }
+    for (ze_event_handle_t e : fill_ev_) zeEventDestroy(e);
+    fill_ev_.clear();
+    if (fill_pool_) { zeEventPoolDestroy(fill_pool_); fill_pool_ = nullptr; }
     for (Pool& P : pools) {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / std::max<uint64_t>(1, P.rec));
       for (size_t c = 0; c < P.chunks.size(); ++c) {
@@ -303,6 +311,9 @@ struct XCache {
     // error is not thrown from here; the layer's ensure() reads them again and reports a lasting read error itself)
     all_in_ok = false;
     try { join(); } catch (const std::exception&) {}
+    // (self audit 2026-11-20 A3: background fills finished and committed first: one still copying into the piece
+    //  freed below wrote freed memory, and its commit later set a slot past the shortened arrays)
+    fill_drain();
     zrt::sync();
     Pool* P = nullptr;
     for (auto& Q : pools) {
@@ -593,6 +604,7 @@ struct XCache {
   std::deque<Fill> fills_;
   std::vector<uint8_t> fill_pend_;  // key -> in a batch not committed yet
   ze_command_list_handle_t fill_list_ = nullptr;
+  ze_event_pool_handle_t fill_pool_ = nullptr;  // (A5: kept to be destroyed with its events)
   std::vector<ze_event_handle_t> fill_ev_;
   size_t fill_ev_next_ = 0;
   uint64_t fills_done = 0, fills_dropped = 0;
@@ -600,12 +612,11 @@ struct XCache {
   ze_event_handle_t fill_event() {
     if (fill_ev_.empty()) {
       ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)kFillEvents};
-      ze_event_pool_handle_t pool = nullptr;
-      ZE_CHECK(zeEventPoolCreate(zrt::ctx, &pd, 1, &zrt::D().dev, &pool));
+      ZE_CHECK(zeEventPoolCreate(zrt::ctx, &pd, 1, &zrt::D().dev, &fill_pool_));
       fill_ev_.resize(kFillEvents);
       for (uint32_t k = 0; k < kFillEvents; ++k) {
         ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
-        ZE_CHECK(zeEventCreate(pool, &ed, &fill_ev_[k]));
+        ZE_CHECK(zeEventCreate(fill_pool_, &ed, &fill_ev_[k]));
       }
     }
     // (reused 256 batches later at the soonest, 2 events a batch and at most kFillMax in flight: long passed)
@@ -616,6 +627,9 @@ struct XCache {
   // layer l's experts ids[0..n): those in the RAM tier copied into victim slots in the background
   void fill(int l, const int* ids, size_t n) {
     if (pool_of.empty() || pool_of[l] < 0 || fills_.size() >= kFillMax) return;
+    // (self audit 2026-11-20 A4: not while a deep prefetch runs on its thread: the least recent slot taken below could
+    //  be one it is writing. A fill is only a head start for later tokens; the miss is computed by the CPU either way)
+    if (pf_.joinable()) return;
     if (fill_pend_.empty()) fill_pend_.assign((size_t)NL * NE, 0);
     Pool& P = pools[pool_of[l]];
     Fill F;
@@ -642,19 +656,35 @@ struct XCache {
       cp.push_back({P.addr[s], src});
     }
     if (F.ent.empty()) return;
-    if (!fill_list_) {
-      const char* kind = "";
-      int ord = 0, idx = 0;
-      fill_list_ = zrt::new_copy_list(&kind, &ord, &idx);
+    try {
+      if (!fill_list_) {
+        const char* kind = "";
+        int ord = 0, idx = 0;
+        fill_list_ = zrt::new_copy_list(&kind, &ord, &idx);
+      }
+      F.start = fill_event();
+      F.done = fill_event();
+      ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), F.start, 0, nullptr));  // (signalled where the compute list is now)
+      ZE_CHECK(zeCommandListAppendBarrier(fill_list_, nullptr, 1, &F.start));
+      const uint64_t rec = st.layers[l].rec;
+      for (auto& [dst, src] : cp) ZE_CHECK(zeCommandListAppendMemoryCopy(fill_list_, dst, src, rec, nullptr, 0, nullptr));
+      ZE_CHECK(zeCommandListAppendBarrier(fill_list_, F.done, 0, nullptr));
+    } catch (...) {
+      // (self audit 2026-11-20 A6: the batch never queued whole: its slots back as free (at the list's tail) and its
+      //  experts no longer pending, as if fill() had not run; the error goes on)
+      for (auto [key, s] : F.ent) {
+        fill_pend_[key] = 0;
+        P.key[s] = -1;
+        push_back(P, s);
+      }
+      throw;
     }
-    F.start = fill_event();
-    F.done = fill_event();
-    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), F.start, 0, nullptr));  // (signalled where the compute list is now)
-    ZE_CHECK(zeCommandListAppendBarrier(fill_list_, nullptr, 1, &F.start));
-    const uint64_t rec = st.layers[l].rec;
-    for (auto& [dst, src] : cp) ZE_CHECK(zeCommandListAppendMemoryCopy(fill_list_, dst, src, rec, nullptr, 0, nullptr));
-    ZE_CHECK(zeCommandListAppendBarrier(fill_list_, F.done, 0, nullptr));
     fills_.push_back(std::move(F));
+  }
+  // every batch in flight finished and committed (shrink, the destructor: no copy may still write a slot then)
+  void fill_drain() {
+    for (const Fill& F : fills_) ZE_CHECK(zeEventHostSynchronize(F.done, UINT64_MAX));
+    fill_commit();
   }
   // the finished batches' experts entered as cached (most recent), the compute list waiting on their events first
   void fill_commit() {

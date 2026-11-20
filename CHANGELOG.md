@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-20: the expert cache's background fills: four races and a leak (self audit A3-A6)
+
+These are the copies `ARC_XCPU=1` queues so that a token's CPU-computed experts enter the GPU cache for the next tokens.
+- **A3:** `shrink()` (a launch that ran out of memory) could free a 1 GiB piece of the cache while a fill was still
+  copying into it, and the fill's commit then set a slot past the shortened arrays. Fills now finish and commit first.
+- **A4:** a fill could take the slot a deep prefetch was writing on its thread. No fills are queued while one runs.
+  Fills are only a head start for later tokens; the CPU computes the miss either way.
+- **A5:** the destructor left the fills' copy list and its 512 events behind at every model switch. It now waits for
+  the fills and destroys both.
+- **A6:** an error while queuing a fill left its slots outside every list and its experts marked pending. They are
+  now given back before the error goes on.
+- Checked: `ARC_XCPU=0`, Flash Next's logits byte for byte as before (64 tokens). `ARC_XCPU=1`: 128 tokens,
+  13,521 experts on the CPU and as many fills, none dropped. The out-of-memory and model-switch paths were not
+  run here.
+
 ## 2026-11-20: packing and expert-file builds: a moved source, two processes, the stop guard (self audit A7-A10)
 
 - **A moved or copied source (A7):** packing a model again from its new place (copied from D: to C:, say) was
