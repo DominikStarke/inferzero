@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-20: the FFN's gate and up in one launch by default on discrete cards (`ARC_GEMM_XW_GU`)
+
+- A Pro B60 under Linux (skipzx-lab, issue #57, main a62be02): the 27B's 4K / 16K prompt 1,805.8 / 1,764.9 ->
+  1,865.9 / 1,831.6 tok/s (+3.3 / +3.8 %), the logits of a 4K code prompt byte for byte the default's. So it is the
+  default on discrete cards with 16-lane XMX (the B-series); `ARC_GEMM_XW_GU=0` turns it off. iGPUs with 16-lane XMX
+  (the 140V / B390) keep it opt-in until measured; the laptop's logits are byte for byte as before.
+- Also measured by skipzx-lab, nothing changed for it: `ARC_ATTN_X8=1` on an A770 (150 W) is slower than `attn_q8`
+  (27B 4K 1,217 -> 1,160 tok/s, 16K 1,135 -> 923; its best work-group, 1 x 1, still 1.6x attn_q8's time): it stays
+  opt-in. The A770's gemm_xw8 tile, group and prefetch sweep: nothing beats the defaults (every set bit-identical).
+
 ## 2026-11-20: precise mode's CPU experts in one pass by default; the old-driver warning in the web UI and launchers; ARC_BATCH per GPU
 
 - **ARC_XCPU in `--precise`: one pass on the CPU by default** (the user's choice). With `ARC_XCPU=1` the CPU's

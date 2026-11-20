@@ -447,7 +447,8 @@ static int run_main(int argc, char** argv) {
             "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n"
             "  Opt-in on 8-lane XMX (A770, A750, Arc 140T): ARC_ATTN_X8=1 the prompt attention as flash attention on XMX\n"
             "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n"
-            "  Opt-in on 16-lane XMX: ARC_GEMM_XW_GU=1 the FFN's gate and up GEMMs in one launch (the same results)\n"
+            "  ARC_GEMM_XW_GU=0 / 1: the FFN's gate and up GEMMs in one launch, the same results (on by default on discrete\n"
+            "  cards with 16-lane XMX, opt-in on the 140V / B390)\n"
             "  MoE partly off the GPU: ARC_XCPU=1 the experts missing from the GPU cache computed by the CPU from the RAM tier\n"
             "  (KL-checked); in Flash Next's precise mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both\n"
             "  passes as on the GPU (exact)\n");

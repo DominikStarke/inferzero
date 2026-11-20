@@ -121,7 +121,8 @@
         <tr><td>Qwen3.8 27B</td><td class="n">1,223</td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>2026.11.17.08 / .18.08</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">80.7-82.1</td><td class="n">105.7</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">51.2-51.6</td><td class="n">84.4</td><td>2026.11.18.08</td></tr>
-        <tr><td>Qwen3.8 27B, Linux</td><td class="n">–</td><td class="n">22.6-22.9</td><td class="n">40.4</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 27B, Linux <small>(this card held to 150 W)</small></td><td class="n">1,217 <small>(16K: 1,135)</small></td><td class="n">22.6-22.9</td><td class="n">40.4</td><td>main fb00781 (prompt); 2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_S, Linux <small>(one card, 14-16 % of its experts cached, 150 W)</small></td><td class="n">428 <small>(16K: 535)</small></td><td class="n">13.3 <small>(15.1 with 2,048-token prompt chunks)</small></td><td class="n">–</td><td>main 566d84e (after a 16K prompt)</td></tr>
         <tr><td>Qwen3.6 35B-A3B, Linux <small>(73 % of its experts on the card)</small></td><td class="n">–</td><td class="n">52.4-70.0</td><td class="n">97.6</td><td>main at fd858b5 (the #56 fix)</td></tr>
       </tbody>
     </table></div>
@@ -185,9 +186,9 @@
         <tr><td>Qwen3.6 35B-A3B</td><td class="n">3,536</td><td class="n">82.4</td><td class="n">111.9</td><td>2026.11.14.09 (generation .13.11)</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">84.7-86.3</td><td class="n">115.2</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">52.3-52.8</td><td class="n">82.9</td><td>2026.11.18.08</td></tr>
-        <tr><td>Qwen3.8 27B, Linux</td><td class="n">–</td><td class="n">23.2-23.3</td><td class="n">50.0</td><td>2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 27B, Linux <small>the FFN's gate and up in one GEMM launch (<code>ARC_GEMM_XW_GU</code>, the default since 2026-11-20; 1,806 without it)</small></td><td class="n">1,866 <small>(16K: 1,832)</small></td><td class="n">23.2-23.3</td><td class="n">50.0</td><td>main a62be02 (prompt); 2026.11.18.08</td></tr>
         <tr><td>Qwen3.6 35B-A3B, Linux</td><td class="n">–</td><td class="n">83.9-85.6</td><td class="n">98.5</td><td>2026.11.18.08</td></tr>
-        <tr><td>Qwen3.8 Flash Next IQ3_S, Linux</td><td class="n">–</td><td class="n">22.5 <small>(27.3-28.2 with <code>ARC_XCPU=1</code>)</small></td><td class="n">–</td><td>2026.11.18.08 (after a 4K prompt)</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_S, Linux <small>(25-30 % of its experts on the card)</small></td><td class="n">531 <small>(16K: 672, 32K: 629)</small></td><td class="n">22.3-22.7 <small>(26.1-26.3 with <code>ARC_XCPU=1</code>; precise mode 18.6-21.0, 20.4-23.0 with it)</small></td><td class="n">–</td><td>main 566d84e / a62be02 (prompt chunk 4,096)</td></tr>
       </tbody>
     </table></div>
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 7,174 / 7,007 tok/s, 9B 4,874 / 4,862, 27B 1,610 / 1,754, 35B-A3B 3,236 / 3,995; 128K: 4B 3,137, 27B 905, 35B-A3B 2,129. Flash Next's experts are streamed over the PCIe 3.0 x8 link; <code>ARC_XCPU=1</code> (pull request #55) computes the experts missing from the GPU's cache on the CPU.</p>

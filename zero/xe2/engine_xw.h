@@ -192,9 +192,13 @@
   // (gemm_xw.cl -DXW_GU), its epilogue writing silu(gate) * up: the gate's f32 values (285 MB a layer for a 4K prompt
   // of the 27B) are neither written to big_ nor read back by the up GEMM. 16 lanes, NC 2 / 4 / 8; the same results bit
   // for bit as the two launches (xw_gu_check at start; a difference or a failed build keeps the two launches)
+  // On by default on discrete cards since 2026-11-20: a Pro B60's 27B 4K / 16K prompt 1,805.8 / 1,764.9 -> 1,865.9 /
+  // 1,831.6 tok/s (+3.3 / +3.8 %), a 4K code prompt's logits byte for byte the default's (skipzx-lab, issue #57,
+  // a62be02). iGPUs (the 140V / B390) opt-in, unmeasured. ARC_GEMM_XW_GU=0: two launches as before. (The default per
+  // call: each GPU of a split decides for its own, as ARC_H8_GRF)
   static bool xw_gu_env() {
-    static const bool on = getenv("ARC_GEMM_XW_GU") && atoi(getenv("ARC_GEMM_XW_GU")) != 0;
-    return on;
+    static const int e = getenv("ARC_GEMM_XW_GU") ? (atoi(getenv("ARC_GEMM_XW_GU")) != 0 ? 1 : 0) : -1;
+    return e >= 0 ? e == 1 : !zrt::integrated();
   }
   int xw_gu_ok_ = -1;  // (-1 not checked yet, 0 differs / fails, 1 checked)
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }

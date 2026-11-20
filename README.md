@@ -140,8 +140,10 @@ kept on the card): an Arc B580 12 GB runs Qwen3.8 27B that way.
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) and A-series cards (Alchemist: A770, A750, A580) run the same
 engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never takes; Alchemist cards take the Arc
 140T's preset (H8 on the 8-lane XMX GEMM). Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
-- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,726 tok/s (release
-  2026.11.17.08; 1,522 on 2026.11.14.09, 1,322 before the weight prefetch), generation 22.7-23.7 tok/s (two runs,
+- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,866 tok/s under Linux with the
+  FFN's gate and up in one GEMM launch (skipzx-lab, issue #57, main a62be02 with `ARC_GEMM_XW_GU=1`, the default on
+  discrete cards since 2026-11-20; 1,806 without it); 1,726 on Windows (release 2026.11.17.08; 1,522 on
+  2026.11.14.09, 1,322 before the weight prefetch), generation 22.7-23.7 tok/s (two runs,
   2026.11.14.09; 23.7 under Linux, skipzx-lab, issue #58), 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation
   82.4 tok/s, 111.9 with MTP (2026.11.13.11). What each switch measured there: [docs/xe2-tuning.md](docs/xe2-tuning.md).
 - **One Pro B70** on native Linux ([issue #27](https://github.com/rizagp/inferzero/issues/27), joshdev-de, Fedora 45):
