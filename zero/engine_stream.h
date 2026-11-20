@@ -212,6 +212,7 @@
     snprintf(h, sizeof h, "\nhost: routing reads %.0f ms (waiting for the GPU), ensure %.0f ms, PLE rows %.0f ms",
              hst_sync_ms_, hst_ensure_ms_, hst_ple_ms_);
     std::string out = r + h;
+    if (const std::string xh = x.xhist_line(); !xh.empty()) out += "\n" + xh;  // (ARC_XHIST, zero/xcache.h)
     if (xcpu_n_) {  // (ARC_XCPU, zero/xe2/engine_xcpu.h)
       char c[260];
       snprintf(c, sizeof c, "\nCPU experts (ARC_XCPU): %llu computed (%llu from RAM), %.0f ms (%.3f ms an expert, %d threads); cache fills %llu (%llu dropped); host: input reads %.0f ms, fills %.0f ms",

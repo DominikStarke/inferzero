@@ -941,6 +941,43 @@ struct XCache {
     fwrite(r, 4, 3, trace_);
     fwrite(ids, 4, n, trace_);
   }
+  // ARC_XHIST=1 (diagnostics, 2026-11-21, QUEUE "a CPU share of the thinly routed missing experts"): for each prompt
+  // chunk's layer, the experts that were not in the cache when it began (read on demand, or by the deep prefetch for
+  // it: fresh_), counted by how many of the chunk's tokens route to them, with their bytes. Printed with
+  // expert_stats. Reads only what ensure() reads; changes nothing
+  static constexpr int kXhB = 9;  // (buckets: 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65-128, 129+ tokens)
+  uint64_t xhist_n[kXhB] = {}, xhist_bytes[kXhB] = {};
+  static bool xhist_on() {
+    static const bool on = getenv("ARC_XHIST") && atoi(getenv("ARC_XHIST")) != 0;
+    return on;
+  }
+  void xhist_add(int l, const int* ids, size_t n) {
+    static thread_local std::vector<int> cnt;
+    cnt.assign(NE, 0);
+    for (size_t i = 0; i < n; ++i)
+      if (ids[i] >= 0 && ids[i] < NE && mine(ids[i])) ++cnt[ids[i]];
+    for (int e = 0; e < NE; ++e) {
+      if (!cnt[e]) continue;
+      const size_t key = (size_t)l * NE + e;
+      if (where[key] >= 0 && !fresh_[key]) continue;  // (in the cache before this chunk's layer)
+      int b = 0;
+      for (int c = cnt[e] - 1; c > 0 && b < kXhB - 1; c >>= 1) ++b;
+      ++xhist_n[b];
+      xhist_bytes[b] += lrec[l];
+    }
+  }
+  std::string xhist_line() const {
+    if (!xhist_on()) return "";
+    static const char* lab[kXhB] = {"1", "2", "3-4", "5-8", "9-16", "17-32", "33-64", "65-128", "129+"};
+    std::string r = "prompt misses by tokens an expert (ARC_XHIST):";
+    char b[64];
+    for (int i = 0; i < kXhB; ++i) {
+      snprintf(b, sizeof b, " %s: %llu (%.2f GB)%s", lab[i], (unsigned long long)xhist_n[i], xhist_bytes[i] / 1e9,
+               i + 1 < kXhB ? " |" : "");
+      r += b;
+    }
+    return r;
+  }
   void ensure(int l, const int* ids, size_t n, bool prompt, bool dummy_rest) {
     trace_ensure(l, ids, n, prompt);
     // (a deep prefetch of another layer keeps running, unless it uses this layer's staging half)
@@ -958,6 +995,7 @@ struct XCache {
     static thread_local std::vector<int> miss;
     seen.assign(NE, 0);
     miss.clear();
+    if (prompt && xhist_on()) xhist_add(l, ids, n);
     // hits first, to the front (the victims below skip this call's experts anyway); a prompt's experts that a deep
     // prefetch read stay at the back, as its misses go there: a prompt walks the layers in turn, and an LRU list that
     // takes every new expert to the front then loses the next layers' experts each time (Qwen3.6 35B, 97 % cached:

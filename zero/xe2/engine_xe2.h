@@ -389,7 +389,11 @@
     static const int e = getenv("ARC_ATTN_X8") ? atoi(getenv("ARC_ATTN_X8")) : 0;
     return e == 1 || e == 2 ? e : 0;
   }
-  bool attnfx8_on() const { return cl_.sg8 && (attnx8_mode() == 2 || (attnx8_mode() == 1 && cl_.xmx)); }
+  // (=1 on an iGPU only where XMX passed its start-time checks (xmx_), as attnfx_wanted: a 140T whose check failed,
+  //  e.g. with an old driver, keeps attn_q8; the Researcher's audit half, 2026-11-21. =2: DPAS emulated, tests)
+  bool attnfx8_on() const {
+    return cl_.sg8 && (attnx8_mode() == 2 || (attnx8_mode() == 1 && cl_.xmx && (xmx_ || !zrt::integrated())));
+  }
   bool attnfx_wanted() const {
     static const int e = getenv("ARC_ATTN_FX") ? (atoi(getenv("ARC_ATTN_FX")) != 0 ? 1 : 0) : -1;
     // (on by default on discrete cards, and on iGPUs with 16-lane XMX since 2026-11-17: a B390's 27B 4K prompt attention

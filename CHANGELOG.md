@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21: `ARC_XHIST=1`, the prompt's missing experts by tokens; `ARC_ATTN_X8=1` only where XMX passed its checks
+
+- `ARC_XHIST=1` (diagnostics): at the end of a run with streamed experts, the prompt's experts that were not in the
+  cache when their layer began, counted by how many of the chunk's tokens route to each (1, 2, 3-4, ... 129+), with
+  their GB. It is the first measurement for computing thinly routed missing experts on the CPU. It changes no result
+  (the laptop's Flash Next: logits byte-identical); there, a 256-token prompt's 5,929 misses had 1,900 experts with one token.
+- `ARC_ATTN_X8=1` on an iGPU (the Arc 140T) now needs XMX to have passed its start-time checks, as the other XMX
+  attention does: a 140T whose check failed, e.g. with an old driver, keeps `attn_q8`. Discrete cards unchanged.
+
 ## 2026-11-21: help texts and docs for PRs #67 / #68; the Max defaults' switches read once
 
 - `runz --help`, `serverz --help`, docs/server.md and docs/models.md describe the borrowed MTP block for dense
