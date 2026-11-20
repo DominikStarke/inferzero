@@ -39,6 +39,13 @@ static bool xcpu_on() {
   static const bool on = getenv("ARC_XCPU") && atoi(getenv("ARC_XCPU")) != 0;
   return on;
 }
+// ARC_XCPU_Q2=0 (opt-in, 2026-11-20, "precise, faster CPU"): in two-pass mode the CPU's experts run one pass, as
+// before A2 (0.176 against 0.301 ms an expert on the laptop), while the GPU's experts and everything else keep both.
+// Unset or 1: both passes on the CPU too
+static bool xcpu_q2() {
+  static const bool on = !getenv("ARC_XCPU_Q2") || atoi(getenv("ARC_XCPU_Q2")) != 0;
+  return on;
+}
 static int xcpu_threads() {
   static const int t = getenv("ARC_XCPU_THREADS") ? std::max(1, atoi(getenv("ARC_XCPU_THREADS")))
                                                   : std::max(1, (int)std::thread::hardware_concurrency() / 2);

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-20: `ARC_XCPU_Q2=0`, precise mode with a faster CPU (opt-in); ARC_XCPU's top token over 708 positions
+
+- **`ARC_XCPU_Q2=0`** (opt-in): in Flash Next's precise mode the CPU's experts run one int8 pass, as before A2, while
+  the GPU's experts and everything else keep both. Unset, the CPU runs both passes (A2), since precise is chosen for
+  exactness. Flash Next IQ3_S, token by token against f32, the Japanese chat (548 positions) and 160 code tokens, a
+  4 GiB cache with the RAM tier:
+
+  | Precise mode | KL (chat / code) | top token | CPU, ms an expert |
+  |---|---|---|---|
+  | CPU off | 0.00075 / 0.00221 | 702 / 708 | - |
+  | CPU on, two passes (default) | 0.00076 / 0.00222 | 702 / 708 | 0.302 |
+  | CPU on, one pass (`ARC_XCPU_Q2=0`; before A2) | 0.00126 / 0.00251 | 700 / 708 | 0.187 |
+
+  All within precise's 0.015 and above 98 %. The laptop's iGPU gains no speed from ARC_XCPU (it reads RAM directly);
+  a discrete card on a slow link does (skipzx-lab's B60: Flash Next 22.5 -> 27.3-28.2), so the speed is asked there.
+- **ARC_XCPU in the default mode** over the same 708 positions: top token 701 off, 695 on (98.2 %, the rule is 98 %);
+  KL 0.00220 -> 0.00263 (chat), 0.00827 -> 0.00379 (code). Every flip is a near tie of the f32 reference (top-two
+  margins 0.0004-0.21 in log-prob). The 156 / 160 of A2's row was those 160 code tokens alone.
+- With `ARC_XCPU_Q2` unset: logits byte for byte as after A2 (precise, ARC_XCPU=0).
+
 ## 2026-11-20: the FFN's gate and up GEMMs in one launch on 16-lane XMX, opt-in (`ARC_GEMM_XW_GU=1`)
 
 - **Why:** on a Pro B70 the 27B's 4K prompt takes 1,378 ms (2,962-2,972 tok/s); 3,000 needs 1,365. `gemm_up` takes
