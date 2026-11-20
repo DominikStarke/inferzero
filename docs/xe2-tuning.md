@@ -17,6 +17,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_XCPU` (the CPU computes MoE experts missing from the GPU cache, 2026-11-20) | 1 (a B60 on PCIe 3.0 x8: Flash Next +17 %) | 0 (no gain: the iGPU reads RAM directly) | 0 | 0 (an A770 on x16: no gain) | 0 |
 | `ARC_GEMM_XW_GU` (gate + up in one launch, 2026-11-20) | 1 (a B60: +3.3 / +3.8 % at 4K / 16K, the same logits) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |
+| `ARC_GEMM_XW_NC_E` (the n_embd-wide H8 GEMMs at 32 x 32, 2026-11-20) | – | – | 0 (opt-in) | 0 (opt-in) | – |
 | `ARC_H8_NORM` | on | off | on | on | off |
 | `ARC_H8_GRF` | 128 | 256 | 256 (128 ignored: spills) | 256 (128 ignored) | 256 |
 | `ARC_GEMM_SPLIT` (H8 GEMMs) | 34 | 17 | 17 | 17 (since 2026-11-18) | 17 |

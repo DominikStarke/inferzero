@@ -353,8 +353,21 @@
   }
   // (8 lanes: a width that is not a multiple of 16 * NC runs at the widest NC that divides it, down to one column group:
   //  so packed operands, which ARC_GEMM_XW_NC=2 allows with WGX, always reach gemm_xw8. 2026-11-17)
+  // ARC_GEMM_XW_NC_E=2 (8 lanes, opt-in, 2026-11-20; the A770 row's G1; 32 x 64 spills, so 2 only): the GEMMs whose N is n_embd (down, o,
+  // ssm_out: K up to 17,408 against N 5,120) at that many column groups a sub-group, the others at ARC_GEMM_XW_NC. An
+  // A770's profile has those three ~2x a B60's, the others 1.5-1.75x: at 32 x 16 each activation chunk serves 16
+  // columns, so a long K's activations are read again for every 16. The same values in each column (checked at start
+  // with an n_embd-wide shape). Off (0): as before
+  static int xw_nc_e() {
+    static const int v = [] {
+      const int e = getenv("ARC_GEMM_XW_NC_E") ? atoi(getenv("ARC_GEMM_XW_NC_E")) : 0;
+      return e == 2 ? e : 0;
+    }();
+    return v;
+  }
   int xw_nc_for(int N) const {
     int nc = xw_nc();
+    if (xw_lanes() == 8 && xw_nc_e() && N == hp.n_embd) nc = xw_nc_e();
     if (xw_lanes() == 8)
       while (nc > 1 && N % (16 * nc)) nc /= 2;
     return nc;
@@ -398,7 +411,8 @@
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
                             std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs() +
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
-                            (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "");
+                            (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
+                            (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -446,6 +460,9 @@
           zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
                         xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations",
                         xw_lanes() == 16 ? xw_pfd_v() : xw_pfd(), xw_pf_eff());
+        if (xw_lanes() == 8 && xw_nc_e())
+          zlog::eprintf("inferzero: gemm_xw8: the GEMMs %d columns wide (n_embd) at %d x %d (ARC_GEMM_XW_NC_E)\n", hp.n_embd,
+                        xw_tm(), 16 * xw_nc_e());
         if (xw_wgx() > 1 || xw_lock())
           zlog::eprintf("inferzero: gemm_xw work-groups of up to %d column sub-groups%s\n", xw_wgx(),
                         xw_lock() ? ", in step each 64-value chunk (ARC_GEMM_XW_LOCK=1)" : "");
@@ -477,6 +494,8 @@
       if (xw_wgx() > 1) shapes.push_back({2 * tm, 2 * xw_wgx() * (xw_nc() == 6 ? 64 : cols)});
       // (8 lanes, NC 2 / 4: a width of three column groups, which runs one a sub-group (xw_nc_for))
       if (xw_lanes() == 8 && xw_nc() > 1) shapes.push_back({2 * tm, 48});
+      // (ARC_GEMM_XW_NC_E: an n_embd-wide shape, which runs at its column groups)
+      if (xw_lanes() == 8 && xw_nc_e() && hp.n_embd % 32 == 0) shapes.push_back({2 * tm, hp.n_embd});
       for (auto [M, N] : shapes) {
         const int ng = N / 16, ldc = N + 32, coff = 16;
         std::vector<uint32_t> wq((size_t)ng * nsb * 4 * 16 * 16), wh((size_t)ng * 16);

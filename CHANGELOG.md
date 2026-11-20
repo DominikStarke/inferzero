@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-20: Alchemist / Arc 140T: wider tiles for the n_embd-wide H8 GEMMs, opt-in (`ARC_GEMM_XW_NC_E=2`)
+
+- **Why:** skipzx-lab's A770 profile (issue #45) has every H8 GEMM 1.5-2x a B60's although the A770 measures more int8
+  XMX, and the three whose N is n_embd (down, o, ssm_out: K up to 17,408 against N 5,120) the most, ~2x. At gemm_xw8's
+  32 x 16 tile each activation chunk serves 16 columns, so a long K's activations are read again for every 16 (the
+  B-series' 32 x 64 serves 64). ocloc for dg2 (the A770): gemm_xw8 32 x 16 has 303 sends for 68 DPAS and 80 syncs
+  between its first and last DPAS, against gemm_xw 32 x 64 on bmg's 93 sends for 128 DPAS and 30 syncs.
+- **What:** `ARC_GEMM_XW_NC_E=2` runs those n_embd-wide GEMMs at 32 x 32 (two column groups a sub-group) and leaves the
+  others at 32 x 16. Each column's sum is the same: checked at start with an n_embd-wide shape, and the laptop (the
+  preset emulated, a 1,024-token prompt of the 27B) gives byte-identical logits with and without it.
+- **Opt-in** until an A770 / 140T measures it; skipzx-lab's sweep set one tile for every GEMM (32 x 32 for all:
+  1,004 tok/s against 1,217), which would hide a win on these three alone.
+
 ## 2026-11-20: the CPU computes MoE experts missing from the GPU cache by default on B-series cards (`ARC_XCPU`)
 
 - **Why:** a Pro B60 on PCIe 3.0 x8 (skipzx-lab, issue #57, a62be02), Flash Next IQ3_S, a ~4,200-token prompt then 256
