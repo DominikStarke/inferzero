@@ -290,6 +290,7 @@
         <tr><td>Qwen3.6 35B-A3B</td><td class="n">66.3 / 20.4 (3.25x) <small>(76 % of its experts on the card)</small></td><td class="n">89.0 / 28.3 (3.18x) <small>(every expert on the cards)</small></td><td class="n">172.8 / 90.4 (2.01x)</td></tr>
       </tbody>
     </table></div>
+    <p class="note">A Pro B70 (joshdev-de, Linux, main 566d84e), 4 together / 1 alone: the 27B 107.3 / 36.4 (2.95x), the 35B-A3B 262.1 / 132.6 (2.03x), Flash Next 105.3 / 39.1, all bit-identical.</p>
     <p class="note">Every run bit-identical. On the B65 Flash Next IQ3_S too: 65.0 tok/s for four, 32.3 alone (45 % of its experts on the card). On the two A770s the 35B-A3B is faster split than on one card (28.3 against 20.4 tok/s for one conversation): each card then holds all of its half's experts, so none comes from the SSD; the 4B and the 27B are slower split there (the sums go through host memory under Windows), and batching is what makes the split pay.</p>
   </div>
 </section>
