@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-20: precise mode's CPU experts in one pass by default; the old-driver warning in the web UI and launchers; ARC_BATCH per GPU
+
+- **ARC_XCPU in `--precise`: one pass on the CPU by default** (the user's choice). With `ARC_XCPU=1` the CPU's
+  experts run one int8 pass, while the GPU's experts and everything else keep both. Measured (Flash Next, token by
+  token against f32, 548 chat + 160 code positions): KL 0.00126 / 0.00251, top token 700 / 708 (98.9 %), 0.187 ms an
+  expert. `ARC_XCPU_Q2=1` selects both passes on the CPU (A2's form: 0.00076 / 0.00222, 702 / 708, 0.302 ms). This
+  replaces the `ARC_XCPU_Q2=0` of the entry below, whose default was two passes. With ARC_XCPU unset nothing changes.
+- **Run to run:** which experts the CPU takes depends on when the background fills finish (fill_commit only polls
+  them), so ARC_XCPU's logits differ between runs of the same prompt. With one pass that shows: 6 runs of the code
+  tokens KL 0.00168-0.00519 (top token 157-158 / 160), 3 of the chat 0.00084-0.00152 (540-543 / 548); the worst
+  pair 697 / 708 = 98.4 %, all far under precise's 0.015. Two passes stay at 0.00222-0.00224 (158 / 160).
+- **The old-driver warning, shown (W2):** serverz's `/props` carries `driver_warning` when the Intel graphics driver
+  is older than 32.0.101.8976. The web UI shows it in a bar above the chat (with a link to Intel's driver page; hidden
+  until the page is reloaded), the Windows launcher in its status line and details, `zero-server status` in yellow,
+  and `zero-server doctor` as a FAIL line (from the driver's own version, the server running or not). Windows only,
+  as the check itself; Linux reports its driver differently.
+- **ARC_BATCH per GPU (tiered placement P0):** the recorded-list default (64 on Alchemist under Windows) is now each
+  GPU's own, from its own kind, instead of GPU 0's for the whole process, so a later split over unlike cards gives each
+  card its setting. Today's splits are of one kind: nothing changes for them or for one GPU.
+
 ## 2026-11-20: `ARC_XCPU_Q2=0`, precise mode with a faster CPU (opt-in); ARC_XCPU's top token over 708 positions
 
 - **`ARC_XCPU_Q2=0`** (opt-in): in Flash Next's precise mode the CPU's experts run one int8 pass, as before A2, while

@@ -251,6 +251,10 @@
   bool xw_gu_matmul(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
     if (!xw_gu_env() || !xw_ || xw_lanes() != 16 || !xw_gu_shape(xw_nc()) || !h8_row()) return false;
     if (gw.N != uw.N || gw.K != uw.K || Mp % xw_tm() || gw.K % 256 || gw.N % (16 * (xw_nc() / 2))) return false;
+    // (one piece of K only: the gate GEMM alone splits K past ARC_GEMM_SPLIT's superblocks, which the fused launch
+    //  does not, so it would no longer be bit-identical there; the caller's fused path needs K <= 8192 anyway. The
+    //  Researcher's review, 2026-11-20)
+    if (h8_splits(gw.K, 0) > 1) return false;
     if (!h8_takes(gw, Mp) || !h8_takes(uw, Mp) || p140_take(gw, Mp) || p140_take(uw, Mp)) return false;
     if (xw_gu_ok_ < 0) {
       xw_gu_ok_ = xw_gu_check() ? 1 : 0;

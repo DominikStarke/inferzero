@@ -446,7 +446,11 @@ static int run_main(int argc, char** argv) {
             "  ARC_H8_GRF=256 / ARC_MOE_GRF=256 the H8 and MoE GEMM kernels' 256 registers (not 128), ARC_MOE_GEMM_PAD=0\n"
             "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n"
             "  Opt-in on 8-lane XMX (A770, A750, Arc 140T): ARC_ATTN_X8=1 the prompt attention as flash attention on XMX\n"
-            "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n");
+            "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n"
+            "  Opt-in on 16-lane XMX: ARC_GEMM_XW_GU=1 the FFN's gate and up GEMMs in one launch (the same results)\n"
+            "  MoE partly off the GPU: ARC_XCPU=1 the experts missing from the GPU cache computed by the CPU from the RAM tier\n"
+            "  (KL-checked); in Flash Next's precise mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both\n"
+            "  passes as on the GPU (exact)\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;

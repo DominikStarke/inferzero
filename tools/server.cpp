@@ -411,6 +411,10 @@ class Server {
       r.set("platform", "linux");  // (bash)
 #endif
       r.set("chunk", eng_.max_chunk);
+      {  // (an Intel graphics driver older than the oldest measured right: the web UI's banner, the launchers' line)
+        const std::string dw = ClRt::driver_warning_text();
+        if (!dw.empty()) r.set("driver_warning", dw);
+      }
       r.set("weights", eng_.w8_resident ? "w8-resident" : "w8-just-in-time");
       r.set("vision", has_vision());
       r.set("ocr", ocr_);  // (OCR mode: the web UI shows its tasks)
@@ -1354,7 +1358,8 @@ int main(int argc, char** argv) {
             "                        GPUs perhaps, less accurate: check the KL first)\n"
             "  --precise             Qwen3.8 Flash Next's precise mode (as ARC_FN_PRECISE=1): BF16 hyper-connection rows and\n"
             "                        router, two int8 passes everywhere: KL 0.0105 -> 0.0060 at 3.5K tokens, prompts about\n"
-            "                        half as fast; other models are unchanged\n"
+            "                        half as fast; other models are unchanged. With ARC_XCPU=1 (the CPU computing missed\n"
+            "                        experts) the CPU's experts run one pass by default; ARC_XCPU_Q2=1: both (exact)\n"
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes).\n"
             "  Discrete cards also: prompt attention as flash attention on XMX (ARC_ATTN_FX=0: off; iGPUs with 16-lane\n"
@@ -2415,6 +2420,7 @@ int main(int argc, char** argv) {
         r.set("modalities", mod);
         r.set("audio", false);
         if (!so.whisper_props.is_null()) r.set("whisper", so.whisper_props);
+        if (const std::string dw = ClRt::driver_warning_text(); !dw.empty()) r.set("driver_warning", dw);
         return rs.send(200, "application/json", r.dump());
       }
     }

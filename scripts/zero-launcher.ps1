@@ -756,6 +756,11 @@ function Update-Status {
     $busy = if ($p -and $p.stats.busy) { "  |  answering" } else { "" }
     $status.Text = ("On  -  {0}  |  context {1:N0}  |  {2}{3}{4}" -f $id, $(if ($p) { $p.n_ctx } else { 0 }), (Base), $up, $busy)
     $status.ForeColor = $Pal.ok
+    # (an Intel graphics driver older than the oldest measured right: serverz's /props driver_warning, 2026-11-20)
+    if ($p -and $p.driver_warning) {
+      $status.Text += "  |  OLD GRAPHICS DRIVER: answers may be wrong (details below)"
+      $status.ForeColor = $Pal.warn
+    }
   } elseif ($busyAct) {
     $status.Text = "Loading / stopping..."
     $status.ForeColor = $Pal.warn
@@ -774,6 +779,10 @@ function Update-Status {
   if ($id -and $p) {
     $L = New-Object System.Collections.Generic.List[string]
     $mem = $p.memory
+    if ($p.driver_warning) {
+      $L.Add("WARNING  $($p.driver_warning)")
+      $L.Add("")
+    }
     $L.Add("model    $id")
     $L.Add(("context  {0:N0} tokens, {1:N0} filled   chunk {2}" -f $p.n_ctx, $p.stats.position, $p.chunk))
     $L.Add(("MTP      {0}   images {1}   audio {2}" -f $(if ($p.mtp) { "yes ($($p.mtp_drafts) drafts)" } else { "no" }), $(if ($p.vision) { "yes" } else { "no" }), $(if ($p.audio) { "yes" } else { "no" })))

@@ -39,11 +39,14 @@ static bool xcpu_on() {
   static const bool on = getenv("ARC_XCPU") && atoi(getenv("ARC_XCPU")) != 0;
   return on;
 }
-// ARC_XCPU_Q2=0 (opt-in, 2026-11-20, "precise, faster CPU"): in two-pass mode the CPU's experts run one pass, as
-// before A2 (0.176 against 0.301 ms an expert on the laptop), while the GPU's experts and everything else keep both.
-// Unset or 1: both passes on the CPU too
+// In two-pass mode (Flash Next's --precise) the CPU's experts run one pass by default since 2026-11-20 (the user's
+// choice: 0.187 against 0.302 ms an expert; KL against f32 over 548 chat + 160 code positions 0.00126 / 0.00251 against
+// two passes' 0.00076 / 0.00222, top token 700 against 702 of 708), while the GPU's experts and everything else keep
+// both. ARC_XCPU_Q2=1: the CPU runs both passes too (A2's form, for exactness). (Run to run the one-pass KL moves with
+// which experts the CPU takes, set by the background fills' timing: code 0.00168-0.00519 over 6 runs, chat
+// 0.00084-0.00152 over 3, the top token >= 98.4 %; two passes 0.00222-0.00224)
 static bool xcpu_q2() {
-  static const bool on = !getenv("ARC_XCPU_Q2") || atoi(getenv("ARC_XCPU_Q2")) != 0;
+  static const bool on = getenv("ARC_XCPU_Q2") && atoi(getenv("ARC_XCPU_Q2")) != 0;
   return on;
 }
 static int xcpu_threads() {

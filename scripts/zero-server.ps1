@@ -858,7 +858,14 @@ switch ($Action) {
     }
     try {
       $gpus = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "Intel" })
-      foreach ($g in $gpus) { Add-Check "gpu" "ok" "$($g.Name), driver $($g.DriverVersion) ($("{0:yyyy-MM-dd}" -f $g.DriverDate))" }
+      foreach ($g in $gpus) {
+        Add-Check "gpu" "ok" "$($g.Name), driver $($g.DriverVersion) ($("{0:yyyy-MM-dd}" -f $g.DriverDate))"
+        # (the engine's own threshold, zero/clrt.h: older Intel drivers gave wrong answers, 2026-11-20)
+        $dv = $null
+        if ($g.Name -match 'Intel' -and [version]::TryParse("$($g.DriverVersion)", [ref]$dv) -and $dv -lt [version]"32.0.101.8976") {
+          Add-Check "driver" "FAIL" "$($g.Name): driver $($g.DriverVersion) is older than 32.0.101.8976, the oldest measured right: answers may be wrong. Install Intel's current Arc / Core Ultra graphics driver (Windows Update can put an old one back)"
+        }
+      }
       if (-not $gpus.Count) { Add-Check "gpu" "FAIL" "no Intel GPU in Windows' list of display adapters" }
     } catch {}
     $ci = Join-Path $root "bin\clinfo.exe"
@@ -896,6 +903,7 @@ switch ($Action) {
       $pr = $null; try { $pr = Invoke-RestMethod "$base/props" -TimeoutSec 3 } catch {}
       $mt = if ($pr -and $pr.memory) { ", GPU memory {0:N1} of {1:N1} GiB" -f ($pr.memory.total / 1GB), ($pr.memory.device / 1GB) } else { "" }
       Add-Check "server" "ok" "running on $base, model $run$(if ($pr) { ", context $($pr.n_ctx)" })$mt"
+      if ($pr -and $pr.driver_warning) { Add-Check "driver" "FAIL" $pr.driver_warning }  # (the server's own check, 2026-11-20)
     } else {
       Add-Check "server" "info" "not running on port $Port"
       try {
@@ -938,6 +946,7 @@ switch ($Action) {
     if ($id) {
       $p = Invoke-RestMethod "$base/props" -TimeoutSec 2
       Say "inferzero server running on $base : model $id"
+      if ($p.driver_warning) { Write-Host "  WARNING: $($p.driver_warning)" -ForegroundColor Yellow }  # (2026-11-20)
       if (Test-Path $lastFile) { Say ("  " + (Get-Content $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
       if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
