@@ -226,7 +226,7 @@
   // rotation reads big_ itself and swiglu_quant is left out. Bit-identical; ARC_H8_SWI=0 as before.
   // h8_takes: matmul1's prompt path takes the H8 GEMM for w (its first branch past the GEMVs)
   bool h8_takes(const GpuWeight& w, int Mp) const {
-    return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp)) && h8_igpu_rows_ok(Mp);
+    return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp)) && (w.wq || h8_igpu_rows_ok(Mp));
   }
   // (2026-11-19) iGPUs with 16-lane XMX (Lunar Lake's Arc 140V, Panther Lake's B390) take the default H8 from chunks
   // of ARC_H8_MIN rows (default 256), shorter chunks the plain XMX GEMM. a1ex4's 140V (issue #60), the 27B, --bench-pp
@@ -234,7 +234,10 @@
   // lines cross at ~140 tokens (a 128-token prompt spends 59 % of its time decoding weights for H8). Accuracy: KL against
   // f32 on 480 tokens 0.00117 (max 0.029, top token 470 / 480) with H8, 0.00057 (473 / 480) without: both far inside
   // 0.015, and generation never runs H8. (The first threshold, 1,024, came from cold one-shot runs and made 256-1,023
-  // tokens 1.4-1.8x slower: release .05.) Discrete cards and ARC_H8=1 as before; the 125H never runs H8
+  // tokens 1.4-1.8x slower: release .05.) Discrete cards and ARC_H8=1 as before; the 125H never runs H8.
+  // (Weights resident in W8 always take H8 (h8_takes): h8_prepare rotates a resident copy in place the first time, so
+  //  the plain GEMM would then read rotated weights with unrotated activations, wrong logits on a short chunk after a
+  //  long one. Self audit 2026-11-20, A1; the 140T preset's resident form keeps its copy unrotated instead, p140_res_)
   bool h8_igpu_rows_ok(int Mp) const {
     if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;
     static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 256;

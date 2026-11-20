@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-20: a fix for Lunar Lake / Panther Lake: wrong answers after a short follow-up with a resident model
+
+- **The bug** (self audit, A1; releases 2026.11.19.05-.07): on iGPUs with 16-lane XMX (Arc 140V, Arc B390), a
+  model whose decoded weights are kept on the GPU (a 4B, maybe a 9B) has them converted to H8's rotated form the
+  first time a prompt of 256+ tokens runs. A later chunk under the H8 threshold (a short follow-up message, a long
+  prompt's tail) then took the plain path over those rotated weights: wrong logits. Models whose weights are decoded
+  just in time (the 27B there) were not affected.
+- **The fix:** weights kept on the GPU always take H8 there, as before release .05; the threshold (`ARC_H8_MIN`)
+  applies only to weights decoded just in time. Not run on a 140V or B390 here (the laptop has no XMX); the owners
+  are asked to check a 4B with a long prompt and then a short one.
+
+## 2026-11-20: the first requests after an update don't wait for the 2-8-row kernels (one longer warm-up instead)
+
+- **What** (joshdev-de, PR #65): the warm-up also runs passes of 2 to 8 rows, which short prompts, short follow-up
+  turns and `serverz --slots` use. A Pro B70's `serverz --slots 4`, 27B, after an update: the first request 35.2 ->
+  4.0 s, the first round of 4 at once 19.3 -> 9.0 s.
+- **The cost:** the one-time warm-up after each update takes longer, 10.9 -> 85.6 s on the B70 with the driver's
+  compiler cache off (~75 s more, once); later starts skip it as before. Bit-identical: the warm-up's output is
+  thrown away.
+
 ## 2026-11-20: the first answers after an update no longer wait for kernels: the warm-up covers MTP heads and switches
 
 - **An MTP head in a file of its own is warmed over every row count** (joshdev-de, PR #62). The warm-up rejected every
