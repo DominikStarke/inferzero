@@ -612,6 +612,14 @@
             g->get_int(a + ".expert_count", -1) != f_.get_int(a + ".expert_count", -1) ||  // (dense: both absent)
             !g->find(mp + "nextn.eh_proj.weight"))
           return false;
+        // (and the same heads, head sizes and vocabulary: a head from another model of the same width would load
+        //  and draft nothing useful, or index past this model's embedding; 2026-11-21, with PR #68)
+        for (const char* k : {".attention.head_count", ".attention.head_count_kv", ".attention.key_length",
+                              ".attention.value_length", ".feed_forward_length"})
+          if (g->get_int(a + k, -1) != f_.get_int(a + k, -1)) return false;
+        const GgufTensor* te = g->find("token_embd.weight");
+        const GgufTensor* tm = f_.find("token_embd.weight");
+        if (te && tm && te->dims != tm->dims) return false;
         mtp_file_ = std::move(g);
         return true;
       } catch (const std::exception&) {

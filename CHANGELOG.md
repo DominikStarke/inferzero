@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: pruned MoE models, and borrowed MTP heads for dense fine-tunes (PRs #67, #68 by triblax)
+
+- **MoE models with 16 to 256 experts** load, not only 256. A pruned model whose expert count is not a multiple of
+  16 (e.g. 184 of the 35B-A3B's 256) routes with its last lanes masked. Models whose count is a multiple of 16 run
+  the same kernels as before, token for token (Flash Next on the laptop: logits byte-identical). Flash Next keeps its
+  512.
+- **`--mtp-model` for dense Qwen3.5 / 3.8 fine-tunes** shipped without their own MTP block: the base model's GGUF
+  lends its block (e.g. a 27B fine-tune with the Qwen3.8 27B's). Drafts are verified, so the output stays the
+  fine-tune's own. A head is taken only when it matches the model: the same width, layer count, expert count, heads,
+  head sizes, FFN width and vocabulary. The last four checks were added at the merge, and a head that doesn't match
+  is refused with a message.
+
 ## 2026-11-21: Data Center GPU Max (Xe-HPC): its own defaults, from hibagus's sweeps
 
 - A Data Center GPU Max (Ponte Vecchio: device IDs 0x0BD0-0x0BDB, or the name) now takes the settings hibagus's
