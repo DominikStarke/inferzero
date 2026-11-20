@@ -450,7 +450,8 @@ static int run_main(int argc, char** argv) {
             "  ARC_GEMM_XW_GU=0 / 1: the FFN's gate and up GEMMs in one launch, the same results (on by default on discrete\n"
             "  cards with 16-lane XMX, opt-in on the 140V / B390)\n"
             "  8-lane XMX: ARC_GEMM_XW_SHAPE=0 one tile for every prompt GEMM (default on Alchemist: a tile per shape),\n"
-            "  ARC_GEMM_XW_DB=0 / 1 the 32-token tiles' reads one step ahead (default on Alchemist), the same results\n"
+            "  ARC_GEMM_XW_DB=0 / 1 the 32-token tiles' reads one step ahead (default on Alchemist), the same results;\n"
+            "                   =2 every tile, the next weights in place and the loop unrolled by 4 (opt-in)\n"
             "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
             "  tier (KL-checked; on by default on discrete B-series cards, off on Alchemist and iGPUs); in Flash Next's precise\n"
             "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n");

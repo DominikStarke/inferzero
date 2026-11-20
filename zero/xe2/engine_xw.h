@@ -207,9 +207,16 @@
   // Only for 32-token tiles, and by default on Alchemist (discrete 8-lane) since 2026-11-21: hansong80's A770 (#45,
   // main 2a78721, the 27B 4K prompt) gained on every 32 x 16 GEMM (down -10 %, qkv / z -8 %, q -7 %, up -6 %, gate
   // -4 %) and lost on every 16 x 32 one (ssm_out / o +137-139 %, k / v +72-82 %): -4.9 % in all with it everywhere.
-  // ARC_GEMM_XW_DB=0: off, =1: on (for 32-token tiles) on any 8-lane GPU, the 140T included
+  // ARC_GEMM_XW_DB=0: off, =1: on (for 32-token tiles) on any 8-lane GPU, the 140T included; =2 (opt-in, 2026-11-21):
+  // -DXW_DB2, the next B in place and the chunk loop unrolled by 4 (no spill on ocloc dg2 where the =1 form spills
+  // unrolled), on every tile, 16 x 32 included
+  int xw_db_env() const {
+    static const int e = getenv("ARC_GEMM_XW_DB") ? std::max(0, std::min(2, atoi(getenv("ARC_GEMM_XW_DB")))) : -1;
+    return e;
+  }
   bool xw_db(int tm) const {
-    static const int e = getenv("ARC_GEMM_XW_DB") ? (atoi(getenv("ARC_GEMM_XW_DB")) != 0 ? 1 : 0) : -1;
+    const int e = xw_db_env();
+    if (e == 2) return true;
     if (tm != 32 || e == 0) return false;
     return e == 1 || (cl_.sg8 && !zrt::integrated());
   }
@@ -224,7 +231,7 @@
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
                              (xw_lock() ? " -DXW_LOCK" : "") + (gu ? " -DXW_GU" : "") +
-                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? " -DXW_DB" : "");
+                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? (xw_db_env() == 2 ? " -DXW_DB -DXW_DB2" : " -DXW_DB") : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
     const bool d2 = (nc ? nc : xw_nc()) != 6;
@@ -452,7 +459,7 @@
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
                             (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
                             (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
-                            (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" : "");
+                            (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)

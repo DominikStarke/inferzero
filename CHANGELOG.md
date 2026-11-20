@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: Alchemist: `ARC_GEMM_XW_DB=2` (opt-in), the read-ahead loop unrolled for every tile
+
+- **Why:** with the reads one step ahead (`=1`, the default on the 32 x 16 tiles), hansong80's A770 (#45) lost on
+  the 16 x 32 GEMMs (ssm_out / o +137-139 %). ocloc (2026.1, dg2-g10, 256 registers) shows no register spill in that
+  loop at either tile. What changed is the unrolling: the plain loop is unrolled over 4 chunks (65 DPAS in the
+  binary), the read-ahead loop is not (18). Unrolling it as it stands spills (16 x 32: 5,952 bytes at 2 chunks, 5,696
+  at 4).
+- **New:** `=2` reads the next chunk's weights into the same registers, a column group's right after its last DPAS of
+  the chunk, so the loop unrolls over 4 chunks without a spill (76 DPAS at 16 x 32, 72 at 32 x 16). It is on every
+  tile, 16 x 32 included. The same DPAS in the same order: the same results bit for bit (the laptop's 27B with the
+  A770 preset emulated, 1,024 tokens: logits byte-identical for `=0`, `=1` and `=2`). The default is unchanged; its
+  speed is to be measured on an A770.
+
 ## 2026-11-21: Alchemist: the 32 x 16 prompt GEMMs read one step ahead by default (`ARC_GEMM_XW_DB`)
 
 - **Measured** by hansong80 (an A770 16 GB, issue #45, main 2a78721, the 27B's 4K prompt, two rounds): with the reads

@@ -143,7 +143,15 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int nch = K / 64;
   __global const uint* apk = (__global const uint*)aq + (size_t)(m0 / 8) * nch * 128;
   const int ch0 = s_begin * 4, ch1 = s_end * 4;
+  //      -DXW_DB2 (ARC_GEMM_XW_DB=2, 2026-11-21, opt-in): the next chunk's B into the same registers, column group c's
+  //      right after c's last DPAS of the chunk, and the chunk loop unrolled by 4 as the plain loop is. ocloc dg2-g10 at
+  //      256 registers: the form above spills when unrolled (16 x 32: 5,952 bytes at 2, 5,696 at 4), this one does not
+  //      (76 DPAS at 16 x 32, as the plain loop's 65 + its 4 chunks); the same DPAS in the same order, bit for bit.
+#ifdef XW_DB2
+  int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+#else
   int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC], nlo0[XW_NC], nlo1[XW_NC], nhi0[XW_NC], nhi1[XW_NC];
+#endif
   int8 na0 = (int8)(0), na1 = (int8)(0);
   if (ch0 < ch1) {
 #pragma unroll
@@ -158,6 +166,9 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     na0 = as_int8(intel_sub_group_block_read8(tp));
     na1 = as_int8(intel_sub_group_block_read8(tp + 64));
   }
+#ifdef XW_DB2
+#pragma unroll 4
+#endif
   for (int ch = ch0; ch < ch1; ++ch) {
     XW_ARRIVE();
 #if XW_PF
@@ -189,6 +200,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
         __global const uint* tp = apk + (size_t)(ch + 1) * 128;
         na0 = as_int8(intel_sub_group_block_read8(tp));
         na1 = as_int8(intel_sub_group_block_read8(tp + 64));
+#ifndef XW_DB2
 #pragma unroll
         for (int c = 0; c < XW_NC; ++c) {  // (and the next chunk's B)
           __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + ch + 1) * (16 * LS);
@@ -197,17 +209,29 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
           nhi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
           nhi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
         }
+#endif
       }
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
         xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
         xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+#ifdef XW_DB2
+        if (t + 1 == XW_TG && more) {  // (the next chunk's B for column group c, in place)
+          __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + ch + 1) * (16 * LS);
+          lo0[c] = as_int8(intel_sub_group_block_read8(dp));
+          lo1[c] = as_int8(intel_sub_group_block_read8(dp + 64));
+          hi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
+          hi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
+        }
+#endif
       }
     }
+#ifndef XW_DB2
     if (more) {
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) lo0[c] = nlo0[c], lo1[c] = nlo1[c], hi0[c] = nhi0[c], hi1[c] = nhi1[c];
     }
+#endif
     XW_WAIT();
   }
 #elif defined(XW_PACKA) || defined(XW_PACKW)
