@@ -140,14 +140,15 @@ kept on the card): an Arc B580 12 GB runs Qwen3.8 27B that way.
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) and A-series cards (Alchemist: A770, A750, A580) run the same
 engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never takes; Alchemist cards take the Arc
 140T's preset (H8 on the 8-lane XMX GEMM). Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
-- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,866 tok/s under Linux with the
-  FFN's gate and up in one GEMM launch (skipzx-lab, issue #57, main a62be02 with `ARC_GEMM_XW_GU=1`, the default on
-  discrete cards since 2026-11-20; 1,806 without it); 1,726 on Windows (release 2026.11.17.08; 1,522 on
+- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,874 tok/s under Linux with the
+  FFN's gate and up in one GEMM launch (skipzx-lab, issue #57, release 2026.11.20.03, where it is the default; 1,800
+  without it); 1,726 on Windows (release 2026.11.17.08; 1,522 on
   2026.11.14.09, 1,322 before the weight prefetch), generation 22.7-23.7 tok/s (two runs,
   2026.11.14.09; 23.7 under Linux, skipzx-lab, issue #58), 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation
   82.4 tok/s, 111.9 with MTP (2026.11.13.11). What each switch measured there: [docs/xe2-tuning.md](docs/xe2-tuning.md).
 - **One Pro B70** on native Linux ([issue #27](https://github.com/rizagp/inferzero/issues/27), joshdev-de, Fedora 45):
-  4K prompt 2,972 tok/s (main 7368768 with `ARC_H8_NORM`, the default on discrete cards since 2026-11-18; 2,897 with the 2D GEMM and its prefetch alone), 8K 2,727
+  4K prompt 3,100 tok/s (main e93fac1 with the FFN's gate and up in one GEMM launch, the default since 2026-11-20 and in
+  release 2026.11.20.03; 2,972 without it, main 7368768 with `ARC_H8_NORM`; 2,897 with the 2D GEMM and its prefetch alone), 8K 2,727
   (2026.11.16.12), generation 35.2 tok/s, 70.6 with MTP (2026.11.16.02). Qwen3.6 35B-A3B: 8K prompt 5,647 tok/s
   (2026.11.17.04), 4K 5,177, 16K 5,445, generation 95-98 tok/s (2026.11.16.15). Flash Next, 46 % of its experts in the
   card's 32 GB: 4K prompt 1,414 (2026.11.17.04), 16K 1,145, generation 38.6 tok/s once the expert cache holds what
