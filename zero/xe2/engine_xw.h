@@ -204,9 +204,9 @@
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
   //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group; gu: -DXW_GU)
-  cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1, bool gu = false) {
+  cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1, bool gu = false, int tm = 0) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
-                             std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
+                             std::to_string(tm ? tm : xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
                              (xw_emu_ ? " -DXW_EMU" : "") + xw_pf_defs() +
                              (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
@@ -223,14 +223,16 @@
   // gemm_xw8.cl's header (a sub-group of 16 or 8 work-items). With ARC_GEMM_XW_WGX the widest column count up to it
   // that divides the column blocks, and fewer token sub-groups if the work-group would not fit a Xe-core's threads (32
   // at 256 registers, 64 at 128)
+  // (tm / wgx0: the tile's tokens and column sub-groups, 0 = xw_tm() / xw_wgx(): xw_tile_for's per shape)
   void xw_run(const char* name, int nc, int pack, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K,
-              cl_mem C, int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy, int g_base) {
-    const int tm = xw_tm(), nb = N / (16 * nc), ln = xw_lanes();
-    int wgx = xw_wgx();
+              cl_mem C, int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy, int g_base, int tm0 = 0,
+              int wgx0 = 0) {
+    const int tm = tm0 ? tm0 : xw_tm(), nb = N / (16 * nc), ln = xw_lanes();
+    int wgx = wgx0 ? wgx0 : xw_wgx();
     while (wgx > 1 && nb % wgx) wgx /= 2;
     const int cap = xw_grf256() ? 32 : 64;
     while (wgx * wgy > cap && wgy > 1) wgy /= 2;
-    cl_kernel k = xw_kernel(nc, pack, wgx);
+    cl_kernel k = xw_kernel(nc, pack, wgx, false, tm);
     size_t gws[2] = {(size_t)ln * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)ln * wgx, (size_t)wgy};
     if (ln == 8) set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1);
     else set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1, g_base);
@@ -372,12 +374,36 @@
       while (nc > 1 && N % (16 * nc)) nc /= 2;
     return nc;
   }
+  // A tile per GEMM shape on Alchemist (discrete 8-lane XMX), by default since 2026-11-20: bench/xw_pergemm on two
+  // A770s 16 GB, the 27B IQ3_S (#45; skipzx-lab at 150 W, hansong80 at 225 W, 4K and 16K prompts) gave the same split:
+  // 32 x 16 with 4 column sub-groups a work-group for the big ones (down, up, gate, qkv, q, z: -1 to -9 % each) and
+  // 16 x 32 for those with N <= n_embd and K <= 8192 (ssm_out, o, k, v: -7 to -27 %); all GEMMs 3.5-6.6 % less time
+  // than at the one default tile. The same sums in each column (checked at start, with a long-K shape too).
+  // ARC_GEMM_XW_SHAPE=0, or any of ARC_GEMM_XW_TM / _NC / _WGX / _NC_E set: one tile for all, as before. The Arc 140T
+  // (an iGPU) keeps its preset's tile until measured.
+  struct XwTile { int tm, nc, wgx; };
+  // (ARC_GEMM_XW_SHAPE=1: on any GPU taking gemm_xw8, the 140T preset and the 125H's emulation included: tests)
+  bool xw_shape_on() const {
+    static const int env = getenv("ARC_GEMM_XW_SHAPE") ? atoi(getenv("ARC_GEMM_XW_SHAPE")) : -1;
+    static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX");
+    if (env == 0 || fixed || xw_nc_e() || xw_lanes() != 8) return false;
+    return env == 1 || (cl_.sg8 && !zrt::integrated());
+  }
+  XwTile xw_tile_for(int N, int K) const {
+    XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};
+    if (!xw_shape_on() || xw_tm() != 32) return t;
+    if (N <= hp.n_embd && K <= 8192) t = {16, 2, xw_wgx()};
+    else t = {32, 1, 4};
+    while (t.nc > 1 && N % (16 * t.nc)) t.nc /= 2;
+    return t;
+  }
   bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc_for(N)) == 0; }
   // one piece of K over all N columns: one launch, or with NC 6 the 96-wide part and the rest in 64-wide tiles
   void xw_piece(const char* name, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C, int ldc,
                 int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
-    const int nc = xw_nc_for(N);
-    if (nc != 6) return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0);
+    const XwTile t = xw_tile_for(N, K);
+    const int nc = t.nc;
+    if (nc != 6) return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx);
     if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
     const int n96 = xw_cols96(N);
     if (n96 > 0) xw_run(name, 6, 0, wq, wh, aq, asc, M, n96, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0);
@@ -412,7 +438,8 @@
                             std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs() +
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
                             (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
-                            (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "");
+                            (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
+                            (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -460,6 +487,9 @@
           zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
                         xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations",
                         xw_lanes() == 16 ? xw_pfd_v() : xw_pfd(), xw_pf_eff());
+        if (xw_shape_on())
+          zlog::eprintf("inferzero: gemm_xw8: a tile per GEMM shape: 16 x 32 where N <= %d and K <= 8192, else 32 x 16 "
+                        "with 4 column sub-groups (ARC_GEMM_XW_SHAPE=0: one tile)\n", hp.n_embd);
         if (xw_lanes() == 8 && xw_nc_e())
           zlog::eprintf("inferzero: gemm_xw8: the GEMMs %d columns wide (n_embd) at %d x %d (ARC_GEMM_XW_NC_E)\n", hp.n_embd,
                         xw_tm(), 16 * xw_nc_e());
@@ -476,7 +506,7 @@
   // stored, in 3 split-K pieces, added and with the fused SwiGLU; two shapes (a partial row group, two and three
   // column blocks, a column offset and a row stride wider than N), against gemm.cl without XMX: bit for bit
   bool xw_check() {
-    const int K = 2048, nsb = K / 256;
+    const int K0 = 2048;  // (each shape's K: K0 unless it says, see the per-shape tiles' long-K shape)
     uint32_t seed = 777;
     auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
     auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
@@ -487,16 +517,20 @@
     bool built = true;
     try {
       const int tm = xw_tm(), cols = 16 * xw_nc();
-      std::vector<std::pair<int, int>> shapes = {{3 * tm, 2 * cols}, {2 * tm, 3 * cols}};
+      std::vector<std::array<int, 3>> shapes = {{3 * tm, 2 * cols, K0}, {2 * tm, 3 * cols, K0}};
       // (NC 6: 96 + 64 parts, 96 + 128 (the 27B's widths have a 128-wide rest), 96 only, 64 only)
-      if (xw_nc() == 6) shapes = {{3 * tm, 256}, {2 * tm, 224}, {2 * tm, 288}, {2 * tm, 128}};
+      if (xw_nc() == 6) shapes = {{3 * tm, 256, K0}, {2 * tm, 224, K0}, {2 * tm, 288, K0}, {2 * tm, 128, K0}};
       // (ARC_GEMM_XW_WGX: a shape of two whole work-groups of column blocks, so the column sub-groups are checked)
-      if (xw_wgx() > 1) shapes.push_back({2 * tm, 2 * xw_wgx() * (xw_nc() == 6 ? 64 : cols)});
+      if (xw_wgx() > 1) shapes.push_back({2 * tm, 2 * xw_wgx() * (xw_nc() == 6 ? 64 : cols), K0});
       // (8 lanes, NC 2 / 4: a width of three column groups, which runs one a sub-group (xw_nc_for))
-      if (xw_lanes() == 8 && xw_nc() > 1) shapes.push_back({2 * tm, 48});
+      if (xw_lanes() == 8 && xw_nc() > 1) shapes.push_back({2 * tm, 48, K0});
       // (ARC_GEMM_XW_NC_E: an n_embd-wide shape, which runs at its column groups)
-      if (xw_lanes() == 8 && xw_nc_e() && hp.n_embd % 32 == 0) shapes.push_back({2 * tm, hp.n_embd});
-      for (auto [M, N] : shapes) {
+      if (xw_lanes() == 8 && xw_nc_e() && hp.n_embd % 32 == 0) shapes.push_back({2 * tm, hp.n_embd, K0});
+      // (the per-shape tiles: K0's shapes take the small one; a long K (33 superblocks) the big one, over two of its
+      //  work-groups)
+      if (xw_shape_on()) shapes.push_back({2 * tm, 128, 8448});
+      for (const auto& sh : shapes) {
+        const int M = sh[0], N = sh[1], K = sh[2], nsb = K / 256;
         const int ng = N / 16, ldc = N + 32, coff = 16;
         std::vector<uint32_t> wq((size_t)ng * nsb * 4 * 16 * 16), wh((size_t)ng * 16);
         for (auto& v : wq) v = rnd();

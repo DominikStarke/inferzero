@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-20: Alchemist: a tile per prompt GEMM by default; Flash Next keeps 4,096-token chunks on split models
+
+- **A tile per GEMM shape on Alchemist (A770 / A750 / A580):** `bench/xw_pergemm` on two A770s 16 GB (issue #45:
+  skipzx-lab at 150 W, hansong80 at 225 W; the 27B IQ3_S at 4K and 16K) gave the same split: 32 x 16 with 4 column
+  sub-groups a work-group for the big GEMMs (down, up, gate, qkv, q, z: 1-9 % faster each), 16 x 32 for those with
+  N <= n_embd and K <= 8,192 (ssm_out, o, k, v: 7-27 % faster). The GEMMs' time with each at its best: -3.5 to -6.6 %
+  against the one default tile. The same sums in each column: checked at start (with a long-K shape for the big
+  tile), and the laptop's 27B gives byte-identical logits with the preset emulated. `ARC_GEMM_XW_SHAPE=0` keeps one
+  tile; setting `ARC_GEMM_XW_TM` / `_NC` / `_WGX` does too. The Arc 140T keeps its preset's tile until measured.
+- **Flash Next on a split model keeps 4,096-token prompt chunks on any card:** on two A770s 16 GB (hansong80, #45,
+  .20.03) 2,048 against 4,096 gave the prompt 466 against 527 tok/s and generation 12.2-12.8 against 13.1-13.4. A chunk's
+  sums go across the split (192 at 2,048, 96 at 4,096), so the smaller chunk pays them twice; one 16 GB card keeps
+  2,048 (14-19 % faster generation there).
+
 ## 2026-11-20: bench/xw_pergemm.ps1 / .sh: which XMX tile each of a model's prompt GEMMs wants
 
 - For every tile setting, the real model's prompt (`runz --bench-pp N --n 0 --prof`) and each GEMM kind's GPU time

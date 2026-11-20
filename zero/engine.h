@@ -16,6 +16,7 @@
 #include "../src/json.h"
 #include "../src/load_progress.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <climits>  // (INT_MAX in the parts below: GCC 16's libstdc++ no longer brings it in through other headers, issue #27)
 #include <deque>
@@ -375,7 +376,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  -> 13.3 / 12.8 tok/s at 16K / 32K (-12-16 %), its expert cache 16 -> 14 %; a B60 24 GB: prompt +10 %, generation
     //  -2 %. So 16 GB cards (A770, Pro B50, the B580's 12) keep 2048; iGPUs keep the 15 GiB line, as measured on the
     //  laptop above)
-    const bool fn_4k = zrt::D().global_mem >= (zrt::integrated() ? (15ull << 30) : (20ull << 30));
+    // (a split model keeps 4096 on any card, since 2026-11-20: hansong80's two A770s 16 GB (#45, .20.03), Flash Next
+    //  IQ3_S at 2048 / 4096, prompt 465.9 / 466.3 -> 527.0 / 528.3 tok/s (+13 %), generation 12.17 / 12.76 -> 13.13 /
+    //  13.43 (+5 %): a chunk's sums go through the split, 192 at 2048 against 96 at 4096, so the smaller chunk pays them
+    //  twice; one card has none, and 2048 wins there. The user's "keep the faster one")
+    const bool fn_4k = o.tp_size > 1 || zrt::D().global_mem >= (zrt::integrated() ? (15ull << 30) : (20ull << 30));
     // (the user, 2026-11-20: "Yes, 4096 for all", then "gemma4 2048 then": a MoE model with every expert on the GPU
     //  (the 35B-A3B on a B60 / B70) 2048 -> 4096 too, Gemma 4 2048 either way)
     max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
