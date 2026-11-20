@@ -25,9 +25,10 @@
       <a href="index.html#uninstall">Uninstall</a>
       <a href="index.html#speed">Speed</a>
       <a href="results.html" aria-current="page">All results</a>
+      <a href="multi-gpu.html">Several GPUs</a>
       <a href="index.html#open">Open source</a>
     </nav>
-    <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.19.01</a>
+    <a class="gh" href="https://github.com/rizagp/inferzero">github</a>
   </div>
 </header>
 
@@ -251,6 +252,7 @@
 <section id="s-multi-b60">
   <div class="wrap">
     <h2>2, 3 and 4 × Arc Pro B60: one model split</h2>
+    <p class="setup">How to set several GPUs up, and when it helps: <a href="multi-gpu.html">Several GPUs</a>.</p>
     <p class="setup">One model's layers divided over the cards (<code>--gpus N</code>) · Windows (no direct GPU-to-GPU copies there: the sums go through host memory) · manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a></p>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>
@@ -305,6 +307,7 @@
 <section id="s-multi-other">
   <div class="wrap">
     <h2>Other multi-GPU setups</h2>
+    <p class="setup">How to set several GPUs up, and when it helps: <a href="multi-gpu.html">Several GPUs</a>.</p>
     <div class="tbl"><table>
       <thead><tr><th>Setup</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Notes</th></tr></thead>
       <tbody>
