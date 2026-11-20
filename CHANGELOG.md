@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-21: serverz logs each request's expert reads (streamed MoE)
+
+- After each request of a model whose experts stream from the SSD, serverz logs runz's expert line: hits and misses,
+  the GB read from the SSD and how fast, and the RAM tier's size and the records taken from it. The numbers count from
+  the server's start, so a request's own reads are the difference to the line before. Asked for by issue #47: on a
+  B65, later prompts in one server were barely faster than the first (21.6 / 20.7 / 19.9 s), and serverz printed
+  nothing that showed why.
+
 ## 2026-11-21: Alchemist: `ARC_GEMM_XW_DB=2` (opt-in), the read-ahead loop unrolled for every tile
 
 - **Why:** with the reads one step ahead (`=1`, the default on the 32 x 16 tiles), hansong80's A770 (#45) lost on
