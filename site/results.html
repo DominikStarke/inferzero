@@ -220,7 +220,7 @@
       <thead><tr><th>Model</th><th class="n">Prompt</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
       <tbody>
         <tr><td>Qwen3.8 27B <small>the FFN's gate and up in one GEMM launch, the default since 2026-11-20 (2,972 without it)</small></td><td class="n">3,100 <small>4K</small><br>2,727 <small>8K</small></td><td class="n">35.2</td><td class="n">70.6</td><td>main e93fac1 with ARC_GEMM_XW_GU=1, = release 2026.11.20.03 (8K .16.12, generation .16.02)</td></tr>
-        <tr><td>Qwen3.6 35B-A3B</td><td class="n">5,177 <small>4K</small><br>5,647 <small>8K</small><br>5,445 <small>16K</small></td><td class="n">95-98</td><td class="n">–</td><td>2026.11.17.04 (generation .16.15)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B</td><td class="n">5,177 <small>4K</small><br>5,647 <small>8K</small><br>5,445 <small>16K</small></td><td class="n">117.2 <small>after a 4K prompt, 115.5 after 16K</small></td><td class="n">–</td><td>2026.11.17.04 (generation main e93fac1)</td></tr>
         <tr><td>Qwen3.8 Flash Next <small>46 % of its experts on the card</small></td><td class="n">1,414 <small>4K</small><br>1,145 <small>16K</small></td><td class="n">44.9 <small>warm, the CPU computing the missed experts (44.2 without)</small><br>6.6 <small>cold</small></td><td class="n">–</td><td>2026.11.17.04; generation a5acc31 = release 2026.11.20.03</td></tr>
       </tbody>
     </table></div>
