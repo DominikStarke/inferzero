@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-21: build.sh builds bench/xw_peak (`./build.sh xw_peak`)
+
+- The 8-lane XMX GEMM probe now builds on Linux too, so Alchemist owners there can measure `ARC_GEMM_XW_SLM`'s
+  variants in a minute. It is not in the default list: `./build.sh` builds what it built before.
+
 ## 2026-11-21: `ARC_GEMM_XW_SLM` (opt-in, 8-lane XMX): the prompt GEMM's operands through local memory
 
 - **Why:** an A770's H8 prompt GEMMs take 1.5-2x a Pro B60's (skipzx-lab, issue #45: the 27B's 4K prompt 1,289
