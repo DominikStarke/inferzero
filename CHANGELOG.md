@@ -20,8 +20,8 @@
   or more (smaller cards keep 2,048); the other streamed MoE models (the 35B-A3B when its experts are streamed) 8,192 ->
   4,096. Gemma 4 keeps 2,048, which was faster for it.
 - **Flash Next:** a Pro B70 (joshdev-de, issue #27): 4K / 16K prompt 1,150 / 1,110 -> 1,257 / 1,216 tok/s (+9 %), its
-  expert cache 23.35 -> 22.53 GiB; the laptop: 4K 156 -> 164 tok/s, generation after it 5.3 -> 5.8. KL against f32 on
-  3,584 tokens the same at both sizes (default 0.00894, precise 0.00583).
+  expert cache 23.35 -> 22.53 GiB; the laptop (driver 32.0.101.9150): 4K 156 -> 164 tok/s, generation after it 5.3 ->
+  5.8. KL against f32 on 3,584 tokens the same at both sizes (default 0.00894, precise 0.00583; driver 32.0.101.9175).
 - **The streamed 35B-A3B:** from the laptop's earlier sweep, a 32K prompt 604 -> 533 tok/s (-12 %), its expert cache
   77 -> 81 %, generation at 128K 12.6 -> 12.8 tok/s. `--chunk 8192` gives the old speed back.
 
@@ -55,7 +55,8 @@
   marker ignored them, so such a run skipped the warm-up and compiled in generation: a B70's 27B with
   `ARC_GEMV_WAVE_MT=0`, first run 18.1 -> 64.8 tok/s. Each combination warms up once.
 - Both bit-identical: the warm-up's output is thrown away (`--dump-logits` the same before and after on the B70's
-  27B, 35B-A3B and Flash Next, and here on the 4B with and without MTP).
+  27B, 35B-A3B and Flash Next, and here on the 4B with and without MTP: both builds on the same driver, 31.0.101.5328,
+  which Windows Update had installed; the identity holds, the speeds of that morning don't).
 
 ## 2026-11-20: Alchemist: the decoded weights kept for short prompts, beside the 140T preset (`ARC_140T_RES=1`, opt-in)
 

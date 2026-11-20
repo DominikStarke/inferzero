@@ -41,7 +41,7 @@ trap 'rm -rf "$TMP"' EXIT
 trap 'exit 130' INT TERM
 OUT="$TMP/out.txt"
 PROMPT="$TMP/prompt.txt"
-head -c 3000 "$ROOT/README.md" > "$PROMPT" 2> /dev/null || printf 'The quick brown fox. %.0s' {1..200} > "$PROMPT"
+head -c 9000 "$ROOT/README.md" > "$PROMPT" 2> /dev/null || printf 'The quick brown fox. %.0s' {1..200} > "$PROMPT"
 
 # --- the settings, each with its values from the smallest to the largest (the B-series default marked in the notes)
 # generation (one token): name|values|quick values
@@ -150,6 +150,10 @@ sweep() {  # title model kind list-name
       printf '%-28s %10s  %-9s %s\n' "$kv" "$R" "$(pct "$R" "$base_r")" "$note"
     done
   done
+  # (the defaults again: a card that warms or clocks down over the sweep makes late settings look better or worse;
+  #  a drift of a few % means a winner of that size needs an alternated A/B before it counts)
+  measure "$model" "$kind" ""
+  printf '%-28s %10s  %-9s %s\n' "defaults again (drift)" "$R" "$(pct "$R" "$base_r")" ""
 }
 check_and_combine() {  # model kind
   local model="$1" kind="$2" w ref all=""
