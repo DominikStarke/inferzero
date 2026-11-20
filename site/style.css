@@ -95,3 +95,16 @@ footer a{color:var(--mute)}
 h3.sub{margin:26px 0 10px}
 section[id^="s-"]{padding:40px 0}
 .more{margin-top:16px;font-weight:600}
+
+/* the hero's screenshot */
+.shot{margin:34px 0 0}
+.shot img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+.shot figcaption{color:var(--mute);font-size:.92rem;margin-top:10px}
+#start h3.sub{margin:22px 0 12px}
+#start h3.sub:first-of-type{margin-top:6px}
+
+/* (grid items shrink below their content, and long paths in code wrap: otherwise one path widened a card past a
+   phone's edge and the whole page scrolled sideways) */
+.grid>*,.steps>*{min-width:0}
+code{overflow-wrap:anywhere}
+[id]{scroll-margin-top:72px}  /* (a jump to a section stops below the sticky header) */
