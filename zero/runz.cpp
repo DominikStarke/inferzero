@@ -456,7 +456,9 @@ static int run_main(int argc, char** argv) {
             "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
             "  tier (KL-checked; on by default on discrete 16-lane cards: the B-series, a Data Center Max; off on Alchemist and\n"
             "  iGPUs; results move run to run with it on: ARC_XCPU=0 for bit-for-bit checks); in Flash Next's precise\n"
-            "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n");
+            "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n"
+            "  ARC_XRAM_GB=N the RAM tier' size per GPU (0: none), ARC_XRAM_FILL=0 the expert cache's fill at start kept\n"
+            "  out of the RAM tier (opt-in: the tier then holds what the GPU cache does not)\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;

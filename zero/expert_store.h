@@ -351,7 +351,9 @@ struct ExpertStore {
   // sets of read slots (0: the caller's thread, 1: the expert cache's prefetch thread; two threads may read at once).
   // src (out): where the record is now, for the GPU copy: dst, or its place in the RAM tier (to_dst: always dst)
   struct Req { int layer, expert; void* dst; const void* src = nullptr; };
-  void read(std::vector<Req>& reqs, int set = 0, bool to_dst = false) {
+  // keep: records read from the SSD may enter the tier (false: the expert cache's fill at load, ARC_XRAM_FILL=0, so
+  // the tier holds what the GPU's cache does not; tier hits are still taken)
+  void read(std::vector<Req>& reqs, int set = 0, bool to_dst = false, bool keep = true) {
     Slot* slots = slots_ + (set ? kQD : 0);
     if (!ram_rec_) {
       read_ssd(reqs, slots);
@@ -373,7 +375,7 @@ struct ExpertStore {
         if (to_dst) memcpy(r.dst, m, layers[r.layer].rec), r.src = r.dst;
         continue;
       }
-      char* home = m ? nullptr : ram_take(slot, layers[r.layer].rec);
+      char* home = m || !keep ? nullptr : ram_take(slot, layers[r.layer].rec);
       todo.push_back({r.layer, r.expert, home ? home : r.dst});
       at.push_back(i);
     }

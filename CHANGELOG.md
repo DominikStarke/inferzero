@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: `ARC_XRAM_FILL=0` (opt-in): the expert cache's fill at start kept out of the RAM tier
+
+- **Why:** on a B65 (teodortomas, issue #47) the second and later 3.4K-token Flash Next prompts in one serverz still
+  read 26-28 GB from the SSD each (19.7-21.0 s). A request touched ~17,300 experts that were not in the GPU's cache
+  when used; the 25.3 GiB RAM tier holds ~10,400 of the 2.44 MB records. If the tier held none of what the GPU cache
+  holds, ~6,900 would be left for the SSD (~17 GB), but ~11,500 were read. The tier keeps the first records read and
+  never replaces any, and the GPU cache's fill at start went into it too, so part of it held copies of what the cache
+  already had.
+- **New:** with `ARC_XRAM_FILL=0` that fill goes to the GPU cache only, and the tier fills with the records read
+  later. The same data either way: the same results (the laptop's Flash Next with a 2 GiB tier forced, 256 tokens
+  and 8 generated: logits byte-identical). Speed to be measured on a discrete card; the most it can save is the
+  ~11 GB above, ~4-5 s of a 21 s prompt.
+
 ## 2026-11-21: self audit: an attention kernel's guard, split models' GEMM tiles, help texts
 
 - **attn_split** (the long-prompt attention over key splits) builds only where its work-group divides the K / V tile,
