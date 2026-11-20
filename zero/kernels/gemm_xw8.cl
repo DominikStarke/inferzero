@@ -446,6 +446,73 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
   for (int v = 0; v < XW_TM / SG; ++v)
     av[v] = as_float(intel_sub_group_block_read((__global const uint*)(asc + m0 + SG * v)));
+#ifdef XW_EPI2
+  // -DXW_EPI2 (2026-11-21, opt-in; the A770 plan): the same values a row at a time. A sub-group's XW_NH column blocks
+  // of a row are one run of 8 * XW_NH floats (column g0 * 16 + 8 h + lane), so a row's C is read and written in one
+  // block message of XW_NH words instead of XW_NH messages of 32 bytes spread over the tile, and the accumulate mode
+  // is decided once, not per value. On an A770 the 32 x 32 tiles lost most on up + SwiGLU (xw_peak, skipzx-lab, #45:
+  // 12.67 ms against 7.19 for gate; at 32 x 16 8.13 against 6.67). Every value gets the same operations in the same
+  // order (scale x column scale x sum, then + C or the SwiGLU): bit for bit the epilogue below.
+#if XW_NH == 2
+#define EPI_T uint2
+#define EPI_RD(p) intel_sub_group_block_read2(p)
+#define EPI_WR(p, v) intel_sub_group_block_write2((p), (v))
+#elif XW_NH == 4
+#define EPI_T uint4
+#define EPI_RD(p) intel_sub_group_block_read4(p)
+#define EPI_WR(p, v) intel_sub_group_block_write4((p), (v))
+#else
+#define EPI_T uint8
+#define EPI_RD(p) intel_sub_group_block_read8(p)
+#define EPI_WR(p, v) intel_sub_group_block_write8((p), (v))
+#endif
+  float dc[XW_NH];
+#pragma unroll
+  for (int h = 0; h < XW_NH; ++h)
+    dc[h] = as_float(intel_sub_group_block_read(wh + (size_t)(g0 + h / 2) * LS + (h & 1) * SG));
+#define EPI_ROWS(MODE)                                                                                     \
+  _Pragma("unroll") for (int t = 0; t < XW_TG; ++t) {                                                      \
+    _Pragma("unroll") for (int r = 0; r < 8; ++r) {                                                        \
+      const float as = BCAST(av[t], r);                                                                    \
+      __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + 8 * t + r) * ldc + (size_t)g0 * LS); \
+      EPI_T o;                                                                                             \
+      uint* ow = (uint*)&o;                                                                                \
+      MODE##_LOAD                                                                                          \
+      _Pragma("unroll") for (int h = 0; h < XW_NH; ++h) {                                                  \
+        const int8 x = xacc[t][h];                                                                         \
+        const int is[8] = {x.s0, x.s1, x.s2, x.s3, x.s4, x.s5, x.s6, x.s7};                                \
+        float v = as * dc[h] * (float)is[r];                                                               \
+        MODE##_OP                                                                                          \
+        ow[h] = as_uint(v);                                                                                \
+      }                                                                                                    \
+      EPI_WR(cp, o);                                                                                       \
+    }                                                                                                      \
+  }
+#define EPI_SWI_LOAD o = EPI_RD(cp);
+#define EPI_SWI_OP                     \
+  {                                    \
+    const float gt = as_float(ow[h]);  \
+    v *= gt / (1.0f + exp(-gt));       \
+  }
+  // (store and add share one loop with the add under its per-value condition, as in the plain epilogue: a loop for
+  //  the add alone let -cl-mad-enable fuse the product into it, and split-K sums differed by an ulp (the 125H's
+  //  xw_peak --emu, 23,285 of 65,536 values; FP_CONTRACT OFF does not stop it). XW_EPI2_FMA: that fused form, to
+  //  compare)
+#define EPI_GEN_LOAD \
+  if (accumulate == 1) o = EPI_RD(cp);
+#ifdef XW_EPI2_FMA
+#define EPI_GEN_OP \
+  if (accumulate == 1) v = fma(as * dc[h], (float)is[r], as_float(ow[h]));
+#else
+#define EPI_GEN_OP \
+  if (accumulate == 1) v += as_float(ow[h]);
+#endif
+  if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
+    EPI_ROWS(EPI_SWI)
+  } else {
+    EPI_ROWS(EPI_GEN)
+  }
+#else
 #pragma unroll
   for (int h = 0; h < XW_NH; ++h) {
     const int g = g0 + h / 2, hg = h & 1;
@@ -470,4 +537,5 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       }
     }
   }
+#endif
 }

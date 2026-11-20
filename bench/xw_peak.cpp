@@ -335,8 +335,13 @@ int main(int argc, char** argv) {
       //  4 column x 4 token sub-groups a work-group). ocloc dg2-g10, 256 registers: no spill for these four
       {"A770 32x16 w4 DB", "-DXW_PACKA -DXW_PACKW -DXW_DB", 32, 1, true, true, 4},
       {"slm 32x16 4x4", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 1, true, true, 4, false, 4},
-      {"slm 32x16 2x8", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 1, true, true, 2, false, 8},
       {"slm 32x32 4x4", "-DXW_PACKA -DXW_PACKW -DXW_SLM", 32, 2, true, true, 4, false, 4},
+      // (2026-11-21) -DXW_EPI2 (" e2"): the epilogue a row at a time, one block message of the row's columns, the
+      //  accumulate mode decided once. ocloc dg2-g10: 32 x 32 525 -> 301 messages, with SLM 457 -> 233; no spill
+      {"A770 32x16 w4 DB e2", "-DXW_PACKA -DXW_PACKW -DXW_DB -DXW_EPI2", 32, 1, true, true, 4},
+      {"packAW 32x32 w2", "-DXW_PACKA -DXW_PACKW", 32, 2, true, true, 2},
+      {"packAW 32x32 w2 e2", "-DXW_PACKA -DXW_PACKW -DXW_EPI2", 32, 2, true, true, 2},
+      {"slm 32x32 4x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 4, false, 4},
   };
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")
