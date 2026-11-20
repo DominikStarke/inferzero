@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-20: `bench/xehpc_sweep.sh`: every kernel and tile setting swept on one GPU
+
+- For the Data Center GPU Max 1550 (issue #48), whose settings were never tuned (the defaults are the B-series ones), and any discrete card: each generation and prompt setting changed alone from the defaults, from the smallest value to the largest (prompt chunks at most 4,096), a winner at +2 %; each winner's logits then hashed against the defaults (`same`, or `differs`: a KL check before it could be a default), and a phase's winners run together at tg128 / pp512 / pp4096 / pp16384. `--moe-model` adds the MoE settings, `--quick` takes fewer values. Linux, bash only. Written by the Researcher session; not run on a GPU yet.
+
 ## 2026-11-20: a warning when Windows has put an old Intel graphics driver in place
 
 - **Why:** a Windows Update put a February 2024 Intel driver (31.0.101.5328) in place of 32.0.101.9150 on the laptop.
