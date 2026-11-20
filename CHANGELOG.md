@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-20: a fix for B-series cards and Lunar / Panther Lake: an image no longer ends the server (issue #70)
+
+- **What happened:** on a GPU with 16-lane sub-groups (the B-series, the 140V / B390) the first chat request with an
+  image ended serverz: building the Qwen3-VL vision encoder's attention kernel failed on an `#error` in another kernel.
+  The ops kernels build each kernel together with the parts before it, so the vision kernel's build also compiled
+  `attn_q8` with the vision heads' size (72) and a work-group that does not divide its tile (kemnitzs, a Pro B70).
+- **The fix:** `attn_q8` is compiled only where its work-group divides the tile; in a build for another kernel it is
+  left out. The text path is unchanged: the 27B's logits byte for byte as before.
+- **Checked** on the laptop with the 16-lane kernels forced (`ARC_NO_SG8=1`, as a B70 takes them): before, the same
+  `#error` and the server gone; after, the 27B with its mmproj describes a test image right ("a red circle, a blue
+  square, and the black text HELLO 42") and the server stays up.
+
 ## 2026-11-20: `bench/gpu_sweep.ps1` / `.sh`: one sweep for every Intel GPU, in place of eleven
 
 - Every switch a user can change, measured on one GPU with a real model: generation and the prompt one setting at a
