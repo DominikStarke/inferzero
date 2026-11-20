@@ -92,8 +92,10 @@
   //  a Pro B70's 27B 4K prompt 2,853.2 with 2D alone -> 2,896.7 tok/s, logits identical; the same prefetch without 2D
   //  2,711.4 against 2,771.7, so the plain form keeps weights 1 ahead (joshdev-de, issue #27, 1a7ac94))
   bool xw_pf_2d_def() const { return xw_2d() && !getenv("ARC_GEMM_XW_PF") && !getenv("ARC_GEMM_XW_PFD"); }
-  int xw_pf_v() const { return xw_pf_2d_def() ? 3 : xw_pf(); }
-  int xw_pfd_v() const { return xw_pf_2d_def() ? 2 : xw_pfd(); }
+  // (a Data Center GPU Max with neither set: the activations' part 1 chunk ahead, as ARC_GEMM_XW_PF=2; see xehpc_on)
+  bool xw_pf_max_def() const { return xehpc_on() && !getenv("ARC_GEMM_XW_PF") && !getenv("ARC_GEMM_XW_PFD"); }
+  int xw_pf_v() const { return xw_pf_max_def() ? 2 : xw_pf_2d_def() ? 3 : xw_pf(); }
+  int xw_pfd_v() const { return xw_pf_max_def() ? 1 : xw_pf_2d_def() ? 2 : xw_pfd(); }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
   int xw_pf_eff() const {
     // (8 lanes, gemm_xw8: the weights' part by default in the 140T preset (p140_, also Alchemist cards) since
@@ -101,6 +103,7 @@
     //  release 2026.11.16.12; 2 and 3 slower: 341.9 / 338.5); a prefetch reads no value into the sums. Otherwise
     //  only when ARC_GEMM_XW_PF is set; the activations' part with the packed layout (XW_PACKA) only)
     if (xw_lanes() != 16) return (getenv("ARC_GEMM_XW_PF") || p140_) ? xw_pf() : 0;
+    if (xw_pf_max_def()) return (!x2d_ || xw_emu_) ? 0 : 2;  // (as ARC_GEMM_XW_PF=2 set by hand: 2 & 1 without 2D)
     return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf_v();
   }
   std::string xw_pf_defs() const {
@@ -155,7 +158,9 @@
       const int e = getenv("ARC_GEMM_XW_WGX") ? atoi(getenv("ARC_GEMM_XW_WGX")) : 0;
       return e == 2 || e == 4 ? e : e ? 1 : 0;
     }();
-    return xw_lanes() == 16 ? v : v8 ? v8 : p140_ ? 2 : 1;
+    // (a Data Center GPU Max: 8 by default, see xehpc_on in zero/xe2/engine_xe2.h)
+    if (xw_lanes() == 16) return !getenv("ARC_GEMM_XW_WGX") && xehpc_on() ? 8 : v;
+    return v8 ? v8 : p140_ ? 2 : 1;
   }
   bool xw_lock() const {
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;

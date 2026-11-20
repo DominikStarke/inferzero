@@ -1120,14 +1120,16 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     // (Q6_K: every matrix, not only output heads: 27B MTP block FFN 63-67 -> 71-77 GB/s, attn_output 0.41 -> 0.34 ms,
     //  eh_proj 0.78 -> 0.61 ms; tiny matrices equal; 16 Oct)
   }
-  static int gemv_v_rows(const GpuWeight& w) {
+  int gemv_v_rows(const GpuWeight& w) const {
     // (tuning; 1-8 rows a sub-group. Audit 2026-11-12 #8: a negative value or one above the matrix's rows gave a grid
     //  of 0 and a launch skipped without a word, the output left as it was: such values are ignored, with a note)
-    static const int force = [] {
+    static const int force_env = [] {
       const int v = getenv("ARC_GVROWS") ? atoi(getenv("ARC_GVROWS")) : 0;
       if (v < 0 || v > 8) zlog::eprintf("inferzero: ARC_GVROWS=%d ignored (1-8)\n", v);
       return v >= 1 && v <= 8 ? v : 0;
     }();
+    // (a Data Center GPU Max: one row, as ARC_GVROWS=1; see xehpc_on in zero/xe2/engine_xe2.h)
+    const int force = force_env ? force_env : !getenv("ARC_GVROWS") && xehpc_on() ? 1 : 0;
     // (a per-type rule tuned on single matrices repeated in bench/gemv_bench, e.g. IQ4_XS one row, IQ3_XXS four,
     // was no faster in the model, where each matrix streams once: 4.68 / 4.67 / 4.79 vs 4.68 / 4.51 / 4.65 tok/s)
     if (force && force <= w.N) return force;

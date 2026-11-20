@@ -162,8 +162,10 @@
       for (int i = 0; i < 3; ++i)
         rd_bytes += (uint64_t)(share * NU * (i == 2 ? E : F) * ((i == 2 ? F : E) / 256) * gguf_sb_bytes(L.ex_type[i]));
     }
-    static const int gr_gu = getenv("ARC_MOE_GR_GU") ? std::clamp(atoi(getenv("ARC_MOE_GR_GU")), 1, 8) : 1,
-                     gr_dn = getenv("ARC_MOE_GR_DN") ? std::clamp(atoi(getenv("ARC_MOE_GR_DN")), 1, 8) : 4;  // (rows per sub-group;
+    // (a Data Center GPU Max: 4 and 8 by default, see xehpc_on in zero/xe2/engine_xe2.h)
+    static const int gr_gu_e = getenv("ARC_MOE_GR_GU") ? std::clamp(atoi(getenv("ARC_MOE_GR_GU")), 1, 8) : 0,
+                     gr_dn_e = getenv("ARC_MOE_GR_DN") ? std::clamp(atoi(getenv("ARC_MOE_GR_DN")), 1, 8) : 0;
+    const int gr_gu = gr_gu_e ? gr_gu_e : xehpc_on() ? 4 : 1, gr_dn = gr_dn_e ? gr_dn_e : xehpc_on() ? 8 : 4;  // (rows per sub-group;
     // the down projection's 512-wide rows: 4 per sub-group in generation, 5.1 -> 4.0 ms per token, 1 for prompts)
     // standard experts, chunks of >= gemm_min tokens: decode + int8 GEMM (moe_gemm). Decoding all experts costs ~1 s
     // per chunk, so shorter chunks keep the per-tile kernels (Qwen3.6 35B: 1024 tokens 499 vs 490 tok/s, 2048 tokens
@@ -573,8 +575,10 @@
       // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
       //  sums in the same order whatever the shape)
       // (at most 32 sub-groups per work-group: CG 1 / 2 / 4, WY up to 32 / CG; self audit 2026-11-08)
-      static const int mcg = getenv("ARC_MOE_CG") ? std::clamp(atoi(getenv("ARC_MOE_CG")), 1, 4) : 1,
-                       mwy = getenv("ARC_MOE_WY") ? std::clamp(atoi(getenv("ARC_MOE_WY")), 1, 32 / (mcg == 3 ? 2 : mcg)) : 1;
+      // (a Data Center GPU Max: CG 4 by default, see xehpc_on in zero/xe2/engine_xe2.h)
+      static const int mcg_e = getenv("ARC_MOE_CG") ? std::clamp(atoi(getenv("ARC_MOE_CG")), 1, 4) : 0;
+      const int mcg = mcg_e ? mcg_e : xehpc_on() ? 4 : 1;
+      const int mwy = getenv("ARC_MOE_WY") ? std::clamp(atoi(getenv("ARC_MOE_WY")), 1, 32 / (mcg == 3 ? 2 : mcg)) : 1;
       const int cg = N % (16 * mcg) == 0 ? mcg : 1;
       const size_t ny = (std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G) + mwy - 1) / mwy * mwy;
       for (int e0 = 0; e0 < NE; e0 += G) {

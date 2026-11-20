@@ -205,14 +205,15 @@
   // ARC_H8_REUSE=0 rotates before each GEMM as before.
   int h8_share_ = 0, h8_last_M_ = -1, h8_last_K_ = -1, h8_last_a32_ = -1;
   cl_mem h8_last_aq_ = nullptr;  // (the input it was rotated from: a two-pass model swaps aq_)
-  static bool h8_reuse_env() {
-    static const bool on = !getenv("ARC_H8_REUSE") || atoi(getenv("ARC_H8_REUSE")) != 0;
-    return on;
+  // (a Data Center GPU Max: off by default, see xehpc_on in zero/xe2/engine_xe2.h)
+  bool h8_reuse_env() const {
+    static const char* e = getenv("ARC_H8_REUSE");
+    return e ? atoi(e) != 0 : !xehpc_on();
   }
   struct H8Share {
     Engine* e;
     explicit H8Share(Engine* en) : e(en) {
-      e->h8_share_ = h8_reuse_env() ? 1 : 0;
+      e->h8_share_ = e->h8_reuse_env() ? 1 : 0;
       e->h8_last_K_ = -1;
     }
     ~H8Share() {
@@ -271,7 +272,7 @@
   //  7368768); the B60's no gain of 11-14 was before the 128-register default. iGPUs off; =0 off, =1 on)
   bool h8_norm_env() const {
     static const char* e = getenv("ARC_H8_NORM");
-    return e ? atoi(e) != 0 : p140_ || !zrt::integrated();
+    return e ? atoi(e) != 0 : p140_ || (!zrt::integrated() && !xehpc_on());  // (a Max: off, see xehpc_on)
   }
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply

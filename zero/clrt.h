@@ -448,6 +448,14 @@ inline bool integrated() {
   dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
   return zeDeviceGetProperties(D().dev, &dp) == 0 && (dp.flags & 1u);
 }
+// this thread's GPU is a Data Center GPU Max (Ponte Vecchio, Xe-HPC: device IDs 0x0BD0-0x0BDB, the Max 1550 0x0BD5;
+// or its name), 2026-11-21: the defaults hibagus's sweeps measured there (zero/xe2/engine_xe2.h xehpc_on)
+inline bool xehpc() {
+  ze_device_properties_t dp{};
+  dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+  if (zeDeviceGetProperties(D().dev, &dp) != 0) return false;
+  return (dp.deviceId >= 0x0BD0 && dp.deviceId <= 0x0BDB) || strstr(dp.name, "Data Center GPU Max") != nullptr;
+}
 // this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
 inline uint32_t hw_threads() {
   ze_device_properties_t dp{};

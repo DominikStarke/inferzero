@@ -95,9 +95,20 @@
   // (128 by default on discrete cards with 16-lane XMX since 2026-11-16: a Pro B70's 35B 8K prompt 5,377 / 5,338 ->
   //  5,612 tok/s, +4.4-5.1 % (joshdev-de, issue #27, release 2026.11.16.12); the same source, another register file.
   //  iGPUs keep 256 (the 128 build spilled there). ARC_MOE_GRF=256: as before)
+  // A Data Center GPU Max (Xe-HPC) takes its own defaults where hibagus's one-stack Max 1550 sweeps measured a gain
+  // (issue #48, 2026-11-20, main 03c310a; every winner's logits the same as the defaults'): 27B generation
+  // ARC_GVROWS=1 (27.77 -> 29.70 tok/s); 27B prompt ARC_H8_NORM=0, ARC_H8_REUSE=0, ARC_GEMM_XW_PF=2, ARC_GEMM_XW_WGX=8
+  // (together 4K 2,645 -> 2,910, +10.0 %); 35B-A3B generation ARC_MOE_GR_GU=4 + ARC_MOE_GR_DN=8 (81.6 -> 88.0);
+  // 35B-A3B prompt ARC_MOE_GRF=256 + ARC_MOE_CG=4 (4K 4,665 -> 5,138). Each switch set by hand decides as before;
+  // other GPUs unchanged. (Kept once per engine: each GPU of a split decides for its own)
+  mutable int xehpc_ = -1;
+  bool xehpc_on() const {
+    if (xehpc_ < 0) xehpc_ = !zrt::integrated() && !cl_.sg8 && zrt::xehpc() ? 1 : 0;
+    return xehpc_ == 1;
+  }
   std::string xe2_moe_grf() const {
     const char* e = getenv("ARC_MOE_GRF");
-    const bool grf128 = e ? std::string(e) == "128" : (!zrt::integrated() && cl_.xmx && !cl_.sg8);
+    const bool grf128 = e ? std::string(e) == "128" : (!zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on());
     return xe2_ && grf128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   // ARC_GEMM_CG=2 / 4: 16-column groups per work-group of the prompt GEMM (a matrix whose column groups it does not
@@ -162,7 +173,7 @@
   }
   int xe2_gemv_rows(const GpuWeight& w, int rows) const {
     static const bool fixed = getenv("ARC_GVROWS") != nullptr;
-    const int t = fixed ? 0 : xe2_gemv_threads();
+    const int t = fixed || xehpc_on() ? 0 : xe2_gemv_threads();  // (a Max: one row, as ARC_GVROWS=1, see xehpc_on)
     if (t <= 0 || w.N <= t || w.N > 65536) return rows;
     return w.N <= 4 * t ? 4 : 1;
   }

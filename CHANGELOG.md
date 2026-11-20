@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: Data Center GPU Max (Xe-HPC): its own defaults, from hibagus's sweeps
+
+- A Data Center GPU Max (Ponte Vecchio: device IDs 0x0BD0-0x0BDB, or the name) now takes the settings hibagus's
+  one-stack Max 1550 sweep found faster (issue #48, 2026-11-20, main 03c310a). In every case the logits were the same
+  as with the defaults:
+  - the 27B's generation: one GEMV row a sub-group, as `ARC_GVROWS=1` (27.77 -> 29.70 tok/s, +6.9 %);
+  - the 27B's prompt: `ARC_H8_NORM=0`, `ARC_H8_REUSE=0`, `ARC_GEMM_XW_PF=2`, `ARC_GEMM_XW_WGX=8` (alone +5.9 / +4.6 /
+    +2.9 / +2.1 %; together 4K 2,645 -> 2,910 tok/s, +10.0 %, 16K 2,129 -> 2,306, +8.3 %);
+  - the 35B-A3B's generation: `ARC_MOE_GR_GU=4`, `ARC_MOE_GR_DN=8` (81.6 -> 88.0 tok/s, +7.9 %);
+  - the 35B-A3B's prompt: `ARC_MOE_GRF=256`, `ARC_MOE_CG=4` (4K 4,665 -> 5,138 tok/s, +10.1 %; 16K 3,994 -> 4,348).
+- Each of these set by hand decides as before. Other GPUs are unchanged: the laptop's 27B at 4,096 tokens gives the
+  same logits byte for byte. Each GPU of a split model decides for its own. Two of the pairs were measured together
+  only with a value next to these (the combined 27B prompt run with `ARC_GEMM_XW_PFD=8`, the 35B prompt with
+  `ARC_MOE_CG=8`), so a clean run on the new defaults is asked for.
+
 ## 2026-11-21: build.sh builds bench/xw_peak (`./build.sh xw_peak`)
 
 - The 8-lane XMX GEMM probe now builds on Linux too, so Alchemist owners there can measure `ARC_GEMM_XW_SLM`'s

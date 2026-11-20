@@ -38,6 +38,14 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_2D` / `_PF` | on where the driver offers them | the same | the same | the same | – |
 | MTP drafts a step (the 27B, not a switch) | 3 | 7 | 7 | 7 | 7 |
 
+## Data Center GPU Max (Xe-HPC) defaults (2026-11-21)
+
+A Data Center GPU Max (Ponte Vecchio, device IDs 0x0BD0-0x0BDB) takes the B-series column above, with these
+differences, from hibagus's one-stack Max 1550 sweeps (issue #48): `ARC_GVROWS` 1, `ARC_H8_NORM` 0, `ARC_H8_REUSE` 0,
+`ARC_GEMM_XW_PF` 2 (PFD 1), `ARC_GEMM_XW_WGX` 8, `ARC_MOE_GR_GU` 4, `ARC_MOE_GR_DN` 8, `ARC_MOE_GRF` 256, `ARC_MOE_CG` 4.
+Measured slower there, so not to use: `ARC_GEMV_PF=0 / 1` (-9.4 / -5.6 %), `ARC_GEMV_GRF=256` (-8.6 %),
+`ARC_IQ3S_TILE=1` (-5.0 %), `ARC_GDN_CHUNK=1 / 2` (-9 / -15 %), prompt chunks below 4,096.
+
 All the switches (environment variables; each is read once per process):
 
 | Switch | Default | What it does | Section |
