@@ -363,41 +363,66 @@
   // spans and the sparse masks stay on attn_q8. On by default on discrete cards (16-lane XMX); ARC_ATTN_FX=0: attn_q8,
   // =1 forces it, =2 without the check (the kernel's timing ablations); ARC_ATTN_FX_WG="NT,NH": token groups of 8 x q
   // heads per work-group; ARC_ATTN_FX_PF=0: no L1 prefetch; ARC_ATTN_FX_DEFS: further -D options (tests)
-  std::string attnfx_src_;
+  //
+  // attn_x8 (QUEUE A6 / T4, 2026-11-20; zero/kernels/attn_x8.cl): the same flash attention for GPUs whose DPAS takes
+  // 8-lane sub-groups (Alchemist A770 / A750, the Arc 140T), whose prompts ran attn_q8 on DP4a. Opt-in until owners
+  // measure it: ARC_ATTN_X8=1 where the driver offers XMX, =2 with the DPAS emulated by DP4a dot products on any GPU
+  // with 8-lane sub-groups (tests: the 125H). The same start-up check against attn_q8; ARC_ATTN_X8_WG="NT,NH" (heads of
+  // more than 128 dims take two sub-groups a token group: at most 32 sub-groups in all); ARC_ATTN_FX_PF and
+  // ARC_ATTN_FX_DEFS apply to it too
+  std::string attnfx_src_, attnx8_src_;
   cl_kernel k_attn_fx_ = nullptr;
   int fx_nt_ = 0, fx_nh_ = 0;
+  bool fx_x8_ = false;  // (k_attn_fx_ is attn_x8)
+  static int attnx8_mode() {
+    static const int e = getenv("ARC_ATTN_X8") ? atoi(getenv("ARC_ATTN_X8")) : 0;
+    return e == 1 || e == 2 ? e : 0;
+  }
+  bool attnfx8_on() const { return cl_.sg8 && (attnx8_mode() == 2 || (attnx8_mode() == 1 && cl_.xmx)); }
   bool attnfx_wanted() const {
     static const int e = getenv("ARC_ATTN_FX") ? (atoi(getenv("ARC_ATTN_FX")) != 0 ? 1 : 0) : -1;
     // (on by default on discrete cards, and on iGPUs with 16-lane XMX since 2026-11-17: a B390's 27B 4K prompt attention
-    //  377 -> 160 ms, issue #1; the 140T, 8 lanes, never takes it)
+    //  377 -> 160 ms, issue #1; GPUs with 8-lane DPAS only through ARC_ATTN_X8, attn_x8)
     // (an iGPU only where XMX passed its start-time checks, speed included (xmx_): one whose check kept DP4a runs the
     //  GPU's own defaults; audit 2026-11-17)
     const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8 && xmx_)) : e == 1;
     const int hd = hp.qwen3 ? hp.head_dim : 256;
-    return on && cl_.xmx && !cl_.sg8 && !hp.gemma && !hp.swa_rings && hd % 32 == 0 && hd <= 256 && !attn_q8_defs_.empty();
+    const bool model = !hp.gemma && !hp.swa_rings && hd % 32 == 0 && hd <= 256 && !attn_q8_defs_.empty();
+    if (cl_.sg8) return e != 0 && attnfx8_on() && model;
+    return on && cl_.xmx && model;
   }
   std::string attnfx_defs() const {
     const int hd = hp.qwen3 ? hp.head_dim : 256, hpg = hp.n_head / hp.n_head_kv;
     static const bool pf = !getenv("ARC_ATTN_FX_PF") || atoi(getenv("ARC_ATTN_FX_PF")) != 0;
     // (ARC_ATTN_FX_DEFS: further -D options for the kernel's variants, tests)
     static const std::string extra = getenv("ARC_ATTN_FX_DEFS") ? std::string(" ") + getenv("ARC_ATTN_FX_DEFS") : "";
+    const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "")
+                                   : (pf ? " -DFX_PF" : "");
     return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
-           " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + (pf ? " -DFX_PF" : "") + extra;
+           " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;
   }
+  const char* attnfx_which() const { return fx_x8_ ? "attnx8" : "attnfx"; }
+  const char* attnfx_name() const { return fx_x8_ ? "attn_x8" : "attn_fx"; }
   void attnfx_init() {
     if (!attnfx_wanted()) return;
     const int hpg = hp.n_head / hp.n_head_kv;
-    // (32 sub-groups, every thread slot of an Xe-core with 256 registers; two q heads where the GQA ratio is even: a
-    //  B70's 27B 16K prompt, attention 965 ms at 4 x 6, 772 at 5 x 6, 707 at 16 x 2, 710 at 32 x 1)
-    int nh = hpg % 2 == 0 ? 2 : 1, nt = 32 / nh;
-    if (const char* e = getenv("ARC_ATTN_FX_WG")) sscanf(e, "%d,%d", &nt, &nh);
+    fx_x8_ = cl_.sg8;
+    // (attn_x8: two sub-groups a token group for heads of more than 128 dims)
+    const int ds = fx_x8_ && (hp.qwen3 ? hp.head_dim : 256) > 128 ? 2 : 1;
+    // (attn_fx: 32 sub-groups, every thread slot of an Xe-core with 256 registers; two q heads where the GQA ratio is
+    //  even: a B70's 27B 16K prompt, attention 965 ms at 4 x 6, 772 at 5 x 6, 707 at 16 x 2, 710 at 32 x 1.
+    //  attn_x8, not measured yet: all q heads of a KV head in one work-group (with two sub-groups a token group they
+    //  run in step, and token groups added run the last one's spans), 16 sub-groups)
+    const int cap = 32 / ds;
+    int nh = fx_x8_ ? hpg : hpg % 2 == 0 ? 2 : 1, nt = fx_x8_ ? std::max(1, 16 / (nh * ds)) : 32 / nh;
+    if (const char* e = getenv(fx_x8_ ? "ARC_ATTN_X8_WG" : "ARC_ATTN_FX_WG")) sscanf(e, "%d,%d", &nt, &nh);
     if (nh < 1 || hpg % nh) nh = hpg;
-    while (nh > 1 && nt * nh > 32) {  // (at most 32 sub-groups: the largest divisor of the GQA ratio that fits)
+    while (nh > 1 && nt * nh > cap) {  // (at most 32 sub-groups: the largest divisor of the GQA ratio that fits)
       int d = nh - 1;
       while (hpg % d) --d;
       nh = d;
     }
-    if (nt < 1 || nt * nh > 32) nt = std::max(1, 32 / nh);
+    if (nt < 1 || nt * nh > cap) nt = std::max(1, cap / nh);
     fx_nt_ = nt, fx_nh_ = nh;
     static std::mutex mu;
     static std::map<std::string, double> known;  // (-1: failed)
@@ -410,14 +435,16 @@
       const double d = nocheck ? 0.0 : attnfx_check();
       it = known.emplace(key, d).first;
       if (d >= 0)
-        zlog::eprintf("inferzero: prompt attention as flash attention on XMX (attn_fx, %d x 8 tokens x %d heads a work-group; "
-                      "against attn_q8: max difference %.1e of the output range)\n", nt, nh, d);
+        zlog::eprintf("inferzero: prompt attention as flash attention on XMX (%s%s, %d x 8 tokens x %d heads a work-group; "
+                      "against attn_q8: max difference %.1e of the output range)\n", attnfx_name(),
+                      fx_x8_ && attnx8_mode() == 2 ? ", DPAS emulated: tests" : "", nt, nh, d);
     }
-    if (it->second >= 0) k_attn_fx_ = kernel("attnfx", attnfx_defs(), "attn_fx");
+    if (it->second >= 0) k_attn_fx_ = kernel(attnfx_which(), attnfx_defs(), attnfx_name());
   }
-  // gws / lws of attn_fx for T tokens and nkv KV heads
+  // gws / lws of attn_fx (attn_x8) for T tokens and nkv KV heads
   void attnfx_grid(int T, int nkv, size_t gws[2], size_t lws[2]) const {
-    const int hpg = hp.n_head / hp.n_head_kv, tq = 8 * fx_nt_, lsz = 16 * fx_nt_ * fx_nh_;
+    const int hd = hp.qwen3 ? hp.head_dim : 256, ds = fx_x8_ && hd > 128 ? 2 : 1;
+    const int hpg = hp.n_head / hp.n_head_kv, tq = 8 * fx_nt_, lsz = (fx_x8_ ? 8 * ds : 16) * fx_nt_ * fx_nh_;
     gws[0] = (size_t)(T + tq - 1) / tq * lsz, gws[1] = (size_t)nkv * (hpg / fx_nh_);
     lws[0] = (size_t)lsz, lws[1] = 1;
   }
@@ -435,8 +462,10 @@
     cl_.soft_fail = true;
     double worst = 0;
     try {
-      const struct { int M, p0, cap; } cases[2] = {{40, 0, 48}, {45, 27, 80}};
-      for (const auto& c : cases) {
+      // (attn_x8 also a third: 77 tokens at 150 over 256 slots, token groups of a work-group past M_valid)
+      const struct { int M, p0, cap; } cases[3] = {{40, 0, 48}, {45, 27, 80}, {77, 150, 256}};
+      for (int ci = 0; ci < (fx_x8_ ? 3 : 2); ++ci) {
+        const auto& c = cases[ci];
         const int nbc = c.cap / 16, blk_u = 4 * hd;
         std::vector<uint32_t> qi((size_t)c.M * nh * hd / 4), kq((size_t)nbc * blk_u), vq((size_t)nbc * blk_u);
         for (auto& v : qi) v = rnd();
@@ -451,7 +480,7 @@
         std::vector<float> res[2];
         for (int x = 0; x < 2; ++x) {
           const cl_mem bo = mk(out.data(), out.size() * 4);
-          cl_kernel k = x == 0 ? k_attn_q8_ : kernel("attnfx", attnfx_defs(), "attn_fx");
+          cl_kernel k = x == 0 ? k_attn_q8_ : kernel(attnfx_which(), attnfx_defs(), attnfx_name());
           int cx = c.cap, nn = nh, p0 = c.p0, mm = c.M, win = 0, nlo = -1, nhi = -1;
           set_args(k, 0, bq, bqs, bk, bks, bv, bvs, cx, nn, p0, mm, bo, win, nlo, nhi);
           size_t gws[2] = {(size_t)(c.M + tpw - 1) / tpw * 512, 1}, lws[2] = {512, 1};
@@ -469,15 +498,15 @@
         worst = std::max(worst, mref > 0 ? mdiff / mref : 1e30);
       }
       if (worst > tol) {
-        zlog::eprintf("inferzero: attn_fx differs from attn_q8 by %.2e of the output range (more than %.0e): attn_q8 "
-                      "(please report)\n", worst, tol);
+        zlog::eprintf("inferzero: %s differs from attn_q8 by %.2e of the output range (more than %.0e): attn_q8 "
+                      "(please report)\n", attnfx_name(), worst, tol);
         worst = -1;
       }
     } catch (const zrt::GpuWaitError&) {
       for (cl_mem& m : bufs) free_buf(m);
       throw;
     } catch (const std::exception& e) {
-      zlog::eprintf("inferzero: attn_fx does not build here (%s): attn_q8\n", e.what());
+      zlog::eprintf("inferzero: %s does not build here (%s): attn_q8\n", attnfx_name(), e.what());
       worst = -1;
     }
     for (cl_mem& m : bufs) free_buf(m);

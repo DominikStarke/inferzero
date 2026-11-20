@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-20: the prompt attention as flash attention on 8-lane XMX, opt-in (A770 / A750, Arc 140T)
+
+- **Why:** the A770's 27B 4K prompt is ~1,223 tok/s against a B60's ~1,726, and attention is 13.6 % of its 16K
+  prompt: Alchemist and the 140T ran `attn_q8` on DP4a, since `attn_fx` (Battlemage) needs 16-lane DPAS.
+- **What:** `zero/kernels/attn_x8.cl`, the 8-lane form of `attn_fx`: 8 query tokens a sub-group, 8 x 8 x 32 int8
+  DPAS, K / V straight from the int8 cache, `attn_fx`'s online softmax and P quantization per 32 keys. The scores are
+  computed transposed (keys as the DPAS rows, one token a lane), so K is read in full cache lines and the softmax needs
+  no reductions; one 8 x 8 transpose a span turns P into the A operand. Heads of 256 dims run on two sub-groups that
+  add their integer partial scores through SLM. ocloc (`dg2`, `arl-h`), the 27B's shape: no spills, 1,459 / 1,446
+  instructions and 72 memory messages per 32-key span.
+- **Opt-in:** `ARC_ATTN_X8=1` (on GPUs with 8-lane XMX), checked at start against `attn_q8` like `attn_fx`;
+  `ARC_ATTN_X8=2` emulates the DPAS with DP4a on any GPU with 8-lane sub-groups (tests). Owners of an A770 / 140T:
+  to measure (`--bench-pp 4096` / `16384` / `65536` with `--prof`).
+- **Accuracy** (the laptop, DPAS emulated), against `attn_q8`: the 27B over 4 x 512 tokens of USAGE.md KL 0.00058
+  (max 0.0128, same top token 98.53 %), one 4,096-token chunk 0.00056 (max 0.0146, 98.83 %); the 4B 0.00078
+  (max 0.0176, 98.33 %). Against f32 (the 27B, 480 positions): 0.00056 (`attn_q8`) -> 0.00060, max
+  0.0133 -> 0.0101, top token 469 -> 476 of 480.
+- Without the switch every GPU runs as before: the laptop's 4B and 27B logits bit for bit (480 tokens of USAGE.md + 16).
+
 ## 2026-11-20: 4,096-token chunks for MoE models fully on the card too; the driver warning's threshold; a warm-up fix
 
 - **The 35B-A3B (and other MoE models) with every expert on the GPU: chunk 2,048 -> 4,096** (the user: "Yes, 4096

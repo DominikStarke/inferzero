@@ -444,7 +444,9 @@ static int run_main(int argc, char** argv) {
             "  the H8 GEMM's work-groups of 4 column sub-groups (2 / 8: that many), ARC_GEMM_XW_2D=0 its 2D block loads,\n"
             "  ARC_GEMV_DB=0 the GEMV's read-ahead (dense models), ARC_GEMV_WAVE=0 GEMV rows from the GPU's threads,\n"
             "  ARC_H8_GRF=256 / ARC_MOE_GRF=256 the H8 and MoE GEMM kernels' 256 registers (not 128), ARC_MOE_GEMM_PAD=0\n"
-            "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n");
+            "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n"
+            "  Opt-in on 8-lane XMX (A770, A750, Arc 140T): ARC_ATTN_X8=1 the prompt attention as flash attention on XMX\n"
+            "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;
