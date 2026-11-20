@@ -142,14 +142,22 @@ sweep() {  # title model kind list-name
     name="${item%%|*}"; vals="${item#*|}"
     if [ "$QUICK" = 1 ]; then vals="${vals#*|}"; else vals="${vals%%|*}"; fi
     [ "$kind" = gen ] && [ "$name" = "--chunk" ] && continue
+    # (only each setting's fastest winning value goes on to H and C: two values of one setting in C's environment left
+    #  the last one listed in force, not the best; hibagus, issue #48, 2026-11-20)
+    local best_kv="" best_r=0
     for v in $vals; do
       local kv="$name=$v"; [ "$name" = "--chunk" ] && kv="--chunk=$v"
       measure "$model" "$kind" "$kv"
       local note=""; [ "$R" = 0 ] && note="failed: $(err_of)"
-      if faster "$R" "$base_r"; then note="WINNER"; WINNERS+=("$kv"); fi
+      if faster "$R" "$base_r"; then
+        note="WINNER"
+        if LC_ALL=C awk -v a="$R" -v b="$best_r" 'BEGIN { exit !(a > b) }'; then best_kv="$kv"; best_r="$R"; fi
+      fi
       printf '%-28s %10s  %-9s %s\n' "$kv" "$R" "$(pct "$R" "$base_r")" "$note"
     done
+    [ -n "$best_kv" ] && WINNERS+=("$best_kv")
   done
+  [ ${#WINNERS[@]} -gt 0 ] && echo "(each setting's best winner, for H and C: ${WINNERS[*]})"
   # (the defaults again: a card that warms or clocks down over the sweep makes late settings look better or worse;
   #  a drift of a few % means a winner of that size needs an alternated A/B before it counts)
   measure "$model" "$kind" ""
