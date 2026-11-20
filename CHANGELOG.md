@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-20: `bench/gpu_sweep.ps1` / `.sh`: one sweep for every Intel GPU, in place of eleven
+
+- Every switch a user can change, measured on one GPU with a real model: generation and the prompt one setting at a
+  time (smallest to largest), each setting's best value checked against the defaults' logits, the best combination
+  built greedily (only each setting's best value, kept when faster), drafting (MTP 2-7, DFlash2, texts against plain),
+  the XMX tile per GEMM kind, where the time goes by kernel, and the MoE settings with `ARC_XCPU`. An untimed warm-up
+  the first time a model meets a set of switches, so no timed run includes a kernel build; progress on the console.
+- Removed: gemm_sweep, b60_sweep (2), decode_try (2), xw_sweep, xw_pergemm (2), xehpc_sweep, igpu_sweep, igpu_grf_sweep
+  (`f33_sweep` stays for the chunked DeltaNet's KL checks). Their results stay in the docs and issues.
+
 ## 2026-11-20: Alchemist / Arc 140T: the prompt GEMM's loads one step ahead, opt-in (`ARC_GEMM_XW_DB=1`)
 
 - **Why:** the user asked for the A770's slow GEMMs to reach the ratio its other kernels already have against a B60
