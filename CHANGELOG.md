@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-20: Alchemist / Arc 140T: the prompt GEMM's loads one step ahead, opt-in (`ARC_GEMM_XW_DB=1`)
+
+- **Why:** the user asked for the A770's slow GEMMs to reach the ratio its other kernels already have against a B60
+  (1.15-1.25x, against 1.5-2x for the H8 GEMMs). In gemm_xw8's packed loop every read is waited on right where it is
+  used: a token group's activations just before its DPAS, a chunk's weights at the chunk's start. With 256 registers
+  an Xe-core runs half its threads, so little else covers that wait.
+- **What:** `ARC_GEMM_XW_DB=1` (gemm_xw8.cl -DXW_DB, where both operands are packed): the next token group's
+  activations are read before this group's DPAS, and at a chunk's last group the next chunk's weights too. The same
+  DPAS in the same order, so the same results bit for bit (checked at start; the laptop's 27B, the preset emulated:
+  byte-identical logits). ocloc dg2 at 32 x 16 WGX 4 / 16 x 32 WGX 2: no spills, no reads left between the loop's DPAS.
+- **Opt-in** until an A770 / 140T measures it; it is the first of three steps toward that ratio (next: the down GEMM's
+  split-K pieces in one launch, then the 128-register form if the registers allow).
+
 ## 2026-11-20: Alchemist: a tile per prompt GEMM by default; Flash Next keeps 4,096-token chunks on split models
 
 - **A tile per GEMM shape on Alchemist (A770 / A750 / A580):** `bench/xw_pergemm` on two A770s 16 GB (issue #45:

@@ -134,7 +134,83 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int h = 0; h < XW_NH; ++h) xacc[t][h] = (int8)(0);
 
-#if defined(XW_PACKA) || defined(XW_PACKW)
+#if defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
+  // ---- -DXW_DB (ARC_GEMM_XW_DB=1, 2026-11-20, the A770 row's G3): the packed loop with its loads one step ahead. The
+  //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B
+  //      operands too, so a load's latency is covered by the DPAS before it is needed (the plain loop waits on each
+  //      read where it is used). The same operands reach the same DPAS in the same order: bit for bit the plain loop's.
+  //      Registers: one token group's A (2 x 8 words a lane) and one chunk's B (4 x 8 x XW_NC) more than the plain loop.
+  const int nch = K / 64;
+  __global const uint* apk = (__global const uint*)aq + (size_t)(m0 / 8) * nch * 128;
+  const int ch0 = s_begin * 4, ch1 = s_end * 4;
+  int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC], nlo0[XW_NC], nlo1[XW_NC], nhi0[XW_NC], nhi1[XW_NC];
+  int8 na0 = (int8)(0), na1 = (int8)(0);
+  if (ch0 < ch1) {
+#pragma unroll
+    for (int c = 0; c < XW_NC; ++c) {
+      __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + ch0) * (16 * LS);
+      lo0[c] = as_int8(intel_sub_group_block_read8(dp));
+      lo1[c] = as_int8(intel_sub_group_block_read8(dp + 64));
+      hi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
+      hi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
+    }
+    __global const uint* tp = apk + (size_t)ch0 * 128;
+    na0 = as_int8(intel_sub_group_block_read8(tp));
+    na1 = as_int8(intel_sub_group_block_read8(tp + 64));
+  }
+  for (int ch = ch0; ch < ch1; ++ch) {
+    XW_ARRIVE();
+#if XW_PF
+    {
+      const int qn = ch + XW_PFD, lane = (int)get_sub_group_local_id();
+      if (qn < ch1) {
+#if XW_PF & 1
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) prefetch(wq + ((size_t)(g0 + c) * nsb * 4 + qn) * (16 * LS) + lane * 32, 32);
+#endif
+#if XW_PF & 2
+#pragma unroll
+        for (int t = 0; t < XW_TG; ++t)
+          if (t % XW_WGX == sx) prefetch(apk + ((size_t)t * nch + qn) * 128 + lane * 16, 16);
+#endif
+      }
+    }
+#endif
+    const bool more = ch + 1 < ch1;  // (uniform over the sub-group)
+#pragma unroll
+    for (int t = 0; t < XW_TG; ++t) {
+      const int8 a0 = na0, a1 = na1;
+      // (the next A: token group t + 1 of this chunk, or group 0 of the next chunk)
+      if (t + 1 < XW_TG) {
+        __global const uint* tp = apk + ((size_t)(t + 1) * nch + ch) * 128;
+        na0 = as_int8(intel_sub_group_block_read8(tp));
+        na1 = as_int8(intel_sub_group_block_read8(tp + 64));
+      } else if (more) {
+        __global const uint* tp = apk + (size_t)(ch + 1) * 128;
+        na0 = as_int8(intel_sub_group_block_read8(tp));
+        na1 = as_int8(intel_sub_group_block_read8(tp + 64));
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) {  // (and the next chunk's B)
+          __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + ch + 1) * (16 * LS);
+          nlo0[c] = as_int8(intel_sub_group_block_read8(dp));
+          nlo1[c] = as_int8(intel_sub_group_block_read8(dp + 64));
+          nhi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
+          nhi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
+        }
+      }
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+        xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
+        xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+      }
+    }
+    if (more) {
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) lo0[c] = nlo0[c], lo1[c] = nlo1[c], hi0[c] = nhi0[c], hi1[c] = nhi1[c];
+    }
+    XW_WAIT();
+  }
+#elif defined(XW_PACKA) || defined(XW_PACKW)
   // (the packed layouts: a column group's 4 B operands, then each token group's 2 A operands)
   const int nch = K / 64;
   __global const uint* apk = (__global const uint*)aq + (size_t)(m0 / 8) * nch * 128;
