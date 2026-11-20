@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>inferzero results: prompt and generation speed on every tested setup</title>
-<meta name="description" content="Prompt processing and generation speed of inferzero on every setup tested: Core Ultra laptops, Arc A-series and B-series cards, Data Center GPU Max, several GPUs, model by model.">
+<meta name="description" content="Prompt processing and generation speed of inferzero on every setup tested: Core Ultra laptops and mini PCs, Arc A-series and B-series cards, Data Center GPU Max, several GPUs, model by model.">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="inferzero: free, open-source AI on your Intel PC">
-<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel laptop graphics and Arc cards. Free, open source, no cloud.">
+<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel Core Ultra graphics and Arc cards. Free, open source, no cloud.">
 <meta property="og:type" content="website">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -69,7 +69,7 @@
 
 <section id="s-140t">
   <div class="wrap">
-    <h2>Core Ultra 9 285H laptop (Arc 140T)</h2>
+    <h2>Core Ultra 9 285H mini PC (Arc 140T)</h2>
     <p class="setup">Arc 140T (Xe-LPG Plus, 8-lane XMX) · 64 GB RAM, DDR5-5600 · Windows · PascalSoftwares, <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a></p>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
@@ -83,7 +83,7 @@
 
 <section id="s-140v">
   <div class="wrap">
-    <h2>Core Ultra 7 258V laptop (Arc 140V)</h2>
+    <h2>Core Ultra 7 258V (Arc 140V)</h2>
     <p class="setup">Arc 140V (Lunar Lake, Xe2, 16-lane XMX) · LPDDR5X-8533, 31 GB · Windows 11 · a1ex4, <a href="https://github.com/rizagp/inferzero/issues/60">issue #60</a></p>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
@@ -91,13 +91,13 @@
         <tr><td>Qwen3.8 27B</td><td class="n">401-444</td><td class="n">5.9-6.5</td><td class="n">13.9</td><td>2026.11.19.02</td></tr>
       </tbody>
     </table></div>
-    <p class="note">A thin-and-light laptop: the prompt slows over three passes (444, 416, 401 tok/s) as its clocks drop. Generation reads 73-81 GB/s of the 104-108 GB/s its memory gives. KL against the f32 reference 0.00117 (top token 97.9 %). 2K prompt 389 tok/s, 32K 268. The NPU runs on Lunar Lake, but the GPU alone is faster (4K 324 against 175 tok/s with it).</p>
+    <p class="note">The prompt slows over three passes (444, 416, 401 tok/s) as its clocks drop. Generation reads 73-81 GB/s of the 104-108 GB/s its memory gives. KL against the f32 reference 0.00117 (top token 97.9 %). 2K prompt 389 tok/s, 32K 268. The NPU runs on Lunar Lake, but the GPU alone is faster (4K 324 against 175 tok/s with it).</p>
   </div>
 </section>
 
 <section id="s-b390">
   <div class="wrap">
-    <h2>Core Ultra X7 358H laptop (Arc B390)</h2>
+    <h2>Core Ultra X7 358H mini PC (Arc B390)</h2>
     <p class="setup">Arc B390 (Panther Lake, Xe3, 16-lane XMX) · a 64 GB+ GPU share · <a href="https://github.com/rizagp/inferzero/issues/1">issue #1</a></p>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
