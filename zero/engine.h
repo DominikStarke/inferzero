@@ -791,7 +791,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   // Runs the generation kernels once so that a first request does not wait for their just-in-time compilation: a
   // short prompt and a token, then with MTP / DFlash2 drafts and a verification pass of every row count (DFlash2 and
   // the MTP block each); leaves the engine reset. Only when this model, these options and these kernel sources have
-  // not been warmed before (a marker in the kernel cache, "w2": since the Gemma drafter is warmed too): after an update the first requests took seconds per new
+  // not been warmed before (a marker in the kernel cache, "w3": since the MTP block runs over every row count of its pending drafts too): after an update the first requests took seconds per new
   // kernel (27B with DFlash2: a 27-token prompt 37 s, then 1-3 tok/s), later starts skip it. Returns true when it ran.
   bool warm_up_once(int tok, bool prompt = true) {
     const std::string& dir = cl_.cache_dir;
@@ -800,7 +800,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
              (unsigned long long)ClRt::fnv1a(gemm_src_ + "\x01" + ops_.all() + "\x01" + dec_.all() + "\x01" + moe_src_ + "\x01" + f_.path +
                                              "|" + std::to_string(opt.mtp) + "|" + opt.dflash + (opt.mtp_block ? "" : "|nomtp") +
                                              "|" + std::to_string(opt.mtp_drafts) +
-                                             "|" + std::to_string(max_chunk) + "|" + cl_.device_id + "|w2"));
+                                             "|" + std::to_string(max_chunk) + "|" + cl_.device_id + "|w3"));
     const std::string marker = dir.empty() ? std::string() : dir + PLAT_SEP "warm-" + hex;
     // (every start (prompt = true): a prompt long enough for the large-chunk kernels (moe_rg from 320 rows), then a token: their first
     //  use in a process cost seconds even from the kernel cache; 35B with drafters, a first 1,749-token request 8.6 s
@@ -828,9 +828,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
           dfl_gap_ = 1 << 16;
           mtp_draft(tok, k);
           verify(tok, std::vector<int>(k, tok));
-          verify_done(0);
+          verify_done(k);  // (every draft accepted: the next draft pass runs the MTP block over k + 1 rows)
         }
       }
+      // (the MTP block over 2 .. max_drafts + 1 rows: its rows of the accepted drafts and the next token. With
+      //  verify_done(0) here it only ever ran on 1 row, and a head in a file of its own (Flash Next's Q8_0 mtp-*.gguf,
+      //  its own experts) compiled its 2-8 row kernels in the first real generation: a Pro B70, 11 kernels, drafting
+      //  18 s of a 20 s, 96-token answer (4.8 tok/s, 52.8 once built); issue #27, 2026-11-19)
+      if (pos + 2 < ctx) mtp_draft(tok, 1);
     }
     reset();
     dfl_ema_ = 4.0;
