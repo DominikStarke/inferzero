@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-21: Alchemist: the 32 x 16 prompt GEMMs read one step ahead by default (`ARC_GEMM_XW_DB`)
+
+- **Measured** by hansong80 (an A770 16 GB, issue #45, main 2a78721, the 27B's 4K prompt, two rounds): with the reads
+  one step ahead, every GEMM on the 32 x 16 tile got faster (down 646.9 -> 583.0 ms, -10 %; qkv / z -8 %; q -7 %; up
+  -6 %; gate -4 %), and every one on the per-shape 16 x 32 tile slower (ssm_out 169.7 -> 405.2 ms, o 55.3 -> 131.0,
+  k / v +72-82 %): -4.9 % in all with it on every tile.
+- **Now:** only the 32-token tiles take it, and on Alchemist that is the default; the 16 x 32 tiles keep the plain
+  loop. From the gains above, about 150 ms of a 3.56 s prompt (+4 %), to be confirmed on the whole prompt. The same
+  results bit for bit (checked at start; the laptop's 27B with the preset emulated: byte-identical logits).
+  `ARC_GEMM_XW_DB=0` turns it off; `=1` turns it on for 32-token tiles on any 8-lane GPU (the 140T included).
+
 ## 2026-11-20: a fix for B-series cards and Lunar / Panther Lake: an image no longer ends the server (issue #70)
 
 - **What happened:** on a GPU with 16-lane sub-groups (the B-series, the 140V / B390) the first chat request with an

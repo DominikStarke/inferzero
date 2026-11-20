@@ -204,9 +204,14 @@
   // ARC_GEMM_XW_DB=1 (opt-in, 8 lanes, 2026-11-20; the A770 row's G3): gemm_xw8.cl -DXW_DB, its packed loop with the
   // next token group's and the next chunk's operands read one step ahead of their DPAS (where both operands are
   // packed: the Alchemist / 140T preset). The same DPAS in the same order: bit for bit, checked at start
-  static bool xw_db() {
-    static const bool on = getenv("ARC_GEMM_XW_DB") && atoi(getenv("ARC_GEMM_XW_DB")) != 0;
-    return on;
+  // Only for 32-token tiles, and by default on Alchemist (discrete 8-lane) since 2026-11-21: hansong80's A770 (#45,
+  // main 2a78721, the 27B 4K prompt) gained on every 32 x 16 GEMM (down -10 %, qkv / z -8 %, q -7 %, up -6 %, gate
+  // -4 %) and lost on every 16 x 32 one (ssm_out / o +137-139 %, k / v +72-82 %): -4.9 % in all with it everywhere.
+  // ARC_GEMM_XW_DB=0: off, =1: on (for 32-token tiles) on any 8-lane GPU, the 140T included
+  bool xw_db(int tm) const {
+    static const int e = getenv("ARC_GEMM_XW_DB") ? (atoi(getenv("ARC_GEMM_XW_DB")) != 0 ? 1 : 0) : -1;
+    if (tm != 32 || e == 0) return false;
+    return e == 1 || (cl_.sg8 && !zrt::integrated());
   }
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
@@ -219,7 +224,7 @@
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
                              (xw_lock() ? " -DXW_LOCK" : "") + (gu ? " -DXW_GU" : "") +
-                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db() ? " -DXW_DB" : "");
+                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? " -DXW_DB" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
     const bool d2 = (nc ? nc : xw_nc()) != 6;
@@ -447,7 +452,7 @@
                             "|pack" + std::to_string(xw_pack_cfg()) + "|wgx" + std::to_string(xw_wgx()) +
                             (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
                             (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
-                            (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db() ? "|db" : "");
+                            (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)

@@ -18,6 +18,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_XW_GU` (gate + up in one launch, 2026-11-20) | 1 (a B60: +3.3 / +3.8 % at 4K / 16K, the same logits) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |
 | `ARC_GEMM_XW_NC_E` (the n_embd-wide H8 GEMMs at 32 x 32, 2026-11-20) | – | – | 0 (opt-in) | 0 (opt-in) | – |
+| `ARC_GEMM_XW_DB` (the 32-token tiles' reads one step ahead, 2026-11-21) | – | – | 0 (opt-in) | 1 (32 x 16 GEMMs: -4 to -10 % each) | – |
 | `ARC_GEMM_XW_SHAPE` (a tile per GEMM shape, 2026-11-20) | – | – | 0 (until measured) | 1: 16 x 32 where N <= n_embd and K <= 8,192, else 32 x 16 WGX 4 | – |
 | `ARC_H8_NORM` | on | off | on | on | off |
 | `ARC_H8_GRF` | 128 | 256 | 256 (128 ignored: spills) | 256 (128 ignored) | 256 |
