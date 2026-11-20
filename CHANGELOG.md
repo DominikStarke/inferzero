@@ -7,7 +7,8 @@
 - The Data Center GPU Max defaults' environment checks (`ARC_GVROWS`, `ARC_GEMM_XW_PF` / `_PFD`, `ARC_GEMM_XW_WGX`,
   `ARC_MOE_WY`) are read once, not at every GEMV / GEMM / MoE launch. The same results on every GPU (the laptop's 27B
   at 4,096 tokens and Flash Next: logits byte-identical).
-- `ARC_GEMM_XW_SLM` says at start when it is on (skipzx-lab, #45).
+- `ARC_GEMM_XW_SLM` and `ARC_GEMM_XW_EPI2` say at start when they are on (skipzx-lab, #45).
+
 ## 2026-11-21: `ARC_GEMM_XW_EPI2` (opt-in, 8-lane XMX): the prompt GEMM's epilogue a row at a time
 
 - **Why:** skipzx-lab's A770 (issue #45, 150 W, main a5deeff) measured `ARC_GEMM_XW_SLM`.

@@ -567,6 +567,8 @@
         if (xw_slm_wgy() && xw_lanes() == 8)  // (skipzx-lab, #45: nothing said it was on)
           zlog::eprintf("inferzero: gemm_xw8: operands through local memory, %d token sub-groups a work-group where they "
                         "divide the tokens (ARC_GEMM_XW_SLM)\n", xw_slm_wgy());
+        if (xw_epi2() && xw_lanes() == 8)
+          zlog::eprintf("inferzero: gemm_xw8: the epilogue a row at a time (ARC_GEMM_XW_EPI2)\n");
       } else
         zlog::eprintf("inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
                 xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");
