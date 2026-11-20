@@ -580,10 +580,13 @@ struct XCache {
           const int k = keep[order[j]];
           reqs.push_back({k / NE, k % NE, stage[h] + (j - b0) * stage_rec});
         }
-        // (ARC_XRAM_FILL=0, opt-in, issue #47: these records go to the GPU's cache only, not into the RAM tier too.
-        //  A B65 with a 25.3 GiB tier and a 52 GB expert file still read 26-28 GB from the SSD per 3.4K-token prompt in
-        //  one server; with the fill in the tier, much of it holds copies of what the cache already has)
-        static const bool fill_tier = !(getenv("ARC_XRAM_FILL") && atoi(getenv("ARC_XRAM_FILL")) == 0);
+        // (these records go to the GPU's cache only, not into the RAM tier too, by default where the tier and the
+        //  cache together cannot hold every expert (2026-11-21, issue #47): a B65 32 GB, Flash Next IQ3_S (52 GB of
+        //  experts), a 26.4 GiB tier, serverz, three 3.4K-token prompts: 22.83 / 22.01 / 20.62 -> 27.0 / 13.0 / 11.5 s,
+        //  the SSD 26-28 -> 13 GB a later request; with the fill in the tier, much of the tier held copies of what the
+        //  cache had. ARC_XRAM_FILL=1: into the tier as before, =0: never)
+        static const int fill_env = getenv("ARC_XRAM_FILL") ? (atoi(getenv("ARC_XRAM_FILL")) != 0 ? 1 : 0) : -1;
+        const bool fill_tier = fill_env >= 0 ? fill_env == 1 : st.ram_capacity() + (uint64_t)fill >= st.file_bytes;
         st.read(reqs, 0, false, fill_tier);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
           // A pinned source holds the layer's record, not its pool's padded slot.

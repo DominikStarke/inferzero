@@ -210,6 +210,7 @@
       </tbody>
     </table></div>
     <p class="note">At 131K tokens: the 4B's prompt 2,960 tok/s and generation 57.8, the 9B's 2,474 and 39.1, the 35B-A3B's 1,830 and 60.3.</p>
+    <p class="note">Flash Next in one server, three 3.4K-token prompts in a row (a 26 GiB RAM tier, a Samsung 970 EVO Plus): 22.8 / 22.0 / 20.6 s before, 27.0 / 13.0 / 11.5 s with the expert cache's start-up fill kept out of the RAM tier (main 8c02980, <code>ARC_XRAM_FILL=0</code>; the default since 2026-11-21 where the tier and the card's cache cannot hold every expert). Later prompts run at 272-292 tok/s against 160-170; the SSD reads 13 GB a request instead of 26-28.</p>
   </div>
 </section>
 

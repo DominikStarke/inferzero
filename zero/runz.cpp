@@ -457,8 +457,8 @@ static int run_main(int argc, char** argv) {
             "  tier (KL-checked; on by default on discrete 16-lane cards: the B-series, a Data Center Max; off on Alchemist and\n"
             "  iGPUs; results move run to run with it on: ARC_XCPU=0 for bit-for-bit checks); in Flash Next's precise\n"
             "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n"
-            "  ARC_XRAM_GB=N the RAM tier' size per GPU (0: none), ARC_XRAM_FILL=0 the expert cache's fill at start kept\n"
-            "  out of the RAM tier (opt-in: the tier then holds what the GPU cache does not)\n");
+            "  ARC_XRAM_GB=N the RAM tier' size per GPU (0: none), ARC_XRAM_FILL=1 / 0 the expert cache's fill at start\n"
+            "  into the RAM tier too or not (default: not, where the tier and the cache cannot hold every expert)\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;

@@ -335,6 +335,10 @@ struct ExpertStore {
       for (size_t i = 0; i < ram_n_; ++i) ram_rec_[i].store(nullptr, std::memory_order_relaxed);
     }
   }
+  uint64_t ram_capacity() const {  // (the tier's size; 0: none)
+    std::lock_guard<std::mutex> g(ram_mu_);
+    return ram_rec_ ? ram_cap_ : 0;
+  }
   uint64_t ram_bytes() const {  // (the prefetch thread adds to it: read under its lock)
     std::lock_guard<std::mutex> g(ram_mu_);
     return ram_used_;

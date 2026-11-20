@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: streamed MoE in a server: later prompts up to 44 % faster (the start-up fill out of the RAM tier by default)
+
+- **Measured** by teodortomas (a Pro B65 32 GB, Linux, issue #47, main 8c02980): Flash Next IQ3_S (52 GB of experts),
+  a 26.4 GiB RAM tier, serverz, three 3.4K-token prompts in a row:
+  - fill in the tier: 22.83 / 22.01 / 20.62 s;
+  - with `ARC_XRAM_FILL=0`: 27.0 / 13.0 / 11.5 s, so the second and third prompts are 41 / 44 % faster.
+  - With it, the SSD reads 13 GB a later request instead of 26-28, the tier serves ~12,000 records a request against
+    ~6,000, and the generation's cache hits went from 80-83 % to 89-90 %.
+  - The first request (27.0 s) was on a fresh build; that run's kernels were built during it.
+- **Now the default** where the RAM tier and the GPU's expert cache together cannot hold every expert: the cache's
+  fill at start goes to the GPU only, and the tier fills with what the cache does not hold. Elsewhere, including any
+  GPU without a tier (iGPUs), nothing changes. The same results bit for bit (the laptop's Flash Next with a 2 GiB tier
+  forced: logits byte-identical with the fill in the tier, out of it, and at the default). `ARC_XRAM_FILL=1` puts the
+  fill in the tier as before, `=0` never.
+
 ## 2026-11-21: `ARC_XRAM_FILL=0` (opt-in): the expert cache's fill at start kept out of the RAM tier
 
 - **Why:** on a B65 (teodortomas, issue #47) the second and later 3.4K-token Flash Next prompts in one serverz still
