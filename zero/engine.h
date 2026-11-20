@@ -321,7 +321,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     load_hparams();
     // Flash Next precision includes attention: per-row int8 Q/K/V can amplify small errors through routing.
     if (hp.hc && fn_precise()) opt.attn_int8 = false;
-    // (Flash Next only: a qwen35 head, e.g. Arete-27B with the base Qwen3.8 27B block, has no QSA)
+    // (Flash Next only: a qwen35 head borrowed from the base model, PR #68, has no QSA)
     if (mtp_ext_ && mtp_file_->get_str("general.architecture") == "qwen4exp") {  // (its layer, il = n_layer: full attention, QSA with the file's compress ratio)
       hp.qsa_ratio.resize(hp.n_layer + 1, 0);
       const auto* cr = mtp_file_->get_ints("qwen4exp.attention.compress_ratios");
@@ -1130,7 +1130,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       return v >= 1 && v <= 8 ? v : 0;
     }();
     // (a Data Center GPU Max: one row, as ARC_GVROWS=1; see xehpc_on in zero/xe2/engine_xe2.h)
-    const int force = force_env ? force_env : !getenv("ARC_GVROWS") && xehpc_on() ? 1 : 0;
+    static const bool gv_set = getenv("ARC_GVROWS") != nullptr;  // (once: this runs at every GEMV launch)
+    const int force = force_env ? force_env : !gv_set && xehpc_on() ? 1 : 0;
     // (a per-type rule tuned on single matrices repeated in bench/gemv_bench, e.g. IQ4_XS one row, IQ3_XXS four,
     // was no faster in the model, where each matrix streams once: 4.68 / 4.67 / 4.79 vs 4.68 / 4.51 / 4.65 tok/s)
     if (force && force <= w.N) return force;

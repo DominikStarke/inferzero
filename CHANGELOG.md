@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21: help texts and docs for PRs #67 / #68; the Max defaults' switches read once
+
+- `runz --help`, `serverz --help`, docs/server.md and docs/models.md describe the borrowed MTP block for dense
+  Qwen3.5 / 3.8 fine-tunes, and say that pruned MoE models with 16 to 256 experts load.
+- The Data Center GPU Max defaults' environment checks (`ARC_GVROWS`, `ARC_GEMM_XW_PF` / `_PFD`, `ARC_GEMM_XW_WGX`,
+  `ARC_MOE_WY`) are read once, not at every GEMV / GEMM / MoE launch. The same results on every GPU (the laptop's 27B
+  at 4,096 tokens and Flash Next: logits byte-identical).
+- `ARC_GEMM_XW_SLM` says at start when it is on (skipzx-lab, #45).
+
 ## 2026-11-21: pruned MoE models, and borrowed MTP heads for dense fine-tunes (PRs #67, #68 by triblax)
 
 - **MoE models with 16 to 256 experts** load, not only 256. A pruned model whose expert count is not a multiple of

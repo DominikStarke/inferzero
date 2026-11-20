@@ -45,7 +45,7 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 #endif
 #define ROUTE_P(g, mx) exp((g) - (mx))
 // Router logits per lane: NEV = ceil(NE / 16) per lane. An expert count that is not a multiple of 16 (a pruned
-// model, e.g. Qwen3.6-27B-A3B CoderX with 184 of the 35B's 256) masks the last lanes' ids >= NE to -inf: column NE
+// model, e.g. 184 of the 35B-A3B's 256) masks the last lanes' ids >= NE to -inf: column NE
 // of a logits row is the shared-expert gate, the rest up to router_rows() padding. NE % 16 == 0: both macros expand
 // to the code as it was, token for token.
 #if NE % SG

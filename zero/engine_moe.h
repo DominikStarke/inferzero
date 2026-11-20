@@ -578,7 +578,8 @@
       // (a Data Center GPU Max: CG 4 by default, see xehpc_on in zero/xe2/engine_xe2.h)
       static const int mcg_e = getenv("ARC_MOE_CG") ? std::clamp(atoi(getenv("ARC_MOE_CG")), 1, 4) : 0;
       const int mcg = mcg_e ? mcg_e : xehpc_on() ? 4 : 1;
-      const int mwy = getenv("ARC_MOE_WY") ? std::clamp(atoi(getenv("ARC_MOE_WY")), 1, 32 / (mcg == 3 ? 2 : mcg)) : 1;
+      static const int mwy_e = getenv("ARC_MOE_WY") ? std::max(1, atoi(getenv("ARC_MOE_WY"))) : 1;  // (read once)
+      const int mwy = std::min(mwy_e, 32 / (mcg == 3 ? 2 : mcg));
       const int cg = N % (16 * mcg) == 0 ? mcg : 1;
       const size_t ny = (std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G) + mwy - 1) / mwy * mwy;
       for (int e0 = 0; e0 < NE; e0 += G) {

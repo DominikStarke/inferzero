@@ -93,7 +93,10 @@
   //  2,711.4 against 2,771.7, so the plain form keeps weights 1 ahead (joshdev-de, issue #27, 1a7ac94))
   bool xw_pf_2d_def() const { return xw_2d() && !getenv("ARC_GEMM_XW_PF") && !getenv("ARC_GEMM_XW_PFD"); }
   // (a Data Center GPU Max with neither set: the activations' part 1 chunk ahead, as ARC_GEMM_XW_PF=2; see xehpc_on)
-  bool xw_pf_max_def() const { return xehpc_on() && !getenv("ARC_GEMM_XW_PF") && !getenv("ARC_GEMM_XW_PFD"); }
+  bool xw_pf_max_def() const {
+    static const bool set = getenv("ARC_GEMM_XW_PF") || getenv("ARC_GEMM_XW_PFD");  // (once: runs per launch)
+    return !set && xehpc_on();
+  }
   int xw_pf_v() const { return xw_pf_max_def() ? 2 : xw_pf_2d_def() ? 3 : xw_pf(); }
   int xw_pfd_v() const { return xw_pf_max_def() ? 1 : xw_pf_2d_def() ? 2 : xw_pfd(); }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
@@ -159,7 +162,8 @@
       return e == 2 || e == 4 ? e : e ? 1 : 0;
     }();
     // (a Data Center GPU Max: 8 by default, see xehpc_on in zero/xe2/engine_xe2.h)
-    if (xw_lanes() == 16) return !getenv("ARC_GEMM_XW_WGX") && xehpc_on() ? 8 : v;
+    static const bool set = getenv("ARC_GEMM_XW_WGX") != nullptr;
+    if (xw_lanes() == 16) return !set && xehpc_on() ? 8 : v;
     return v8 ? v8 : p140_ ? 2 : 1;
   }
   bool xw_lock() const {
@@ -551,6 +555,9 @@
         if (xw_wgx() > 1 || xw_lock())
           zlog::eprintf("inferzero: gemm_xw work-groups of up to %d column sub-groups%s\n", xw_wgx(),
                         xw_lock() ? ", in step each 64-value chunk (ARC_GEMM_XW_LOCK=1)" : "");
+        if (xw_slm_wgy() && xw_lanes() == 8)  // (skipzx-lab, #45: nothing said it was on)
+          zlog::eprintf("inferzero: gemm_xw8: operands through local memory, %d token sub-groups a work-group where they "
+                        "divide the tokens (ARC_GEMM_XW_SLM)\n", xw_slm_wgy());
       } else
         zlog::eprintf("inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
                 xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");

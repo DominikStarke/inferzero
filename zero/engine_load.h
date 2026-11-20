@@ -597,7 +597,7 @@
   void adopt_mtp_file() {
     const std::string a = f_.get_str("general.architecture");
     // (--draft dflash without a DFlash2 folder still drafts with the block, as init() decides after this)
-    // (qwen35: a fine-tune shipped without its nextn block, e.g. NousResearch Arete-27B, takes the base Qwen3.8 27B
+    // (qwen35: a fine-tune shipped without its nextn block takes its base model's, e.g. the Qwen3.8 27B
     //  GGUF's block: --mtp-model <base model .gguf>; drafts are verified, so the output stays the model's own)
     if ((a != "qwen4exp" && a != "qwen35") || !opt.mtp || (!opt.mtp_block && !opt.dflash.empty())) return;
     const int64_t nb = f_.get_int(a + ".block_count", 0);
