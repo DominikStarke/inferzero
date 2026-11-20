@@ -35,9 +35,13 @@ uint8_t* xcpu_in_ = nullptr;  // (host memory the inputs are copied into)
 uint64_t xcpu_n_ = 0, xcpu_ram_ = 0;  // (experts computed; of them read from the RAM tier)
 double xcpu_ms_ = 0, xcpu_rd_ms_ = 0, xcpu_fill_ms_ = 0;  // (compute + copies; the input reads; fills and commits)
 
-static bool xcpu_on() {
-  static const bool on = getenv("ARC_XCPU") && atoi(getenv("ARC_XCPU")) != 0;
-  return on;
+// On by default on discrete Battlemage cards (16-lane, the B-series) since 2026-11-20 (the user): a Pro B60 on PCIe
+// 3.0 x8, Flash Next IQ3_S, a ~4,200-token prompt then 256 tokens, 22.5 -> 26.3 tok/s (+17 %, three pairs; skipzx-lab,
+// issue #57, a62be02). Off on Alchemist (an A770 on x16 measured 20.0 / 20.6 -> 18.9 / 20.1) and on iGPUs (they read
+// RAM directly: no gain). ARC_XCPU=0 / 1 decides everywhere. (The default per call: each GPU decides for its own)
+bool xcpu_on() const {
+  static const int e = getenv("ARC_XCPU") ? (atoi(getenv("ARC_XCPU")) != 0 ? 1 : 0) : -1;
+  return e >= 0 ? e == 1 : !zrt::integrated() && !cl_.sg8;
 }
 // In two-pass mode (Flash Next's --precise) the CPU's experts run one pass by default since 2026-11-20 (the user's
 // choice: 0.187 against 0.302 ms an expert; KL against f32 over 548 chat + 160 code positions 0.00126 / 0.00251 against

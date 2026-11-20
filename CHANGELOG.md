@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-20: the CPU computes MoE experts missing from the GPU cache by default on B-series cards (`ARC_XCPU`)
+
+- **Why:** a Pro B60 on PCIe 3.0 x8 (skipzx-lab, issue #57, a62be02), Flash Next IQ3_S, a ~4,200-token prompt then 256
+  tokens, three pairs: 22.66 / 22.59 / 22.25 tok/s off against 26.33 / 26.34 / 26.11 on (+17 %), ~13,340 experts on
+  the CPU at 0.10-0.11 ms each. The user: make it the default.
+- **Where:** discrete Battlemage cards (the B-series: B580, Pro B50 / B60 / B65 / B70). Not on Alchemist (an A770 on
+  PCIe 3.0 x16 measured no gain, 20.0 / 20.6 -> 18.9 / 20.1) and not on iGPUs (they read RAM directly). `ARC_XCPU=0`
+  turns it off, `=1` on, anywhere. Split models only with the test switch, as before.
+- **What changes in the answers:** the CPU's sums are not the GPU's bit for bit (KL-checked: over 708 positions the
+  top token 701 -> 695, 98.2 %; skipzx-lab's generation 241 -> 237 / 256), and which experts the CPU takes follows the
+  background fills' timing, so a temp-0 answer can differ slightly between runs until the fills are committed at fixed
+  points (queued). `ARC_XCPU=0` gives the reproducible path.
+- **A timing trap:** `--bench-pp N --n 128` in the default mode showed it slower on the B60 (early stalls of
+  190-340 ms a step); a real prompt then generation is the measure. With the GGUF on a USB disk the gain fell to ~10 %.
+
 ## 2026-11-20: Flash Next's 4,096-token prompt chunks from 20 GiB on discrete cards (16 GB cards keep 2,048)
 
 - **Why:** on a 16 GB A770 (skipzx-lab, issue #57, Linux, held to 150 W) the bigger chunk gained the prompt only

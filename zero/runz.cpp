@@ -449,9 +449,9 @@ static int run_main(int argc, char** argv) {
             "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n"
             "  ARC_GEMM_XW_GU=0 / 1: the FFN's gate and up GEMMs in one launch, the same results (on by default on discrete\n"
             "  cards with 16-lane XMX, opt-in on the 140V / B390)\n"
-            "  MoE partly off the GPU: ARC_XCPU=1 the experts missing from the GPU cache computed by the CPU from the RAM tier\n"
-            "  (KL-checked); in Flash Next's precise mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both\n"
-            "  passes as on the GPU (exact)\n");
+            "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
+            "  tier (KL-checked; on by default on discrete B-series cards, off on Alchemist and iGPUs); in Flash Next's precise\n"
+            "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;
