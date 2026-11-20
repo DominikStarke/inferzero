@@ -15,9 +15,20 @@
   // DP4a default (256 registers: DP4a spills with 128). The start-time check runs its kernels too. ARC_140T=0: off;
   // ARC_140T=1 with ARC_XMX_TRY=2: on the 125H with DP4a standing in for DPAS (tests)
   bool p140_ = false;
-  static constexpr int kP140Min = 512;
+  // (p140_res_: the weights resident in W8 for the chunks below kP140Min, and those of kP140Min+ still decoded just in
+  //  time from the raw rows into the staging (an A770's 4B: 128 tokens 1,197 just in time against 2,381 resident, 4K
+  //  5,028 against 3,325). ARC_140T_RES=1, engine_setup.h plan_weights)
+  bool p140_res_ = false;
+  // (from kP140Min tokens XMX takes a chunk; with p140_res_ from kP140MinRes, where the resident DP4a GEMM stops being
+  //  faster: an A770, 3 runs each, XMX against resident DP4a, 4B 640 tokens 3,101 / 3,208, 768 3,395 / 3,282; 9B 640
+  //  1,757 / 1,847, 768 2,035 / 1,872. ARC_140T_MIN=n: from n)
+  static constexpr int kP140Min = 512, kP140MinRes = 768;
+  static int p140_min(bool res) {
+    static const int e = getenv("ARC_140T_MIN") ? atoi(getenv("ARC_140T_MIN")) : 0;
+    return e > 0 ? e : res ? kP140MinRes : kP140Min;
+  }
   bool p140_take(const GpuWeight& w, int Mp) const {
-    return p140_ && !w.wq && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && Mp >= kP140Min && Mp % 32 == 0 && w.N % 32 == 0;
+    return p140_ && (!w.wq || p140_res_) && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && Mp >= p140_min(p140_res_) && Mp % 32 == 0 && w.N % 32 == 0;
   }
   // ---- H8 + 4 column groups by default on discrete cards with 16-lane XMX, for the Qwen dense models (issue #4,
   // 2026-11-08, a Pro B60, 27B, package d980970: 512 tokens 615 -> 677 tok/s, 4K 766 -> 1,024, 16K 706 -> 937; KL
@@ -51,12 +62,12 @@
     //  The start-time checks still turn it off if its kernels differ or do not build)
     // (the models it was measured on: Qwen dense, as h8_auto_; not MoE, Gemma, Flash Next or Qwen3 dense, and not with
     //  ARC_H8_SB=1, whose staged form it does not track. Self audit 2026-11-08)
-    return (cl_.xmx || test) && cl_.sg8 && !w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 && h8_row();
+    return (cl_.xmx || test) && cl_.sg8 && (!w8_resident || p140_res_) && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 && h8_row();
   }
   // (the preset would apply but for the resident weights: the reason the log gives, hansong80's A770, issue #35)
   bool p140_off_resident() const {
     const char* e = getenv("ARC_140T");
-    return !(e && atoi(e) == 0) && cl_.xmx && cl_.sg8 && w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 &&
+    return !(e && atoi(e) == 0) && cl_.xmx && cl_.sg8 && w8_resident && !p140_res_ && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 &&
            h8_row();
   }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows

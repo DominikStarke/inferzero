@@ -281,6 +281,10 @@
       w.wq = buf(qb);
       w.wh = buf(hb);
       if (!opt.dry) decode_w8(w, w.wq, w.wh);
+      if (p140_res_) {  // (the long chunks' just-in-time decode: zero/xe2/engine_xe2.h)
+        stage_need_q_[w.role] = std::max(stage_need_q_[w.role], qb);
+        stage_need_h_[w.role] = std::max(stage_need_h_[w.role], hb);
+      }
     } else {
       stage_need_q_[w.role] = std::max(stage_need_q_[w.role], qb);
       stage_need_h_[w.role] = std::max(stage_need_h_[w.role], hb);

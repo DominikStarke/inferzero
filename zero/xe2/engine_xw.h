@@ -132,7 +132,7 @@
   }
   bool xw_pack_a(int Mp, int K) const { return xw_ && (xw_pack_cfg() & 1) && Mp % xw_tm() == 0 && K % 256 == 0; }
   bool xw_pack_w(const GpuWeight& w, int Mp) const {
-    return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && xw_takes_n(w.N) && w.K % 256 == 0;
+    return xw_ && (xw_pack_cfg() & 2) && (!w.wq || p140_res_) && Mp % xw_tm() == 0 && xw_takes_n(w.N) && w.K % 256 == 0;
   }
   // ARC_GEMM_XW_WGX=1 / 2 / 4 / 8 (16 lanes, 2026-11-15): column sub-groups per work-group next to the WGY token ones,
   // (a work-group of 256 tokens x 128 columns, 32 sub-groups), so the activations of a chunk are shared in L1
