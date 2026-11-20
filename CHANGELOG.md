@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-20: Flash Next's 4,096-token prompt chunks from 20 GiB on discrete cards (16 GB cards keep 2,048)
+
+- **Why:** on a 16 GB A770 (skipzx-lab, issue #57, Linux, held to 150 W) the bigger chunk gained the prompt only
+  3-6 % (16K 517 -> 535 tok/s) and cost generation after it 12-16 % (15.1 -> 13.3 tok/s after 16K, 15.2 -> 12.8
+  after 32K), because its buffers take room from the expert cache (16 -> 14 % of the experts). On a 24 GB B60 it gained
+  the prompt 10 % for 2 % of generation. The user: "keep the faster one".
+- **What:** Flash Next takes 4,096 on discrete cards with 20 GiB or more (the B60, B65, B70) and 2,048 below (the
+  A770 / A750 16 GB, Pro B50 16 GB, B580 12 GB). iGPUs keep the 15 GiB line. `--chunk` still overrides it.
+- **Accuracy:** the same at every chunk size (skipzx-lab's KL against f32, 256 positions: the B60 0.00740 at 4,096,
+  0.00897 at 2,048; the A770 0.00774 at both).
+
 ## 2026-11-20: the FFN's gate and up in one launch by default on discrete cards (`ARC_GEMM_XW_GU`)
 
 - A Pro B60 under Linux (skipzx-lab, issue #57, main a62be02): the 27B's 4K / 16K prompt 1,805.8 / 1,764.9 ->

@@ -370,7 +370,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  the laptop's 4K 156 -> 164, generation after 5.3 -> 5.8; KL against f32 on 3,584 tokens the same at both (default
     //  0.00894, precise 0.00583). The other streamed MoE models 8192 -> 4096 (the laptop's 35B at 32K: 604 -> 533 tok/s in
     //  QUEUE 19.4's sweep, its cache 77 -> 81 %). Gemma 4 keeps 2048 (its 4096 measured slower above))
-    const bool fn_4k = zrt::D().global_mem >= (15ull << 30);
+    // (discrete cards from 20 GiB since 2026-11-20, the user: "keep the faster one". An A770 16 GB (skipzx-lab, #57,
+    //  Linux, 150 W): 4096 against 2048 the prompt only +3-6 % (16K 517 -> 535 tok/s) but generation after it 15.1 / 15.2
+    //  -> 13.3 / 12.8 tok/s at 16K / 32K (-12-16 %), its expert cache 16 -> 14 %; a B60 24 GB: prompt +10 %, generation
+    //  -2 %. So 16 GB cards (A770, Pro B50, the B580's 12) keep 2048; iGPUs keep the 15 GiB line, as measured on the
+    //  laptop above)
+    const bool fn_4k = zrt::D().global_mem >= (zrt::integrated() ? (15ull << 30) : (20ull << 30));
     // (the user, 2026-11-20: "Yes, 4096 for all", then "gemma4 2048 then": a MoE model with every expert on the GPU
     //  (the 35B-A3B on a B60 / B70) 2048 -> 4096 too, Gemma 4 2048 either way)
     max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? 1024 : (w8_resident && !res_long ? 512 : 4096);
