@@ -242,6 +242,14 @@
     }();
     return e;
   }
+  // ARC_GEMM_XW_EPI2=1 (opt-in, 8 lanes, 2026-11-21; the A770 plan): gemm_xw8.cl -DXW_EPI2, the epilogue a row at a
+  // time, a row's columns in one block message, SwiGLU's mode decided once. ocloc dg2-g10 at 256 registers, no spill:
+  // 32 x 16 w4 with the read-ahead loop 239 -> 175 memory messages, 32 x 32 525 -> 269, 32 x 32 through local memory
+  // 457 -> 201. The same operations per value: bit for bit, checked at start (and xw_peak --emu on the 125H)
+  static bool xw_epi2() {
+    static const bool on = getenv("ARC_GEMM_XW_EPI2") && atoi(getenv("ARC_GEMM_XW_EPI2")) != 0;
+    return on;
+  }
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
   //  packed operands, bit 1 the activations, bit 2 the weights. wgx: column sub-groups per work-group; gu: -DXW_GU)
@@ -252,7 +260,7 @@
                              std::to_string(tm ? tm : xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
                              (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
-                             std::to_string(slm);
+                             std::to_string(slm) + (xw_epi2() ? " -DXW_EPI2" : "");
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -262,7 +270,8 @@
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
                              (xw_lock() ? " -DXW_LOCK" : "") + (gu ? " -DXW_GU" : "") +
-                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? (xw_db_env() == 2 ? " -DXW_DB -DXW_DB2" : " -DXW_DB") : "");
+                             (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? (xw_db_env() == 2 ? " -DXW_DB -DXW_DB2" : " -DXW_DB") : "") +
+                             (xw_lanes() == 8 && xw_epi2() && !gu ? " -DXW_EPI2" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     // (not the 32 x 96 tiles (NC 6): with the 2D form they spill 2 KB, ocloc bmg / ptl; 32 x 64 none, 489 -> 77 sends)
     const bool d2 = (nc ? nc : xw_nc()) != 6;
@@ -498,7 +507,7 @@
                             (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
                             (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
-                            (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "");
+                            (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)

@@ -8,6 +8,26 @@
   `ARC_MOE_WY`) are read once, not at every GEMV / GEMM / MoE launch. The same results on every GPU (the laptop's 27B
   at 4,096 tokens and Flash Next: logits byte-identical).
 - `ARC_GEMM_XW_SLM` says at start when it is on (skipzx-lab, #45).
+## 2026-11-21: `ARC_GEMM_XW_EPI2` (opt-in, 8-lane XMX): the prompt GEMM's epilogue a row at a time
+
+- **Why:** skipzx-lab's A770 (issue #45, 150 W, main a5deeff) measured `ARC_GEMM_XW_SLM`.
+  - The local-memory loop lost on the 32 x 16 GEMMs: the 27B's 4K prompt 1,288 -> 1,210 tok/s at `=1`.
+  - It won only on the 16 x 32 ones at `=8` (ssm_out / o / k / v -8 to -9 %).
+  - In `xw_peak`, the 32 x 32 tile through local memory was the fastest down GEMM (7.81 against 8.38 ms) but lost
+    badly on up + SwiGLU (12.67 against 8.13). The plain 32 x 32 tile showed the same gap in the model (up 898
+    against gate 636 ms, where 32 x 16 has 551 against 489).
+  - The difference is the epilogue: a row's C was read and written in 32-byte pieces spread over the tile, and the
+    accumulate mode was decided for every value.
+- **New:** `ARC_GEMM_XW_EPI2=1`, `gemm_xw8.cl -DXW_EPI2`.
+  - A row's columns are read and written in one block message, and the SwiGLU mode is decided once.
+  - Store and add keep the add under its per-value condition. In a loop of its own, `-cl-mad-enable` fused the
+    product into the add, and split-K sums differed by an ulp (caught by `xw_peak --emu`).
+  - ocloc dg2-g10 at 256 registers, no spill: 32 x 16 with the read-ahead loop 239 -> 175 memory messages, 32 x 32
+    525 -> 269, 32 x 32 through local memory 457 -> 201.
+  - The same operations per value: bit for bit, `xw_peak --emu` on the 125H (store, SwiGLU, split-K: identical),
+    checked at start.
+- `bench/xw_peak`: `e2` variants of the default, of 32 x 32 with 2 column sub-groups and of 32 x 32 through local
+  memory. Speed to be measured on an A770.
 
 ## 2026-11-21: pruned MoE models, and borrowed MTP heads for dense fine-tunes (PRs #67, #68 by triblax)
 
