@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <string>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/file.h>  // (flock: BuildLock)
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -564,6 +566,42 @@ struct KeepAwake {
   KeepAwake(const KeepAwake&) = delete;
   KeepAwake& operator=(const KeepAwake&) = delete;
   static int& depth() { thread_local int d = 0; return d; }
+};
+// An exclusive lock on `path` (a small file beside a build's .tmp) while one lives: a second process that wants to
+// build the same file finds it held (held() false) instead of removing a .tmp another process is still writing
+// (self audit 2026-11-20 A9). Windows: the file opened without sharing and deleted on close; Linux: flock, the file
+// removed by its holder before letting go. A lock that cannot be made for another reason (a read-only folder) counts as
+// held: the build goes on as before.
+struct BuildLock {
+  explicit BuildLock(const std::string& path) : path_(path) {
+#ifdef _WIN32
+    h_ = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE,
+                     nullptr);
+    busy_ = h_ == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION;
+#else
+    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+    busy_ = fd_ >= 0 && flock(fd_, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+    if (busy_) { ::close(fd_); fd_ = -1; }
+#endif
+  }
+  ~BuildLock() {
+#ifdef _WIN32
+    if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+#else
+    if (fd_ >= 0) { ::unlink(path_.c_str()); ::close(fd_); }
+#endif
+  }
+  bool held() const { return !busy_; }
+  BuildLock(const BuildLock&) = delete;
+  BuildLock& operator=(const BuildLock&) = delete;
+ private:
+  std::string path_;
+  bool busy_ = false;
+#ifdef _WIN32
+  HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+  int fd_ = -1;
+#endif
 };
 // `from` renamed to `to`, an existing `to` replaced: false on failure (last_error() says why)
 inline bool replace_file(const char* from, const char* to) {

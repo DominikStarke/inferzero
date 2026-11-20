@@ -169,6 +169,26 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
 #endif
           same = a == c;
         }
+        // (self audit 2026-11-20 A7: the source copied or moved since, D: -> C: for one: another path, the same model.
+        //  Taken as the same when the package's tensor table (every tensor's name, type and shape, by name: the package
+        //  lists its expert tensors, virtual, after the others) matches this file's; a model of the same name made
+        //  otherwise differs in its types or shapes)
+        if (!same) {
+          try {
+            GgufFile pk((fs::path(dir) / (name + ".gguf")).string());
+            same = pk.tensors.size() == src.tensors.size();
+            for (size_t i = 0; same && i < src.tensors.size(); ++i) {
+              const GgufTensor& s = src.tensors[i];
+              const GgufTensor* p = pk.find(s.name);
+              same = p && p->type == s.type && p->dims == s.dims;
+            }
+          } catch (const std::exception&) {
+            same = false;  // (an unreadable package: refused as before)
+          }
+          if (same)
+            zlog::eprintf("inferzero: %s was made from %s; this file (%s) has the same tensors: taken as the same model, "
+                          "moved or copied\n", dir.c_str(), prev.c_str(), now.string().c_str());
+        }
         if (!same)
           throw std::runtime_error("a package of the same name, made from another file, is already in " + dir +
                                    " (from " + prev + "; this one is " + now.string() +
@@ -218,7 +238,8 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   const std::string tmp = r.gguf + ".tmp";
   auto drop_tmp = [&] { std::error_code e; fs::remove(tmp, e); };
   plat::KeepAwake awake;  // (S11)
-  drop_stale_tmp(tmp);    // (S7)
+  const plat::BuildLock lock(tmp + ".lock");  // (A9: until the package is complete or its .tmp removed)
+  drop_stale_tmp(tmp, lock);                  // (S7)
   {  // (S3: the package GGUF's room first; the expert file's is checked when it is written)
     uint64_t rest = 1ull << 20;
     for (const GgufTensor* t : keep) rest += (t->nbytes + align - 1) / align * align;

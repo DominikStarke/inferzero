@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-20: packing and expert-file builds: a moved source, two processes, the stop guard (self audit A7-A10)
+
+- **A moved or copied source (A7):** packing a model again from its new place (copied from D: to C:, say) was
+  refused as "made from another file". Now the package's tensor table (every tensor's name, type and shape) is
+  compared with the file's: the same tensors are taken as the same model, with a line saying so; a model of the same
+  name made otherwise is still refused.
+- **Two processes building the same file (A9):** a build now holds a lock beside its `.tmp` (`plat::BuildLock`:
+  Windows opens it unshared and deleted on close, Linux uses `flock`). A second process that finds the lock held stops
+  with "another inferzero is writing ... now" instead of removing the `.tmp` the first is still writing. The line
+  about an old `.tmp` now says "removed" only when it was.
+- **The stop guard (A8):** guards are counted, so two builds on two threads restore the Ctrl+C / SIGTERM handlers in
+  the right order; a signal the process ignores (SIG_IGN) stays ignored and no longer stops a build.
+- **Docker (A10):** `compose.yaml` and `kubernetes.yaml` no longer say SIGTERM handling is "not yet".
+- Inference is untouched: no kernel or engine path changed.
+
 ## 2026-11-20: ARC_XCPU in precise mode runs both passes, and works on packaged models (self audit A2)
 
 - **Precise mode (`--precise`):** the GPU's experts run two int8 passes there (the activations and their rounding

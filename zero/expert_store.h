@@ -37,14 +37,22 @@ extern "C" inline void xbuild_on_signal(int sig) { g_xbuild_sig.store(sig); }
 // A .tmp left by a build that was killed (power cut, SIGKILL, a crash): as large as the file it was to become. Removed
 // with a line saying so before a new build writes it again (it was truncated silently before, its space taken until
 // then; S7).
-inline void drop_stale_tmp(const std::string& tmp) {
+// (self audit 2026-11-20 A9: the caller holds `lock`, a plat::BuildLock on tmp + ".lock", for the whole build: a .tmp
+//  another process is still writing has its lock held, and this one stops with a message instead of removing it; the
+//  line says a removal only when one happened)
+inline void drop_stale_tmp(const std::string& tmp, const plat::BuildLock& lock) {
+  if (!lock.held())
+    throw std::runtime_error("another inferzero is writing " + tmp + " now: wait for it to finish, or stop it");
   std::error_code e;
   const auto st = std::filesystem::status(std::filesystem::path(tmp), e);
   if (e || !std::filesystem::is_regular_file(st)) return;
   const uintmax_t n = std::filesystem::file_size(std::filesystem::path(tmp), e);
-  zlog::eprintf("inferzero: removing %s (%.1f GB) left by an earlier build that did not finish\n", tmp.c_str(),
-                e ? 0.0 : n / 1e9);
-  std::filesystem::remove(std::filesystem::path(tmp), e);
+  const double gb = e ? 0.0 : n / 1e9;
+  if (std::filesystem::remove(std::filesystem::path(tmp), e) && !e)
+    zlog::eprintf("inferzero: removed %s (%.1f GB) left by an earlier build that did not finish\n", tmp.c_str(), gb);
+  else
+    zlog::eprintf("inferzero: could not remove %s (%.1f GB) left by an earlier build: %s\n", tmp.c_str(), gb,
+                  e.message().c_str());
 }
 // Refuses to start writing `bytes` next to `path` when its drive has less free (plus 256 MB of room): a full disk
 // stopped a build after tens of minutes, with the numbers nowhere (S3). A drive whose free space cannot be read: no
@@ -61,22 +69,35 @@ inline void need_free_space(const std::string& path, uint64_t bytes, const char*
     throw std::runtime_error(std::string(what) + " " + path + msg + "free some space, or put the models on another drive");
   }
 }
+// (self audit 2026-11-20 A8: guards counted, not told apart by the handler they replaced, so two builds on two threads
+//  (a pack beside a load) no longer restore each other's handlers out of order; the first installs, the last restores
+//  and hands the signal on. A signal the process ignored (SIG_IGN, e.g. nohup's SIGINT) stays ignored: a build is not
+//  stopped by it)
 struct XBuildStopGuard {
-  void (*old_int)(int) = SIG_DFL;
-  void (*old_term)(int) = SIG_DFL;
+  static std::mutex& mu() { static std::mutex m; return m; }
+  static inline int depth = 0;
+  static inline void (*old_int)(int) = SIG_DFL;
+  static inline void (*old_term)(int) = SIG_DFL;
+  static void (*take(int sig))(int) {
+    void (*old)(int) = std::signal(sig, xbuild_on_signal);
+    if (old == SIG_IGN) std::signal(sig, SIG_IGN);  // (kept ignored)
+    return old;
+  }
   XBuildStopGuard() {
-    old_int = std::signal(SIGINT, xbuild_on_signal);
-    old_term = std::signal(SIGTERM, xbuild_on_signal);
+    std::lock_guard<std::mutex> g(mu());
+    if (depth++ == 0) {
+      old_int = take(SIGINT);
+      old_term = take(SIGTERM);
+    }
   }
   ~XBuildStopGuard() {
+    std::lock_guard<std::mutex> g(mu());
+    if (--depth > 0) return;
+    // (the last guard restores the handlers and hands the signal on, once the .tmp files are gone)
     std::signal(SIGINT, old_int == SIG_ERR ? SIG_DFL : old_int);
     std::signal(SIGTERM, old_term == SIG_ERR ? SIG_DFL : old_term);
-    // (the outermost guard hands the signal on, once the .tmp files are gone: an inner one would only set the flag
-    //  again through the outer guard's handler)
-    if (old_int != xbuild_on_signal && old_term != xbuild_on_signal) {
-      const int sig = g_xbuild_sig.exchange(0);
-      if (sig) std::raise(sig);
-    }
+    const int sig = g_xbuild_sig.exchange(0);
+    if (sig) std::raise(sig);
   }
   static void check(const std::string& what) {
     if (g_xbuild_sig.load())
@@ -483,7 +504,8 @@ struct ExpertStore {
     zlog::eprintf("inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
     const std::string tmp = path + ".tmp";
     plat::KeepAwake awake;  // (S11: a laptop left alone slept mid-build)
-    drop_stale_tmp(tmp);    // (S7)
+    const plat::BuildLock lock(tmp + ".lock");  // (A9: held until the .tmp is renamed or removed below)
+    drop_stale_tmp(tmp, lock);                  // (S7)
     need_free_space(path, file_bytes, "the expert file");  // (S3: before anything is written)
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop
