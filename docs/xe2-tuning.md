@@ -107,7 +107,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_P2P`, `ARC_TP_PIPE`, `ARC_TP_EVSUM` (opt-in since 2026-11-18), `ARC_TP_OVERLAP`, `ARC_TP_LM`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`, `ARC_TP_SIM`) | [multi-gpu.md](multi-gpu.md) |
 
-The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
+The tools: `bench\gpu_sweep.ps1` / `.sh` (every prompt, generation, tile and drafting setting one at a time, the best combination, per-kernel profiles), `bin\mgpu_probe.exe` and
 `bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\membw_probe.exe` (memory read
 bandwidth of the CPU, the GPU and both; docs/speed-progress.md), `bin\clinfo.exe` (what the driver
 offers), `bin\gpu_bench.exe` (the matrix engines' int8 / f16 / bf16, the vector engines and memory measured against
@@ -161,10 +161,10 @@ Measured by manoreken2 (issue #4), the newest release that ran each:
 One Pro B70 (friskens, issue #12, 2026-11-13; the release not stated, 2026.11.13.06 asked for), the same 27B: 4K
 prompt 2,107 tok/s, 512 tokens 1,112, generation 32.2 tok/s, 74.9-75.2 with MTP.
 
-## 1. Prompt: `bench\gemm_sweep.ps1`
+## 1. Prompt: `bench\gpu_sweep.ps1 -Phases PTK`
 
 ```powershell
-.\bench\gemm_sweep.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -Tokens 4096
+.\bench\gpu_sweep.ps1 -Model C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -Phases PTK
 ```
 
 One setting at a time from the defaults, then the best of each together. New since 2026-11-01:
@@ -183,10 +183,10 @@ scales) its KL against the default was 0.009 / 0.00001 / 0.026 / 0.0055 at four 
 changed at the 4th token: probably over the limit against f32, so it stays a switch. A dense 27B quantizes more
 matrices this way.
 
-## 2. Generation: `bench\decode_try.ps1`
+## 2. Generation: `bench\gpu_sweep.ps1 -Phases GDK`
 
 ```powershell
-.\bench\decode_try.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -DFlash <the 27B's DFlash2 drafter folder>
+.\bench\gpu_sweep.ps1 -Model C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -Phases GDK -DFlash <the 27B's DFlash2 drafter folder>
 ```
 
 The same greedy answer (256 tokens of Python) plain, with `--mtp`, `--mtp --mtp-drafts 7`, with the DFlash2
@@ -325,7 +325,7 @@ accumulator still adds its 16-blocks in the same order, so CG 1 / 2 / 4 give the
 with DPAS emulated, 27B).
 
 ```powershell
-.\bench\gemm_sweep.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # rows X16, X16TM, X16GRF, X16CG
+.\bench\gpu_sweep.ps1 -Model C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -Phases P   # the ARC_X16 rows
 $env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-pp 4096 --n 64; Remove-Item Env:ARC_X16
 ```
 
@@ -882,7 +882,7 @@ spill; 64 x 16 spills plainly but not with `XW_PACKA` + `XW_PACKW` (`bin\xw_peak
 64 x 32 spill. `xw_sweep.ps1 -Wide` adds 16 x 64, 64 x 16 and 32 x 64 to its 140T rows. `xw_peak` lists them all with
 the packed forms (one minute: `bin\xw_peak.exe`).
 
-**To measure (a B60):** `.\bench\xw_sweep.ps1 -Model <27B gguf>`: the prompt at 512 / 4K / 16K tokens for the
+**To measure (a B60):** `.\bench\gpu_sweep.ps1 -Model <27B gguf> -Phases PT`: the prompt at 512 / 4K / 16K tokens for the
 default and four tile shapes, each shape's logits against the default's (identical expected), and a `--prof` of the
 default and the fastest shape at 4K. Left after that: the weights double-buffered in registers, the W8 and MoE
 expert layouts, and an 8-lane form for the Arc 140T.

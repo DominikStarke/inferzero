@@ -82,7 +82,7 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
 reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks have Linux versions in bash: `bench/website_bench.sh`,
-`bench/b60_sweep.sh`, `bench/decode_try.sh` (the `.ps1` files on Windows). Nothing on Linux needs Python.
+`bench/gpu_sweep.sh` (the `.ps1` files on Windows). Nothing on Linux needs Python.
 `scripts/make-package-linux.sh` makes the package (into `dist/`). Not on Linux yet: the window launcher, speech
 recording, the NPU (built, not run), `web_view` (Edge); audio formats other than WAV and scanned-PDF pages need
 `ffmpeg` / `pdftoppm` if installed ([linux-port.md](linux-port.md)).

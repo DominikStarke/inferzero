@@ -245,8 +245,7 @@ Several GPUs and GPU tuning:
 .\bin\serverz.exe -m model.gguf --gpus 4 --slots 4           # the server on a split model
 .\bin\mgpu_probe.exe                                         # the GPUs, and what moving data between them costs
 .\bin\event_probe.exe                                        # whether GPUs can sync without the CPU in the middle
-.\bench\gemm_sweep.ps1 -Models model.gguf                     # the prompt GEMM's settings swept on this GPU
-.\bench\decode_try.ps1 -Models model.gguf                     # generation: plain, MTP, DFlash2, GEMV switches
+.\bench\gpu_sweep.ps1 -Model model.gguf                      # every setting, tile and drafting mode swept on this GPU
 ```
 
 What to run on a discrete Arc card (B580 / B60 / B70, A770 / A750 / A580): [docs/xe2-tuning.md](xe2-tuning.md).

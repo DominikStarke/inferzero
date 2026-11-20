@@ -53,7 +53,7 @@ and since 2026-11-18 Docker and Kubernetes files (`docker/`, not tested yet).
   stops the server again (it passes TERM: a background command of a non-interactive shell starts with SIGINT ignored).
 - **2026-11-15: no Python on Linux.** `zero-launcher.sh` is the whole launcher in bash (curl downloads into the Hugging
   Face cache layout, each file's size and SHA-256 from the repository's headers, `HF_TOKEN`); the benchmarks have bash
-  twins (`bench/website_bench.sh`, `b60_sweep.sh`, `decode_try.sh`); `tests/test_zero_launcher.sh` and
+  twins (`bench/website_bench.sh`, `gpu_sweep.sh`); `tests/test_zero_launcher.sh` and
   `tests/check_catalog_sync.sh` run in CI's `linux-package` job. `ref_forward` and `gpu_bench` build with g++ and are
   in the package (`plat::fseek64` for `_fseeki64`).
 - **2026-11-14: contributions for Linux.** `--install-service` never overwrites an existing unit without

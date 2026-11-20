@@ -69,7 +69,7 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 | `docs/before-after.md` | every change with its numbers; `docs/speed-progress.md`, `docs/lessons-intel-arc-igpu.md` for history and what did not work |
 | `docs/multi-gpu.md`, `docs/xe2-tuning.md` | split models and GPUs with XMX (B-series, B390, Arc 140T, Alchemist): design, failsafes, switches and their defaults per GPU kind, what users measured |
 | `docs/architecture.md`, `docs/linux-port.md` | how the engine works and the source layout; the Linux port |
-| `bench/` | `gemm_sweep.ps1`, `decode_try.ps1` / `.sh`, `xw_sweep.ps1`, `f33_sweep.ps1`, `b60_sweep.ps1` / `.sh` (discrete cards), `website_bench.ps1` / `.sh`, `gpu_bench.cpp`, `xw_peak.cpp`, micro-benchmarks |
+| `bench/` | `gpu_sweep.ps1` / `.sh` (every setting, tile and drafting mode on any GPU, with per-kernel profiles), `f33_sweep.ps1`, `website_bench.ps1` / `.sh`, `gpu_bench.cpp`, `xw_peak.cpp`, micro-benchmarks |
 | `docker/` | `Dockerfile`, `compose.yaml`, `kubernetes.yaml`, `entrypoint.sh`: the server in a container on Linux (not tested yet) |
 | `build.sh`, `zero-launcher.sh` | the Linux build and the terminal launcher (bash only) |
 
