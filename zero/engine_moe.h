@@ -297,7 +297,7 @@
       tl1.resize(1 + 3 * (size_t)NU);
       const bool xcpu = xcpu_layer_ok(L);
       if (xcpu)  // (with the CPU's inputs, one wait: zero/xe2/engine_xcpu.h)
-        xcpu_read_tiles(Mp, tl1);
+        xcpu_read_tiles(Mp, tl1, q2f);  // (two-pass mode: the residual's too, audit 2026-11-20 A2)
       else
         CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
       xt_hit_h_.assign(1, 0);
@@ -409,7 +409,7 @@
       size_t gws[2] = {(size_t)E, max_tiles}, lws[2] = {16, 1};
       run("moe_down", k, 2, gws, lws);
     }
-    if (!xmiss.empty()) xcpu_run(L, xmiss, Mp);  // (the CPU's slots copied into my_ ahead of moe_combine)
+    if (!xmiss.empty()) xcpu_run(L, xmiss, Mp, q2f);  // (the CPU's slots copied into my_ ahead of moe_combine)
     if (tp_moe()) {
       tp_moe_combine(T);  // (this GPU's experts + the shared expert on GPU 0, summed over the GPUs)
     } else {

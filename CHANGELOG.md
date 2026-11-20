@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-20: ARC_XCPU in precise mode runs both passes, and works on packaged models (self audit A2)
+
+- **Precise mode (`--precise`):** the GPU's experts run two int8 passes there (the activations and their rounding
+  residual), but the CPU's experts under `ARC_XCPU=1` ran one. Now the CPU does both, as the GPU's fused kernels do:
+  gate / up against the activations and their residual, the two sums added; h quantized with its residual
+  (`quant_act32_q2`, as `moe_quant`); the down rows against both. Flash Next, 160 code tokens token by token against
+  f32: KL 0.00221 with the CPU off, 0.00222 with it computing ~10,700 experts (top token 158 / 160 both). Two passes
+  cost the CPU 0.301 ms an expert against 0.176 in the default mode.
+- **Packaged models:** a launcher package keeps the experts in its `.experts` file only, so its GGUF's expert tensors
+  have no data, and `ARC_XCPU=1` refused every such layer: it did nothing on a packaged model. The CPU only ever
+  computes experts whose record is in the RAM tier (where records stay once read), so it now reads those alone and no
+  longer needs the GGUF's copy.
+- With `ARC_XCPU=0` (the default) nothing changes: Flash Next's logits byte for byte as before, default and precise.
+
 ## 2026-11-20: the prompt attention as flash attention on 8-lane XMX, opt-in (A770 / A750, Arc 140T)
 
 - **Why:** the A770's 27B 4K prompt is ~1,223 tok/s against a B60's ~1,726, and attention is 13.6 % of its 16K
