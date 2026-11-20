@@ -123,7 +123,10 @@
   // 2,772 tok/s (h8_decode 61.9 -> 43.7 ms, h8_act 95.0 -> 88.5), the same logits (joshdev-de, issue #27, release
   // 2026.11.17.03); the B60 is the same chip. Lunar / Panther Lake keep 256 until a B390 measures it. ARC_H8_GRF=256: 256
   std::string h8_grf() const {
-    static const int e = getenv("ARC_H8_GRF") ? atoi(getenv("ARC_H8_GRF")) : (zrt::integrated() ? 256 : 128);
+    // (the switch read once; the default per call, so each shard of a split over unlike GPUs decides for its own, not
+    //  the first one asking: the Researcher, 2026-11-20)
+    static const int env = getenv("ARC_H8_GRF") ? atoi(getenv("ARC_H8_GRF")) : 0;
+    const int e = env ? env : (zrt::integrated() ? 256 : 128);
     return (e == 128 && !cl_.sg8) || e == -128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   cl_kernel h8r_kernel(int hb, int src, const char* name, const std::string& extra = std::string()) {
