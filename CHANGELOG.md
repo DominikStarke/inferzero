@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-21: self audit: an attention kernel's guard, split models' GEMM tiles, help texts
+
+- **attn_split** (the long-prompt attention over key splits) builds only where its work-group divides the K / V tile,
+  as attn_q8 does. The `#error` that kept bad sizes out was dropped for issue #70, so a build with such sizes would
+  have loaded only part of each tile, with no error. No model shipped today has such sizes (head dims 64-512 all
+  divide), so nothing changed for them: the same kernels as before where the sizes fit.
+- **Alchemist's tile per GEMM shape** is no longer the default on split models. A shard's GEMMs are sliced while the
+  rule's n_embd is not, so with 3 or 4 A770s the 27B's gate / up / down took the 16 x 32 tile that was measured
+  slower for them on one card. Split models go back to the one tile they had before 2026-11-20 (the same results;
+  `ARC_GEMM_XW_SHAPE=1` still turns it on).
+- **ARC_XCPU's default** is decided once per engine, not with a driver call on every MoE layer of every token.
+  The help texts now say where it is on: any discrete GPU without 8-lane sub-groups, a Data Center Max included. They
+  also say that results move run to run with it on, so bit-for-bit checks set `ARC_XCPU=0`.
+- `serverz --help` lists the discrete defaults `runz --help` already did (`ARC_GEMM_XW_GU`, `_SHAPE`, `_DB`). Stale
+  comments that still called these switches opt-in are fixed. The docs now say that `ARC_GEMM_XW_NC_E=2` turns the
+  per-shape tiles off. serverz's new expert line logs each of its lines with the log's prefix.
+
 ## 2026-11-21: serverz logs each request's expert reads (streamed MoE)
 
 - After each request of a model whose experts stream from the SSD, serverz logs runz's expert line: hits and misses,

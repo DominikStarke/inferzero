@@ -188,7 +188,7 @@
   }
   bool xw_2d() const { return xw_2d_level() != 0 && xw_2d_fb_ < 2; }     // (the loads in 2D blocks)
   bool xw_2d_c() const { return xw_2d_level() == 1 && xw_2d_fb_ == 0; }  // (and C's reads / writes)
-  // ARC_GEMM_XW_GU=1 (opt-in, 2026-11-20; the B70's 3,000 plan): the FFN's gate and up GEMMs as one gemm_xw launch
+  // ARC_GEMM_XW_GU (2026-11-20, opt-in at first, the default below; the B70's 3,000 plan): the FFN's gate and up GEMMs as one gemm_xw launch
   // (gemm_xw.cl -DXW_GU), its epilogue writing silu(gate) * up: the gate's f32 values (285 MB a layer for a 4K prompt
   // of the 27B) are neither written to big_ nor read back by the up GEMM. 16 lanes, NC 2 / 4 / 8; the same results bit
   // for bit as the two launches (xw_gu_check at start; a difference or a failed build keeps the two launches)
@@ -201,7 +201,7 @@
     return e >= 0 ? e == 1 : !zrt::integrated();
   }
   int xw_gu_ok_ = -1;  // (-1 not checked yet, 0 differs / fails, 1 checked)
-  // ARC_GEMM_XW_DB=1 (opt-in, 8 lanes, 2026-11-20; the A770 row's G3): gemm_xw8.cl -DXW_DB, its packed loop with the
+  // ARC_GEMM_XW_DB (8 lanes, 2026-11-20, opt-in at first, the default below; the A770 row's G3): gemm_xw8.cl -DXW_DB, its packed loop with the
   // next token group's and the next chunk's operands read one step ahead of their DPAS (where both operands are
   // packed: the Alchemist / 140T preset). The same DPAS in the same order: bit for bit, checked at start
   // Only for 32-token tiles, and by default on Alchemist (discrete 8-lane) since 2026-11-21: hansong80's A770 (#45,
@@ -399,15 +399,17 @@
   // 32 x 16 with 4 column sub-groups a work-group for the big ones (down, up, gate, qkv, q, z: -1 to -9 % each) and
   // 16 x 32 for those with N <= n_embd and K <= 8192 (ssm_out, o, k, v: -7 to -27 %); all GEMMs 3.5-6.6 % less time
   // than at the one default tile. The same sums in each column (checked at start, with a long-K shape too).
-  // ARC_GEMM_XW_SHAPE=0, or any of ARC_GEMM_XW_TM / _NC / _WGX / _NC_E set: one tile for all, as before. The Arc 140T
-  // (an iGPU) keeps its preset's tile until measured.
+  // ARC_GEMM_XW_SHAPE=0, or any of ARC_GEMM_XW_TM / _NC / _WGX set, or ARC_GEMM_XW_NC_E=2: one tile for all, as before. The Arc 140T
+  // (an iGPU) keeps its preset's tile until measured. Not by default on a split model (self audit 2026-11-21): a
+  // shard's N and K are sliced while n_embd is not, so with 3 or 4 A770s the 27B's gate / up / down would fall under
+  // the 16 x 32 rule that was measured slower for them on one card (and lose ARC_GEMM_XW_DB, 32-token tiles only).
   struct XwTile { int tm, nc, wgx; };
   // (ARC_GEMM_XW_SHAPE=1: on any GPU taking gemm_xw8, the 140T preset and the 125H's emulation included: tests)
   bool xw_shape_on() const {
     static const int env = getenv("ARC_GEMM_XW_SHAPE") ? atoi(getenv("ARC_GEMM_XW_SHAPE")) : -1;
     static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX");
     if (env == 0 || fixed || xw_nc_e() || xw_lanes() != 8) return false;
-    return env == 1 || (cl_.sg8 && !zrt::integrated());
+    return env == 1 || (cl_.sg8 && !zrt::integrated() && opt.tp_size <= 1);
   }
   XwTile xw_tile_for(int N, int K) const {
     XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};

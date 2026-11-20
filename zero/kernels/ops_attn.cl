@@ -818,6 +818,9 @@ __kernel void attn_ps(__global const char* qi, __global const float* qsc, __glob
 // keys [max(lo(m), split start), min(pos0 + m, split end)]. Partial results (max, sum, unnormalized o) go to
 // part[((m * nsplit + split) * nh + h) * (HD + 2)]; attn_combine merges each row's splits.
 // grid (nsplit * 16*NSP*TPW, nkv), local (16*NSP*TPW, 1). kstart and slen: multiples of 16.
+// (as attn_q8, only where its work-group divides the tile: NL whole, or part of each tile would not be loaded; self
+//  audit 2026-11-21, the #error that had kept such builds out was dropped for issue #70)
+#ifdef ATTN_Q8_FITS
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_split(__global const char* qi, __global const float* qsc, __global const uint* kq,
                          __global const float* ksc, __global const uint4* vq, __global const float* vsc, int cap,
@@ -899,6 +902,7 @@ __kernel void attn_split(__global const char* qi, __global const float* qsc, __g
     }
   }
 }
+#endif  // ATTN_Q8_FITS
 
 // Single-token attention split over the key range (flash-decoding): one sub-group per (key split, kv head,
 // head slice) computes, for HS q heads, the max score, softmax denominator and unnormalized P*V over its keys

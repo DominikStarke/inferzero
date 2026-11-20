@@ -1738,7 +1738,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 #include "xe2/engine_xe2.h"  // (tuning switches for GPUs with XMX, zero/xe2/; off on the iGPUs)
 #include "engine_h8.h"  // (H8 prompt GEMMs, QUEUE 31.12: Hadamard-rotated int8, ARC_H8=1)
 #include "xe2/engine_hostcpu.h"  // (the weights in host memory computed by the CPU for one token, ARC_HOST_CPU=1)
-#include "xe2/engine_xcpu.h"  // (one token's expert-cache misses computed by the CPU, ARC_XCPU=1)
+#include "xe2/engine_xcpu.h"  // (one token's expert-cache misses computed by the CPU, ARC_XCPU)
 #include "xe2/engine_xw.h"  // (the H8R GEMM on XMX with wider tiles, QUEUE 33.4: by default with h8_auto_ / the 140T preset; ARC_GEMM_XW)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)

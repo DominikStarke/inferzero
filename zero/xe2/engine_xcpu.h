@@ -1,5 +1,5 @@
 // Part of the Engine class body (included from zero/engine.h): one token's MoE experts that are not in the GPU's
-// expert cache, computed by the CPU (ARC_XCPU=1, opt-in).
+// expert cache, computed by the CPU (ARC_XCPU; on by default on discrete 16-lane cards, see xcpu_on).
 //
 // A miss otherwise copies the expert's record (Flash Next: ~2.3 MB) to the GPU and the layer waits for it: on a
 // B60 in a PCIe 3.0 x8 slot ~0.36 ms a miss, 49 misses a token at 90 % hits, ~17 of 44 ms (expert cache size sweep,
@@ -38,10 +38,17 @@ double xcpu_ms_ = 0, xcpu_rd_ms_ = 0, xcpu_fill_ms_ = 0;  // (compute + copies; 
 // On by default on discrete Battlemage cards (16-lane, the B-series) since 2026-11-20 (the user): a Pro B60 on PCIe
 // 3.0 x8, Flash Next IQ3_S, a ~4,200-token prompt then 256 tokens, 22.5 -> 26.3 tok/s (+17 %, three pairs; skipzx-lab,
 // issue #57, a62be02). Off on Alchemist (an A770 on x16 measured 20.0 / 20.6 -> 18.9 / 20.1) and on iGPUs (they read
-// RAM directly: no gain). ARC_XCPU=0 / 1 decides everywhere. (The default per call: each GPU decides for its own)
+// RAM directly: no gain). ARC_XCPU=0 / 1 decides everywhere. (The default per engine: each GPU decides for its own;
+// it is any discrete GPU without 8-lane sub-groups, so a Data Center GPU Max too. Kept once per engine: it was a
+// driver call on every MoE layer of every token, self audit 2026-11-21.) Results move run to run with it on (which
+// experts the CPU takes depends on the fills' timing): a bit-for-bit check of a streamed MoE model on such a card
+// needs ARC_XCPU=0 on both sides.
+mutable int xcpu_def_ = -1;
 bool xcpu_on() const {
   static const int e = getenv("ARC_XCPU") ? (atoi(getenv("ARC_XCPU")) != 0 ? 1 : 0) : -1;
-  return e >= 0 ? e == 1 : !zrt::integrated() && !cl_.sg8;
+  if (e >= 0) return e == 1;
+  if (xcpu_def_ < 0) xcpu_def_ = !zrt::integrated() && !cl_.sg8 ? 1 : 0;
+  return xcpu_def_ == 1;
 }
 // In two-pass mode (Flash Next's --precise) the CPU's experts run one pass by default since 2026-11-20 (the user's
 // choice: 0.187 against 0.302 ms an expert; KL against f32 over 548 chat + 160 code positions 0.00126 / 0.00251 against

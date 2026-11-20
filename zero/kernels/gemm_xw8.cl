@@ -135,7 +135,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     for (int h = 0; h < XW_NH; ++h) xacc[t][h] = (int8)(0);
 
 #if defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
-  // ---- -DXW_DB (ARC_GEMM_XW_DB=1, 2026-11-20, the A770 row's G3): the packed loop with its loads one step ahead. The
+  // ---- -DXW_DB (ARC_GEMM_XW_DB, 2026-11-20, the A770 row's G3; the Alchemist default for 32-token tiles since 2026-11-21): the packed loop with its loads one step ahead. The
   //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B
   //      operands too, so a load's latency is covered by the DPAS before it is needed (the plain loop waits on each
   //      read where it is used). The same operands reach the same DPAS in the same order: bit for bit the plain loop's.
