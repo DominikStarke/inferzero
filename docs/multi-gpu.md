@@ -130,6 +130,27 @@ on their sums there.
 
 On Windows the B60s report no peer access, so nothing changes there.
 
+### No peer access on Linux: a kernel without P2PDMA
+
+The xe driver gives one GPU access to another's memory only when the kernel has `CONFIG_PCI_P2PDMA=y`. Unraid
+7.4.0's stock kernel (6.18.60) does not, so two Arc Pro B50s reported "the driver reports no peer access" though
+the board copies GPU to GPU (catduckgnaf, issue #59). Other distributions' kernels may lack it too. To see:
+
+```
+grep P2PDMA /boot/config-$(uname -r)               # or: zcat /proc/config.gz | grep P2PDMA
+grep -c ' pci_p2pdma_add_resource$' /proc/kallsyms   # 0: not in this kernel
+```
+
+The same kernel rebuilt with it, `mgpu_probe` on the two B50s (PCIe 3.0 x8 each, one Xeon socket): a 20 KB copy
+11-14 µs direct against 16-18 through host memory, 40 MB at 4.8 GB/s against 2.8-2.9. On those links it changed
+little: the 35B-A3B's 4K prompt +2 % (table in "Mixture of experts" below), its generation the same, the 27B's
+4 batched conversations 59.1 -> 62.2 tok/s, the logits the same on both kernels. Faster links gain more (the two
+B60s below).
+
+On the same two cards, `ARC_XSPLIT_TP=1` (a split model running a token's cached experts before its missed ones
+arrive, the F30 test) gave the same logits run to run on both kernels (md5 equal), and `ARC_TP_EVSUM=1` crashed or
+hung (a segfault before loading, a GPU reset after 120 s, logits that differed before the hang): leave it off.
+
 Measured on two Pro B60s on Linux (scenic6942, issue #17, both cards on PCIe 4.0 x8; the 27B GSQ-RCO IQ3_S,
 `--bench-pp 4096 --n 128`, three prompt runs each): the links measure 14.1 GB/s direct and 14.2 through host memory.
 
@@ -282,12 +303,19 @@ next chunk's attention work.
 
 ## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
 
-**A MoE model that fits on one card is faster unsplit when the cards have no peer access.** Two Arc Pro B50s whose
-driver gives no direct copies between them (the sums through host memory, ~22.5 µs a small copy) ran a 35B-A3B
-fine-tune at 40-46 tok/s on one card and 8.16 split over both (catduckgnaf, issue #59, release 2026.11.16.16): a
-token pays 80 sums, and the split turns off the step that runs a token's cached experts before its missed ones
-arrive (`ARC_XSPLIT`, see F30). One model per card is the fast setup there. With peer access and every expert
-resident, two B60s beat one (35B generation 70.1 -> 91.2 tok/s).
+**A MoE model that nearly fills one card: the split can win generation even through host memory.** Two Arc Pro
+B50s 16 GB (catduckgnaf, issue #59, release 2026.11.19.04, a 35B-A3B fine-tune Q4_K_M, `--bench-pp 4096 --n 128`):
+
+| Setup | 4K prompt | Generation |
+|---|---|---|
+| one card (61 % of the experts on it, the rest streamed) | 1,715 tok/s | 46.8 tok/s |
+| 2 cards, sums through host memory, `ARC_XSPLIT_TP=1` | 1,460 | 66.8 |
+| 2 cards, sums direct (a kernel with P2PDMA, below) | 1,490-1,494 | 63.2-64.2 |
+
+Split, every expert has a place on a card, which outweighs the 80 sums a token pays; the prompt is ~13 % slower.
+(An earlier 8.16 tok/s split on 2026.11.16.16 had the first token's kernel compile inside its timing.) One model per
+card is still the setup for running two models at once. With peer access and every expert resident, two B60s beat
+one too (35B generation 70.1 -> 91.2 tok/s).
 
 The MoE layers are divided by expert instead of by FFN column: GPU r of N holds the routed experts [e0, e1) (256
 experts over 2: 0-127 and 128-255). Every GPU routes every token itself (the router and its input are the same on

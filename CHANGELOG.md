@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-11-20: the first answers after an update no longer wait for kernels: the warm-up covers MTP heads and switches
+
+- **An MTP head in a file of its own is warmed over every row count** (joshdev-de, PR #62). The warm-up rejected every
+  draft, so the MTP block only ever ran on one row there; Flash Next's Q8_0 head (`mtp-*.gguf`, its own matrices and
+  experts) then compiled 11 kernels in the first real answer. A Pro B70, first MTP answer after an update: Flash Next
+  5.0 -> 56.1 tok/s, the 35B-A3B 11.4 -> 131.3. Installs warm up once more after this release.
+- **A run with other `ARC_*` switches, or another MTP head, warms its own kernels** (joshdev-de, PR #63). The warm-up's
+  marker ignored them, so such a run skipped the warm-up and compiled in generation: a B70's 27B with
+  `ARC_GEMV_WAVE_MT=0`, first run 18.1 -> 64.8 tok/s. Each combination warms up once.
+- Both bit-identical: the warm-up's output is thrown away (`--dump-logits` the same before and after on the B70's
+  27B, 35B-A3B and Flash Next, and here on the 4B with and without MTP).
+
+## 2026-11-20: Alchemist: the decoded weights kept for short prompts, beside the 140T preset (`ARC_140T_RES=1`, opt-in)
+
+- **Why:** on Alchemist the 140T preset keeps no decoded copy of the weights, so a prompt chunk under 512 tokens
+  decodes every weight first (~45-55 ms on an A770's 4B at any length).
+- **What** (skipzx-lab, PR #61): with `ARC_140T_RES=1`, where the decoded copy fits it stays for chunks under 768
+  tokens (the DP4a GEMM), and the preset still takes longer chunks from the raw weights. An A770 on Linux, best of 3:
+  the 4B's 128-token prompt 1,161 -> 2,030 tok/s, 512 2,744 -> 3,170, 4K unchanged (5,025 / 5,006); the 9B (with
+  `--budget 14`) 684 -> 1,487 at 128. Generation the same. The cost is the copy: the 4B's GPU buffers 3.9 -> 7.7 GiB,
+  the 9B's 6.6 -> 13.9, less room for the context, so it stays opt-in.
+- **Accuracy:** each chunk takes one of the two existing paths, bit for bit (17- and 640-token prompts equal to the
+  resident path, 3,584 tokens equal to the default). KL against f32 on 512 tokens goes down, as the short chunks read
+  the plain int8 weights instead of the rotated ones: the 4B 0.00197 -> 0.00102 (top token 490 -> 501 / 512).
+
+## 2026-11-20: `serverz --gpus N` says what a split model leaves out
+
+- With `--gpus 2`, `--mmproj` was accepted and then dropped without a word (`/props`: vision false; catduckgnaf,
+  issue #59). The server now logs that images are not read with a split model yet, and that drafting is off.
+
 ## 2026-11-19: split models: the prompt's sums direct by themselves where the direct links are a little slower
 
 - **Measured:** hibagus's 4 stacks of Max 1550s (issue #48), the 27B, 5 rounds of the three settings: host memory

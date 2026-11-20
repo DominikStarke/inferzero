@@ -78,6 +78,13 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   zlog::eprintf("inferzero-server: loading %s\n", model.c_str());
   const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
+    // (said, not dropped silently: --mmproj was accepted with --gpus 2 and /props said vision: false with no line
+    //  why; catduckgnaf, issue #59)
+    if (!so.mmproj.empty() && so.mmproj != "-")
+      LOG_WRN("--gpus %d: images are not read with a split model yet; %s is not loaded (text only)\n", so.gpus,
+              so.mmproj.c_str());
+    if (so.eo.mtp || !so.eo.dflash.empty())
+      LOG_INF("--gpus %d: drafting (MTP / DFlash2) is off for a split model for now\n", so.gpus);
     so.eo.mtp = false;
     so.eo.dflash.clear();
     so.dflash_auto = false;
