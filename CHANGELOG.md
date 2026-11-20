@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-20: bench/xw_pergemm.ps1 / .sh: which XMX tile each of a model's prompt GEMMs wants
+
+- For every tile setting, the real model's prompt (`runz --bench-pp N --n 0 --prof`) and each GEMM kind's GPU time
+  (gemm_down / up / gate / qkv / o / ssm_out / z ...): two rounds in alternating order after an untimed warm-up, the
+  fastest setting per GEMM, and the total if each GEMM took its own. 8-lane XMX (Alchemist, the 140T): 32 x 16, 32 x 32,
+  16 x 32, WGX 4, and with all settings 16 x 64, 64 x 16, WGX 1, 32 x 32 WGX 4; 16-lane (B-series): 32 x 64, 32 x 32,
+  32 x 96, 32 x 128, and 16 x 128, 64 x 64, WGX 1 / 2. Every setting gives the same results (checked at start). It decides
+  whether the engine should pick the tile per GEMM (`ARC_GEMM_XW_NC_E` does it for the n_embd-wide ones by hand).
+
 ## 2026-11-20: Alchemist / Arc 140T: wider tiles for the n_embd-wide H8 GEMMs, opt-in (`ARC_GEMM_XW_NC_E=2`)
 
 - **Why:** skipzx-lab's A770 profile (issue #45) has every H8 GEMM 1.5-2x a B60's although the A770 measures more int8
