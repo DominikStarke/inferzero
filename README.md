@@ -153,7 +153,9 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   4K prompt 3,100 tok/s (main e93fac1 with the FFN's gate and up in one GEMM launch, the default since 2026-11-20 and in
   release 2026.11.20.03; 2,972 without it, main 7368768 with `ARC_H8_NORM`; 2,897 with the 2D GEMM and its prefetch alone), 8K 2,727
   (2026.11.16.12), generation 35.2 tok/s, 70.6 with MTP (2026.11.16.02). Qwen3.6 35B-A3B: 8K prompt 5,647 tok/s
-  (2026.11.17.04), 4K 5,177, 16K 5,445, generation 117.2 tok/s after a 4K prompt (main e93fac1; 95-98 on 2026.11.16.15). Flash Next, 46 % of its experts in the
+  (2026.11.17.04), 4K 5,177, 16K 5,445, generation 117.2 tok/s after a 4K prompt (main e93fac1; 95-98 on 2026.11.16.15). Another B70 on
+  Ubuntu (Daleang, [issue #73](https://github.com/rizagp/inferzero/issues/73), main 6b99c2a, a Threadripper with PCIe 3.0): the 27B's 4K
+  prompt 3,086-3,135 tok/s, generation 33.8; over two of them 3,105 / 47.4. Flash Next, 46 % of its experts in the
   card's 32 GB: 4K prompt 1,414 (2026.11.17.04), 16K 1,145, generation 38.6 tok/s once the expert cache holds what
   the text uses (6.6 from a cold cache). Another B70 under Windows ([issue #12](https://github.com/rizagp/inferzero/issues/12),
   release 2026.11.13.06, before the weight prefetch; a rerun is asked for): 2,105 tok/s, generation 32.2, 75.2 with MTP.
