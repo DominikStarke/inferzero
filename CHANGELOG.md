@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: the GEMVs' sign table computed instead of read (opt-in `ARC_GV_SGNPOP=1`)
+
+- **`ARC_GV_SGNPOP=1`**: the one-token GEMV (`gemv_v`, and the 2-8 token `gemv_mt_v`) of IQ3_XXS, IQ2_XXS and IQ2_XS
+  computes each 8-weight group's signs from its 7-bit index instead of reading them from the sign table in local
+  memory. The table (`ksigns_iq2xs`) is the index with its parity as bit 7, for all 128 entries, so a popcount gives
+  the same values: bit-identical. It saves 4 random local-memory reads per 32 weights.
+- **A Pro B60, the 27B** (skipzx-lab, #57): generation 24.09 -> 24.49 tok/s on average over 4 alternated pairs
+  (+1.6 %), the logits byte for byte the same. IQ3_XXS is the 27B's slowest GEMV (~280 GB/s on `gemv_v`, the same at
+  2 / 4 / 8 rows) and its most common gate / up type. Its codebook lookups cost about as much again: without them (a
+  probe, wrong output) a matrix took 0.104 ms instead of 0.122.
+- **Off by default until other cards measure it.** `bench/gemv_bench` gets `GB_TYPE=<ggml type>`, to time only one
+  type's layers of a mixed model such as this 27B.
+
 ## 2026-11-22: a layer split over GPUs on two Level Zero drivers
 
 - **The bug (skipzx-lab, #57):** on Linux, a B60 and an A770 can show up on two Level Zero drivers, one per kind.

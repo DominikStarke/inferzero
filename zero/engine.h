@@ -1347,7 +1347,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       g.guvk = vk;
       if (g.N % grows) return false;  // (the up rows must start a sub-group of their own: never kernel'd)
       g.guk = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(g.type) + " -DGROWS=" + std::to_string(grows) +
-                                   head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2" + iq3t_def(g),
+                                   head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2" + iq3t_def(g) + xe2_gv_sgn(),
                      vk ? "gemv_v" : "gemv");
     }
     const int grows = g.gurows;
@@ -1384,7 +1384,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
         w.g1k[fz] = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(w.g1rows) +
                                          head_defs(w) + probe_def + (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) +
-                                         (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w),
+                                         (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w) + xe2_gv_sgn(),
                            vk ? "gemv_v" : "gemv");
       }
       const bool vk = w.g1vk;
@@ -1430,7 +1430,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       cl_kernel k = kernel("decode", xe2_gemv_mt_grf() + "-DQT=" +
                                          std::to_string(w.type) + " -DGROWS=" + std::to_string(gr) + " -DTB=" +
                                          std::to_string(fuse ? 2 * tb : tb) + head_defs(w) +
-                                         (fuse ? " -DQ2F" + q2_defs_ : std::string()) + iq3t_def(w),
+                                         (fuse ? " -DQ2F" + q2_defs_ : std::string()) + iq3t_def(w) + xe2_gv_sgn(),
                            vk ? "gemv_mt_v" : "gemv_mt");
       q2_fused_ = fuse;
       int N = w.N, K = w.K, M = Mp, T = cur_T_;

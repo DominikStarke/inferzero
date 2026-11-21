@@ -1383,6 +1383,13 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
   // codebook types: the block's bytes with 16-bit vector loads (offsets 2 mod 4), codebook / signs from local memory
   __global const ushort* ps = (__global const ushort*)p;
   __local const uchar* ksg = (__local const uchar*)(kt + GRID_N);  // (types with a sign table)
+  // (-DGV_SGNPOP, 2026-11-22: the sign table computed, not read: ksigns_iq2xs[i] is i with its parity as bit 7 (all 128
+  //  entries, src/iq_tables.h), so the 4 random local-memory reads a 32-block become a popcount; the same values)
+#ifdef GV_SGNPOP
+#define KSG(i) ((uint)(i) | ((popcount((uint)(i)) & 1u) << 7))
+#else
+#define KSG(i) ((uint)ksg[i])
+#endif
   *dmin = 0.0f;
   *mn0 = *mn1 = 0;
 #if QT == IQ3_XXS
@@ -1398,7 +1405,7 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
     w[2 * l] = apply_mask4(kt[qq[l] & 0xFF], m.x);
     w[2 * l + 1] = apply_mask4(kt[qq[l] >> 8], m.y);
 #else
-    const uint sg = ksg[(a >> (7 * l)) & 127];
+    const uint sg = KSG((a >> (7 * l)) & 127);
     w[2 * l] = apply_signs4(kt[qq[l] & 0xFF], sg & 0xF);
     w[2 * l + 1] = apply_signs4(kt[qq[l] >> 8], sg >> 4);
 #endif
@@ -1416,7 +1423,7 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
     w[2 * l] = apply_mask4(kt[2 * gi], m.x);
     w[2 * l + 1] = apply_mask4(kt[2 * gi + 1], m.y);
 #else
-    const uint gi = (a0 >> (8 * l)) & 0xFF, sg = ksg[(a1 >> (7 * l)) & 127];
+    const uint gi = (a0 >> (8 * l)) & 0xFF, sg = KSG((a1 >> (7 * l)) & 127);
     w[2 * l] = apply_signs4(kt[2 * gi], sg & 0xF);
     w[2 * l + 1] = apply_signs4(kt[2 * gi + 1], sg >> 4);
 #endif
@@ -1465,7 +1472,7 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
     w[2 * l] = apply_mask4(kt[2 * gi], m.x);
     w[2 * l + 1] = apply_mask4(kt[2 * gi + 1], m.y);
 #else
-    const uint gi = qq[l] & 511, sg = ksg[qq[l] >> 9];
+    const uint gi = qq[l] & 511, sg = KSG(qq[l] >> 9);
     w[2 * l] = apply_signs4(kt[2 * gi], sg & 0xF);
     w[2 * l + 1] = apply_signs4(kt[2 * gi + 1], sg >> 4);
 #endif

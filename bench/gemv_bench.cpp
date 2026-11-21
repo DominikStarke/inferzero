@@ -7,6 +7,8 @@
 // A kernel name starting with "gemv_mt" (gemv_mt / gemv_mt_v: T token rows per weight read, speculative
 // verification) runs with T = GB_T (default 8) activation rows and the extra arguments (T, ldc = N, c_off = 0,
 // acc = 0); defines should carry the matching -DTB. Errors are reported for every token row.
+// GB_TYPE=<ggml type number> (2026-11-22): only that type's layers, for models that mix types per layer (the 27B GSQ:
+// 18 for its IQ3_XXS gates); without it, the first matching layer's type and shape.
 // GB_CMP=kernel[:defines] compares bitwise with another kernel (same argument form), built from GB_CMP_FILE if set.
 #include "../src/clrt.h"
 #include "../src/quants.h"
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
       const GgufTensor* tp = g.find(nm);
       if (!tp) { if (l > 64) break; continue; }
       const GgufTensor& t = *tp;
+      if (getenv("GB_TYPE") && (int)t.type != atoi(getenv("GB_TYPE"))) continue;  // (GB_TYPE: one weight type)
       if (!ts.empty() && (t.type != ts[0]->type || t.dims != ts[0]->dims)) continue;  // one type and shape per run
       ts.push_back(&t);
     }

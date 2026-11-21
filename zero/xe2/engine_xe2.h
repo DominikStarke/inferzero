@@ -210,6 +210,13 @@
     }
     return defs[gemv_pf_kind_];
   }
+  // ARC_GV_SGNPOP=1 (2026-11-22, opt-in): the GEMVs' sign table computed, not read (decode.cl -DGV_SGNPOP: the 7-bit
+  // index with its parity as bit 7, as ksigns_iq2xs holds it), for the codebook types (IQ2_XXS / IQ2_XS / IQ3_XXS);
+  // bit-identical. A B60's IQ3_XXS gate in bench/gemv_bench: 0.122 -> 0.113 ms a matrix at best (issue #57)
+  static const std::string& xe2_gv_sgn() {
+    static const std::string s = getenv("ARC_GV_SGNPOP") && atoi(getenv("ARC_GV_SGNPOP")) != 0 ? " -DGV_SGNPOP" : "";
+    return s;
+  }
   // ARC_GEMV_WAVE (2026-11-15): the single-token GEMV's rows per sub-group (gemv and gemv_v) by the GPU's thread
   // count T (EUs x threads per EU: a Pro B70 2,048, a B60 1,280) instead of by type: a matrix of T < N <= 4T rows takes
   // 4 rows a sub-group (its N / 4 sub-groups in one round of the GPU's threads), N > 4T one row (many rounds, so the
