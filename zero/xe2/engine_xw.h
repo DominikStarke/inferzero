@@ -599,8 +599,15 @@
     xw_emu_ = xw_lanes() == 8 ? !cl_.xmx : (!xmx_ || cl_.sg8);
     // (and Panther Lake's Xe3 iGPU since 2026-11-21: the B390's 27B 4K prompt 428.8 / 417.2 -> 504.2 / 485.0 tok/s with
     //  the 2D form (+16-18 %), the logits the same (n005, issue #74, Linux, .21.18); Lunar Lake's 140V keeps the plain
-    //  form: -9-15 % there with it (a1ex4, issue #60, driver 8991). The start check proves each GPU's form bit for bit)
+    //  form: -9-15 % there with it (a1ex4, issue #60, driver 8991). The start check proves each GPU's form bit for bit.
+    //  Linux only since 2026-11-22: a B390 under Windows (gee456, #49, SO-DIMM DDR5, the full sweep) was -12.8 % with
+    //  it at 4K (631.0 -> 550.2), so Windows keeps the plain form until its pairs (#1, #75) tell the driver from the
+    //  memory)
+#ifdef _WIN32
+    xw_2d_discrete_ = !zrt::integrated();
+#else
     xw_2d_discrete_ = !zrt::integrated() || zrt::panther_lake();
+#endif
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +

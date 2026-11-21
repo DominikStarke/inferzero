@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-22: the B390's 2D GEMM default is Linux only for now
+
+- **Under Windows, a B390 goes back to the plain prompt GEMM form.** gee456's full sweep on his B390 under Windows
+  measured the 2D form 12.8 % slower at 4K (631.0 -> 550.2 tok/s, #49), where n005's under Linux was 16-18 % faster
+  (#74). His machine has slower SO-DIMM memory, so either the driver or the memory makes the difference. Pairs from
+  two Windows B390s are asked (#1, #75). Linux keeps the 2D form. `ARC_GEMM_XW_2D=1` turns it on anywhere.
+
 ## 2026-11-22: more weight reads in flight for generation (opt-in `ARC_GEMV_DEEP=D`)
 
 - **`ARC_GEMV_DEEP=D`** (2-16): the one-token GEMV keeps D windows of weights in flight instead of one. A Pro B65's
