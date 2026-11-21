@@ -2,7 +2,7 @@
 
 The switches below are off unless the table says otherwise. Each changes speed or memory; the ones marked "same output" give the same text bit for bit, the others are checked against an f32 reference (KL). The launchers read this list from `scripts/options.tsv`; this page is made from that file (`powershell -File tools\gen_options_md.ps1`).
 
-Set an environment variable before starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz's command line.
+On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), `-NoOpt <id>` off, and `zero-server options` lists them with whether each is for your PC. By hand: set the environment variable before starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz's command line.
 
 ## CPU experts (`ARC_XCPU=1`)
 
@@ -29,7 +29,7 @@ Set an environment variable before starting the server (PowerShell: `$env:NAME =
 
 - **What it does:** On the Arc 140T and Alchemist cards: short prompt chunks use resident decoded weights, long ones decode just in time.
 - **Default:** off.
-- **Best for:** alchemist, igpu-xe-lpg, dense.
+- **Best for:** alchemist, igpu-140t, dense.
 - **Cost:** about 2x the weights' size in VRAM.
 - **Output:** the same, bit for bit.
 - **Measured:** not measured on a card yet.

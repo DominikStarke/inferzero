@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21: zero-server turns the speed and accuracy options on and off
+
+- `zero-server start -Opt copy_draft` turns an option of the catalog on, `-NoOpt xcpu` off (an option that is on
+  by default, off). `-Opt budget=12` gives one its value; several go with commas.
+- The choices are kept for later starts (`%USERPROFILE%\.inferzero\options.json`); the command line, the dry run
+  and the start lines say which are on. A change restarts a running server.
+- `zero-server options` lists every option: its state, what it does, its cost, whether its output is the same or
+  checked, and whether it is for this PC, from the PC's graphics.
+
 ## 2026-11-21: one list of the options you can turn on
 
 - `scripts/options.tsv` lists the opt-in switches people may want, ten for now, each checked against the code:

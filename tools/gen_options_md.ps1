@@ -19,8 +19,10 @@ $md.Add('The switches below are off unless the table says otherwise. Each change
   'launchers read this list from `scripts/options.tsv`; this page is made from that file ' +
   '(`powershell -File tools\gen_options_md.ps1`).')
 $md.Add("")
-$md.Add('Set an environment variable before starting the server (PowerShell: `$env:NAME = "value"`, bash: ' +
-  '`export NAME=value`), or add the flag to serverz''s command line.')
+$md.Add('On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), `-NoOpt <id>` off, and ' +
+  '`zero-server options` lists them with whether each is for your PC. By hand: set the environment variable before ' +
+  'starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz''s ' +
+  'command line.')
 $md.Add("")
 foreach ($d in $rows) {
   $how = $d.name + $(if ($d.kind -eq "env") { "=" + $d.on } elseif ($d.on) { " " + $d.on } else { "" })

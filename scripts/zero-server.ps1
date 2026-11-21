@@ -23,7 +23,7 @@
 #                                     Transcripts / Meetings tabs, voice messages, /v1/audio/transcriptions
 #   zero-server start ... -DryRun      check the options, print the server's command line and a GPU memory estimate
 #   zero-server start -Preset work     the options saved with save-preset -Preset work (the command line wins)
-#   zero-server list | logs | doctor | version [-Check] | pull <keys> | presets | save-preset   (help: zero-server help)
+#   zero-server list | logs | doctor | version [-Check] | pull <keys> | presets | save-preset | options   (help: zero-server help)
 #
 # Exit codes: 0 ok, 1 a wrong option or value (the message says which), 2 the server stopped while loading,
 # 3 not ready within 10 minutes, 4 the port is used by another program.
@@ -34,7 +34,7 @@
 #      90 days / 200 MB at most)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
-    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "help", "--help", "-h")] [string]$Action = "start",
+    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "options", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
   [string]$Ctx = "",
   [int]$Chunk = 0,
@@ -82,7 +82,9 @@ param(
   [switch]$Follow,        # logs: keep printing new lines
   [int]$Lines = 40,       # logs: how many lines
   [switch]$Check,         # version: ask GitHub whether a newer package is out
-  [string]$Drafter = ""   # auto | mtp | dflash | off | <DFlash2 folder>
+  [string]$Drafter = "",  # auto | mtp | dflash | off | <DFlash2 folder>
+  [string[]]$Opt = @(),   # speed / accuracy options by id (scripts\options.tsv): on, kept for later starts; id=value for a value
+  [string[]]$NoOpt = @()  # the same, off (a default-on option: turned off); zero-server options lists them
 )
 $ErrorActionPreference = "Stop"
 # (an option this script does not have went to $args and was ignored: "-Whispr on" started the server without
@@ -126,6 +128,82 @@ function Get-RecorderExe {
   return $null
 }
 New-Item -ItemType Directory -Force $stateDir | Out-Null
+
+# ---- speed / accuracy options (QUEUE O2, 2026-11-21): the catalog scripts\options.tsv (one row an option: its id,
+# switch, values, default, plain title, what it does, the PCs it is for, its cost, same output or KL), the choices in
+# %USERPROFILE%\.inferzero\options.json ({"copy_draft": "on", "xcpu": "off", "budget": "12"}), kept for later starts.
+# -Opt id / -Opt id=value turns one on, -NoOpt id off (an option on by default: off), and `zero-server options` lists
+# them with what each does and whether it is for this PC. An env option goes into the server's environment, a flag
+# onto its command line
+$optCatalog = @()
+$optTsv = Join-Path $root "scripts\options.tsv"
+if (Test-Path -LiteralPath $optTsv) {
+  $ol = [IO.File]::ReadAllText($optTsv, (New-Object Text.UTF8Encoding $false)) -split "\r?\n" | Where-Object { $_ -ne "" }
+  $oc = $ol[0] -split "`t"
+  $optCatalog = @(foreach ($l in $ol[1..($ol.Count - 1)]) {
+    $v = $l -split "`t"; $d = [ordered]@{}
+    for ($i = 0; $i -lt $oc.Count; $i++) { $d[$oc[$i]] = $(if ($i -lt $v.Count) { $v[$i] } else { "" }) }
+    [pscustomobject]$d
+  })
+}
+$optFile = Join-Path $stateDir "options.json"
+$optChoice = [ordered]@{}
+if (Test-Path -LiteralPath $optFile) {
+  try { (Get-Content -LiteralPath $optFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $optChoice[$_.Name] = "$($_.Value)" } }
+  catch { Write-Host "zero-server: $optFile is not valid JSON: the options in it are not used" -ForegroundColor Yellow }
+}
+function Find-Opt([string]$id) {
+  $o = @($optCatalog | Where-Object { $_.id -eq $id })[0]
+  if (-not $o) { throw "zero-server: no option '$id' (the options: $(($optCatalog | ForEach-Object { $_.id }) -join ', '); zero-server options)" }
+  return $o
+}
+$optChanged = $false
+foreach ($s in @($Opt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
+  $id, $val = $s.Trim() -split '=', 2
+  $o = Find-Opt $id
+  if ($o.on -match '^[A-Za-z]' -and -not $val) { throw "-Opt ${id}: give its value, e.g. -Opt $id=12 ($($o.on))" }
+  $optChoice[$o.id] = if ($val) { $val.Trim() } else { "on" }
+  $optChanged = $true
+}
+foreach ($s in @($NoOpt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
+  $o = Find-Opt $s.Trim()
+  $optChoice[$o.id] = "off"
+  $optChanged = $true
+}
+if ($optChanged -and -not $DryRun) { [IO.File]::WriteAllText($optFile, ($optChoice | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) }
+# the environment variables and serverz flags the choices make (a choice for an option no longer in the catalog: left out)
+function Opt-Effect {
+  $envs = [ordered]@{}; $flags = @(); $words = @()
+  foreach ($k in $optChoice.Keys) {
+    $o = @($optCatalog | Where-Object { $_.id -eq $k })[0]
+    if (-not $o) { continue }
+    $c = $optChoice[$k]
+    if ($c -eq "off") {
+      if ($o.kind -eq "env" -and $o.off -ne "") { $envs[$o.name] = $o.off; $words += "$($o.title): off" }
+      continue
+    }
+    $val = if ($c -eq "on") { $o.on } else { $c }
+    if ($o.kind -eq "env") { $envs[$o.name] = $val }
+    elseif ($o.on -match '^[A-Za-z]') { $flags += @($o.name, $val) }
+    else { $flags += $o.name }
+    $words += "$($o.title)$(if ($c -ne 'on') { " ($c)" })"
+  }
+  return @{ envs = $envs; flags = $flags; words = $words }
+}
+# which kinds of PC this one is, from Windows' display adapters (the catalog's best_for words)
+function PC-Kinds {
+  $k = @()
+  $gs = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Intel" } | ForEach-Object { $_.Name })
+  foreach ($g in $gs) {
+    if ($g -match 'Arc\S* A\d{3}') { $k += "alchemist" }
+    elseif ($g -match 'Arc\S* (Pro )?B\d{2}[0-9]?\b' -and $g -notmatch 'B390') { $k += "b-series" }
+    elseif ($g -match '140V|130V|B390|Xe2') { $k += "igpu-xe2" }
+    elseif ($g -match '140T') { $k += "igpu-140t" }  # (Xe-LPG Plus: 8-lane XMX, the 140T preset)
+    elseif ($g -match 'Arc|Graphics') { $k += "igpu-xe-lpg" }
+  }
+  if (@($gs | Where-Object { $_ -match 'Arc\S* (Pro )?[AB]\d{2}' }).Count -gt 1) { $k += "multi-gpu" }
+  return @($k | Select-Object -Unique)
+}
 
 # ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
 # zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
@@ -414,6 +492,9 @@ Options for start / restart:
                                  off (= -NoMtp), or a DFlash2 drafter's folder (= -DFlash <folder>)
   -DryRun                        check everything, print the serverz.exe command line and a GPU memory estimate
                                  (with -Json as JSON), and start or stop nothing
+  -Opt <id>[=value][,<id>...]    turn speed / accuracy options on (copy_draft, batch, xcpu, ...; kept for later
+                                 starts); -NoOpt <id> off. zero-server options lists them, what each does and
+                                 whether it is for this PC (docs\options.md)
   -Ctx <N|auto>                  context in tokens, or auto = the largest that fits the GPU memory currently
                                  set, less 0.5 GiB for the driver (computed on the first start
                                  of a model, remembered, recomputed when the GPU memory changes). Not given:
@@ -807,6 +888,31 @@ switch ($Action) {
     Write-Host "Done. Start it: zero-server start -Model $($keys[0])"
     return
   }
+  "options" {
+    # every option of scripts\options.tsv: its state (on / off as chosen, or the default), whether it is for this PC
+    $kinds = PC-Kinds
+    $list = foreach ($o in $optCatalog) {
+      $c = if ($optChoice.Contains($o.id)) { $optChoice[$o.id] } else { "" }
+      $fit = @($o.best_for -split ';' | Where-Object { $_ -in "alchemist", "b-series", "igpu-xe2", "igpu-140t", "igpu-xe-lpg", "multi-gpu" })
+      $for = if (-not $fit.Count) { "any" } elseif (@($fit | Where-Object { $_ -in $kinds }).Count) { "this PC" } else { "not this PC (" + ($fit -join ", ") + ")" }
+      [ordered]@{ id = $o.id; state = $(if ($c) { $c } else { "default" }); default = $o.default; title = $o.title; what = $o.what;
+        how = $(if ($o.kind -eq "env") { "$($o.name)=$($o.on)" } else { "$($o.name) $($o.on)".Trim() }); for = $for; output = $o.output;
+        cost = $o.cost; measured = $o.measured; status = $o.status }
+    }
+    if ($Json) { Out-Json @{ pc = $kinds; options = @($list); file = $optFile }; return }
+    if (-not $optCatalog.Count) { Write-Host "No option catalog ($optTsv)."; return }
+    Write-Host "Speed and accuracy options (this PC: $(if ($kinds.Count) { $kinds -join ', ' } else { 'not recognized' })):"
+    foreach ($e in $list) {
+      $mark = switch ($e.state) { "default" { " " } "off" { "-" } default { "+" } }
+      Write-Host ("{0} {1,-11} {2}  [{3}; {4}; {5}]" -f $mark, $e.id, $e.title, $(if ($e.state -eq "default") { "default: $($e.default)" } else { $e.state }),
+        $(if ($e.output -eq "same") { "same output" } else { "output checked (KL)" }), $e.for)
+      Write-Host ("               {0}. Cost: {1}." -f $e.what, $e.cost) -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Host "Turn one on: zero-server start -Opt <id> (kept for later starts); off: -NoOpt <id>; the details: docs\options.md"
+    if ($optChanged) { Write-Host "Saved in $optFile. A running server takes them at its next start (zero-server restart)." -ForegroundColor Yellow }
+    return
+  }
   "presets" {
     $ps = @(Get-ChildItem -LiteralPath $presetDir -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name)
     $out = [ordered]@{}
@@ -1126,10 +1232,14 @@ if ($NoSwap) { $extra += "--no-swap" }
 if ($ListenHost) { $extra += @("--host", $ListenHost) }
 if ($SessionDir) { $extra += @("--session-dir", "`"$SessionDir`"") }
 if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with the SSD cache is restarted without it)
-$extraKey = "$($extra -join ' ')|think $ThinkBudget"
+# (the chosen speed / accuracy options: flags here, environment variables just before the server starts; both in the
+#  key, so a changed choice restarts a running server)
+$optFx = Opt-Effect
+$extra += $optFx.flags
+$extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and
@@ -1187,6 +1297,8 @@ if ($DryRun) {
   }
   Say "Dry run: would $what with $($m.alias), context $ctxArg, port $Port"
   Say "  command: $srvCmd"
+  if ($optFx.envs.Count) { Say "  environment: $(($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ')" }
+  if ($optFx.words.Count) { Say "  options: $($optFx.words -join ', ')" }
   Say "  $(Est-Text $est)"
   return
 }
@@ -1270,8 +1382,16 @@ if (Test-Path -LiteralPath $log) {
     }
   } catch {}
 }
-$p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
-  -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
+# (the chosen options' environment variables: in this process only while the server starts, which inherits them)
+$envBefore = @{}
+foreach ($k in $optFx.envs.Keys) { $envBefore[$k] = [Environment]::GetEnvironmentVariable($k); Set-Item "Env:$k" $optFx.envs[$k] }
+if ($optFx.words.Count) { Say "  options: $($optFx.words -join ', ')" }
+try {
+  $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
+    -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
+} finally {
+  foreach ($k in $envBefore.Keys) { if ($null -eq $envBefore[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } else { Set-Item "Env:$k" $envBefore[$k] } }
+}
 if ($m -ne $none) { Set-Content $lastFile $m.path -Encoding utf8 }  # (none: the chat model used last stays the default)
 @{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; port = $Port; cmd = $srvCmd; started = (Get-Date).ToString("s") } |
   ConvertTo-Json | Set-Content $stateFile -Encoding utf8
