@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: one list of the options you can turn on
+
+- `scripts/options.tsv` lists the opt-in switches people may want, ten for now, each checked against the code:
+  - what each does and its default;
+  - which PCs it is for and what it costs;
+  - whether the output stays the same;
+  - what it measured, and on whose card.
+- The launchers will read it for their options screens (next).
+- `docs/options.md` is the same list for reading, made from that file (`python tools/gen_options_md.py`).
+
 ## 2026-11-21: expert files carry a checksum per layer
 
 - A new expert file records each layer's checksum in its header, in room the layout already keeps (marked "SUMS"):
