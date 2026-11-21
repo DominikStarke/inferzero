@@ -200,31 +200,15 @@ if (Test-Path .\bin\test_json.exe) { Unit "JSON parser (numbers, escapes, repeat
 if (Test-Path .\bin\test_sampler.exe) { Unit "sampler" .\bin\test_sampler.exe @() "ALL OK" }
 Unit "tool call streaming" .\bin\tool_stream_test.exe @("3000") "ALL OK"
 
-# chat template rendering vs Jinja (needs python + jinja2: Jinja2 is the reference, a developer's check only; the
-# release packages hold no .py, so there these two skip)
-$tq35 = Join-Path $Data "qwen35_template.jinja"; $tq38 = Join-Path $Data "qwen38_template.jinja"
-if (-not (Test-Path tests\test_chat_render.py)) { Skip "chat template (14 cases)" "a developer's check (Python + Jinja2): not in the package" }
-elseif (-not ((Test-Path $tq35) -and (Test-Path $tq38))) { Skip "chat template (14 cases)" "templates missing in $Data" }
-elseif (-not (Test-Path .\bin\chat_render.exe)) { Skip "chat template (14 cases)" "bin\chat_render.exe not built" }
-elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "chat template (14 cases)" "python not found" }
+# chat template rendering (the native Qwen one and minja's Gemma 4 ones) against committed goldens, byte for byte;
+# the goldens are what Jinja2 rendered (tests\test_chat_golden.ps1 says how they were made). No Python
+if (-not (Test-Path .\bin\chat_render.exe)) { Skip "chat templates (goldens)" "bin\chat_render.exe not built" }
 else {
-  $o = Run-Exe python @("tests\test_chat_render.py", "$root\bin\chat_render.exe", $tq35, $tq38)
+  $o = Run-Exe "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$root\tests\test_chat_golden.ps1",
+                              "-Exe", "$root\bin\chat_render.exe", "-Data", $Data)
   if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
-  Check "chat template (14 cases)" ($o -match "ALL IDENTICAL")
-}
-# templates inferzero renders with minja (Gemma 4) vs Jinja2 (needs python with jinja2)
-$tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja") |
-  ForEach-Object { Join-Path $Data $_ } | Where-Object { Test-Path $_ }
-if (-not (Test-Path tests\test_chat_jinja.py)) { Skip "minja templates" "a developer's check (Python + Jinja2): not in the package" }
-elseif (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
-elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "minja templates" "python not found" }
-else {
-  $o = Run-Exe python (@("tests\test_chat_jinja.py", "$root\bin\chat_render.exe") + $tj)
-  if ($o -match "No module named 'jinja2'") { Skip "minja templates" "python has no jinja2" }
-  else {
-    if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
-    Check "minja templates ($($tj.Count) templates x 9 cases)" ($o -match "ALL IDENTICAL")
-  }
+  $m = [regex]::Match($o, "ALL IDENTICAL \((\d+) renderings\)")
+  Check "chat templates ($(if ($m.Success) { $m.Groups[1].Value } else { '?' }) renderings against goldens)" $m.Success
 }
 
 # GGUF repacking (zero/gguf_pack.h) must reproduce every key and tensor

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-21: the chat template checks without Python; no .py left in the repository
+
+- `tests\test_chat_golden.ps1` replaces `tests/test_chat_render.py` and `tests/test_chat_jinja.py`. It renders the
+  same cases with `bin\chat_render.exe` and compares each rendering with a committed golden, byte for byte:
+  - the native Qwen rendering, 7 cases with and without Qwen3.8's form (14);
+  - minja on the three Gemma 4 templates in `tests\data`, 9 cases each (27).
+
+  `tests\run_tests.ps1` runs it, so it no longer skips where Python or Jinja2 is missing.
+- The goldens are what Jinja2 rendered, made without running Python: both .py checks passed on 2026-11-10, every case
+  identical, and nothing they render has changed since. The templates, `src\json.h` and minja are untouched, and the
+  two later changes to the renderer are a conversation that opens with a tool message (no case does) and an error
+  message moved to the log. The test says how to update a golden after a change.
+- Checked in Windows PowerShell 5.1 and 7: all 41 identical. A golden changed by one letter is reported, with the
+  byte where it differs.
+- With this, the repository holds no Python at all. The packages already held none.
+
 ## 2026-11-21: the tiny DeepSeek-V4.1 test model made in C++
 
 - `tools\make_tiny_deepseek41.cpp` replaces `tools/make_tiny_deepseek41.py`. It writes the same keys, tensors,
