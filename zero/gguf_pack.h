@@ -129,14 +129,25 @@ inline void verify_package(const GgufFile& src, const std::string& path, const s
   if (!pk.has("inferzero.package")) bad("no inferzero.package key");
   if (pk.tensors.size() != keep.size() + vnames.size()) bad("its tensor count");
   uint64_t bytes = 0;
+  // (both files' pieces copied out through copy_mapped first, S4: a page that cannot be read is read again, not the
+  //  end of the process; and the stall watch over the check, S1. The Researcher's review)
+  const size_t piece = 64ull << 20;
+  struct Buf { uint8_t* p; size_t n; ~Buf() { if (p) plat::page_free(p, n); } } ba{(uint8_t*)plat::page_alloc(piece), piece},
+      bb{(uint8_t*)plat::page_alloc(piece), piece};
+  if (!ba.p || !bb.p) throw std::runtime_error("out of memory checking the package");
+  BuildWatch watch("the package check", src.path, path);  // (path: the package's .tmp, removed if it hangs for good)
   for (const GgufTensor* t : keep) {
     const GgufTensor* p = pk.find(t->name);
     if (!p || !p->data) bad("tensor " + t->name + " missing");
     if (p->type != t->type || p->dims != t->dims || p->nbytes != t->nbytes) bad("tensor " + t->name + "'s type or shape");
     XBuildStopGuard::check("the package check " + path);
-    for (uint64_t o = 0; o < t->nbytes; o += 64ull << 20) {
-      const size_t n = (size_t)std::min<uint64_t>(64ull << 20, t->nbytes - o);
-      if (memcmp(p->data + o, t->data + o, n) != 0) bad("tensor " + t->name + "'s bytes from " + std::to_string(o));
+    for (uint64_t o = 0; o < t->nbytes; o += piece) {
+      const size_t n = (size_t)std::min<uint64_t>(piece, t->nbytes - o);
+      copy_mapped(src, ba.p, t->data + o, n, "the package check", "");
+      copy_mapped(pk, bb.p, p->data + o, n, "the package check", "");
+      if (memcmp(ba.p, bb.p, n) != 0) bad("tensor " + t->name + "'s bytes from " + std::to_string(o));
+      watch.tick();
+      XBuildStopGuard::check("the package check " + path);
     }
     plat::release_mapped(t->data, (size_t)t->nbytes);
     bytes += t->nbytes;

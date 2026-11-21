@@ -645,8 +645,8 @@ struct ExpertStore {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     Header h{};
-    // (version 1: as written before 2026-11-21; 2: the same file with each layer's checksum after the layer table, S12)
-    const bool ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == kMagic && (h.version == kVersion || h.version == kVersionSums) &&
+    // (version 1, the only one: the layers' checksums (S12) sit in the padding after the layer table, kSumsMagic)
+    const bool ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == kMagic && h.version == kVersion &&
                     (any_fp || h.fingerprint == fp) &&
                     h.layers == layers.size() && h.experts == (uint64_t)n_expert && h.bytes == file_bytes;
     bool same = ok;
@@ -659,9 +659,11 @@ struct ExpertStore {
     return same;
   }
   // ---- S12 (2026-11-21): a checksum of each layer's bytes, in the header after the layer table (the room the layout
-  // already keeps: 80 bytes a layer, 56 used), the header's version then 2. kVersion stays 1: it is part of the
-  // fingerprint, and the layout and the layers' bytes are the same (version 1 files are read as before, without sums)
-  static constexpr uint32_t kVersionSums = 2;
+  // already keeps: 80 bytes a layer, 56 used), marked by kSumsMagic there. The header's version stays 1 (it is also
+  // part of the fingerprint): releases before this one read such a file as before, the padding they never look at
+  // (a version 2 header, the first form, made them rebuild it: the Researcher's review), and files without sums are
+  // read as before here
+  static constexpr uint32_t kSumsMagic = 0x534D5553;  // "SUMS", then 4 zero bytes, then the sums
   static uint64_t sum_bytes(uint64_t h, const uint8_t* p, size_t n) {  // (n a multiple of 8: records are 4 KB multiples)
     for (size_t i = 0; i + 8 <= n; i += 8) {
       uint64_t w;
@@ -678,14 +680,13 @@ struct ExpertStore {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return;
     struct Close { FILE* f; ~Close() { fclose(f); } } cf{f};
-    Header h{};
-    if (fread(&h, sizeof h, 1, f) != 1) return;
-    if (h.version != kVersionSums) {
+    uint32_t mark[2] = {0, 0};
+    if (fseek(f, (long)sums_at(), SEEK_SET) != 0 || fread(mark, 4, 2, f) != 2 || mark[0] != kSumsMagic) {
       zlog::eprintf("inferzero: %s has no layer checksums (written before 2026-11-21): not checked\n", path.c_str());
       return;
     }
     std::vector<uint64_t> want(layers.size());
-    if (fseek(f, (long)sums_at(), SEEK_SET) != 0 || fread(want.data(), 8, want.size(), f) != want.size()) return;
+    if (fread(want.data(), 8, want.size(), f) != want.size()) return;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> b(64u << 20);
     size_t n_ok = 0;
@@ -819,7 +820,7 @@ struct ExpertStore {
     // (S12: each layer's checksum; a resumed build's earlier layers read back from the .tmp first, before it is opened
     //  for writing, which Windows opens without sharing)
     std::vector<uint64_t> sums(layers.size(), 0);
-    const bool sums_fit = sums_at() + 8 * layers.size() <= first;
+    const bool sums_fit = sums_at() + 8 + 8 * layers.size() <= first;
     if (resume && sums_fit) {
       FILE* rf = fopen(tmp.c_str(), "rb");
       if (!rf) throw std::runtime_error("cannot read " + tmp);
@@ -996,12 +997,12 @@ struct ExpertStore {
     if (pos != file_bytes)  // (every layer written: the offsets the layer table gives, end to end)
       throw std::runtime_error("the expert file " + tmp + " came out " + std::to_string(pos) + " bytes, not " +
                                std::to_string(file_bytes));
-    // (S12: the header once more, version 2 and the layers' checksums after the layer table; where they don't fit,
-    //  version 1 as before)
+    // (S12: the header's block once more, with kSumsMagic and the layers' checksums after the layer table; where they
+    //  don't fit, as before)
     if (sums_fit) {
-      Header h{kMagic, kVersionSums, fp, layers.size(), (uint64_t)n_expert, file_bytes};
-      memcpy(hb, &h, sizeof h);
-      memcpy(hb + sums_at(), sums.data(), 8 * sums.size());
+      const uint32_t mark[2] = {kSumsMagic, 0};
+      memcpy(hb + sums_at(), mark, 8);
+      memcpy(hb + sums_at() + 8, sums.data(), 8 * sums.size());
       if (!out.w.open_at(tmp.c_str(), 0) || !out.w.write(hb, first) || !out.w.sync())
         throw std::runtime_error("write failed: " + tmp);
       out.w.close();
