@@ -144,7 +144,7 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
 140T's preset (H8 on the 8-lane XMX GEMM). Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
 - **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,874 tok/s under Linux with the
   FFN's gate and up in one GEMM launch (skipzx-lab, issue #57, release 2026.11.20.03, where it is the default; 1,800
-  without it), 1,954 with the 64 x 32 tile that is the B60's default since 2026-11-21 (skipzx-lab, #57); 1,922 on
+  without it), 1,945-1,957 with the 64 x 32 tile, the B60's default since release 2026.11.21.17 (skipzx-lab, #57); 1,922 on
   Windows (MaineTim, issue #19, main 0cf5283), 1,909 (manoreken2, release 2026.11.21.01; 1,836 with the fused gate /
   up off; 1,726 on
   2026.11.17.08, 1,522 on
