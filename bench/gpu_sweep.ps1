@@ -116,7 +116,10 @@ function Invoke-Runz([string]$m, [string]$sset, [string[]]$a) {
     if (-not $script:warmed.ContainsKey($key)) {
       $script:warmed[$key] = $true
       Write-Host ("[{0}] warm-up: {1} {2}" -f $script:ph.name, $(if ($sset) { $sset } else { "defaults" }), ($draft -join ' ')) -ForegroundColor DarkGray
-      $null = & $runz $m --bench-pp 512 --n 16 @draft @extra 2>&1
+      # (with drafting flags, the question itself: --bench-pp decodes plain, so MTP's verification kernels would
+      #  first build inside a timed run; 2026-11-21)
+      if ($draft.Count) { $null = & $runz $m --text-file $question --n 16 @draft @extra 2>&1 }
+      else { $null = & $runz $m --bench-pp 512 --n 16 @draft @extra 2>&1 }
     }
     Show-Progress ($(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
     return (& $runz $m @a @extra 2>&1 | ForEach-Object { "$_" })
@@ -280,6 +283,15 @@ function Kernels([string]$m, [string]$what, [string]$sset, [string]$label) {
 Write-Output ("inferzero gpu_sweep: {0}{1}; device {2}; phases {3}{4}; {5}" -f (Split-Path $Model -Leaf), $(if ($MoeModel) { ", " + (Split-Path $MoeModel -Leaf) } else { "" }),
   $(if ($Device) { $Device } else { "default" }), $Phases, $(if ($Quick) { ", quick" } else { "" }), [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'"))
 try { git -C $root log -1 --format='commit %h %ad' --date=short 2>$null } catch {}
+# (2026-11-21: another inferzero run on the GPU at the same time made a whole phase's numbers wrong, the 4B's MTP 2-2.5x
+#  "slower" among them: wait for it, up to 30 minutes, then go on with a warning)
+for ($w = 0; $w -lt 180; $w++) {
+  $busy = @(Get-Process runz, serverz, xw_peak -ErrorAction SilentlyContinue)
+  if (-not $busy.Count) { break }
+  if ($w -eq 0) { Write-Host ("Another inferzero program is running ({0}): waiting for it to finish, so the numbers are this sweep's alone" -f (($busy | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) -join ", ")) -ForegroundColor Yellow }
+  Start-Sleep -Seconds 10
+}
+if (@(Get-Process runz, serverz, xw_peak -ErrorAction SilentlyContinue).Count) { Write-Host "Still running after 30 minutes: going on, but the numbers may be low" -ForegroundColor Yellow }
 Start-Phase "warm-up" 1
 $o = Invoke-Runz $Model "" @("--bench-pp", "1024", "--n", "1")
 $o | Where-Object { $_ -match '^inferzero: (GPU|XMX|H8|the H8|prompt attention)|^loaded:' } | Select-Object -First 8

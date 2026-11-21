@@ -183,7 +183,13 @@ run() {
   if [ -z "${WARMED[$key]:-}" ]; then
     WARMED[$key]=1
     if [ -t 2 ]; then printf '\r\033[K[%s] warm-up: %s' "$PH_NAME" "${sset:-defaults} ${d[*]}" >&2; fi
-    env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" --bench-pp 512 --n 16 "${d[@]}" "${a[@]}" > /dev/null 2>&1
+    # (with drafting flags, the question itself: --bench-pp decodes plain, so MTP's verification kernels would first
+    #  build inside a timed run; 2026-11-21)
+    if [ ${#d[@]} -gt 0 ]; then
+      env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" --text-file "$QUESTION" --n 16 "${d[@]}" "${a[@]}" > /dev/null 2>&1
+    else
+      env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" --bench-pp 512 --n 16 "${d[@]}" "${a[@]}" > /dev/null 2>&1
+    fi
   fi
   progress "${sset:-defaults} ${*:1:4}"
   env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" "$@" "${a[@]}" > "$OUT" 2>&1
@@ -391,6 +397,14 @@ kernels() {  # model what(prompt|generation) sset label
 
 echo "inferzero gpu_sweep: $(basename -- "$MODEL")${MOE_MODEL:+, $(basename -- "$MOE_MODEL")}; device ${DEVICE:-default}; phases $PHASES$([ "$QUICK" = 1 ] && echo ", quick"); $(date -u '+%Y-%m-%d %H:%M UTC')"
 git -C "$ROOT" log -1 --format='commit %h %ad' --date=short 2> /dev/null
+# (2026-11-21: another inferzero run on the GPU at the same time made a whole phase's numbers wrong: wait for it, up
+#  to 30 minutes, then go on with a warning)
+for w in $(seq 1 180); do
+  pgrep -x 'runz|serverz|xw_peak' > /dev/null 2>&1 || break
+  [ "$w" = 1 ] && echo "Another inferzero program is running ($(pgrep -lx 'runz|serverz|xw_peak' | tr '\n' ' ')): waiting for it to finish" >&2
+  sleep 10
+done
+pgrep -x 'runz|serverz|xw_peak' > /dev/null 2>&1 && echo "Still running after 30 minutes: going on, but the numbers may be low" >&2
 run "$MODEL" "" --bench-pp 1024 --n 1  # (warm-up: kernels compiled, caches filled)
 grep -aE '^inferzero: (GPU|XMX|H8|the H8|prompt attention)|^loaded:' "$OUT" | head -n 8
 LANES8=1; grep -aq 'no 8-lane sub-groups' "$OUT" && LANES8=0

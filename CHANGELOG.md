@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-21: bench/gpu_sweep waits for other GPU runs, and warms drafting with the question
+
+- `gpu_sweep.ps1` / `.sh` wait at start, up to 30 minutes, while another runz, serverz or xw_peak is running. Two
+  programs on one GPU made a whole phase's numbers wrong: on the laptop, MTP measured 2-2.5x slower than plain, when it
+  is 80 % faster.
+- The untimed warm-up of a drafting setting (`--mtp`, `--dflash`) now runs the question itself. `--bench-pp` decodes
+  plain, so MTP's verification kernels were first built inside a timed run.
+
 ## 2026-11-21: Alchemist: the 27B's prompt +15.7 % (a 32 x 32 tile through local memory by default)
 
 - **Measured** by skipzx-lab (an A770 held to 150 W, Linux, issue #45, main b9f011c, the 27B IQ3_S, a 45 s pause
