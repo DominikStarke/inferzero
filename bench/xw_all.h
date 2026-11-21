@@ -92,7 +92,9 @@ static std::vector<Cand> all_cands(const AllSel& s) {
                 Cand c;
                 c.tm = tm, c.nc = nc, c.wgx = x, c.wgy = y, c.cps = cps, c.slm = true, c.epi2 = e;
                 c.name = "slm " + t + " " + std::to_string(x) + "x" + std::to_string(y) + " c" + std::to_string(cps) + (e ? " e2" : "");
-                c.defs = std::string(" -DXW_PACKA -DXW_PACKW -DXW_SLM") + (cps > 1 ? " -DXS_CPS=" + std::to_string(cps) : "") +
+                // (-DXW_PTR: the copy's addresses set once, as the engine builds every local-memory form on Alchemist
+                //  since 2026.11.21.10; the same results, so the sweep ranks the forms the engine runs)
+                c.defs = std::string(" -DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_PTR") + (cps > 1 ? " -DXS_CPS=" + std::to_string(cps) : "") +
                          (e ? " -DXW_EPI2" : "");
                 v.push_back(c);
               }
