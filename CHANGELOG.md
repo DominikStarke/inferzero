@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: copy drafting (opt-in): code edits and other repeated text up to 39 % faster, the same output
+
+- **`--copy-draft`** (runz and serverz, with `--mtp`; or `ARC_COPY_DRAFT=1`): when the last 4-8 tokens appeared
+  earlier in the conversation, the tokens that followed them there become the drafts. Otherwise the MTP block drafts
+  as before.
+- The model checks every draft as it checks MTP's, so the text stays the same as without it.
+- A copied step skips the MTP block's own drafting, which is most of the gain where the answer repeats the context:
+  - a code edit (give back a function with one change), 256 tokens: the 4B 42.0 -> 58.5 tok/s, the 27B 17.5 -> 22.1;
+  - a summary, where little repeats: unchanged within the noise (the 4B 29.4 / 30.2, the 27B 9.7 / 9.3).
+- `ARC_COPY_NGRAM` / `ARC_COPY_MIN` set the longest and shortest match (default 8 / 4). Shorter matches made the
+  summary slower (2 tokens: 27 % of their drafts right).
+
 ## 2026-11-21: long MoE prompts decode each matrix once (Flash Next, the 35B)
 
 - A prompt longer than a chunk goes through the model layer by layer. Each matrix is decoded into a staging slot

@@ -713,10 +713,12 @@ class Server {
   }
   void run_batch(const std::vector<GenStep*>& st) {
     const int V = eng_.hp.n_vocab;
+    // (a slot's tokens before its step's token: copy drafting's context, opt.copy_draft; the bound slot's in cached_)
+    auto hist = [&](int k) { return k == cur_slot_ ? &cached_ : &slots_[k].cached; };
     if (st.size() == 1) {
       GenStep& g = *st[0];
       if (g.max_drafts > 0) {
-        g.drafts = eng_.mtp_draft(g.tok, g.max_drafts);
+        g.drafts = eng_.mtp_draft(g.tok, g.max_drafts, hist(g.slot));
         g.dflash = eng_.last_draft_dflash();
         const auto& lv = eng_.verify(g.tok, g.drafts);
         g.rows.assign(lv.begin(), lv.begin() + (1 + g.drafts.size()) * V);
@@ -732,7 +734,7 @@ class Server {
       std::vector<std::vector<int>> rows;
       for (GenStep* g : st) {
         eng_.bind(g->slot);
-        g->drafts = eng_.mtp_draft(g->tok, std::min(g->max_drafts, nd));
+        g->drafts = eng_.mtp_draft(g->tok, std::min(g->max_drafts, nd), hist(g->slot));
         g->dflash = eng_.last_draft_dflash();
         rows.push_back({g->tok});
         rows.back().insert(rows.back().end(), g->drafts.begin(), g->drafts.end());
@@ -1018,7 +1020,7 @@ int main(int argc, char** argv) {
       {"--mtp", ""}, {"--mtp-model", "an MTP head .gguf"}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
-      {"--mtp-drafts", "a number, e.g. 3"}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
+      {"--mtp-drafts", "a number, e.g. 3"}, {"--copy-draft", ""}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
       {"--kernels", "a folder"}, {"--session-cache-gb", "GiB, 0 = off"}, {"--session-dir", "a folder"},
       {"--slots", "1..8"}, {"--gpus", "1..64"}, {"--no-swap", ""}, {"--no-web-tools", ""},
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
@@ -1116,6 +1118,7 @@ int main(int argc, char** argv) {
       if (so.eo.npu == -2) throw std::runtime_error("--npu: expected on, off or force (got \"" + v + "\")");
     }
     else if (a == "--mtp") so.eo.mtp = true;
+    else if (a == "--copy-draft") so.eo.copy_draft = true;  // (R1, opt-in)
     // (an MTP head in a file of its own, as runz --mtp-model: Flash Next's from SC117's repository; without it the
     //  server only looks for an mtp-*.gguf in the model's folder. gee456, issue #31, 2026-11-17)
     else if (a == "--mtp-model") { so.eo.mtp_model = next(); so.eo.mtp = true; }
@@ -1304,6 +1307,8 @@ int main(int argc, char** argv) {
             "  --mtp-drafts N        drafts per step, Qwen 2..7 (default: 7 for Qwen 27B-class, 3 on B-series cards; 7 with\n"
             "                        DFlash2; 5 for MoE; 3 for 4B and Flash Next; 2 otherwise); Gemma 4's drafter\n"
             "                        always drafts 3\n"
+            "  --copy-draft          with --mtp: where the last tokens appeared earlier in the conversation, draft what\n"
+            "                        followed them there (copy drafting; the same text, verified as any drafts)\n"
             "  --npu on|off|force    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU\n"
             "                        (Qwen3.8 27B +15 %%, Gemma 4 12B +10 %%; others off, force: on anyway);\n"
             "                        kept when a request switches models; default off (or ARC_NPU=1)\n"

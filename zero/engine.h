@@ -90,6 +90,10 @@ struct EngineOptions {
   int mtp_drafts = 0;         // drafts per step (1..7; later ones chained on the MTP block's own output); 0 = auto:
                               // 3 for wide dense Qwen models (27B: code 7.8 -> 9.5 tok/s, text +2.5 %), else 2
   float mtp_min_p = 0.5f;     // draft a second token only if the MTP block gives the first this probability
+  // copy drafting (QUEUE R1, 2026-11-21, opt-in): with mtp, a step whose last tokens appeared earlier in the context
+  // drafts the tokens that followed them there instead of asking the drafter (mtp_draft's hist); verified as any drafts,
+  // so the output stays the same. ARC_COPY_DRAFT=1 sets it too
+  bool copy_draft = false;
   std::string mtp_model;      // Gemma 4: assistant drafter GGUF (empty: an mtp-*.gguf next to the model, if any)
   // (a mtp_model that is not this model's head or drafter: false (runz) an error, true (the server, which may switch to
   //  another model) a line saying so, and the head or drafter next to the model as without it. Audit 2026-11-17)

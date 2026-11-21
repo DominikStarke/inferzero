@@ -695,23 +695,68 @@
     return hp.gemma ? (hp.moe ? 3 : 2) : hp.hc ? 3 : hp.moe ? 5 : hp.n_embd >= 5120 ? 7 : hp.n_embd <= 2560 ? 3 : 2;
   }
   int max_drafts() const { return gemma_mtp_ ? 3 : std::clamp(opt.mtp_drafts, 2, kMaxDrafts); }
+  // The MTP block's KV rows of the pending accepted drafts and of `tok`, as its own drafts would write them, when
+  // another drafter (DFlash2, copy drafting) drafts this step: the block attends to every position once it drafts again
+  // (without the rows: stale memory)
+  void mtp_sync_rows(int tok) {
+    const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
+    std::vector<int> toks = pend_toks_;
+    const int np = (int)toks.size();
+    if (np) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hpend_, hfin_, 0, 0, np * E4, 0, nullptr, nullptr));
+    CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, np * E4, E4, 0, nullptr, nullptr));
+    toks.push_back(tok);
+    pend_toks_.clear();
+    mtp_rows(toks.data(), hfin_, np + 1, pos - np, false);
+  }
+  // copy drafting (R1): the context s = hist + [tok]; the most recent earlier place where s's last n tokens (n from
+  // ARC_COPY_NGRAM, default 8, down to ARC_COPY_MIN, default 4) appear, and up to max_drafts of the tokens after it.
+  // A pass over the context from its end per n (~0.1 ms each at 100K tokens); nothing found: empty
+  bool copy_on() const {
+    static const bool e = getenv("ARC_COPY_DRAFT") && atoi(getenv("ARC_COPY_DRAFT")) != 0;
+    return opt.copy_draft || e;
+  }
+  static std::vector<int> copy_lookup(const std::vector<int>& h, int tok, int max_drafts) {
+    // (the 4B, 256 tokens, MTP 42.0 tok/s on a code edit, 29.4 on a summary: longest first from 8 down to 4 58.5 /
+    //  30.2, from 4 to 2 56.8 / 28.7 (the summary's 2-token matches 27 % right); 3 to 2 51.6 / 28.1)
+    static const int ng = getenv("ARC_COPY_NGRAM") ? std::clamp(atoi(getenv("ARC_COPY_NGRAM")), 1, 16) : 8;
+    static const int nmin = getenv("ARC_COPY_MIN") ? std::clamp(atoi(getenv("ARC_COPY_MIN")), 1, ng) : std::min(ng, 4);
+    const int L = (int)h.size() + 1;  // (s[L - 1] = tok)
+    auto s = [&](int i) { return i == L - 1 ? tok : h[i]; };
+    for (int n = std::min(ng, L - 1); n >= nmin; --n) {
+      // j: the last token of an earlier match (j < L - 1), the drafts s[j + 1 ..]
+      for (int j = L - 2; j >= n - 1; --j) {
+        int k = 0;
+        while (k < n && s(j - k) == s(L - 1 - k)) ++k;
+        if (k < n) continue;
+        std::vector<int> d;
+        for (int i = j + 1; i < L && (int)d.size() < max_drafts; ++i) d.push_back(s(i));
+        return d;
+      }
+    }
+    return {};
+  }
+  bool copy_used_ = false;
+  bool last_draft_copy() const { return copy_used_; }  // the drafts of the last mtp_draft were copied (R1)
   // `tok` is the next token (sampled, not yet processed; it goes to position pos). Returns up to `max_drafts` greedy
   // drafts of the MTP block for the tokens after it: the second one is chained on the block's own output and only
   // made when the first has probability >= opt.mtp_min_p.
-  std::vector<int> mtp_draft(int tok, int max_drafts) {
+  // hist: the tokens before `tok` (positions 0 .. pos - 1, the accepted drafts included). With opt.copy_draft, when the
+  // last tokens up to `tok` appeared earlier in it, the tokens that followed there are the drafts (copy drafting, R1)
+  std::vector<int> mtp_draft(int tok, int max_drafts, const std::vector<int>* hist = nullptr) {
+    copy_used_ = false;
+    if (hist && copy_on()) {
+      const int md = std::clamp(max_drafts, 1, std::min(this->max_drafts(), std::max(1, ctx - pos - 1)));
+      std::vector<int> cd = copy_lookup(*hist, tok, md);
+      if (!cd.empty()) {
+        dfl_used_ = false;
+        copy_used_ = true;
+        if (mtp_block_) mtp_sync_rows(tok);  // (the block's KV rows of the pending tokens and `tok`, as its drafts would)
+        return cd;
+      }
+    }
     dfl_used_ = dfl_ && (!mtp_block_ || dfl_pick());
     if (dfl_used_) {
-      if (mtp_block_) {  // the MTP block's KV row of `tok` too (and of the pending accepted drafts), as its own drafts
-        // would write it: the block attends to every position once it drafts again (without the row: stale memory)
-        const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
-        std::vector<int> toks = pend_toks_;
-        const int np = (int)toks.size();
-        if (np) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hpend_, hfin_, 0, 0, np * E4, 0, nullptr, nullptr));
-        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, np * E4, E4, 0, nullptr, nullptr));
-        toks.push_back(tok);
-        pend_toks_.clear();
-        mtp_rows(toks.data(), hfin_, np + 1, pos - np, false);
-      }
+      if (mtp_block_) mtp_sync_rows(tok);
       max_drafts = std::clamp(max_drafts, 1, std::clamp(opt.mtp_drafts, 1, std::min(kMaxDrafts, dfl_B_ - 1)));
       if (pos + 1 + max_drafts > ctx) max_drafts = std::max(1, ctx - pos - 1);
       return dflash_draft(tok, max_drafts);

@@ -395,6 +395,8 @@ static int run_main(int argc, char** argv) {
             "  --draft auto|mtp|dflash  with --dflash: both drafters picked per step (auto), the MTP block only, or\n"
             "                        DFlash2 only (the MTP block is not loaded)\n"
             "  --mtp-min-p P         draft a second token only above this MTP probability (default 0.5)\n"
+            "  --copy-draft          with --mtp: where the last tokens appeared earlier in the context, draft what followed\n"
+            "                        them there (copy drafting; the same output, verified as any drafts)\n"
             "engine:\n"
             "  --ctx N               context (default: what the prompt needs)     --chunk N   prompt tokens per step\n"
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
@@ -524,6 +526,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--mtp-drafts") eo.mtp_drafts = atoi(next());
     else if (a == "--mtp-model") { eo.mtp_model = next(); eo.mtp = true; }  // (an MTP head / drafter file of its own)
     else if (a == "--mtp-min-p") eo.mtp_min_p = (float)atof(next());
+    else if (a == "--copy-draft") eo.copy_draft = true;  // (R1: drafts copied from the context where it repeats)
     else if (a == "--kl-ref") kl_ref = next();
     else if (a == "--slots-check") slots_check = true;
     else if (a == "--bench-batch") bench_batch = atoi(next());
@@ -1438,7 +1441,7 @@ static int run_main(int argc, char** argv) {
     int tok = tk[0].first;
     const uint64_t rb0 = eng.rd_bytes;
     auto t1 = std::chrono::steady_clock::now();
-    int steps = 0, accepted = 0, drafted = 0;
+    int steps = 0, accepted = 0, drafted = 0, copy_steps = 0, copy_drafted = 0, copy_accepted = 0;
     double mtp_draft_ms = 0, mtp_verify_ms = 0, mtp_done_ms = 0;  // (where an MTP step's time goes, 2026-11-18)
     if (eng.has_mtp) {
       // speculative decoding with the MTP block: up to two drafts per step, verified by one main-model pass
@@ -1451,11 +1454,15 @@ static int run_main(int argc, char** argv) {
       FILE* dl = dump_logits.empty() ? nullptr : fopen(dump_logits.c_str(), "wb");
       struct Close { FILE*& f; ~Close() { if (f) fclose(f); } } close_dl{dl};
       if (dl) fwrite(lg.data(), sizeof(float), lg.size(), dl);
+      std::vector<int> hist(toks.begin(), toks.end());  // (the tokens before `tok`: copy drafting's context, R1)
       while ((int)gen.size() < n_gen) {
         gen.push_back(tok);
         if (tok == vocab.eos || (int)gen.size() >= n_gen) break;
         const auto c0 = std::chrono::steady_clock::now();
-        const std::vector<int> drafts = eng.mtp_draft(tok, eng.opt.mtp_drafts);
+        hist.resize(toks.size());
+        hist.insert(hist.end(), gen.begin(), gen.end() - 1);
+        const std::vector<int> drafts = eng.mtp_draft(tok, eng.opt.mtp_drafts, &hist);
+        const bool copied = eng.last_draft_copy();
         const auto c1 = std::chrono::steady_clock::now();
         const auto& lv = eng.verify(tok, drafts);
         const auto c2 = std::chrono::steady_clock::now();
@@ -1477,6 +1484,7 @@ static int run_main(int argc, char** argv) {
         ++steps;
         drafted += (int)drafts.size();
         accepted += acc;
+        if (copied) ++copy_steps, copy_drafted += (int)drafts.size(), copy_accepted += acc;
         if (stop) break;
         tok = next;
       }
@@ -1505,6 +1513,9 @@ static int run_main(int argc, char** argv) {
     }
     if (steps) printf("MTP: %d drafts, %d accepted (%.1f %%), %.2f tokens per main-model pass (%d passes)\n", drafted,
                       accepted, 100.0 * accepted / std::max(drafted, 1), (double)gen.size() / steps, steps);
+    if (copy_steps)
+      printf("copy drafting: %d of %d steps, %d drafts, %d accepted (%.1f %%)\n", copy_steps, steps, copy_drafted,
+             copy_accepted, 100.0 * copy_accepted / std::max(copy_drafted, 1));
     if (steps)
       printf("MTP time: drafting %.1f ms, verification %.1f ms (%.1f ms a pass), verify_done %.1f ms\n", mtp_draft_ms,
              mtp_verify_ms, mtp_verify_ms / steps, mtp_done_ms);
