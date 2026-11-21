@@ -1685,6 +1685,59 @@ int main(int argc, char** argv) {
           }
         }
       }
+      // QSA on a dense Qwen (the QSA 27B: a trained indexer on the full-attention layers; the idea from an MIT
+      // engine's graph): as Flash Next's selection above (qwen4exp_layers) with two differences: each raw indexer key
+      // is RMS-normed with indexer.k_norm.pre_weight before the block mean, and a query always sees its own block
+      // besides its top (top_k / ratio) complete blocks. REF_DENSE=1: every key, as the file read without QSA
+      std::vector<uint8_t> allow;  // [T][T], empty: dense
+      {
+        const auto* cr = F->get_ints(A + ".attention.compress_ratios");
+        const int ratio = cr && il < (int)cr->size() ? (int)(*cr)[il] : 0;
+        if (ratio > 0 && F->find(p + "indexer.k_proj.weight") && !getenv("REF_DENSE")) {
+          const int ih = hp("attention.indexer.head_count"), id = hp("attention.indexer.key_length");
+          const int ntop = (getenv("REF_TOPK") ? atoi(getenv("REF_TOPK")) : hp("attention.indexer.top_k")) / ratio, nb = T / ratio;
+          std::vector<float> kr, qi;
+          matmul(p + "indexer.k_proj.weight", h, T, kr);
+          matmul(p + "indexer.q_proj.weight", h, T, qi);
+          auto ikn = vecf(p + "indexer.k_norm.weight"), iqn = vecf(p + "indexer.q_norm.weight");
+          auto ikp = vecf(p + "indexer.k_norm.pre_weight");
+          for (int t = 0; t < T; ++t) rmsnorm(&kr[(size_t)t * id], id, ikp.data(), eps);
+          std::vector<float> pk((size_t)nb * id, 0.0f);
+          for (int b = 0; b < nb; ++b) {
+            float* d = &pk[(size_t)b * id];
+            for (int j = 0; j < ratio; ++j)
+              for (int i = 0; i < id; ++i) d[i] += kr[(size_t)(b * ratio + j) * id + i];
+            for (int i = 0; i < id; ++i) d[i] /= (float)ratio;
+            rmsnorm(d, id, ikn.data(), eps);
+            rope(d, b * ratio);
+          }
+          for (int t = 0; t < T; ++t)
+            for (int hh = 0; hh < ih; ++hh) {
+              float* d = &qi[((size_t)t * ih + hh) * id];
+              rmsnorm(d, id, iqn.data(), eps);
+              rope(d, t);
+            }
+          allow.assign((size_t)T * T, 0);
+#pragma omp parallel for
+          for (int t = 0; t < T; ++t) {
+            const int nv = (t + 1) / ratio;  // complete blocks visible to t
+            std::vector<std::pair<double, int>> sc(nv);
+            for (int b = 0; b < nv; ++b) {
+              double acc = 0;
+              for (int hh = 0; hh < ih; ++hh) {
+                double dd = 0;
+                for (int i = 0; i < id; ++i) dd += (double)qi[((size_t)t * ih + hh) * id + i] * pk[(size_t)b * id + i];
+                acc += std::max(dd, 0.0);
+              }
+              sc[b] = {acc / std::sqrt((double)id), b};
+            }
+            std::stable_sort(sc.begin(), sc.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            for (int k = 0; k < std::min(nv, ntop); ++k)
+              for (int j = 0; j < ratio; ++j) allow[(size_t)t * T + sc[k].second * ratio + j] = 1;
+            for (int u = t / ratio * ratio; u <= t; ++u) allow[(size_t)t * T + u] = 1;  // (its own block, complete or not)
+          }
+        }
+      }
       std::vector<float> att((size_t)T * nh * hd);
       for (int t = 0; t < T; ++t)
         for (int hh = 0; hh < nh; ++hh) {
@@ -1695,6 +1748,7 @@ int main(int argc, char** argv) {
             double s = 0;
             for (int i = 0; i < hd; ++i) s += (double)q[((size_t)t * nh + hh) * hd + i] * kk[(size_t)u * nkv * hd + g * hd + i];
             sc[u] = s / std::sqrt((double)hd);
+            if (!allow.empty() && !allow[(size_t)t * T + u]) sc[u] = -1e300;
             mx = std::max(mx, sc[u]);
           }
           double z = 0;

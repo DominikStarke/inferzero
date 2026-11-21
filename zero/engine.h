@@ -79,6 +79,8 @@ struct Hparams {
   // QSA sparse attention (Flash Next): block size per layer (0: dense), indexer heads / key size, keys selected
   std::vector<int> qsa_ratio;
   int qsa_heads = 0, qsa_dim = 0, qsa_topk = 0, n_qsa = 0;
+  // (a dense Qwen with a QSA indexer, the QSA 27B: raw keys normed with k_norm.pre_weight, a query sees its own block)
+  bool qsa_own = false;
   int hce() const { return hc_n * n_embd; }  // residual floats per token
   int conv_dim() const { return 2 * ssm_nk * ssm_d_state + ssm_d_inner; }
   bool recurrent(int il) const { return !gemma && (il + 1) % full_attn_interval != 0; }

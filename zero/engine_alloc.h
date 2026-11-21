@@ -15,12 +15,6 @@
       hc_gate_ = buf(M * hp.hce() * 4);
       hc_lo_ = buf(M * (size_t)std::max(layers_[0].hc_down[0].N, out_hc_down_.N) * 4);
       hco_ = buf(M * hp.n_embd * 4);
-      if (hp.n_qsa) {
-        qsa_ixo_ = buf(M * (size_t)(1 + hp.qsa_heads) * hp.qsa_dim * 4);
-        qsa_qx_ = buf(M * (size_t)hp.qsa_heads * hp.qsa_dim * 4);
-        qsa_sc_ = buf((size_t)256 * qsa_blocks(ctx) * 4 + 64);
-        qsa_mask_ = buf(M * (size_t)qsa_mask_words(ctx) * 4 + 64);
-      }
       if (hp.ple_layer >= 0) {
         ple_emb_ = buf(M * hp.n_embd * 4);
         hc_bak_ = buf(conv_bytes() - ple_hist_off());
@@ -35,6 +29,15 @@
           mems_.push_back(ple_hist_);
         }
       }
+    }
+    // (QSA: Flash Next's and the QSA 27B's indexer buffers. Inside the Flash Next block before 2026-11-21, so a dense
+    //  model's indexer GEMM wrote through a buffer never made: the QSA 27B's KL 3.26 with every block selected)
+    if (hp.n_qsa) {
+      qsa_ixo_ = buf(M * (size_t)(1 + hp.qsa_heads) * hp.qsa_dim * 4);
+      qsa_qx_ = buf(M * (size_t)hp.qsa_heads * hp.qsa_dim * 4);
+      qsa_sc_ = buf((size_t)256 * qsa_blocks(ctx) * 4 + 64);
+      qsa_mask_ = buf(M * (size_t)qsa_mask_words(ctx) * 4 + 64);
+      if (hp.qsa_own) qsa_bak_ = buf(conv_bytes() - qsa_tail_off(0));  // (the QSA 27B's tails, see qsa_spec_save)
     }
     asc_ = buf(M * (maxK / 32) * 4 * (q2mm_ ? 2 : 1));
     if (hp.moe) asct_ = buf(M * (hp.n_embd / 32) * 4);

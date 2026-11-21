@@ -206,7 +206,7 @@
     // (with the verification pass's state, so that a slot's drafts can wait for verify_done while other slots run:
     //  S_next and the inputs verify_done replays, the pass's hidden states, its DFlash2 rows)
     auto add_layer = [&](Layer& L) {
-      for (cl_mem* f : {&L.kq, &L.vq, &L.ksc, &L.vsc, &L.conv_state, &L.S, &L.pk, &L.S_next, &L.conv_pre,
+      for (cl_mem* f : {&L.kq, &L.vq, &L.ksc, &L.vsc, &L.conv_state, &L.S, &L.pk, &L.S_next, &L.conv_pre, &L.ixsv,
                         &L.xin, &L.qkvin, &L.abin})
         add(*f);
       if (!opt.attn_int8 || frows_) { add(L.kc); add(L.vc); }
@@ -216,6 +216,7 @@
     add(hlast_);
     add(hpend_);
     add(hver_);
+    add(qsa_bak_);  // (the QSA 27B: a slot's tails before its verification pass, settled later)
     for (auto& D : dfl_l_) { add(D.rk); add(D.rv); }
     if (dfl_) {
       dfl_vrows_rows_ = batch_rows_;
@@ -276,7 +277,8 @@
   // history and its QSA blocks per sequence too); every slot's drafts settled; up to 1 + max(drafts, slots - 1) rows.
   // The bound slot stays bound.
   bool batch_ok() const { return (!hp.hc || !has_mtp) && opt.attn_int8 && slot_ptrs_.size() > 1; }
-  bool batch_verify_ok() const { return batch_ok() && has_mtp && !gemma_mtp_ && !hp.hc; }
+  // (not the QSA 27B yet: its tails would need the roll-back per row of the batched pass)
+  bool batch_verify_ok() const { return batch_ok() && has_mtp && !gemma_mtp_ && !hp.hc && !hp.qsa_own; }
   const std::vector<float>& forward_batch(const std::vector<int>& slots, const std::vector<int>& toks) {
     TP_MIRROR(forward_batch(slots, toks), TpMirror::kBatch, (int)slots.size());
     const int B = (int)slots.size();

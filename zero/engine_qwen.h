@@ -116,11 +116,47 @@
     if (spec_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, qsa_ixo_, L.ixsv, 0, 0, (size_t)T * ldx * 4, 0, nullptr, nullptr));
     return qsa_seq(L, 0, T, pos);
   }
+  // the build options of the QSA kernels for layer L (the QSA 27B: -DQSA_PRE, -DQSA_OWN; see qsa_seq), and the
+  // pre-norm weight they read (Flash Next: a stand-in, never read)
+  std::string qsa_defs(const Layer& L) const {
+    return "-DQR=" + std::to_string(L.qr) + " -DQH=" + std::to_string(hp.qsa_heads) + (L.ix_kp ? " -DQSA_PRE" : "") +
+           (hp.qsa_own ? " -DQSA_OWN" : "");
+  }
+  cl_mem qsa_kp(const Layer& L) const { return L.ix_kp ? L.ix_kp : L.ix_kn; }
+  // every QSA layer's tail as after the verification pass's first `rows` rows at position p0: from the tail before the
+  // pass (restored by the caller) and the pass's own indexer rows (L.ixsv), the kernel the pass ran. Flash Next's
+  // hc_rollback and the QSA 27B's qsa_rollback
+  void qsa_tails_from_pass(int p0, int rows) {
+    for (auto& L : layers_) {
+      if (!L.qtail) continue;
+      cl_kernel k = kernel("ops", qsa_defs(L), "qsa_tail");
+      int ld = L.ix.N, pp = p0, tt = rows;
+      float eps = hp.eps;
+      set_args(k, 0, L.ixsv, ld, pp, tt, L.qtail, qsa_kp(L), eps);
+      size_t g1 = hp.qsa_dim, l1 = g1;
+      run("qsa", k, 1, &g1, &l1);
+    }
+  }
+  // The QSA 27B with drafting (verify / verify_done): the tails before a verification pass, put back with the
+  // accepted rows' keys when drafts are rejected (Flash Next does it in hc_spec_save / hc_rollback, with its PLE
+  // state). qsa_bak_ is a slot role: a slot's pass may be settled after other slots ran
+  void qsa_spec_save() {
+    CL_CHECK(clEnqueueCopyBuffer(cl_.queue, layers_[qsa_host()].conv_state, qsa_bak_, qsa_tail_off(0), 0,
+                                 conv_bytes() - qsa_tail_off(0), 0, nullptr, nullptr));
+  }
+  void qsa_rollback(int rows) {
+    const int p0 = pos - 1 - (int)last_drafts_.size();
+    CL_CHECK(clEnqueueCopyBuffer(cl_.queue, qsa_bak_, layers_[qsa_host()].conv_state, 0, qsa_tail_off(0),
+                                 conv_bytes() - qsa_tail_off(0), 0, nullptr, nullptr));
+    qsa_tails_from_pass(p0, rows);
+  }
   // the QSA work of one sequence: indexer rows r0 .. r0 + T - 1 of qsa_ixo_ at positions pos0 .. (its pooled keys and
   // tail in the bound / pointed-to slot's state; queries, scores and masks from row 0 of their buffers)
   bool qsa_seq(Layer& L, int r0x, int T, int pos0) {
     const int QR = L.qr, D = hp.qsa_dim, H = hp.qsa_heads, ldx = (1 + H) * D, ntop = hp.qsa_topk / QR;
-    const std::string defs = "-DQR=" + std::to_string(QR) + " -DQH=" + std::to_string(H);
+    const std::string defs = qsa_defs(L);  // (the QSA 27B: -DQSA_PRE, each raw key RMS-normed with its pre_weight as it is
+    //  pooled or kept in the tail; -DQSA_OWN, a query's own block selected besides its top blocks. Flash Next: neither)
+    const cl_mem kp = qsa_kp(L);
     const cl_mem ixo = from(qsa_ixo_, (size_t)r0x * ldx * 4);
     float eps = hp.eps, ts = std::pow(hp.rope_base, -2.0f / hp.n_rot);
     int p0 = pos0, ld = ldx, nr = hp.n_rot;
@@ -128,14 +164,14 @@
     if (b1 > b0) {
       cl_kernel k = kernel("ops", defs, "qsa_pool");
       int bb = b0;
-      set_args(k, 0, ixo, ld, p0, L.qtail, L.ix_kn, bb, eps, ts, nr, L.pk);
+      set_args(k, 0, ixo, ld, p0, L.qtail, L.ix_kn, bb, eps, ts, nr, L.pk, kp);
       size_t g1 = (size_t)16 * (b1 - b0), l1 = 16;
       run("qsa", k, 1, &g1, &l1);
     }
     {
       cl_kernel k = kernel("ops", defs, "qsa_tail");
       int tt = T;
-      set_args(k, 0, ixo, ld, p0, tt, L.qtail);
+      set_args(k, 0, ixo, ld, p0, tt, L.qtail, kp, eps);
       size_t g1 = D, l1 = D;
       run("qsa", k, 1, &g1, &l1);
     }

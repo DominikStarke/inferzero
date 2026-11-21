@@ -557,19 +557,23 @@
         for (cl_mem m : {L.ksc, L.vsc}) fill(m, scb);
       }
     }
-    if (hp.hc && L.il < (int)hp.qsa_ratio.size() && hp.qsa_ratio[L.il] > 0) {
+    if ((hp.hc || hp.qsa_own) && L.il < (int)hp.qsa_ratio.size() && hp.qsa_ratio[L.il] > 0) {
       L.qr = hp.qsa_ratio[L.il];
       L.ix = load_q8_concat(p + "indexer.k_proj.weight", p + "indexer.q_proj.weight");
       L.ix_kn = load_f32(p + "indexer.k_norm.weight");
       L.ix_qn = load_f32(p + "indexer.q_norm.weight");
+      if (hp.qsa_own) {
+        if (!f_.find(p + "indexer.k_norm.pre_weight")) throw std::runtime_error("QSA indexer: no indexer.k_norm.pre_weight");
+        L.ix_kp = load_f32(p + "indexer.k_norm.pre_weight");
+      }
       if (L.ix.N != (1 + hp.qsa_heads) * hp.qsa_dim) throw std::runtime_error("unexpected QSA indexer shape");
       L.pk = buf((size_t)qsa_blocks(ctx) * hp.qsa_dim * 4 + 64);
       L.ixsv = buf((size_t)(1 + kMaxDrafts) * L.ix.N * 4);
       L.qsa_i = qsa_n_++;
-      if (!opt.dry) {  // its tail raw keys inside the PLE layer's recurrent state (see conv_bytes)
+      if (!opt.dry) {  // its tail raw keys inside a recurrent state (see conv_bytes, qsa_host)
         cl_buffer_region r{qsa_tail_off(L.qsa_i), (size_t)(L.qr - 1) * hp.qsa_dim * 4};
         cl_int err;
-        L.qtail = clCreateSubBuffer(layers_[hp.ple_layer].conv_state, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &r, &err);
+        L.qtail = clCreateSubBuffer(layers_[qsa_host()].conv_state, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &r, &err);
         CL_CHECK(err);
         mems_.push_back(L.qtail);
       }

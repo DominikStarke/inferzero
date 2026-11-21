@@ -254,14 +254,7 @@
       size_t g1 = w;
       run("ple", k, 1, &g1, nullptr);
     }
-    for (auto& L : layers_) {
-      if (!L.qtail) continue;
-      cl_kernel k = kernel("ops", "-DQR=" + std::to_string(L.qr) + " -DQH=" + std::to_string(hp.qsa_heads), "qsa_tail");
-      int ld = L.ix.N, pp = p0, tt = rows;
-      set_args(k, 0, L.ixsv, ld, pp, tt, L.qtail);
-      size_t g1 = hp.qsa_dim, l1 = g1;
-      run("qsa", k, 1, &g1, &l1);
-    }
+    qsa_tails_from_pass(p0, rows);  // (engine_qwen.h: the build options and arguments qsa_seq's tail kernel takes)
     auto tk = [&](int i) { return i == 0 ? spec_tok_ : last_drafts_[i - 1]; };
     ple_prev_[0] = tk(rows - 1);
     ple_prev_[1] = rows >= 2 ? tk(rows - 2) : spec_prev_[0];

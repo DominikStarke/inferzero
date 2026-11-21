@@ -167,6 +167,7 @@
     int qr = 0, qsa_i = -1;
     GpuWeight ix;
     cl_mem ix_kn = nullptr, ix_qn = nullptr, pk = nullptr, qtail = nullptr;
+    cl_mem ix_kp = nullptr;  // (the QSA 27B: indexer.k_norm.pre_weight, each raw key RMS-normed before pooling)
     cl_mem ixsv = nullptr;  // (a verification pass: its indexer rows, for verify_done)
   };
 
@@ -254,6 +255,13 @@
   size_t ple_tok_off() const { return ple_hist_off() + (size_t)ple_hist() * hp.hce() * 4; }
   // (QSA: the raw keys of each QSA layer's tail block, 4 KB apart)
   size_t qsa_tail_off(int i) const { return (ple_tok_off() + 16 + 4095) / 4096 * 4096 + (size_t)i * 4096; }
+  // (the layer whose recurrent state holds the tails: Flash Next's PLE layer; a dense Qwen's first DeltaNet layer)
+  int qsa_host() const {
+    if (hp.ple_layer >= 0) return hp.ple_layer;
+    for (int il = 0; il < hp.n_layer; ++il)
+      if (hp.recurrent(il)) return il;
+    throw std::runtime_error("QSA: no recurrent layer to hold the tail keys");
+  }
   size_t conv_bytes() const {
     return hp.n_qsa ? qsa_tail_off(hp.n_qsa) : ple_tok_off() + (hp.ple_layer >= 0 ? 16 : 0);
   }
@@ -654,6 +662,7 @@
   // (a verification pass on Flash Next: the PLE / QSA state before it, the pass's PLE conv rows and the token ids
   //  before it, so that verify_done() rebuilds the state after the accepted tokens)
   cl_mem hc_bak_ = nullptr, ple_sv_ = nullptr;
+  cl_mem qsa_bak_ = nullptr;  // (the QSA 27B: its tails before a verification pass, see qsa_spec_save)
   int spec_prev_[2] = {-1, -1}, spec_tok_ = -1;
   const GgufTensor* tok_embd_ = nullptr;
   // activations

@@ -2,6 +2,22 @@
 // class is the same text), not a header of its own: setup: the model's hyperparameters per architecture, the weight plan, kernel builds (kernel()).
 
   // ---------------------------------------------------------------- setup
+  // ARC_QSA_TOPK=N (tests: fewer keys a query, sparse sooner): taken only as a positive multiple of the block size,
+  // else said and the file's top_k kept (atoi of a typo gave 0: a query saw only its own block)
+  void qsa_topk_env() {
+    const char* e = getenv("ARC_QSA_TOPK");
+    if (!e) return;
+    const int fi = hp.full_attn_interval;
+    const int r = fi >= 1 && fi <= (int)hp.qsa_ratio.size() ? hp.qsa_ratio[fi - 1] : 0;
+    char* end = nullptr;
+    const long v = strtol(e, &end, 10);
+    if (end == e || *end || v <= 0 || v > (1L << 24) || (r > 0 && v % r)) {
+      zlog::eprintf("inferzero: ARC_QSA_TOPK=%s ignored (a positive multiple of the block size %d): top %d keys\n", e, r,
+                    hp.qsa_topk);
+      return;
+    }
+    hp.qsa_topk = (int)v;
+  }
   void load_hparams() {
     const std::string a = f_.get_str("general.architecture");
     hp.arch = a;
@@ -74,12 +90,12 @@
           hp.qsa_heads = I("attention.indexer.head_count");
           hp.qsa_dim = I("attention.indexer.key_length");
           hp.qsa_topk = I("attention.indexer.top_k");
-          if (const char* e = getenv("ARC_QSA_TOPK")) hp.qsa_topk = atoi(e);  // (tests: fewer keys, sparse sooner)
+          qsa_topk_env();  // (tests: fewer keys, sparse sooner)
           // (the interval indexes the ratios: checked here, before the model's other dimensions are)
           if (hp.full_attn_interval < 1 || hp.full_attn_interval > (int)hp.qsa_ratio.size())
             throw std::runtime_error("invalid full_attention_interval in the GGUF");
           for (int r : hp.qsa_ratio)
-            if (r > 0 && (r < 2 || r > 8 || hp.qsa_topk % r || r != hp.qsa_ratio[hp.full_attn_interval - 1]))
+            if (r > 0 && (r < 2 || r > 8 || hp.qsa_topk <= 0 || hp.qsa_topk % r || r != hp.qsa_ratio[hp.full_attn_interval - 1]))
               throw std::runtime_error("unsupported QSA block size");
           if (hp.qsa_dim != 128 || hp.qsa_heads < 1 || hp.qsa_heads > 16 || hp.ple_layer < 0)
             throw std::runtime_error("unsupported QSA indexer");
@@ -90,6 +106,45 @@
         }
       }
     }
+    // A dense Qwen3.5 / 3.8 with a trained QSA indexer on its full-attention layers (QUEUE LC2; the QSA 27B GGUFs,
+    // Unsloth's tensors plus 80 F32 indexer tensors, the idea from an MIT engine): the same indexer as Flash Next's
+    // with two differences, from that engine's graph: each raw key is RMS-normed with indexer.k_norm.pre_weight before
+    // it is pooled, and a query always sees its own block (complete or not) besides its top blocks. The tail keys live
+    // in the first DeltaNet layer's recurrent state (Flash Next's in its PLE layer's), so snapshots, slots and saved
+    // conversations carry them. ARC_QSA_DENSE=1: read the file as a dense model (its indexer ignored, as before
+    // 2026-11-21). Int8 attention only (--attn-f32: dense, said); not on a layer split
+    if (!hp.hc && !hp.moe && a == "qwen35" && !(getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0))
+      if (const auto* cr = f_.get_ints(a + ".attention.compress_ratios")) {
+        const int nl = I("block_count");
+        hp.qsa_ratio.assign(nl, 0);
+        for (int il = 0; il < nl && il < (int)cr->size(); ++il)
+          if (f_.find("blk." + std::to_string(il) + ".indexer.k_proj.weight")) hp.qsa_ratio[il] = (int)(*cr)[il];
+        for (int r : hp.qsa_ratio) hp.n_qsa += r > 0;
+        const bool split = opt.pp_begin > 0 || (opt.pp_end >= 0 && opt.pp_end < nl);
+        if (hp.n_qsa && (!opt.attn_int8 || split)) {
+          zlog::eprintf("inferzero: QSA indexer not used %s: the model read as dense\n",
+                        split ? "on a layer split" : "with --attn-f32");
+          hp.qsa_ratio.assign(nl, 0);
+          hp.n_qsa = 0;
+        }
+        if (hp.n_qsa) {
+          hp.full_attn_interval = I("full_attention_interval", 4);
+          hp.qsa_heads = I("attention.indexer.head_count");
+          hp.qsa_dim = I("attention.indexer.key_length");
+          hp.qsa_topk = I("attention.indexer.top_k");
+          qsa_topk_env();  // (tests: fewer keys, sparse sooner)
+          if (hp.full_attn_interval < 1 || hp.full_attn_interval > (int)hp.qsa_ratio.size())
+            throw std::runtime_error("invalid full_attention_interval in the GGUF");
+          for (int r : hp.qsa_ratio)
+            if (r > 0 && (r < 2 || r > 8 || hp.qsa_topk <= 0 || hp.qsa_topk % r || r != hp.qsa_ratio[hp.full_attn_interval - 1]))
+              throw std::runtime_error("unsupported QSA block size");
+          if (hp.qsa_dim != 128 || hp.qsa_heads < 1 || hp.qsa_heads > 16)
+            throw std::runtime_error("unsupported QSA indexer");
+          hp.qsa_own = true;
+          zlog::eprintf("inferzero: QSA on %d full-attention layers (blocks of %d, top %d keys; ARC_QSA_DENSE=1: dense)\n",
+                        hp.n_qsa, hp.qsa_ratio[hp.full_attn_interval - 1], hp.qsa_topk);
+        }
+      }
     hp.n_head = I("attention.head_count");
     hp.n_head_kv = I("attention.head_count_kv");
     hp.head_dim = I("attention.key_length");

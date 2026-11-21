@@ -878,6 +878,7 @@
     last_drafts_ = drafts;
     vrows_ = false;
     if (hp.hc && hp.ple_layer >= 0) hc_spec_save(tok);  // (before embed: it advances the token ids)
+    else if (hp.qsa_own) qsa_spec_save();               // (the QSA 27B: its tails, engine_qwen.h)
     ring_guard(T);  // (Gemma: a snapshot's rings' window, see Engine::forward)
     embed(toks.data(), T, 16);
     if (dfl_) dfl_window(pos, T);
@@ -918,6 +919,7 @@
         std::swap(L.S, L.S_next);
       }
     if (hp.hc && hp.ple_layer >= 0 && accepted < nd) hc_rollback(accepted + 1);
+    else if (hp.qsa_own && accepted < nd) qsa_rollback(accepted + 1);
     if (accepted < nd) pos -= nd - accepted;
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hver_, hlast_, accepted * E4, 0, E4, 0, nullptr, nullptr));
     if (gemma_mtp_) {  // the drafter keeps no state of its own

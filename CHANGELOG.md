@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-21: the QSA 27B reads with its trained indexer (sparse attention on the dense 27B)
+
+- **The QSA-trained Qwen3.8 27B** (a GGUF of Unsloth's tensors plus a trained indexer on its 16 full-attention layers,
+  e.g. `Qwen3.8-27B-QSA-Unsloth-UD-Q4_K_M.gguf`) now uses its indexer, as Flash Next uses its own. Each query attends
+  to its top 2,048 keys, in blocks of 4, plus its own block. Until a prompt passes 2,048 tokens every block is chosen,
+  so short work is the dense model's, byte for byte.
+  - It differs from Flash Next's indexer in two ways, which come from the engine the model was made for: each raw
+    key is RMS-normed before its block is pooled (`indexer.k_norm.pre_weight`), and a query always sees its own
+    block.
+  - Its partial blocks' keys live in the first DeltaNet layer's state. Snapshots, `--slots` and saved conversations
+    carry them, and drafting rolls them back when drafts are rejected.
+  - `ARC_QSA_DENSE=1` reads the file as a dense model. The indexer is off, with a line saying so, under `--attn-f32`
+    and on a layer split.
+- **Accuracy**, against its own f32 reference (`tools/ref_forward` now selects as the engine does), on 480 tokens with
+  the selection cut to 64 keys, so most positions were sparse: KL 0.00140 (max 0.0376), the same top token at 475 of
+  480 positions. Read dense on both sides: 0.00079. QSA against the dense reference: 0.0184, so the selection really
+  changes the logits, and the engine selects as the reference does.
+- **Drafting:** the same text with `--mtp` as without it (6.97 against 3.46 tok/s on the laptop).
+- **Flash Next is unchanged:** byte for byte release .21.18's logits and text, with DFlash2 drafting and its roll-backs
+  too. Its drafts' roll-back had lost two kernel arguments while this was built; that was caught before any release.
+- `ARC_QSA_TOPK` (a test switch) is taken only as a positive multiple of the block size, and a top-K of 0 is refused.
+- Not measured yet: the speed of long prompts. Their attention runs `attn_q8` with the block masks; the flash attention
+  form with the QSA mask is the next step (QUEUE LC2).
+
 ## 2026-11-21: the Pro B65's generation defaults (+4.8 % plain, +11 % with drafting)
 
 - **Cards with 1,280 GPU threads or fewer** (the B60's die and the Pro B65) now pick the one-token GEMVs' rows by

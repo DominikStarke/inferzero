@@ -403,14 +403,30 @@ inline void qsa_norm_rope(float* v, __global const float* w, float eps, int p, f
 // pooled keys of the blocks b0 .. b0 + get_num_groups(0) - 1 (complete within positions < pos0 + T); positions
 // before pos0 come from the tail state (positions pos0 / QR * QR .. pos0 - 1). grid (16 * blocks), local (16).
 __attribute__((intel_reqd_sub_group_size(16)))
+// (-DQSA_PRE, the QSA 27B: each raw key of the chunk RMS-normed with kp, indexer.k_norm.pre_weight, before it is
+//  summed; the tail's keys were normed when qsa_tail kept them)
 __kernel void qsa_pool(__global const float* ixo, int ldx, int pos0, __global const float* tail, __global const float* kn,
-                       int b0, float eps, float theta_scale, int n_rot, __global float* pk) {
+                       int b0, float eps, float theta_scale, int n_rot, __global float* pk, __global const float* kp) {
   const int b = b0 + get_group_id(0), lane = get_sub_group_local_id(), t0 = pos0 / QR * QR;
   float v[QJ];
 #pragma unroll
   for (int j = 0; j < QJ; ++j) v[j] = 0.0f;
   for (int i = 0; i < QR; ++i) {
     const int p = b * QR + i;
+#ifdef QSA_PRE
+    if (p >= pos0) {
+      float m[QJ], ss = 0.0f;
+#pragma unroll
+      for (int j = 0; j < QJ; ++j) {
+        m[j] = ixo[(size_t)(p - pos0) * ldx + lane + 16 * j];
+        ss += m[j] * m[j];
+      }
+      const float r = rsqrt(sub_group_reduce_add(ss) / QD + eps);
+#pragma unroll
+      for (int j = 0; j < QJ; ++j) v[j] += m[j] * r * kp[lane + 16 * j];
+      continue;
+    }
+#endif
 #pragma unroll
     for (int j = 0; j < QJ; ++j) v[j] += p >= pos0 ? ixo[(size_t)(p - pos0) * ldx + lane + 16 * j] : tail[(p - t0) * QD + lane + 16 * j];
   }
@@ -421,11 +437,21 @@ __kernel void qsa_pool(__global const float* ixo, int ldx, int pos0, __global co
   for (int j = 0; j < QJ; ++j) pk[(size_t)b * QD + lane + 16 * j] = v[j];
 }
 // the tail state after the chunk: raw keys of positions (pos0 + T) / QR * QR .. pos0 + T - 1. grid (QD), one group.
-__kernel void qsa_tail(__global const float* ixo, int ldx, int pos0, int T, __global float* tail) {
+// (-DQSA_PRE: a key taken from the chunk RMS-normed with kp first, as qsa_pool norms it; the branch is the same for
+//  every work-item of the group, so the reduction is reached by all)
+__kernel void qsa_tail(__global const float* ixo, int ldx, int pos0, int T, __global float* tail, __global const float* kp,
+                       float eps) {
   const int d = get_global_id(0), t0 = pos0 / QR * QR, n0 = (pos0 + T) / QR * QR;
   float h[QR];
   for (int i = 0; i < QR - 1; ++i) {
     const int p = n0 + i;
+#ifdef QSA_PRE
+    if (p < pos0 + T && p >= pos0) {
+      const float x = ixo[(size_t)(p - pos0) * ldx + d];
+      h[i] = x * rsqrt(work_group_reduce_add(x * x) / QD + eps) * kp[d];
+      continue;
+    }
+#endif
     h[i] = p >= pos0 + T ? 0.0f : p >= pos0 ? ixo[(size_t)(p - pos0) * ldx + d] : tail[(p - t0) * QD + d];
   }
   for (int i = 0; i < QR - 1; ++i) tail[i * QD + d] = h[i];
@@ -564,6 +590,11 @@ __kernel void qsa_select(__global const float* sc, int lds, int r0, int pos0, in
         take = u > prefix;
         if (u == prefix) { take = before < k; ++before; }
       }
+#ifdef QSA_OWN
+      // (the QSA 27B: the query's own block too, when it is complete (its last position is the query); an
+      //  incomplete one is the tail block, always seen)
+      take = take || b == (pos0 + m) / QR;
+#endif
       bits |= (take ? 1u : 0u) << j;
     }
     mask[(size_t)m * qmw + w] = bits;
