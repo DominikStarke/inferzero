@@ -114,15 +114,22 @@
   // arithmetic in the loop (gemm_xw.cl -DXW_PFL: the chunk index clamped, the weights' bases set once, each sub-group's
   // token rows by construction). The same prefetches, so the same results bit for bit (checked at start). ocloc, the
   // loop's instructions for 128 DPAS: bmg-g31's default 718 -> 503 (37 branches -> 1), bmg-g21's 64 x 32 821 -> 464
-  // (69 -> 1), ptl-h's plain form 574 -> 502. 16 lanes only; its speed is for the cards to measure
-  static bool xw_pfl() {
-    static const bool v = getenv("ARC_GEMM_XW_PFL") && atoi(getenv("ARC_GEMM_XW_PFL")) != 0;
-    return v;
+  // (69 -> 1), ptl-h's plain form 574 -> 502. 16 lanes only.
+  // On by default on the Pro B65 since 2026-11-21 (the B70's die, BMG-G31, with 1,280 threads or fewer): the 27B 4K
+  // prompt 1,776-1,825 -> 1,859-1,917 tok/s in three pairs, 512 tokens 1,257-1,268 -> 1,327-1,336 (teodortomas, #47,
+  // .21.20); bit-identical. Not on the B60's die, where it was 6.6 % slower (skipzx-lab, #57); the B70 asked.
+  // ARC_GEMM_XW_PFL=0 / 1: off / on anywhere. =2 (opt-in, for the B60's die): the same with the chunk index tested,
+  // not clamped (gemm_xw.cl XW_PFL == 2): there form 1 let the compiler move the next chunk's loads into this one's
+  // last DPAS, breaking the chain into 21 single-DPAS runs (ocloc bmg-g21; the old loop's runs are 6-20, form 2's 3-16)
+  int xw_pfl_form() const {
+    static const int e = getenv("ARC_GEMM_XW_PFL") ? std::clamp(atoi(getenv("ARC_GEMM_XW_PFL")), 0, 2) : -1;
+    return e >= 0 ? e : (xe2_t1280() && !xe2_g21() ? 1 : 0);
   }
+  bool xw_pfl() const { return xw_pfl_form() != 0; }
   std::string xw_pf_defs() const {
     const int pf = xw_pf_eff();
     return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_lanes() == 16 ? xw_pfd_v() : xw_pfd()) +
-                    (xw_lanes() == 16 && xw_pfl() ? " -DXW_PFL" : "")
+                    (xw_lanes() == 16 && xw_pfl() ? " -DXW_PFL=" + std::to_string(xw_pfl_form()) : "")
               : "";
   }
   // ARC_GEMM_XW_PACK (8 lanes: the Arc 140T; issue #5, its xw_peak of 2026-11-13: packAW 32 x 16 against the default,
@@ -590,7 +597,10 @@
     // (8 lanes: emulated where the GPU has no XMX at all (the 125H, ARC_XMX_TRY=2); 16 lanes: where it has no 16-lane
     //  XMX, the 140T's 8-lane DPAS included)
     xw_emu_ = xw_lanes() == 8 ? !cl_.xmx : (!xmx_ || cl_.sg8);
-    xw_2d_discrete_ = !zrt::integrated();
+    // (and Panther Lake's Xe3 iGPU since 2026-11-21: the B390's 27B 4K prompt 428.8 / 417.2 -> 504.2 / 485.0 tok/s with
+    //  the 2D form (+16-18 %), the logits the same (n005, issue #74, Linux, .21.18); Lunar Lake's 140V keeps the plain
+    //  form: -9-15 % there with it (a1ex4, issue #60, driver 8991). The start check proves each GPU's form bit for bit)
+    xw_2d_discrete_ = !zrt::integrated() || zrt::panther_lake();
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
@@ -645,9 +655,10 @@
         else if (getenv("ARC_GEMM_XW_2D") && atoi(getenv("ARC_GEMM_XW_2D")) != 0 && xw_2d_fb_ == 0)
           zlog::eprintf("inferzero: ARC_GEMM_XW_2D needs 16-lane XMX with 2D block loads: not used\n");
         if (!xw_pf_defs().empty())
-          zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
+          zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)%s\n",
                         xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations",
-                        xw_lanes() == 16 ? xw_pfd_v() : xw_pfd(), xw_pf_eff());
+                        xw_lanes() == 16 ? xw_pfd_v() : xw_pfd(), xw_pf_eff(),
+                        xw_lanes() == 16 && xw_pfl() ? (xw_pfl_form() == 2 ? ", the lean loop with the chunk test (ARC_GEMM_XW_PFL=2)" : ", the lean loop (ARC_GEMM_XW_PFL, =0 off)") : "");
         if (xw_shape_on())
           zlog::eprintf("inferzero: gemm_xw8: a tile per GEMM shape: 16 x 32 where N <= %d and K <= 8192, else 32 x 16 "
                         "with 4 column sub-groups (ARC_GEMM_XW_SHAPE=0: one tile)\n", hp.n_embd);

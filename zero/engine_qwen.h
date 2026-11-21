@@ -111,6 +111,7 @@
   // completes, the tail state, the queries; when some row sees more blocks than it may select, its scores and mask.
   // Returns whether the attention must use the masks (else it is dense, as while every block is selected).
   bool qsa_prepare(Layer& L, int T, int Mp, int a_in) {
+    if (hp.qsa_off) return false;  // (Flash Next with full attention: dense, see engine_setup.h)
     const int ldx = (1 + hp.qsa_heads) * hp.qsa_dim;
     matmul("qsa_ix", L.ix, Mp, qsa_ixo_, ldx, 0, 0, a_in);
     if (spec_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, qsa_ixo_, L.ixsv, 0, 0, (size_t)T * ldx * 4, 0, nullptr, nullptr));
@@ -127,6 +128,7 @@
   // pass (restored by the caller) and the pass's own indexer rows (L.ixsv), the kernel the pass ran. Flash Next's
   // hc_rollback and the QSA 27B's qsa_rollback
   void qsa_tails_from_pass(int p0, int rows) {
+    if (hp.qsa_off) return;  // (full attention: no tails kept)
     for (auto& L : layers_) {
       if (!L.qtail) continue;
       cl_kernel k = kernel("ops", qsa_defs(L), "qsa_tail");
@@ -153,6 +155,7 @@
   // the QSA work of one sequence: indexer rows r0 .. r0 + T - 1 of qsa_ixo_ at positions pos0 .. (its pooled keys and
   // tail in the bound / pointed-to slot's state; queries, scores and masks from row 0 of their buffers)
   bool qsa_seq(Layer& L, int r0x, int T, int pos0) {
+    if (hp.qsa_off) return false;
     const int QR = L.qr, D = hp.qsa_dim, H = hp.qsa_heads, ldx = (1 + H) * D, ntop = hp.qsa_topk / QR;
     const std::string defs = qsa_defs(L);  // (the QSA 27B: -DQSA_PRE, each raw key RMS-normed with its pre_weight as it is
     //  pooled or kept in the tail; -DQSA_OWN, a query's own block selected besides its top blocks. Flash Next: neither)
@@ -375,7 +378,7 @@
     }
     if (!batch_.empty()) {  // a batched pass: each sequence's rows with its slot's caches and position (T <= 8)
       const cl_mem qi0 = qi_, qsc0 = qsc_, o0 = o_;
-      if (L.qr > 0) matmul("qsa_ix", L.ix, Mp, qsa_ixo_, (1 + hp.qsa_heads) * hp.qsa_dim, 0, 0, a_in);
+      if (L.qr > 0 && !hp.qsa_off) matmul("qsa_ix", L.ix, Mp, qsa_ixo_, (1 + hp.qsa_heads) * hp.qsa_dim, 0, 0, a_in);
       for (const BatchSeq& q : batch_) {
         point_to(q.slot);
         float eps = hp.eps, theta_scale = std::pow(hp.rope_base, -2.0f / hp.n_rot), kq_scale = 1.0f / std::sqrt((float)hd);

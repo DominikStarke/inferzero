@@ -489,6 +489,12 @@ inline bool bmg_g21() {
   const uint32_t id = pci_device_id();
   return id >= 0xE200 && id <= 0xE21F;
 }
+// this thread's GPU is Panther Lake's integrated Xe3 (the Arc B390 / B370: 0xB080-0xB0BF), not Lunar Lake's Xe2
+// (the 140V, 0x64xx)
+inline bool panther_lake() {
+  const uint32_t id = pci_device_id();
+  return id >= 0xB080 && id <= 0xB0BF;
+}
 // this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
 inline uint32_t hw_threads() {
   Dev& d = D();

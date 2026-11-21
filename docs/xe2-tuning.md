@@ -12,8 +12,9 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_H8` | on: Qwen dense, 4 column groups | on: Qwen dense, 1 column group | in the preset (chunks of 512+ tokens) | in the preset | off |
 | `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64; the B60's die, B60 / B580 / B50, 64 x 32 since 2026-11-21) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
 | `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off (the B60's die: 8 / off) | 1 / off | 2 / off | 2 / off | – |
-| `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 0 (opt-in) | – (16 lanes only) | – | – |
+| `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 1 on Panther Lake (the B390, since 2026-11-22: +16-18 % at 4K); 0 on Lunar Lake | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form (the B60's die: 3 / 1), 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |
+| `ARC_GEMM_XW_PFL` (the lean prefetch loop, 2026-11-21; =2 its form with the chunk test) | 1 on the B65 (the B70's die with 1,280 threads or fewer: +3-7 % at 4K); 0 elsewhere, the B60 -6.6 % with 1 | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_XCPU` (the CPU computes MoE experts missing from the GPU cache, 2026-11-20; on any discrete 16-lane GPU, a Data Center Max too; since 2026-11-21 the same results run to run from the same cache state (the model's `.lru` file; a B60's three runs byte-identical, skipzx-lab #57); before, they moved with the copies' timing) | 1 (a B60 on PCIe 3.0 x8: Flash Next +17 %) | 0 (no gain: the iGPU reads RAM directly) | 0 | 0 (an A770 on x16: no gain) | 0 |
 | `ARC_GEMM_XW_GU` (gate + up in one launch, 2026-11-20) | 1 (a B60: +3.3 / +3.8 % at 4K / 16K, the same logits) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |

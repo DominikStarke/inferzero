@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-22: Panther Lake's 2D GEMM, the B65's lean loop, a second lean form, and KL checks for contributors
+
+- **Flash Next can read with full attention: `ARC_QSA=0`** (the user: "set QSA as the default for QFN, meanwhile add
+  full attention as option"). Its trained sparse attention stays the default.
+  - The switch means the same on both QSA models: `ARC_QSA=1` sparse, `ARC_QSA=0` full, unset each model's own
+    default. That's full attention for the QSA 27B and sparse for Flash Next. The start says which one runs.
+  - **Accuracy** over the last 256 of 3,584 tokens, past the 2,048 keys sparse attention selects from: full attention
+    against its dense f32 reference KL 0.00855, against the sparse default's own 0.00914. The two forms are about
+    0.011 apart. With precise mode: 0.00471 full, 0.00599 sparse.
+  - The sparse default is byte for byte .21.21's (3,584 tokens, and with DFlash2 drafting).
+  - Its speed on long prompts is for the cards to measure.
+
+- **The Arc B390 (Panther Lake) reads its prompt GEMMs in 2D blocks by default:** the 27B's 4K prompt 428.8 /
+  417.2 -> 504.2 / 485.0 tok/s, the same logits (n005, #74, Linux). The engine tells Panther Lake's Xe3 iGPU apart by
+  its device ID (0xB080-0xB0BF). Lunar Lake's 140V keeps the plain form, which was faster there. Each GPU's form is
+  still checked bit for bit at start. `ARC_GEMM_XW_2D=0` turns it off.
+- **The Pro B65 runs the lean prompt GEMM loop by default** (`ARC_GEMM_XW_PFL`): the 27B's 4K prompt 1,776-1,825 ->
+  1,859-1,917 tok/s in three pairs, bit-identical (teodortomas, #47). The rule is the B70's die with 1,280 threads or
+  fewer. Not the B60, where the same loop was 6.6 % slower. A B70's pair is asked.
+- **`ARC_GEMM_XW_PFL=2`** (opt-in, for the B60) keeps the lean loop's set-once addresses but tests the chunk index
+  instead of clamping it. On the B60's 64 x 32 tile the clamp let the compiler move the next chunk's loads among this
+  chunk's XMX steps, breaking their chain. It's the same prefetches, so the same results bit for bit. The start-up line
+  names the form, and `bench/gpu_sweep` tries 0 / 1 / 2.
+- **`bench/kl_options.ps1` / `.sh`:** one command builds the f32 reference on your CPU and prints a table: every
+  option that applies to the model, against the reference, with the KL mean and max and the same top token. Those
+  options are attention, more precise prompt reading, precise mode, and faster drafting's text check. It needs a
+  few GB of RAM and CPU time (about 30 minutes for 480 tokens of the 27B on a laptop).
+
 ## 2026-11-21: the QSA 27B reads with full attention by default; sparse attention opt-in (`ARC_QSA=1`)
 
 - **The QSA-trained 27B now uses full attention unless asked** (the user: "Actually I like full attention"). The start

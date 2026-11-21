@@ -56,12 +56,12 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Measured:** the laptop (no XMX), the 27B on 480 tokens against f32: KL 0.00112 -> 0.00061 (plain 0.00056), top token 467 -> 474 of 480; its 4K prompt 117 -> 62 tok/s.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
 
-## Flash Next precise mode (`--precise`)
+## Precise mode (`--precise`)
 
-- **What it does:** Flash Next with two int8 passes, f16 keys and values and the routers in BF16: for work that needs exactness.
+- **What it does:** Flash Next's more exact mode: two int8 passes, f16 keys and values and the routers in BF16, which roughly doubles its exactness (KL against full precision under 0.015, against about 0.02 by default). About half the prompt speed and a little generation speed. It combines with either attention mode.
 - **Default:** off.
 - **Best for:** moe.
-- **Cost:** about half the prompt speed, some generation speed.
+- **Cost:** slower but more exact.
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** KL against f32 under 0.015 (the default mode up to ~0.02 on text work).
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
@@ -140,13 +140,13 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Note:** needs --gpus 2 or more; Qwen dense only; no --mtp, images, saved prompts or sessions yet.
 - **More:** [docs/multi-gpu.md](multi-gpu.md), experimental.
 
-## Sparse attention for long prompts (`ARC_QSA=1`)
+## Attention: sparse (on) or full (off) (`ARC_QSA=1`)
 
-- **What it does:** The QSA-trained Qwen3.8 27B file only: past 2,048 tokens of context, each token attends to the 2,048 keys its trained indexer picks (in blocks of 4) instead of all of them; shorter work is unchanged.
-- **Default:** off (full attention).
-- **Best for:** dense.
-- **Cost:** the logits move against full attention: KL 0.0184 with the selection cut to 64 keys (480 tokens; its own sparse reference 0.0014).
+- **What it does:** For the two models with a trained attention indexer. Sparse: past 2,048 tokens of context each token reads only the 2,048 keys its indexer picks, faster on long prompts. Full: every key, the most exact. Shorter work is the same either way. The QSA 27B uses full attention unless this is on; Flash Next uses sparse, its trained form, unless this is off.
+- **Default:** per model: the QSA 27B full attention, Flash Next sparse (its trained form).
+- **Best for:** dense, moe.
+- **Cost:** sparse is faster on long prompts, full is more exact.
 - **Output:** slightly different, checked against f32 (KL).
-- **Measured:** KL against its own f32 reference 0.0014, the same top token at 475 of 480 positions (64 keys); the speed of long prompts not measured yet.
-- **Note:** the QSA 27B GGUF; not with --attn-f32 or --split layer.
+- **Measured:** the QSA 27B on 480 tokens, 64 keys: sparse against its own sparse f32 reference KL 0.0014, against the full one 0.0184. Flash Next, the last 256 of 3,584 tokens: full against its dense reference 0.00855, sparse against its sparse one 0.00914, the two forms ~0.011 apart. The speed of long prompts not measured yet.
+- **Note:** the QSA 27B or Flash Next; not with --attn-f32 or --split layer (full attention there).
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.

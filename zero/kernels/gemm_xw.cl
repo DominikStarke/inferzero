@@ -186,8 +186,18 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
       //      are set once before the loop (xw_pfb), and each sub-group's token groups follow from sx by construction
       //      (t = sx, sx + wgx, ..., clamped), not by a test per group. A prefetch reads no value into the sums: the
       //      results are the same bit for bit (checked at start as every form)
+      // (XW_PFL=2: the chunk index tested, not clamped, so exactly the old prefetches; the bases and rows as in 1. With
+      //  TM 64 (the B60's tile) form 1's clamp let the compiler move the next chunk's loads into the last DPAS of this
+      //  one, where no register is free: a sync before each load broke the DPAS chain ~8 times a chunk. The test's one
+      //  branch a chunk keeps the loads before the DPAS: ocloc bmg-g21 472 instructions, 21 syncs (form 1: 464 / 33))
       {
-        const int qn = min(s * 4 + j + XW_PFD, s_end * 4 - 1);
+#if XW_PFL == 2
+      const int qn = s * 4 + j + XW_PFD;
+      if (qn < s_end * 4)
+#else
+      const int qn = min(s * 4 + j + XW_PFD, s_end * 4 - 1);
+#endif
+      {
 #if XW_PF & 1
 #pragma unroll
         for (int c = 0; c < XW_NC; ++c) XW_PREF_W(xw_pfb[c] + (size_t)qn * (16 * SG));
@@ -197,6 +207,7 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
         for (int i = 0; i < (XW_TG + XW_WGX - 1) / XW_WGX; ++i)  // (the work-group's sub-groups share the rows: XW_TG / wgx each)
           intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(qn * 64, m0 + 8 * min(sx + i * wgx, XW_TG - 1)));
 #endif
+      }
       }
 #elif XW_PF
       // ---- the chunk XW_PFD ahead into L1 while this one's DPAS run (B60 prefill plan 13.2): bit 1 its weights, bit 2

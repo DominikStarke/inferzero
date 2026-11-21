@@ -134,7 +134,7 @@ PP=(
   "ARC_GEMM_XW_2D|0 1 2|0 1"               # 2D block loads / stores
   "ARC_GEMM_XW_PF|0 1 2 3|0 1 3"           # prefetch: 0 off, 1 weights, 2 activations, 3 both
   "ARC_GEMM_XW_PFD|1 2 4 8|1 2 4"          # prefetch distance in chunks
-  "ARC_GEMM_XW_PFL|0 1|0 1"              # the leaner prefetch (16 lanes; no tests or address arithmetic in the loop)
+  "ARC_GEMM_XW_PFL|0 1 2|0 1 2"           # the leaner prefetch (16 lanes; no tests or address arithmetic in the loop)
   "ARC_GEMM_XW_GU|0 1|0 1"                 # gate + up in one launch
   "ARC_GEMM_XW_NC_E|1 2|1 2"               # 8 lanes: the n_embd-wide GEMMs' tile width (2: 32 x 32)
   "ARC_GEMM_SPLIT|0 9 17 34 68|0 17 34"    # superblocks per split-K piece (changes the sums: KL)

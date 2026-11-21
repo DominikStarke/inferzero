@@ -4,6 +4,20 @@
   // ---------------------------------------------------------------- setup
   // ARC_QSA_TOPK=N (tests: fewer keys a query, sparse sooner): taken only as a positive multiple of the block size,
   // else said and the file's top_k kept (atoi of a typo gave 0: a query saw only its own block)
+  // The attention of a model with a QSA indexer, per model since 2026-11-21 (the user: "Actually I like full
+  // attention" for the QSA 27B; "set QSA as the default for QFN, meanwhile add full attention as option"): ARC_QSA=1
+  // forces sparse, ARC_QSA=0 forces full, unset is each model's own default (the QSA 27B full, Flash Next sparse, its
+  // trained form). ARC_QSA_DENSE=1 (release .21.19's switch) is ARC_QSA=0 and wins. -1 unset, 0 full, 1 sparse
+  static int qsa_env() {
+    static const int v = getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0 ? 0
+                         : getenv("ARC_QSA")                                         ? (atoi(getenv("ARC_QSA")) != 0 ? 1 : 0)
+                                                                                     : -1;
+    return v;
+  }
+  static void qsa_say(const char* s) {
+    static std::once_flag said;
+    std::call_once(said, [s] { zlog::eprintf("inferzero: %s\n", s); });
+  }
   void qsa_topk_env() {
     const char* e = getenv("ARC_QSA_TOPK");
     if (!e) return;
@@ -86,6 +100,15 @@
         for (int il = 0; il < nl && il < (int)cr->size(); ++il)
           if (f_.find("blk." + std::to_string(il) + ".indexer.k_proj.weight")) hp.qsa_ratio[il] = (int)(*cr)[il];
         for (int r : hp.qsa_ratio) hp.n_qsa += r > 0;
+        // (Flash Next: sparse by default, its trained form; ARC_QSA=0, opt-in since 2026-11-21: full attention. Its QSA
+        //  layers then keep their indexer loaded and take the dense branch, qsa_float_attention's and the int8
+        //  attention's, as while every block is selected; the indexer GEMM, the pooled keys and the tails are skipped)
+        if (hp.n_qsa && qsa_env() == 0) {
+          hp.qsa_off = true;
+          qsa_say("Flash Next with full attention (ARC_QSA=0; unset: its trained sparse attention)");
+        } else if (hp.n_qsa) {
+          qsa_say("Flash Next with its trained sparse attention (QSA; ARC_QSA=0: full attention)");
+        }
         if (hp.n_qsa) {
           hp.qsa_heads = I("attention.indexer.head_count");
           hp.qsa_dim = I("attention.indexer.key_length");
@@ -121,13 +144,9 @@
         for (int il = 0; il < nl && il < (int)cr->size(); ++il)
           if (f_.find("blk." + std::to_string(il) + ".indexer.k_proj.weight")) hp.qsa_ratio[il] = (int)(*cr)[il];
         for (int r : hp.qsa_ratio) hp.n_qsa += r > 0;
-        const bool want = getenv("ARC_QSA") && atoi(getenv("ARC_QSA")) != 0 &&
-                          !(getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0);
+        const bool want = qsa_env() == 1;  // (the QSA 27B: full attention unless ARC_QSA=1)
         if (hp.n_qsa && !want) {
-          static std::once_flag said;
-          std::call_once(said, [] {
-            zlog::eprintf("inferzero: QSA indexer present, not used (full attention; ARC_QSA=1: sparse)\n");
-          });
+          qsa_say("QSA indexer present, not used (full attention; ARC_QSA=1: sparse)");
           hp.qsa_ratio.assign(nl, 0);
           hp.n_qsa = 0;
         }
