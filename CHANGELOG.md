@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: the tiny DeepSeek-V4.1 test model made in C++
+
+- `tools\make_tiny_deepseek41.cpp` replaces `tools/make_tiny_deepseek41.py`. It writes the same keys, tensors,
+  shapes and types, with the same options (`--seed --nu --heads --real --unsloth --q5_1-down`), and each encoder
+  rounds as the .py's did. Build it with `.\build.ps1 tools\make_tiny_deepseek41.cpp`.
+  - Its random numbers come from its own generator, not NumPy's, so a seed gives other weights than the .py's did.
+  - Checked against `tools\ref_forward` (100 random tokens, mean over every position, prompt / token by token):
+    - every expert used (`--nu 16`): KL 0.0027 / 0.0028 (the .py's model: 0.0032 / 0.0033);
+    - Unsloth's types: 0.0044 / 0.0044 (0.0052 / 0.0052);
+    - Q5_1 down experts: 0.0029 / 0.0029;
+    - 4 of 16 experts: 0.055 / 0.054 (router near-ties flip experts, as before: 0.003-0.084).
+  - `--real` (4.4 GB, experts made and written one at a time) loads and generates.
+- `tools/gemma4v_ref.py` is removed: `tools\gemma4v_ref.cpp` already did all it did, and more (the 26B's
+  encoder).
+
 ## 2026-11-21: the expert-cache simulators in C++
 
 - `bench\cache_sim.cpp` replaces `zero/cache_sim.py` (routes recorded with `ARC_DUMP_ROUTES`), and

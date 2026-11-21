@@ -750,7 +750,7 @@ shard (they are a lookup, not a matrix product). One sum per layer, as for the 3
 Memory per GPU: the dense part whole (its BF16 matrices as Q8_0) plus the GPU's expert cache; the experts kept in RAM
 are one pinned pool every GPU copies from, so 4 GPUs do not need 4 copies in RAM.
 
-Checked (laptop, `ARC_TP_SIM`), the tiny model with Unsloth's UD-Q8_K_XL types (`make_tiny_deepseek41.py --unsloth`,
+Checked (laptop, `ARC_TP_SIM`), the tiny model with Unsloth's UD-Q8_K_XL types (`make_tiny_deepseek41 --unsloth`, then a .py, now `tools/make_tiny_deepseek41.cpp`,
 16 experts all used, 100 random tokens), KL against tools/ref_forward, prompt / generation:
 
 | GPUs | KL |
