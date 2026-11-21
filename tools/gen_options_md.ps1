@@ -20,7 +20,10 @@ $md.Add('The switches below are off unless the table says otherwise. Each change
   '(`powershell -File tools\gen_options_md.ps1`).')
 $md.Add("")
 $md.Add('On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), `-NoOpt <id>` off, and ' +
-  '`zero-server options` lists them with whether each is for your PC. By hand: set the environment variable before ' +
+  '`zero-server options` lists them with whether each is for your PC. On Linux: `./zero-launcher.sh --opt <id>` ' +
+  '(`--opt <id>=<value>` for one that takes a value), `--no-opt <id>`, `--default-opt <id>`, `--options` to list them, ' +
+  'or `o` in its menu; the same choices file as on Windows (`~/.inferzero/options.json`), also written into the ' +
+  'systemd unit with `--install-service`. By hand: set the environment variable before ' +
   'starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz''s ' +
   'command line.')
 $md.Add("")

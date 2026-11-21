@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: the speed and accuracy options in the Linux launcher
+
+- **`zero-launcher.sh` has the options** (those in `scripts/options.tsv`, as on Windows):
+  - `--options` lists each one: what it's set to now, its default, what it does, the PCs it's for, and its cost.
+  - `--opt <id>` turns one on (`--opt budget=12` for one that takes a value), `--no-opt <id>` off, and
+    `--default-opt <id>` back to the default. Each takes a comma list.
+  - `o` in the menu changes them one by one.
+- **The same choices file as zero-server on Windows** (`~/.inferzero/options.json`), kept for later starts. The
+  launcher puts each choice into serverz's environment or onto its command line, says them in words at start, and
+  `--install-service` writes them into the systemd unit.
+- Bash and the system's tools only, no jq or Python. `tests/test_launcher_options.sh` (21 cases) runs in CI. Both
+  PowerShells read the file the launcher writes.
+
 ## 2026-11-21: the A770's leaner prompt GEMM loop, on by default
 
 - **`ARC_GEMM_XW_PTR` is on by default on Alchemist cards** (A770, A750, A580; `=0` turns it off). It was opt-in in

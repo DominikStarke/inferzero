@@ -8,9 +8,12 @@
 #   ./zero-launcher.sh --download 4b      download a catalog model (no server)
 #   ./zero-launcher.sh --model 4b         download if needed, then start the server (also a path to a .gguf)
 #   ./zero-launcher.sh --model 4b --install-service   a systemd user service for it instead of starting it here
+#   ./zero-launcher.sh --options          the speed and accuracy options (scripts/options.tsv) and what is chosen
+#   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
 # Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --no-browser, --yes (no
-# questions), --service-name NAME (inferzero), --replace-service; anything after `--` goes to serverz as it is
-# (e.g. -- --slots 2; not --port / --host, which the launcher must know).
+# questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
+# (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows); anything after `--` goes to
+# serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
 # The catalog below follows scripts/model-catalog.ps1 (tests/check_catalog_sync.sh checks that they agree). Flash
 # Next's AutoRound import and the speech models are setup.ps1's on Windows and not offered here.
 # (A symlink to this file, e.g. in ~/bin, is followed to the package; a relative --model path stays relative to where
@@ -255,11 +258,111 @@ port_busy() {  # HOST PORT: something already answers there (another server woul
   (exec 3<>"/dev/tcp/$h/$2") 2>/dev/null
 }
 
+# ---- speed and accuracy options (QUEUE O3, 2026-11-21): the catalog scripts/options.tsv (one row an option: id, kind
+# env / flag, its switch, the on and off values, the default, a plain title, what it does, the PCs it is for, its cost,
+# same output or KL ...) and the choices in options.json, the same file zero-server.ps1 keeps on Windows
+# ({"copy_draft": "on", "xcpu": "off", "budget": "12"}; an option not in it keeps the engine's default). An env option
+# goes into the server's environment, a flag onto its command line; --install-service writes both into the unit
+STATE_DIR=${ARC_DATA_DIR:-$HOME/.inferzero}
+OPT_TSV="$ROOT/scripts/options.tsv"
+declare -A OPTC=()
+OPT_ENV=(); OPT_FLAGS=(); OPT_WORDS=()
+opt_ids() { [ -f "$OPT_TSV" ] && awk -F'\t' 'NR > 1 && $1 != "" { print $1 }' "$OPT_TSV"; }
+opt_known() { [ -n "$1" ] && opt_ids | grep -qxF -- "$1"; }
+opt_col() {  # ID COLUMN: that option's field, by the header's column name
+  awk -F'\t' -v id="$1" -v col="$2" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == col) c = i; next }
+    $1 == id { if (c) print $c; exit }' "$OPT_TSV" | tr -d '\r'
+}
+opt_load() {  # options.json into OPTC (a flat object of strings: split on commas and braces, then "key": "value")
+  OPTC=()
+  local f="$STATE_DIR/options.json" k v
+  [ -f "$f" ] || return 0
+  while IFS=$'\t' read -r k v; do
+    [ -n "$k" ] && OPTC[$k]=$v
+  done < <(tr ',{}' '\n\n\n' < "$f" | sed -n 's/^[[:space:]]*"\([^"\\]*\)"[[:space:]]*:[[:space:]]*"\([^"\\]*\)"[[:space:]]*$/\1\t\2/p')
+}
+opt_save() {  # OPTC to options.json (atomic: a stopped write never leaves half a file)
+  local f="$STATE_DIR/options.json" tmp k first=1
+  mkdir -p "$STATE_DIR" || return 1
+  tmp=$(mktemp "$STATE_DIR/.options-XXXXXX") || return 1
+  {
+    printf '{'
+    for k in $(printf '%s\n' "${!OPTC[@]}" | sort); do
+      [ $first = 1 ] || printf ','
+      first=0
+      printf '\n    "%s":  "%s"' "$k" "${OPTC[$k]}"
+    done
+    printf '\n}\n'
+  } > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+opt_set() {  # ID CHOICE: on, off, a value, or "" (the default); refuses what the catalog does not allow
+  local id=$1 c=$2 on
+  opt_known "$id" || { err "zero-launcher: no option \"$id\" (the options: $(opt_ids | tr '\n' ' '); --options)"; return 2; }
+  on=$(opt_col "$id" on)
+  if [ -z "$c" ]; then unset "OPTC[$id]"; return 0; fi
+  case "$c" in *[\"\\]*|*[[:cntrl:]]*) err "zero-launcher: --opt $id: a value without quotes, backslashes or control characters"; return 2;; esac
+  if [ "$c" = on ] && [[ "$on" =~ ^[A-Za-z] ]]; then err "zero-launcher: --opt $id needs its value, e.g. --opt $id=12 ($on)"; return 2; fi
+  OPTC[$id]=$c
+}
+opt_effect() {  # the choices as OPT_ENV (NAME=value), OPT_FLAGS (serverz arguments) and OPT_WORDS (for the log line)
+  OPT_ENV=(); OPT_FLAGS=(); OPT_WORDS=()
+  local id c kind name on off title v
+  for id in $(printf '%s\n' "${!OPTC[@]}" | sort); do
+    opt_known "$id" || continue  # (a choice for an option no longer in the catalog: left out)
+    c=${OPTC[$id]}; kind=$(opt_col "$id" kind); name=$(opt_col "$id" name)
+    on=$(opt_col "$id" on); off=$(opt_col "$id" off); title=$(opt_col "$id" title)
+    if [ "$c" = off ]; then
+      if [ "$kind" = env ] && [ -n "$off" ]; then OPT_ENV+=("$name=$off"); OPT_WORDS+=("$title: off"); fi
+      continue
+    fi
+    v=$c; [ "$c" = on ] && v=$on
+    if [ "$kind" = env ]; then OPT_ENV+=("$name=$v")
+    elif [[ "$on" =~ ^[A-Za-z] ]]; then OPT_FLAGS+=("$name" "$v")
+    else OPT_FLAGS+=("$name"); fi
+    if [ "$c" = on ]; then OPT_WORDS+=("$title"); else OPT_WORDS+=("$title ($c)"); fi
+  done
+}
+opt_now() {  # ID: what is chosen now, in words
+  if [ -n "${OPTC[$1]+x}" ]; then printf '%s' "${OPTC[$1]}"; else printf 'default'; fi
+}
+opt_list() {  # every option: the choice, the default, what it does and the PCs it is for
+  local id n=0
+  [ -f "$OPT_TSV" ] || { say "no option catalog ($OPT_TSV)"; return 1; }
+  for id in $(opt_ids); do
+    n=$((n + 1))
+    printf ' %2d %-12s %s  [now: %s]\n' "$n" "$id" "$(opt_col "$id" title)" "$(opt_now "$id")"
+    printf '      %s\n' "$(opt_col "$id" what)"
+    printf '      default: %s | for: %s | cost: %s\n' "$(opt_col "$id" default)" "$(opt_col "$id" best_for | tr ';' ' ')" "$(opt_col "$id" cost)"
+  done
+  say "choices: $STATE_DIR/options.json"
+}
+opt_menu() {  # the menu's options screen: a number to change, Enter to go back
+  local s ids id on c
+  while :; do
+    say ""; say "speed and accuracy options (the same choices as zero-server on Windows):"; say ""
+    opt_list || return 1
+    read -r -p $'\noption number to change (Enter: back): ' s || return 0
+    [ -z "$s" ] && return 0
+    mapfile -t ids < <(opt_ids)
+    if ! [[ "$s" =~ ^[0-9]+$ ]] || [ "$s" -lt 1 ] || [ "$s" -gt ${#ids[@]} ]; then say "no option \"$s\""; continue; fi
+    id=${ids[$((s - 1))]}; on=$(opt_col "$id" on)
+    if [[ "$on" =~ ^[A-Za-z] ]]; then
+      read -r -p "$id: a value ($on), off, or Enter for the default: " c || return 0
+    else
+      read -r -p "$id: 1 on, 2 off, Enter the default: " c || return 0
+      case "$c" in 1) c=on;; 2) c=off;; '') ;; *) say "1, 2 or Enter"; continue;; esac
+    fi
+    opt_set "$id" "$c" && opt_save && say "$id: $(opt_now "$id")"
+  done
+}
+
 server_cmd() {  # PATH MTP: fills CMD
   CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget 8192)
   [ "$2" = 1 ] && CMD+=(--mtp)
   [ -n "$HOST" ] && CMD+=(--host "$HOST")
   [ "${GPUS:-0}" -gt 1 ] && CMD+=(--gpus "$GPUS")
+  opt_effect
+  CMD+=("${OPT_FLAGS[@]}")
   CMD+=("${EXTRA[@]}")
 }
 
@@ -269,8 +372,9 @@ run_server() {
   case "$shown" in *:*) url="http://[$shown]:$PORT/";; *) url="http://$shown:$PORT/";; esac
   if port_busy "$host" "$PORT"; then say "port $PORT is in use (another server?): stop it, or choose another with --port"; return 1; fi
   exposed "$HOST" && say "note: --host $HOST makes the server reachable from your network; it has no password of its own"
-  say "starting: ${CMD[*]}"
-  (cd "$ROOT" && exec "${CMD[@]}") &
+  [ ${#OPT_WORDS[@]} -gt 0 ] && say "options: $(IFS=';'; printf '%s' "${OPT_WORDS[*]}" | sed 's/;/; /g')"
+  say "starting: ${OPT_ENV[*]}${OPT_ENV[*]:+ }${CMD[*]}"
+  (cd "$ROOT" && exec env "${OPT_ENV[@]}" "${CMD[@]}") &
   pid=$!
   # (passed on: Ctrl+C reaches the server from the terminal too, which is harmless; a SIGINT or SIGTERM sent to the
   #  launcher alone (kill, an IDE's stop, systemd) must reach it as well. As TERM: a background command of a
@@ -331,6 +435,9 @@ install_service() {
     [ -n "$v" ] || continue
     case "$v" in *"$nl"*|*"$cr"*) say "--install-service: a path, option or cache environment value holds a line break"; return 1;; esac
     env_lines+="Environment=$(sq "$k=$v" 0)$nl"
+  done
+  for v in "${OPT_ENV[@]}"; do  # (the speed and accuracy options' switches: catalog names and checked values)
+    env_lines+="Environment=$(sq "$v" 0)$nl"
   done
   d=$(dirname "$unit")
   mkdir -p "$d" || return 1
@@ -393,25 +500,31 @@ menu() {
     fit=""; [ "${ram:-0}" -gt 0 ] && [ $((ram + 1)) -lt "${_f[5]}" ] && fit="  (wants ${_f[5]} GB of RAM)"
     printf ' %2d %s %s, ~%s GB%s\n' "$i" "$mark" "${_f[1]}" "${_f[3]}" "$fit"
   done
-  say ""; say "  c  check the system    q  quit"
+  say ""; say "  c  check the system    o  speed and accuracy options    q  quit"
   read -r -p $'\nmodel number: ' s || return 130
   s=${s,,}
   case "$s" in
     c) print_check; return $?;;
+    o) opt_menu; menu; return $?;;
     q|'') return 0;;
   esac
   if ! [[ "$s" =~ ^[0-9]+$ ]] || [ "$s" -lt 1 ] || [ "$s" -gt ${#keys[@]} ]; then say "no model \"$s\""; return 2; fi
   start_key "${keys[$((s - 1))]}"
 }
 
-usage() { sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
   REPLACE_SERVICE=0; EXTRA=()
+  local opt_args=() a
+  opt_load
   while [ $# -gt 0 ]; do
     case "$1" in
+      --options) mode=options;;
+      --opt|--no-opt|--default-opt) [ $# -ge 2 ] || { err "zero-launcher: $1 needs an option id (--options lists them)"; return 2; }
+        opt_args+=("$1" "$2"); shift;;
       --check) mode=check;;
       --list) mode=list;;
       --download) arg_dl=${2:-}; shift; mode=download;;
@@ -438,7 +551,26 @@ main() {
   [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || { err "zero-launcher: --port: 1..65535"; return 2; }
   [[ "$GPUS" =~ ^[0-9]+$ ]] || { err "zero-launcher: --gpus: a number"; return 2; }
   [ "$REPLACE_SERVICE" = 1 ] && [ "$INSTALL_SERVICE" != 1 ] && { err "zero-launcher: --replace-service needs --install-service"; return 2; }
+  # (--opt id[=value] / --no-opt id / --default-opt id, each a comma list too: kept in options.json for later starts,
+  #  as zero-server -Opt / -NoOpt / -DefaultOpt)
+  if [ ${#opt_args[@]} -gt 0 ]; then
+    local i ids id val
+    for ((i = 0; i < ${#opt_args[@]}; i += 2)); do
+      IFS=',' read -r -a ids <<< "${opt_args[$((i + 1))]}"
+      for a in "${ids[@]}"; do
+        [ -n "$a" ] || continue
+        id=${a%%=*}; val=""; [ "$id" != "$a" ] && val=${a#*=}
+        case "${opt_args[$i]}" in
+          --opt) opt_set "$id" "${val:-on}" || return 2;;
+          --no-opt) [ -z "$val" ] || { err "zero-launcher: --no-opt $a: just the id"; return 2; }; opt_set "$id" off || return 2;;
+          --default-opt) opt_set "$id" "" || return 2;;
+        esac
+      done
+    done
+    opt_save || { err "zero-launcher: cannot write $STATE_DIR/options.json"; return 1; }
+  fi
   case "$mode" in
+    options) opt_list; return $?;;
     check) print_check; return $?;;
     list) list_models; return 0;;
     download)
