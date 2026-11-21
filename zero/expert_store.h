@@ -437,6 +437,11 @@ struct ExpertStore {
         throw std::runtime_error("the package's expert file is missing or does not match: " + path +
                                  " (make the package again from the original GGUF: serverz --pack <gguf>)");
       build(f, prefixes, fp);
+      static const bool after = getenv("ARC_XBUILD_VERIFY") && atoi(getenv("ARC_XBUILD_VERIFY")) != 0;
+      if (after) check_sums(true);  // (S12: the file just written, read back)
+    } else {
+      static const bool on_load = getenv("ARC_EXPERTS_CHECK") && atoi(getenv("ARC_EXPERTS_CHECK")) != 0;
+      if (on_load) check_sums(false);
     }
     for (int i = 0; i < 2 * kQD; ++i) slots_[i].id = i;  // (before the open: no path reads with ids unset)
     const int op = af_.open(path.c_str(), 2 * kQD);  // (unbuffered, reads in flight: src/platform.h AsyncFile)
@@ -640,7 +645,9 @@ struct ExpertStore {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     Header h{};
-    const bool ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == kMagic && h.version == kVersion && (any_fp || h.fingerprint == fp) &&
+    // (version 1: as written before 2026-11-21; 2: the same file with each layer's checksum after the layer table, S12)
+    const bool ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == kMagic && (h.version == kVersion || h.version == kVersionSums) &&
+                    (any_fp || h.fingerprint == fp) &&
                     h.layers == layers.size() && h.experts == (uint64_t)n_expert && h.bytes == file_bytes;
     bool same = ok;
     for (size_t l = 0; same && l < layers.size(); ++l) {
@@ -650,6 +657,60 @@ struct ExpertStore {
     fclose(f);
     if (ok && package) check_autoround_expert_revision(*package, h.fingerprint);
     return same;
+  }
+  // ---- S12 (2026-11-21): a checksum of each layer's bytes, in the header after the layer table (the room the layout
+  // already keeps: 80 bytes a layer, 56 used), the header's version then 2. kVersion stays 1: it is part of the
+  // fingerprint, and the layout and the layers' bytes are the same (version 1 files are read as before, without sums)
+  static constexpr uint32_t kVersionSums = 2;
+  static uint64_t sum_bytes(uint64_t h, const uint8_t* p, size_t n) {  // (n a multiple of 8: records are 4 KB multiples)
+    for (size_t i = 0; i + 8 <= n; i += 8) {
+      uint64_t w;
+      memcpy(&w, p + i, 8);
+      h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+      h ^= h >> 29;
+    }
+    return h;
+  }
+  size_t sums_at() const { return sizeof(Header) + layers.size() * sizeof(LayerInfo); }
+  // the file's layers read back against the sums its header holds; just_built: say so either way. A version 1 file
+  // has none: a line, nothing checked
+  void check_sums(bool just_built) const {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    struct Close { FILE* f; ~Close() { fclose(f); } } cf{f};
+    Header h{};
+    if (fread(&h, sizeof h, 1, f) != 1) return;
+    if (h.version != kVersionSums) {
+      zlog::eprintf("inferzero: %s has no layer checksums (written before 2026-11-21): not checked\n", path.c_str());
+      return;
+    }
+    std::vector<uint64_t> want(layers.size());
+    if (fseek(f, (long)sums_at(), SEEK_SET) != 0 || fread(want.data(), 8, want.size(), f) != want.size()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> b(64u << 20);
+    size_t n_ok = 0;
+    for (size_t l = 0; l < layers.size(); ++l) {
+      const LayerInfo& L = layers[l];
+      if (!L.rec) continue;
+#ifdef _WIN32
+      if (_fseeki64(f, (long long)L.off, SEEK_SET) != 0) return;
+#else
+      if (fseeko(f, (off_t)L.off, SEEK_SET) != 0) return;
+#endif
+      uint64_t s = 0, left = L.rec * (uint64_t)n_expert;
+      while (left) {
+        const size_t c = (size_t)std::min<uint64_t>(left, b.size());
+        if (fread(b.data(), 1, c, f) != c) throw std::runtime_error("cannot read " + path + " (layer " + std::to_string(l) + ")");
+        s = sum_bytes(s, b.data(), c);
+        left -= c;
+      }
+      if (s != want[l])
+        throw std::runtime_error("the expert file " + path + " is damaged: layer " + std::to_string(l) +
+                                 " is not what was written (delete it: the next load writes it again)");
+      ++n_ok;
+    }
+    zlog::eprintf("inferzero: %s%s: %zu layers checked, all as written (%.1f s)\n", path.c_str(),
+                  just_built ? " read back" : "", n_ok, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   }
   // S2: where a stopped build of this file goes on. rs holds {kResumeMagic, 1, fp, file_bytes, layers, next layer,
   // its offset}; the .tmp must be at least that long and begin with this build's header (hb, `first` bytes)
@@ -755,6 +816,31 @@ struct ExpertStore {
         plat::remove_file(rs.c_str());
       }
     } out{{}, tmp, rs};
+    // (S12: each layer's checksum; a resumed build's earlier layers read back from the .tmp first, before it is opened
+    //  for writing, which Windows opens without sharing)
+    std::vector<uint64_t> sums(layers.size(), 0);
+    const bool sums_fit = sums_at() + 8 * layers.size() <= first;
+    if (resume && sums_fit) {
+      FILE* rf = fopen(tmp.c_str(), "rb");
+      if (!rf) throw std::runtime_error("cannot read " + tmp);
+      struct Close { FILE* f; ~Close() { fclose(f); } } crf{rf};
+      std::vector<uint8_t> b(64u << 20);
+      for (size_t l = 0; l < start_l; ++l) {
+        const LayerInfo& L = layers[l];
+        if (!L.rec) continue;
+#ifdef _WIN32
+        if (_fseeki64(rf, (long long)L.off, SEEK_SET) != 0) throw std::runtime_error("cannot read " + tmp);
+#else
+        if (fseeko(rf, (off_t)L.off, SEEK_SET) != 0) throw std::runtime_error("cannot read " + tmp);
+#endif
+        for (uint64_t left = L.rec * (uint64_t)n_expert; left;) {
+          const size_t c = (size_t)std::min<uint64_t>(left, b.size());
+          if (fread(b.data(), 1, c, rf) != c) throw std::runtime_error("cannot read " + tmp);
+          sums[l] = sum_bytes(sums[l], b.data(), c);
+          left -= c;
+        }
+      }
+    }
     if (!(resume ? out.w.open_at(tmp.c_str(), pos) : out.w.open(tmp.c_str()))) {
       out.done = true;
       throw std::runtime_error("cannot write " + tmp);
@@ -889,6 +975,7 @@ struct ExpertStore {
           }
         }
         put(buf, (uint64_t)ne * L.rec);
+        sums[l] = sum_bytes(sums[l], buf, (size_t)ne * L.rec);  // (S12)
         watch.tick();
       }
       // the layer's GGUF pages leave the working set (they stay in the standby list, which Windows can reuse)
@@ -909,6 +996,16 @@ struct ExpertStore {
     if (pos != file_bytes)  // (every layer written: the offsets the layer table gives, end to end)
       throw std::runtime_error("the expert file " + tmp + " came out " + std::to_string(pos) + " bytes, not " +
                                std::to_string(file_bytes));
+    // (S12: the header once more, version 2 and the layers' checksums after the layer table; where they don't fit,
+    //  version 1 as before)
+    if (sums_fit) {
+      Header h{kMagic, kVersionSums, fp, layers.size(), (uint64_t)n_expert, file_bytes};
+      memcpy(hb, &h, sizeof h);
+      memcpy(hb + sums_at(), sums.data(), 8 * sums.size());
+      if (!out.w.open_at(tmp.c_str(), 0) || !out.w.write(hb, first) || !out.w.sync())
+        throw std::runtime_error("write failed: " + tmp);
+      out.w.close();
+    }
     if (!plat::replace_file(tmp.c_str(), path.c_str()))  // (an old file of the same name: replaced)
       throw std::runtime_error("cannot rename " + tmp + " (" + std::to_string(plat::last_error()) + ")");
     out.done = true;

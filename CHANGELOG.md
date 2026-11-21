@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: expert files carry a checksum per layer
+
+- A new expert file records each layer's checksum in its header (version 2), in room the layout already keeps: the
+  layers' bytes and offsets are as before.
+- **Existing expert files are not rebuilt**: version 1 files load as before; they just have no sums to check.
+- `ARC_EXPERTS_CHECK=1` reads a version 2 file back at load and names the first layer that differs from what was
+  written. `ARC_XBUILD_VERIFY=1` does the same right after a build.
+- Tested on a small model:
+  - an old file loaded unchanged;
+  - a new one has the same layer bytes;
+  - a build resumed after a stop matches one built in one go;
+  - a flipped byte is caught, with its layer named.
+
 ## 2026-11-21: a package's first part read in large pieces
 
 - Making a package (`serverz --pack`) first writes every tensor but the experts. Those were written straight out of
