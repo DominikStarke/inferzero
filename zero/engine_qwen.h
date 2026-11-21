@@ -139,7 +139,8 @@
       size_t g1 = D, l1 = D;
       run("qsa", k, 1, &g1, &l1);
     }
-    if (b1 <= ntop && !getenv("ARC_QSA_ALWAYS")) return false;  // every row sees at most ntop blocks: dense
+    static const bool qsa_always = getenv("ARC_QSA_ALWAYS") != nullptr;  // (read once: every QSA layer)
+    if (b1 <= ntop && !qsa_always) return false;  // every row sees at most ntop blocks: dense
     {
       cl_kernel k = kernel("ops", defs, "qsa_q");
       set_args(k, 0, ixo, ld, p0, L.ix_qn, eps, ts, nr, qsa_qx_);

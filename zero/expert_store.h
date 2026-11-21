@@ -302,7 +302,25 @@ struct ExpertStore {
       if (!in || !std::getline(in, src)) continue;
       while (!src.empty() && (src.back() == '\r' || src.back() == '\n')) src.pop_back();
       const fs::path sp(src);
-      if (src.empty() || fs::exists(sp, e2) || !fs::exists(sp.root_path(), e2)) continue;
+      if (!src.empty() && fs::exists(sp, e2)) {
+        // (S2's kept build of a model that is not loaded again: its .tmp, tens of GB, stays until that model loads.
+        //  Named after ARC_XTMP_DAYS (7) days without a write; the Researcher's review, 2026-11-21)
+        static const double days = getenv("ARC_XTMP_DAYS") ? atof(getenv("ARC_XTMP_DAYS")) : 7.0;
+        for (const auto& f : fs::directory_iterator(d.path(), e2)) {
+          std::error_code e3;
+          const std::string n = f.path().filename().string();
+          if (n.size() < 17 || n.compare(n.size() - 17, 17, ".experts.tmp.done") != 0) continue;
+          const auto age = fs::file_time_type::clock::now() - fs::last_write_time(f.path(), e3);
+          const double d_old = std::chrono::duration<double>(age).count() / 86400.0;
+          const fs::path tmp = f.path().parent_path() / n.substr(0, n.size() - 5);
+          if (e3 || d_old < days || !fs::exists(tmp, e3)) continue;
+          zlog::eprintf("inferzero: %s (%.1f GB) is an expert file's build stopped %.0f days ago: it goes on when %s "
+                        "loads again; delete it and %s to free the space\n", tmp.string().c_str(),
+                        fs::file_size(tmp, e3) / 1e9, d_old, src.c_str(), f.path().filename().string().c_str());
+        }
+        continue;
+      }
+      if (src.empty() || !fs::exists(sp.root_path(), e2)) continue;
       uint64_t bytes = 0;
       for (const auto& f : fs::directory_iterator(d.path(), e2)) {
         std::error_code e3;
@@ -700,8 +718,11 @@ struct ExpertStore {
         w.close();
         if (done) return;
         if (keep) {
-          zlog::eprintf("%sinferzero: kept %s with its finished layers: the next start goes on from there\n",
-                        loadp::st().on ? "" : "\n", path.c_str());  // (the tools' layer counter is a \r line)
+          std::error_code e;
+          const double gb = std::filesystem::file_size(path, e) / 1e9;
+          zlog::eprintf("%sinferzero: kept %s (%.1f GB) with its finished layers: the next start of this model goes on "
+                        "from there; not loading it again? delete it and its .done file\n",
+                        loadp::st().on ? "" : "\n", path.c_str(), e ? 0.0 : gb);  // (the tools' layer counter is a \r line)
           return;
         }
         plat::remove_file(path.c_str());

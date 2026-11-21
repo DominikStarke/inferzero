@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-21: a fix for slow generation over several GPUs (to be confirmed on 4 B60s)
+
+- Generation split over several GPUs had become no faster than one card: the 27B over 4 Pro B60s took 48.8 ms a
+  token (18.6 tok/s), against 18.4 ms in early November (issue #4).
+- The likely cause: two checks added on the path of every matrix-vector product asked the GPU driver for its
+  properties each time, ~660 driver calls a token on each GPU. They also read environment variables, which on Windows
+  take a lock all threads share. A split model's GPUs, one thread each, then waited on each other inside the driver.
+- These answers never change, so they are read once now: the GPU's kind and thread count, the GEMV's read-ahead
+  choice, and five switches read per layer.
+- The same results bit for bit (the 4B, the 4B over 2 simulated GPUs, the 27B). One GPU is not slower or faster on the
+  laptop. The 4 B60s will show whether this was all of it.
+- Expert files: a build kept after a stop (S2) now says its size and how to remove it, and the start-up names one
+  left more than 7 days (`ARC_XTMP_DAYS`).
+
 ## 2026-11-21: an expert file's build goes on where it stopped
 
 - Writing a MoE model's expert file (once per model: Flash Next 52 GB, tens of minutes) began again from zero after

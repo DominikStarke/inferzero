@@ -72,7 +72,10 @@
   }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
-  bool xe2_grf128() const { return xe2_ && (!cl_.sg8 || getenv("ARC_XMX_TRY")); }
+  bool xe2_grf128() const {
+    static const bool xmx_try = getenv("ARC_XMX_TRY") != nullptr;  // (read once: on the verification GEMVs' path)
+    return xe2_ && (!cl_.sg8 || xmx_try);
+  }
 
   // the dense prompt GEMM with the default register file (128) instead of 256 registers per thread: more threads per
   // core; on a Pro B60 the 27B's prompt went 450 -> 617 tok/s (issue #4, 2026-11-02). ARC_GEMM_GRF=256 as before.
@@ -107,7 +110,7 @@
     return xehpc_ == 1;
   }
   std::string xe2_moe_grf() const {
-    const char* e = getenv("ARC_MOE_GRF");
+    static const char* e = getenv("ARC_MOE_GRF");  // (read once)
     const bool grf128 = e ? std::string(e) == "128" : (!zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on());
     return xe2_ && grf128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
@@ -144,13 +147,20 @@
   // prefetch; bit-identical. Not with ARC_GV_PROBE. On by default where the prefetch was (discrete cards) since
   // 2026-11-15: a Pro B70's 27B 31.88 / 31.90 / 31.84 -> 32.25 / 32.32 / 32.32 tok/s in three alternated rounds (+1.4 %;
   // median step 31.2 -> 30.8 ms), logits identical (joshdev-de, issue #27, 6466672). Dense models only: the MoE models' gains of the prefetch (the 35B +11 % on a B60) are not measured with it. ARC_GEMV_DB=0: the prefetch
-  std::string xe2_gemv_pf() const {
-    static const int dbe = getenv("ARC_GEMV_DB") ? (atoi(getenv("ARC_GEMV_DB")) != 0 ? 1 : 0) : -1;
-    const bool db = !getenv("ARC_GV_PROBE") && (dbe < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && hp.n_expert == 0 && !getenv("ARC_GEMV_PF")) : dbe == 1);
-    if (db) return std::string(" -DGEMV_DB");
-    static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
-    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
-    return on ? std::string(" -DGEMV_PF") : std::string();
+  // (decided once per engine: it is on every GEMV's path, and its getenv calls take the C runtime's lock, which a
+  //  split model's shard threads share; issue #4, 2026-11-21)
+  mutable int gemv_pf_kind_ = -1;  // 0 none, 1 -DGEMV_DB, 2 -DGEMV_PF
+  const std::string& xe2_gemv_pf() const {
+    static const std::string defs[3] = {std::string(), std::string(" -DGEMV_DB"), std::string(" -DGEMV_PF")};
+    if (gemv_pf_kind_ < 0) {
+      static const int dbe = getenv("ARC_GEMV_DB") ? (atoi(getenv("ARC_GEMV_DB")) != 0 ? 1 : 0) : -1;
+      static const bool probe = getenv("ARC_GV_PROBE") != nullptr, pf_set = getenv("ARC_GEMV_PF") != nullptr;
+      const bool db = !probe && (dbe < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && hp.n_expert == 0 && !pf_set) : dbe == 1);
+      static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
+      const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
+      gemv_pf_kind_ = db ? 1 : on ? 2 : 0;
+    }
+    return defs[gemv_pf_kind_];
   }
   // ARC_GEMV_WAVE (2026-11-15): the single-token GEMV's rows per sub-group (gemv and gemv_v) by the GPU's thread
   // count T (EUs x threads per EU: a Pro B70 2,048, a B60 1,280) instead of by type: a matrix of T < N <= 4T rows takes

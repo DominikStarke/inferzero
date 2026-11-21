@@ -221,7 +221,8 @@
       const bool asct = asct_on && tm > 1 && !q2f;
       // (tried 2026-11-05: the tile's activations loaded once per step into local memory for the work-group's 16
       //  rows, two work-group barriers a step: bit-identical but gate / up 6.2 -> 9.6 s of a Flash Next 4K prompt)
-      cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : grf_env("ARC_MOE_GRF")) +
+      static const std::string moe_grf_env = grf_env("ARC_MOE_GRF");  // (read once: every MoE layer of every token)
+      cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : moe_grf_env) +
                                          "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
                                          std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +
                                          (asct ? " -DASCT" : "") + ds_swi_defs(), "moe_gateup_q");
@@ -471,7 +472,7 @@
   // per-tile kernel 0.00000. iGPUs and 8-lane GPUs keep the per-tile kernel (slower there without 16-lane XMX: the
   // decode of every expert costs more than the GEMM saves). ARC_MOE_GEMM_PAD=0 / 1 force it
   bool moe_gemm_pad_on() const {
-    const char* e = getenv("ARC_MOE_GEMM_PAD");
+    static const char* e = getenv("ARC_MOE_GEMM_PAD");  // (read once: every MoE layer)
     const bool on = e ? atoi(e) != 0 : (!zrt::integrated() && xmx_ && !cl_.sg8);
     // (not Gemma 4 26B (704 padded to 768): its experts take GELU, which moe_gemm's fused epilogue lacks, and its two
     //  passes go to moe_rg anyway; audit 2026-11-17)

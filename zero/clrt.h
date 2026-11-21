@@ -111,6 +111,11 @@ struct Dev {
   ze_command_list_handle_t cl_copy = nullptr;  // (see copy_list)
   const char* cl_copy_kind = "";
   ze_event_handle_t copy_ev[4] = {};  // (see copy_event)
+  // (integrated() / xehpc() / hw_threads(), read once: they were a zeDeviceGetProperties each call, ~660 a token per
+  //  shard on the GEMV path, and a split model's shard threads called them together: 4 B60s' 27B step 18.4 -> 48.8 ms,
+  //  issue #4, 2026-11-21)
+  int integ = -1, xehpc_dev = -1;
+  int64_t hw_thr = -1;
   ze_command_list_handle_t cl_tp = nullptr;  // (see tp_copy_list)
   ze_event_handle_t tp_ev[32] = {};          // (see tp_event)
   std::vector<ze_event_handle_t> ev_free;  // (see ev_get)
@@ -446,24 +451,37 @@ inline ze_event_handle_t copy_event(int i) {
 }
 // this thread's GPU shares the system RAM (an iGPU: ZE_DEVICE_PROPERTY_FLAG_INTEGRATED)
 inline bool integrated() {
-  ze_device_properties_t dp{};
-  dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
-  return zeDeviceGetProperties(D().dev, &dp) == 0 && (dp.flags & 1u);
+  Dev& d = D();
+  if (d.integ < 0) {
+    ze_device_properties_t dp{};
+    dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+    d.integ = zeDeviceGetProperties(d.dev, &dp) == 0 && (dp.flags & 1u) ? 1 : 0;
+  }
+  return d.integ == 1;
 }
 // this thread's GPU is a Data Center GPU Max (Ponte Vecchio, Xe-HPC: device IDs 0x0BD0-0x0BDB, the Max 1550 0x0BD5;
 // or its name), 2026-11-21: the defaults hibagus's sweeps measured there (zero/xe2/engine_xe2.h xehpc_on)
 inline bool xehpc() {
-  ze_device_properties_t dp{};
-  dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
-  if (zeDeviceGetProperties(D().dev, &dp) != 0) return false;
-  return (dp.deviceId >= 0x0BD0 && dp.deviceId <= 0x0BDB) || strstr(dp.name, "Data Center GPU Max") != nullptr;
+  Dev& d = D();
+  if (d.xehpc_dev < 0) {
+    ze_device_properties_t dp{};
+    dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+    d.xehpc_dev = zeDeviceGetProperties(d.dev, &dp) == 0 &&
+                          ((dp.deviceId >= 0x0BD0 && dp.deviceId <= 0x0BDB) || strstr(dp.name, "Data Center GPU Max") != nullptr)
+                      ? 1 : 0;
+  }
+  return d.xehpc_dev == 1;
 }
 // this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
 inline uint32_t hw_threads() {
-  ze_device_properties_t dp{};
-  dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
-  if (zeDeviceGetProperties(D().dev, &dp) != 0) return 0;
-  return dp.numSlices * dp.numSubslicesPerSlice * dp.numEUsPerSubslice * dp.numThreadsPerEU;
+  Dev& d = D();
+  if (d.hw_thr < 0) {
+    ze_device_properties_t dp{};
+    dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+    d.hw_thr = zeDeviceGetProperties(d.dev, &dp) != 0
+                   ? 0 : (int64_t)dp.numSlices * dp.numSubslicesPerSlice * dp.numEUsPerSubslice * dp.numThreadsPerEU;
+  }
+  return (uint32_t)d.hw_thr;
 }
 // kernel timestamps for profiling (engine.profile: clEnqueueNDRangeKernel asked for an event): events come from pools
 // of 4096 host-visible timestamp events and go back to a free list on clReleaseEvent
