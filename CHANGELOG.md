@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: after an update into a new folder, the launcher offers to point the shortcut and PATH there
+
+- When inferzero is unpacked into a new folder, the desktop shortcut and the PATH entry (for `zero-server` in a
+  terminal) still opened the old folder. Now the Windows launcher notices this when its window opens, and asks once
+  whether to point them to the folder it runs from. A "No" is remembered for that folder.
+- The launcher review's other high findings were checked against the code: the window fits the screen's work area,
+  the labels are plain words, the network option warns and shows the LAN address, serverz's default port is 8090,
+  `serverz --help` is short (with `--help all`), and zero-server lists every model. Still open: downloads in the
+  main window instead of a dialog.
+
 ## 2026-11-21: the speed and accuracy options in Docker
 
 - **`OPTIONS` in `docker/compose.yaml` and `docker/kubernetes.yaml`** chooses the options of `docs/options.md` for the

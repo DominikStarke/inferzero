@@ -1630,6 +1630,7 @@ $form.Add_Shown({
     Start-List
     $timer.Start()
     if (-not $SelfTest) { Check-Update }
+    if (-not $SelfTest) { try { Test-OldInstall } catch {} }  # (after an update into a new folder: the shortcut / PATH)
   })
 # -SelfTest <png>: once the list is in (at most 3 minutes), a picture of the window, the errors seen, and close
 if ($SelfTest) {
