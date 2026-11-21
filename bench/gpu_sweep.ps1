@@ -245,10 +245,10 @@ function Sweep([string]$title, [string]$m, [string]$kind, [string[]]$list) {
   }
   $again = Measure-It $m $kind ""
   Write-Output ("{0,-28} {1,10}  {2,-9}" -f "defaults again (drift)", (F $again 2), (Pct $again $base))
-  return , $win
+  $script:sweepWin = $win  # (not returned: a caller that assigns the function would take its printed table too, below)
 }
 function Check-And-Combine([string]$m, [string]$kind, $win) {
-  if (-not $win -or $win.Count -eq 0) { Write-Output "(no setting 2 % faster than the defaults)"; return "" }
+  if (-not $win -or $win.Count -eq 0) { Write-Output "(no setting 2 % faster than the defaults)"; $script:comboBest = ""; return }
   Write-Output "--- H. each setting's best value: its logits against the defaults (a short prompt and 8 tokens)"
   Start-Phase "H" ($win.Count + 1)
   $ref = Hash-Of $m ""
@@ -271,7 +271,7 @@ function Check-And-Combine([string]$m, [string]$kind, $win) {
     foreach ($c in $cv) { $line += "   pp{0} {1,9}" -f $c, (F (PP-At $m $b.s $c)) }
     Write-Output $line
   }
-  return $cur
+  $script:comboBest = $cur
 }
 
 # --- X: every gemm_xw8 form (bin\xw_peak --all), then its winners in the model at each context
@@ -415,8 +415,11 @@ $o | Where-Object { $_ -match '^inferzero: (GPU|XMX|H8|the H8|prompt attention)|
 $lanes8 = -not ($o | Where-Object { $_ -match 'no 8-lane sub-groups' })
 $xmx = [bool]($o | Where-Object { $_ -match 'XMX on for the prompt GEMMs|H8 GEMMs on XMX' })
 $genBest = ""; $ppBest = ""
-if (Has "G") { $w = Sweep "G. generation" $Model "gen" $GEN; $genBest = Check-And-Combine $Model "gen" $w }
-if (Has "P") { $w = Sweep "P. the prompt" $Model "pp" $PP; $ppBest = Check-And-Combine $Model "pp" $w }
+# (Sweep and Check-And-Combine print their tables and leave their results in $script:sweepWin / $script:comboBest: assigned
+#  as `$w = Sweep ...`, PowerShell put every printed line into $w too, so the G, P, C and M tables never showed and
+#  phase K crashed on the array, manoreken2's B60, issue #4, release .21.02; the bash sweep was right)
+if (Has "G") { Sweep "G. generation" $Model "gen" $GEN; Check-And-Combine $Model "gen" $script:sweepWin; $genBest = $script:comboBest }
+if (Has "P") { Sweep "P. the prompt" $Model "pp" $PP; Check-And-Combine $Model "pp" $script:sweepWin; $ppBest = $script:comboBest }
 if (Has "X") {
   if ($xmx -and $lanes8) { Xw-All $Model }
   else { Write-Output ""; Write-Output "=== X. skipped: it sweeps the 8-lane XMX GEMM (A-series, the Arc 140T); this GPU's log shows $(if ($xmx) { '16-lane XMX' } else { 'no XMX prompt GEMMs' })" }
@@ -430,8 +433,8 @@ if (Has "K") {
 }
 if ((Has "M") -and $MoeModel) {
   Start-Phase "warm-up" 1; $null = Invoke-Runz $MoeModel "" @("--bench-pp", "1024", "--n", "1")
-  $w = Sweep "M. MoE generation" $MoeModel "gen" $MOE; $mg = Check-And-Combine $MoeModel "gen" $w
-  $w = Sweep "M. MoE prompt" $MoeModel "pp" $MOE; $mp = Check-And-Combine $MoeModel "pp" $w
+  Sweep "M. MoE generation" $MoeModel "gen" $MOE; Check-And-Combine $MoeModel "gen" $script:sweepWin; $mg = $script:comboBest
+  Sweep "M. MoE prompt" $MoeModel "pp" $MOE; Check-And-Combine $MoeModel "pp" $script:sweepWin; $mp = $script:comboBest
   if (Has "K") { Start-Phase "K" 4; Kernels $MoeModel "prompt" $mp "the MoE prompt's best combination"; Kernels $MoeModel "generation" $mg "MoE generation's best combination" }
 }
 Write-Progress -Activity "gpu_sweep" -Completed

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-21: faster drafting for English and code (opt-in)
+
+- **`ARC_MTP_VOCAB=32768`** (catalog option `mtp_vocab`): with `--mtp`, each drafted token reads only the 32,768 most
+  common tokens' rows of the output head instead of all 248,320. The model still checks every draft against the full
+  vocabulary, so the text is exactly the plain run's. A token outside the list is just never drafted. The idea is
+  from FR-Spec (Zhao et al., ACL 2025); no code is taken.
+  - On the laptop: the 4B on a coding prompt 36-37 -> 44-46 tok/s (+21-23 %), the 27B 10.9 -> 12.6 (+15 %),
+    Indonesian +5 %.
+  - **Chinese drafts less well: 31.6 -> 26.7 tok/s.** That's why it stays off by default.
+  - It needs 69 MB more GPU memory on the 4B, more for a wider model.
+- The token list (`scripts/draft-vocab/vocab-248320.txt`, for Qwen3.5 / 3.6 / 3.8) is ranked over this repository's
+  files and the model's own answers in Indonesian, Chinese and Spanish. `tools/make_draft_vocab.ps1` makes it again.
+- `bench/gpu_sweep.ps1` (Windows) lost its G, P, C and M tables and then stopped at phase K with "The specified
+  wildcard character pattern is not valid" (manoreken2's B60, #4): the functions' printed tables went into the
+  variables that were meant to hold their results. Fixed; the bash sweep was right.
+
 ## 2026-11-21: H8 in two passes, for exact prompts (opt-in)
 
 - **`ARC_H8_Q2=1`** (catalog option `h8_q2`; `zero-server -Opt h8_q2`, `./zero-launcher.sh --opt h8_q2`): H8 reads

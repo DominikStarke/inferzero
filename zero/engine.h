@@ -1781,12 +1781,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 
   // Final norm of rows [r0, r0 + n) of x_ (per-32 layout, as the GEMVs expect; the f32 rows are also written to
   // `hout` when given), then the lm_head: logits_ row i belongs to x_ row r0 + i.
-  void head_rows(int r0, int n, cl_mem normw, cl_mem hout) {
+  // (hw: another head than lm_head_, the drafts' reduced one (ARC_MTP_VOCAB, engine_drafters.h); its N logits a row)
+  void head_rows(int r0, int n, cl_mem normw, cl_mem hout, const GpuWeight* hw = nullptr) {
+    const GpuWeight& H = hw ? *hw : lm_head_;
+    const int nl = hw ? hw->N : n_logits();
     const int saved = cur_T_;
     cur_T_ = n;
     if (hp.ds41) {  // DeepSeek-V4.1: the streams collapsed with the last FFN site's pre, then the output norm
       ds_collapse(ds_mixF_, 0, normw, r0, n, 16);
-      matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
+      matmul(hw ? "lm_head_draft" : "lm_head", H, 16, logits_, nl, 0, 0, true);
       cur_T_ = saved;
       return;
     }
@@ -1797,7 +1800,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hout, (size_t)r0 * W4, 0, (size_t)n * W4, 0, nullptr, nullptr));
       }
       hc_mix(out_hc_norm_, out_hc_down_, out_hc_up_, n, 16, 1, r0);
-      matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
+      matmul(hw ? "lm_head_draft" : "lm_head", H, 16, logits_, nl, 0, 0, true);
       cur_T_ = saved;
       return;
     }
@@ -1806,7 +1809,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     set_args(k_rmsnorm_, 0, x_, r0, normw, E, M, nn, eps, aq_, asc_, absum_, hout ? hout : big_, wh, a32);
     size_t gws[2] = {256, (size_t)n}, lws[2] = {256, 1};
     run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
-    matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
+    matmul(hw ? "lm_head_draft" : "lm_head", H, 16, logits_, nl, 0, 0, true);
     cur_T_ = saved;
   }
   void head(int T) { head_rows(T - 1, 1, out_norm_, has_mtp ? hlast_ : nullptr); }
