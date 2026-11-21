@@ -85,8 +85,8 @@
             throw std::runtime_error("unsupported QSA indexer");
           // Only precise mode enables the new float QSA path. Keep the historical
           // normal-mode --attn-f32 rejection until that configuration is validated.
-          if (!opt.attn_int8 && !fn_precise())
-            throw std::runtime_error("f32 QSA attention requires Flash Next precise mode");
+          if (!opt.attn_int8 && !fn_precise() && !fn_kv16())
+            throw std::runtime_error("f32 QSA attention requires Flash Next precise mode (or ARC_FN_KV16=1, a test)");
         }
       }
     }

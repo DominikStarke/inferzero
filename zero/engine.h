@@ -324,7 +324,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     adopt_mtp_file();  // (Flash Next's MTP head in a file of its own: before anything keeps a pointer into f_)
     load_hparams();
     // Flash Next precision includes attention: per-row int8 Q/K/V can amplify small errors through routing.
-    if (hp.hc && fn_precise()) opt.attn_int8 = false;
+    if (hp.hc && (fn_precise() || fn_kv16())) opt.attn_int8 = false;
     // (Flash Next only: a qwen35 head borrowed from the base model, PR #68, has no QSA)
     if (mtp_ext_ && mtp_file_->get_str("general.architecture") == "qwen4exp") {  // (its layer, il = n_layer: full attention, QSA with the file's compress ratio)
       hp.qsa_ratio.resize(hp.n_layer + 1, 0);

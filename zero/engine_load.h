@@ -564,6 +564,13 @@
   //  token by token, 3,584 of prose), at -16 % prompt and -6 % generation on the laptop (0.73 GiB more read a token,
   //  out of the expert cache). ARC_FN_HCBF16=0: the Q8_0 rows of before. ARC_FN_AB32=1 DeltaNet's alpha / beta in f32)
   bool hc_bf16() const { return fn_precise() || hc_bf16_env(); }
+  // ARC_FN_KV16=1 (a test, 2026-11-21, the user for manoreken2's stray words, #4): only precise mode's attention part,
+  // the K / V cache in f16 and the scores in f32, the default mode otherwise (one pass, the default experts and H8):
+  // whether the int8 keys carry the cross-language words
+  bool fn_kv16() const {
+    static const bool env = getenv("ARC_FN_KV16") && atoi(getenv("ARC_FN_KV16")) != 0;
+    return env;
+  }
   bool fn_ab32() const {
     static const bool env = getenv("ARC_FN_AB32") && atoi(getenv("ARC_FN_AB32")) != 0;
     return fn_precise() || env;

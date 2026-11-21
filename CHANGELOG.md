@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: a test for Flash Next's stray words: f16 keys alone, and a counter
+
+- **`ARC_FN_KV16=1`** (a test switch): Flash Next's default mode with one part of precise mode, the attention's K / V
+  cache in f16 and its scores in f32. Everything else stays as in the default mode (one pass, the same experts).
+  It tests whether the int8 keys cause the stray words of other languages in Japanese answers (issue #4).
+  - The laptop, a 3,584-token prose prompt, 128 tokens, against precise mode: KL 0.0045 mean / 0.0178 max over the
+    first 24 tokens (the top token the same up to there), the default 0.0076 / 0.0211 over 17.
+  - Generation 5.18 -> 4.69 tok/s on the laptop. Unset, nothing changes.
+- **`bench\stray_words.ps1`** counts them in answer files, per answer and per 1,000 characters: characters of
+  scripts Japanese doesn't use (Hangul, Hebrew, Cyrillic, Greek, Arabic, Thai, Devanagari), and Latin words of 4+
+  letters inside Japanese sentences.
+
 ## 2026-11-21: copy drafting (opt-in): code edits and other repeated text up to 39 % faster, the same output
 
 - **`--copy-draft`** (runz and serverz, with `--mtp`; or `ARC_COPY_DRAFT=1`): when the last 4-8 tokens appeared
