@@ -13,6 +13,8 @@
   - the layer split over two drivers (a B60 and an A770, #57): it runs, and its top-10 is the B60's;
   - `--ctx auto` with `--mtp` on an A770 (#45): 40,960 tokens of context instead of 8,192;
   - `gpu_bench --gemv-layout --rows` on a B60: short launches cost only 2-19 %.
+- **`xw_peak --all` names the forms that spill or don't build**, each with its spill size, after stage 0's count. A
+  newer compiler that spills a form an older one did not now shows which (#19).
 
 ## 2026-11-22: `ARC_GV_SGNPOP=1`, the GEMV's signs computed instead of looked up (opt-in; skipzx-lab's PR #79)
 

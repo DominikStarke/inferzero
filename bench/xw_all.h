@@ -14,6 +14,7 @@
 // --tm 16,32,64, --nc 1,2,4, --cps 1,2,4, --epi2 0,1, --db 0,1,2, --wg 4x4,8x4 (local memory's column x token
 // sub-groups), --limit N (the first N forms: a quick test).
 #pragma once
+#include <cstring>
 #include <set>
 #include <sstream>
 
@@ -274,6 +275,9 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
   printf("; %zu shapes; stages %s\n", shapes.size(), sel.stages.c_str());
   std::vector<Cand> ok;
   size_t n_spill = 0, n_fail = 0;
+  // (the forms that spill or do not build, named: a compiler that spills a form another did not (the B60's 64 x 32
+  //  on compute runtime 26.40 against 26.05, issue #19) shows here, not only in a count)
+  std::vector<std::string> spilled, failed;
   auto tb = clock::now();
   for (size_t i = 0; i < cs.size(); ++i) {
     Cand& c = cs[i];
@@ -287,14 +291,33 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
       ze_kernel_properties_t kp{};
       kp.stype = (ze_structure_type_t)0x1e;
       if (zeKernelGetProperties(c.k->k, &kp) == ZE_RESULT_SUCCESS) c.spill = kp.spillMemSize;
-      if (c.spill) ++n_spill;
-      else ok.push_back(c);
+      if (c.spill) {
+        ++n_spill;
+        spilled.push_back(c.name + " " + std::to_string(c.spill) + " B");
+      } else {
+        ok.push_back(c);
+      }
     } catch (const std::exception&) {
       ++n_fail;
+      failed.push_back(c.name);
     }
     all_bar("built (stage 0)", i + 1, cs.size(), tb);
   }
   printf("stage 0: %zu build without a spill (%zu spill, %zu do not build)\n", ok.size(), n_spill, n_fail);
+  auto list = [](const char* what, const std::vector<std::string>& v) {
+    if (v.empty()) return;
+    printf("  %s: %s", what, v[0].c_str());
+    size_t col = 4 + strlen(what) + v[0].size();
+    for (size_t i = 1; i < v.size(); ++i) {
+      if (col + 2 + v[i].size() > 116) printf(",\n    "), col = 4;
+      else printf(", "), col += 2;
+      printf("%s", v[i].c_str());
+      col += v[i].size();
+    }
+    printf("\n");
+  };
+  list("spill (bytes a thread)", spilled);
+  list("do not build", failed);
   if (sel.stages.find_first_of("123") == std::string::npos) return 0;
 
   // ---- stage 1: each survivor at each token count, the quick look
