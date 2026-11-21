@@ -121,9 +121,12 @@
   // ARC_GEMM_XW_PFL=0 / 1: off / on anywhere. =2 (opt-in, for the B60's die): the same with the chunk index tested,
   // not clamped (gemm_xw.cl XW_PFL == 2): there form 1 let the compiler move the next chunk's loads into this one's
   // last DPAS, breaking the chain into 21 single-DPAS runs (ocloc bmg-g21; the old loop's runs are 6-20, form 2's 3-16)
+  // On the B60's die too from compute runtime 26.40 (2026-11-22), where it takes the general 32 x 64 tile
+  // (xe2_g21_tile): two B60s on 26.40.40196, the 27B 4K prompt 1,921.5 -> 1,943.3 (MaineTim, #19) and 1,917-1,925 ->
+  // 1,947-1,949 in four pairs (skipzx-lab, #57), +1.1-1.3 %; the logits the same (9333c5551ddebfb2)
   int xw_pfl_form() const {
     static const int e = getenv("ARC_GEMM_XW_PFL") ? std::clamp(atoi(getenv("ARC_GEMM_XW_PFL")), 0, 2) : -1;
-    return e >= 0 ? e : (xe2_t1280() && !xe2_g21() ? 1 : 0);
+    return e >= 0 ? e : (xe2_t1280() && (!xe2_g21() || !xe2_g21_tile()) ? 1 : 0);
   }
   bool xw_pfl() const { return xw_pfl_form() != 0; }
   std::string xw_pf_defs() const {

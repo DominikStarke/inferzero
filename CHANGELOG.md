@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: the lean prompt loop on a B60 with compute runtime 26.40
+
+- **On Linux with compute runtime 26.40 or newer, the B60's die now runs the lean prompt loop** (`ARC_GEMM_XW_PFL=1`)
+  with the general tile it takes there. Two B60s on 26.40.40196, the 27B's 4K prompt: 1,921.5 -> 1,943.3 tok/s
+  (MaineTim, #19) and 1,917-1,925 -> 1,947-1,949 in four pairs (skipzx-lab, #57).
+- **The results are the same bit for bit:** the same prefetches, and both cards' logits gave the same hash.
+- **Below 26.40, and on Windows, nothing changes:** the B60's own 64 x 32 tile, without the lean loop. There the lean
+  loop was 6.6 % slower.
+- **Next, maybe:** on 26.40, the 64 x 32 tile with the lean loop read 1,984.5 on one card, another 2 % up. A second
+  card is asked before it becomes the default.
+- The B60 on Linux now says which compute runtime it read and which tile it took. Compute runtime 26.40 measured on a
+  B60 and an A770 is in docs/before-after.md.
+
 ## 2026-11-22: the B60's own prompt tile only below compute runtime 26.40
 
 - **The problem (MaineTim, #19):** a B60 on Linux with compute runtime 26.40.40196 ran the B60's 64 x 32 prompt tile
