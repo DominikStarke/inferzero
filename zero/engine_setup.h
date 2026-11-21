@@ -739,8 +739,10 @@
           }
         for (cl_mem* m : {&q8, &h8, &a8, &s8, &b8, &c8}) free_buf(*m);
         const bool faster = best[1] < 0.97 * best[0];
-        zlog::eprintf("inferzero: XMX speed check (a 512 x 17408 x 5120 GEMM): DP4a %.1f ms, XMX %.1f ms: %s\n",
-                best[0], best[1], faster ? "XMX" : "DP4a");
+        // (which kernel was timed: gemm.cl's / gemm_x8's W8 GEMM; the 140T / Alchemist preset's gemm_xw8 skips this
+        //  check, so a model in the preset is not judged by it: issue #71's log, 2026-11-21)
+        zlog::eprintf("inferzero: XMX speed check (a 512 x 17408 x 5120 GEMM, %s against DP4a): DP4a %.1f ms, XMX %.1f ms: %s\n",
+                cl_.sg8 ? "gemm_x8" : "gemm.cl -DXMX", best[0], best[1], faster ? "XMX" : "DP4a");
         if (!faster) {
           xmx_slow_ = true;
           return false;

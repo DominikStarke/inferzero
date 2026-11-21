@@ -342,6 +342,15 @@ int main(int argc, char** argv) {
       {"packAW 32x32 w2", "-DXW_PACKA -DXW_PACKW", 32, 2, true, true, 2},
       {"packAW 32x32 w2 e2", "-DXW_PACKA -DXW_PACKW -DXW_EPI2", 32, 2, true, true, 2},
       {"slm 32x32 4x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 4, false, 4},
+// (2026-11-21, the sweep of bigger work-groups: the engine's ARC_GEMM_XW_SLM_TILE / _WG / _CPS. Only those ocloc
+//  dg2-g10 builds without a spill at 256 registers: CPS 2 spills at 32 x 32 and at 64 x 16 8 x 2)
+{"slm 32x32 4x8 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 4, false, 8},
+{"slm 32x32 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 8, false, 4},
+{"slm 64x16 4x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 4, false, 4},
+{"slm 64x16 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 8, false, 4},
+{"slm 64x16 8x2 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 8, false, 2},
+{"slm 32x16 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 1, true, true, 8, false, 4},
+{"slm 32x16 8x4 c2 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2", 32, 1, true, true, 8, false, 4},
   };
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")

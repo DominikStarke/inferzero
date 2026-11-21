@@ -261,6 +261,38 @@
   // the per-shape tiles above (xw_tile_for). Decided per call, so a split model's GPU decides for its slice of N.
   // The same sums in the same order: bit for bit, checked at start. ARC_GEMM_XW_BIG=0 off, =1 on any 8-lane GPU
   // (tests); any of ARC_GEMM_XW_TM / _NC / _WGX / _SLM set: off, as asked
+  // (the big tile's shape for the sweep, 2026-11-21, opt-in: ARC_GEMM_XW_SLM_TILE=32x32 / 64x16 / 32x16 the sub-group
+  //  tile, ARC_GEMM_XW_SLM_WG="X,Y" column x token sub-groups (2 / 4 / 8 each, X x Y <= 32), ARC_GEMM_XW_SLM_CPS=1 / 2
+  //  / 4 chunks a barrier stage (gemm_xw8 -DXS_CPS). ocloc dg2-g10 at 256 registers, no spill: 32 x 32 4x4 / 4x8 / 8x4
+  //  and 64 x 16 4x4 / 8x4 / 8x2 at CPS 1, 32 x 16 8x4 at CPS 1 or 2; CPS 2 spills at 32 x 32 (3.1-3.6 KB) and 64 x 16
+  //  8x2 (0.6 KB). Unset: 32 x 32, 4 x 4, CPS 1, the default)
+  struct XwBig { int tm = 32, nc = 2, x = 4, y = 4, cps = 1; };
+  static const XwBig& xw_big_cfg() {
+    static const XwBig c = [] {
+      XwBig b;
+      if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {
+        const std::string v = t;
+        if (v == "64x16") b.tm = 64, b.nc = 1;
+        else if (v == "32x16") b.tm = 32, b.nc = 1;
+      }
+      if (const char* w = getenv("ARC_GEMM_XW_SLM_WG")) {
+        int x = 0, y = 0;
+        if (sscanf(w, "%d,%d", &x, &y) == 2 && (x == 2 || x == 4 || x == 8) && (y == 2 || y == 4 || y == 8) && x * y <= 32)
+          b.x = x, b.y = y;
+        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG=%s not X,Y with 2 / 4 / 8 each and X x Y <= 32: 4,4\n", w);
+      }
+      if (const char* c2 = getenv("ARC_GEMM_XW_SLM_CPS")) {
+        const int v = atoi(c2);
+        b.cps = v == 2 || v == 4 ? v : 1;
+      }
+      return b;
+    }();
+    return c;
+  }
+  std::string xw_big_key() const {
+    const XwBig& b = xw_big_cfg();
+    return std::to_string(b.tm) + "x" + std::to_string(16 * b.nc) + "," + std::to_string(b.x) + "x" + std::to_string(b.y) + "c" + std::to_string(b.cps);
+  }
   bool xw_big_on() const {
     static const int env = getenv("ARC_GEMM_XW_BIG") ? atoi(getenv("ARC_GEMM_XW_BIG")) : -1;
     static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX") ||
@@ -278,7 +310,8 @@
                              std::to_string(tm ? tm : xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
                              (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
-                             std::to_string(slm) + (xw_epi2() ? " -DXW_EPI2" : "");
+                             std::to_string(slm) + (xw_epi2() ? " -DXW_EPI2" : "") +
+                             (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string());
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -476,8 +509,10 @@
   }
   XwTile xw_tile_for(int N, int K, int M = 0, int pack = 0) const {
     // (the big tile where it fits, xw_big_on; elsewhere the rule below, never 32 x 32 without local memory)
-    if (M > 0 && xw_big_on() && (pack & 3) == 3 && N % 128 == 0 && M % 32 == 0 && (M / 32) % 4 == 0)
-      return {32, 2, 4, 4};
+    if (M > 0 && xw_big_on() && (pack & 3) == 3) {
+      const XwBig& b = xw_big_cfg();  // (32 x 32, 4 x 4 unless the sweep's switches say otherwise)
+      if (N % (16 * b.nc * b.x) == 0 && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
+    }
     XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};
     if (xw_shape_on() && xw_tm() == 32) {
       if (N <= hp.n_embd && K <= 8192) t = {16, 2, xw_wgx()};
@@ -532,7 +567,7 @@
                             (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
-                            (xw_big_on() ? "|big" : "");
+                            (xw_big_on() ? "|big" + xw_big_key() : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -635,7 +670,10 @@
       if (xw_slm_wgy()) shapes.push_back({2 * xw_slm_wgy() * tm, 2 * std::max(1, xw_wgx()) * cols, K0});
       // (the big tile, xw_big_on: two of its work-groups each way, so it runs here; the other shapes take the
       //  fallback tiles, as calls that it does not fit)
-      if (xw_big_on()) shapes.push_back({2 * 4 * 32, 2 * 4 * 32, K0});
+      if (xw_big_on()) {
+        const XwBig& b = xw_big_cfg();
+        shapes.push_back({2 * b.y * b.tm, 2 * b.x * 16 * b.nc, K0});
+      }
       for (const auto& sh : shapes) {
         const int M = sh[0], N = sh[1], K = sh[2], nsb = K / 256;
         const int ng = N / 16, ldc = N + 32, coff = 16;

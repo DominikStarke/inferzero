@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-21: Alchemist: switches for bigger work-groups through local memory, for a sweep
+
+- The A770's big tile (32 x 32, 4 x 4 sub-groups through local memory) can now take other shapes, all opt-in, for a
+  sweep on the cards:
+  - `ARC_GEMM_XW_SLM_TILE=32x32 / 64x16 / 32x16` sets the sub-group tile;
+  - `ARC_GEMM_XW_SLM_WG="X,Y"` sets column x token sub-groups, 2, 4 or 8 each, at most 32 (8 columns is new);
+  - `ARC_GEMM_XW_SLM_CPS=1 / 2 / 4` sets how many 64-value chunks one barrier covers (`gemm_xw8 -DXS_CPS`).
+- Each prompt GEMM takes the chosen shape where it divides the matrix and the tokens, and otherwise the fallback tiles
+  as before. Unset, nothing changes.
+- On DG2 at 256 registers (ocloc), these build without a spill: 32 x 32 at 4x4 / 4x8 / 8x4, 64 x 16 at 4x4 / 8x4 /
+  8x2, and 32 x 16 at 8x4, with CPS 1. With CPS 2, only 32 x 16 8x4 (at 32 x 32 it spills 3.1-3.6 KB). xw_peak has a
+  row for each.
+- The same results bit for bit: xw_peak with the DPAS emulated, every row identical, and the laptop's 27B with the
+  A770 preset emulated, logits byte-identical in four of the shapes.
+- The XMX speed check's log line names the kernel it timed: a model in the 140T / Alchemist preset is not judged by it
+  (issue #71).
+
 ## 2026-11-21: confirmed on cards: the A770's default, ARC_XCPU run to run, MTP's gain
 
 - **The A770's new default** (b443eff), skipzx-lab at 150 W with no switches: the 27B 4K prompt 1,490.5 tok/s, 16K
@@ -18,7 +35,9 @@
   rows at a time, never a whole matrix of floats in RAM (a vocab-sized output head would have been 5 GB; the
   Researcher's review).
 - Checked on the laptop with Qwen3.5 4B, converted by llama.cpp's llama-quantize from its UD-Q4_K_XL:
-  - Q4_1 against its own f32 reference: KL 0.00188, so the conversion to Q8_0 costs almost nothing;
+  - each against its own f32 reference, all 480 positions (corrected 2026-11-21: the first figure, 0.00188, was one
+    position): Q4_1 KL 0.00128 (max 0.0245), the same top token 473 / 480; Q5_0 0.00103 (max 0.0118), 472 / 480;
+    so the conversion to Q8_0 costs almost nothing;
   - against the original UD-Q4_K_XL's reference: Q4_1 KL 0.042 and Q5_0 0.020, mostly llama-quantize re-quantizing
     an already 4-bit model;
   - a test of each decoder against the source tensor found and fixed a wrong sign in Q5_0's (correlation 0.9991

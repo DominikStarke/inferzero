@@ -69,8 +69,9 @@
 #ifndef XW_WGX
 #define XW_WGX 1
 #endif
-#if XW_WGX != 1 && XW_WGX != 2 && XW_WGX != 4
-#error "XW_WGX must be 1, 2 or 4"
+// (8: only with -DXW_SLM, its work-groups of up to 32 sub-groups; 2026-11-21, ocloc dg2-g10: 32 x 32 8 x 4 no spill)
+#if XW_WGX != 1 && XW_WGX != 2 && XW_WGX != 4 && !(XW_WGX == 8 && defined(XW_SLM))
+#error "XW_WGX must be 1, 2 or 4 (8 with XW_SLM)"
 #endif
 #define XW_TG (XW_TM / 8)   // DPAS row groups of 8 tokens
 #define XW_NH (2 * XW_NC)   // DPAS column blocks of 8
@@ -155,8 +156,17 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_UA (XS_AW / 64)
 #define XS_U ((XS_AW + XS_BW) / 64)   // 64-word units a chunk
 #define XS_NS (XW_WGX * XW_WGY)       // sub-groups a work-group
-#define XS_UPS ((XS_U + XS_NS - 1) / XS_NS)
-  __local uint xs[2][XS_AW + XS_BW];
+// -DXS_CPS=2 / 4 (2026-11-21, ARC_GEMM_XW_SLM_CPS): that many 64-value chunks a stage, one barrier a stage instead of
+// a chunk; the chunks' DPAS run in their order, so the sums are the same. A piece's chunks are whole superblocks (4
+// chunks each), so CPS 1, 2 or 4 always divides them: no partial stage. Local memory 2 x CPS x a chunk (DG2: 64 KB)
+#ifndef XS_CPS
+#define XS_CPS 1
+#endif
+#if XS_CPS != 1 && XS_CPS != 2 && XS_CPS != 4
+#error "XS_CPS must be 1, 2 or 4"
+#endif
+#define XS_UPS ((XS_U * XS_CPS + XS_NS - 1) / XS_NS)  // (a stage's units a sub-group: v = sid + i * XS_NS)
+  __local uint xs[2][XS_CPS][XS_AW + XS_BW];
   const int nch = K / 64, lane = (int)get_sub_group_local_id();
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
@@ -171,14 +181,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
                : wpw + ((size_t)(((u) - XS_UA) >> 2) * nsb * 4 + (ch)) * 256 + (((u) - XS_UA) & 3) * 64)
 #define XS_LOAD(ch)                                                                          \
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
-    const int u = sid + i * XS_NS;                                                            \
-    if (u < XS_U) st[i] = as_int8(intel_sub_group_block_read8(XS_SRC(u, ch)));                \
+    const int v = sid + i * XS_NS;  /* (unit v of the stage: chunk v / XS_U, its unit v % XS_U) */ \
+    if (v < XS_U * XS_CPS) st[i] = as_int8(intel_sub_group_block_read8(XS_SRC(v % XS_U, (ch) + v / XS_U))); \
   }
 #define XS_STORE(b)                                                                          \
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
-    const int u = sid + i * XS_NS;                                                            \
-    if (u < XS_U) {                                                                           \
-      XS_WR(xs[b] + u * 64, st[i]);                                                           \
+    const int v = sid + i * XS_NS;                                                            \
+    if (v < XS_U * XS_CPS) {                                                                  \
+      XS_WR(xs[b][v / XS_U] + (v % XS_U) * 64, st[i]);                                        \
     }                                                                                         \
   }
 #ifdef XS_SCALAR  // (the local reads and writes a word a lane: for a driver without cl_intel_subgroup_local_block_io)
@@ -200,25 +210,28 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     XS_STORE(0)
     barrier(CLK_LOCAL_MEM_FENCE);
   }
-  for (int ch = ch0; ch < ch1; ++ch) {
-    const int cur = (ch - ch0) & 1;
-    const bool more = ch + 1 < ch1;
-    if (more) { XS_LOAD(ch + 1) }
-    __local const uint* xa = xs[cur] + sy * XW_TG * 128;
-    __local const uint* xb = xs[cur] + XS_AW + sx * XW_NC * 256;
-    int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+  for (int ch = ch0; ch < ch1; ch += XS_CPS) {  // (a stage of XS_CPS chunks)
+    const int cur = ((ch - ch0) / XS_CPS) & 1;
+    const bool more = ch + XS_CPS < ch1;
+    if (more) { XS_LOAD(ch + XS_CPS) }
 #pragma unroll
-    for (int c = 0; c < XW_NC; ++c) {
-      lo0[c] = XS_RD(xb + c * 256), lo1[c] = XS_RD(xb + c * 256 + 64);
-      hi0[c] = XS_RD(xb + c * 256 + 128), hi1[c] = XS_RD(xb + c * 256 + 192);
-    }
-#pragma unroll
-    for (int t = 0; t < XW_TG; ++t) {
-      const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
+    for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
+      __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
+      __local const uint* xb = xs[cur][j] + XS_AW + sx * XW_NC * 256;
+      int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
-        xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
-        xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+        lo0[c] = XS_RD(xb + c * 256), lo1[c] = XS_RD(xb + c * 256 + 64);
+        hi0[c] = XS_RD(xb + c * 256 + 128), hi1[c] = XS_RD(xb + c * 256 + 192);
+      }
+#pragma unroll
+      for (int t = 0; t < XW_TG; ++t) {
+        const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) {
+          xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
+          xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+        }
       }
     }
     if (more) { XS_STORE(cur ^ 1) }
