@@ -189,6 +189,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       eo.dflash.clear();
       a = probe(eo);
     }
+    // (--mtp on a card it leaves little context: a smaller prompt chunk before a smaller context, server_catalog.h)
+    a = mtp_trade_chunk(eo, a, probe, true);
     // (a split model whose shard does not fit either: the floor, as before; the split's own load checks each GPU and
     //  falls back to one GPU, where the refusal below then speaks)
     if (a.ctx <= 0 && so.gpus > 1) a.ctx = 4096;

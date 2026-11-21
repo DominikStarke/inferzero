@@ -77,6 +77,10 @@
   uint64_t device_mem() const {
     cl_ulong v = 0;
     clGetDeviceInfo(cl_.device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(v), &v, nullptr);
+    // (ARC_GPU_MEM_GB=N: the fit checks (--ctx auto, the --ctx check, the expert cache's share) count at most N GiB, as
+    //  on a smaller card: to see here what a 16 GB card's user gets, or to keep room free on the GPU)
+    static const double cap = getenv("ARC_GPU_MEM_GB") ? atof(getenv("ARC_GPU_MEM_GB")) : 0;
+    if (cap > 0) v = std::min<cl_ulong>(v, (cl_ulong)(cap * 1073741824.0));
     return v;
   }
   // Whether this engine's GPU memory fits the GPU's share less the driver's part, and the largest context (a multiple

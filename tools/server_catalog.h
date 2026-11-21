@@ -594,6 +594,9 @@ static uint64_t device_global_mem() {
     if (rt.init(false)) clGetDeviceInfo(rt.device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(dev), &dev, nullptr);
     if (rt.queue) clReleaseCommandQueue(rt.queue);
     if (rt.ctx) clReleaseContext(rt.ctx);
+    // (ARC_GPU_MEM_GB: as Engine::device_mem counts it, so a capped figure is remembered apart)
+    const double cap = getenv("ARC_GPU_MEM_GB") ? atof(getenv("ARC_GPU_MEM_GB")) : 0;
+    if (cap > 0) dev = std::min<uint64_t>(dev, (uint64_t)(cap * 1073741824.0));
   }
   return dev;
 }
@@ -861,12 +864,49 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
   return r;
 }
 
+// --ctx auto with MTP drafting (skipzx-lab, #45, 2026-11-21): the MTP head and the default prompt chunk's buffers
+// (4,096 tokens) can leave a 16 GB card little context (the 27B on an A770: 8,192 tokens with --mtp, 28,672 without).
+// A smaller chunk costs a prompt little (--ctx 32768 --chunk 1024 --mtp: a 20K prompt in 17.7 s against 16.6 s plain
+// at 4,096) and frees its buffers for the KV cache. So when the context would be below kMtpCtxWant (or none fits), chunks of 2,048
+// and then 1,024 tokens are tried, and the one with the most context is kept (the larger chunk on a tie). Only with
+// --mtp, an automatic chunk (no --chunk) and a chunk no smaller than what the model needs (min_chunk: Gemma's
+// images). Buffers only: the results are the same. probe(EngineOptions) returns the AutoCtx of those options.
+static constexpr int kMtpCtxWant = 32768;
+template <class Probe>
+static AutoCtx mtp_trade_chunk(EngineOptions& eo, AutoCtx a, Probe probe, bool say) {
+  if (!eo.mtp || eo.chunk != 0 || a.ctx >= kMtpCtxWant) return a;  // (0: not even the floor fits: tried too)
+  const int from = a.ctx;
+  for (int ch : {2048, 1024}) {
+    if (eo.min_chunk > ch) break;
+    EngineOptions e2 = eo;
+    e2.chunk = ch;
+    AutoCtx b;
+    try {
+      b = probe(e2);
+    } catch (const std::exception&) {
+      break;
+    }
+    if (b.ctx > a.ctx) {
+      a = b;
+      eo.chunk = ch;
+    }
+    if (a.ctx >= kMtpCtxWant) break;
+  }
+  if (say && eo.chunk)
+    zlog::eprintf("--ctx auto: with --mtp, prompt chunks of %d tokens instead of the default, for %d tokens of context "
+                  "instead of %s (--chunk N keeps a chunk of your choice)\n", eo.chunk, a.ctx,
+                  from > 0 ? std::to_string(from).c_str() : "none");
+  return a;
+}
+
 static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   EngineOptions eo;
   eo.mtp = mtp;
   const CtxListing listing;
   try {
-    return auto_ctx(model, eo, false, vision ? encoder_reserve(model, "", 0) : 0).ctx;
+    const size_t enc = vision ? encoder_reserve(model, "", 0) : 0;
+    auto probe = [&](const EngineOptions& o) { return auto_ctx(model, o, false, enc); };
+    return mtp_trade_chunk(eo, probe(eo), probe, false).ctx;  // (as the server's load: mtp_trade_chunk)
   } catch (const std::exception&) {
     return 0;
   }
@@ -887,7 +927,9 @@ static AutoCtx list_ctx(const std::string& path, const EngineOptions& eo, size_t
       return a;
     } catch (const std::exception&) {}
   }
-  return auto_ctx(path, eo, false, enc);
+  EngineOptions e1 = eo;
+  auto probe = [&](const EngineOptions& o) { return auto_ctx(path, o, false, enc); };
+  return mtp_trade_chunk(e1, probe(e1), probe, false);  // (as the server's load: mtp_trade_chunk)
 }
 // --list-models: the catalog as JSON (scripts\zero-server.ps1 and zero-pi read it). ctx: the context --ctx auto chose
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.

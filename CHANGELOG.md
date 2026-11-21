@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-22: `--ctx auto` with `--mtp` trades the prompt chunk for context
+
+- **The problem (skipzx-lab, #45):** on a 16 GB card, the MTP head and the default 4,096-token prompt chunk's buffers
+  left little room. The 27B with `serverz --mtp` on an A770 got 8,192 tokens of context from `--ctx auto`, where plain
+  got 28,672.
+- **Now:** with `--mtp`, `--ctx auto` and no `--chunk`, when the context would be under 32,768 tokens (or nothing
+  fits), the server tries prompt chunks of 2,048 and then 1,024 tokens, and keeps the one with the most context. The
+  log says so: "--ctx auto: with --mtp, prompt chunks of 1024 tokens instead of the default, for 40960 tokens of
+  context instead of 12288". The model list (`--list-models`) counts the same way.
+- **Measured on the laptop:**
+  - the 27B with `ARC_GPU_MEM_GB=15`: 12,288 -> 40,960 tokens;
+  - with `=14`: refused -> 12,288 tokens;
+  - the logits at chunks 4,096, 2,048 and 1,024 are the same bit for bit (a 6,359-token prompt and 32 tokens);
+  - the prompt's time was 4 % longer at 1,024 (57.0 -> 59.5 s).
+- **`--chunk N`** keeps the chunk you give.
+- **New test switch `ARC_GPU_MEM_GB=N`:** the fit checks count at most N GiB of GPU memory, as on a smaller card.
+
 ## 2026-11-22: `gpu_bench --gemv-layout`, the one-token GEMV's reads in two layouts
 
 - **Why:** on a B60 and a Pro B65, more reads in flight (`ARC_GEMV_DEEP`) did not speed up the GEMV. On the B65, the
