@@ -1145,6 +1145,9 @@ What it shows:
   - The next form to build (opt-in, bit-identical: the same bytes in the same DPAS operands): pointers that advance
     by a constant each K step, with 32-bit offsets from a base set once before the loop; and the local-memory fill
     without branches. The target is the B-series' 2.5 a DPAS; at ~6 the ceiling would pass 100 %.
+  - Built the same day as `ARC_GEMM_XW_PTR=1` (gemm_xw8 `-DXW_PTR`, opt-in): **410 -> 184 instructions, 5.6 a DPAS**,
+    9 moves instead of 79, 6 branches instead of 36, no spill; with 2 chunks a stage 989 -> 458. Bit for bit in
+    xw_peak and the 27B's logits. Its speed on an A770: asked on #45 (xw_peak's "slm 32x32 4x4 e2" against "... e2 p").
 - **The B390 runs the plain form, four times the 2D form's instructions.** The 2D block loads are on by default only
   on discrete cards; on iGPUs they were never measured. Asked on #1 and #74 (`ARC_GEMM_XW_2D=1`, checked bit for bit
   at start).

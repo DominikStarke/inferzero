@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: a leaner loop for the A770's prompt GEMM (opt-in)
+
+- `ARC_GEMM_XW_PTR=1` (Alchemist's big tile): the copy of each chunk into local memory has its addresses set once
+  before the loop, and each step adds a constant. Before, every unit rebuilt a 64-bit address from the chunk index
+  and tested whether it was real, inside a branch.
+  - The kernel-loop audit had found the GEMM's inner loop bound by issuing its own instructions: 410 for 33 DPAS on
+    an A770 (12.4 each), which caps it near 65 % of the card's peak. With the switch: 184 (5.6 each), no spill.
+  - The same bytes to the same places: the same results bit for bit. xw_peak compares it with the default, and the
+    27B's logits through the engine are byte for byte the same (the laptop, DPAS emulated).
+  - Its speed on an A770 is not measured yet: asked on #45. If it wins there, it becomes Alchemist's default.
+  - The start-up line says when it's on.
+
 ## 2026-11-21: batching on one Alchemist card under Linux, as the last release meant
 
 - **Fix (issue #72):** release 2026.11.21.05 meant to send an Alchemist card's kernels in recorded lists under Linux

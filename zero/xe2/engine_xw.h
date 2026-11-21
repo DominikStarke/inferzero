@@ -301,6 +301,14 @@
     const XwBig& b = xw_big_cfg();
     return std::to_string(b.tm) + "x" + std::to_string(16 * b.nc) + "," + std::to_string(b.x) + "x" + std::to_string(b.y) + "c" + std::to_string(b.cps);
   }
+  // ARC_GEMM_XW_PTR=1 (2026-11-21, opt-in; the kernel-loop audit, docs/xe2-tuning.md 16): the local-memory forms'
+  // copy with its addresses set once before the loop (gemm_xw8.cl -DXW_PTR). ocloc dg2-g10, the big tile's K loop:
+  // 410 -> 184 instructions for its 33 DPAS (12.4 -> 5.6 each), no spill: the loop was bound by issuing them. The
+  // same words to the same places: bit for bit, as the start check confirms
+  bool xw_ptr() const {
+    static const bool on = getenv("ARC_GEMM_XW_PTR") && atoi(getenv("ARC_GEMM_XW_PTR")) != 0;
+    return on;
+  }
   bool xw_big_on() const {
     static const int env = getenv("ARC_GEMM_XW_BIG") ? atoi(getenv("ARC_GEMM_XW_BIG")) : -1;
     static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX") ||
@@ -319,7 +327,8 @@
                              (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                              std::to_string(slm) + (xw_epi2() ? " -DXW_EPI2" : "") +
-                             (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string());
+                             (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
+                             (xw_ptr() ? " -DXW_PTR" : "");
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -642,6 +651,9 @@
                         "(ARC_GEMM_XW_BIG=0: off)\n", b.tm, 16 * b.nc, b.x, b.y, b.cps, b.cps > 1 ? "s" : "",
                         16 * b.nc * b.x, b.tm * b.y);
         }
+        if (xw_ptr() && xw_lanes() == 8)
+          zlog::eprintf("inferzero: gemm_xw8: the local-memory copy's addresses set once before the loop "
+                        "(ARC_GEMM_XW_PTR=1)\n");
         if (xw_epi2() && xw_lanes() == 8)
           zlog::eprintf("inferzero: gemm_xw8: the epilogue a row at a time (ARC_GEMM_XW_EPI2)\n");
       } else

@@ -385,6 +385,11 @@ int main(int argc, char** argv) {
 {"slm 64x16 8x2 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 8, false, 2},
 {"slm 32x16 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 1, true, true, 8, false, 4},
 {"slm 32x16 8x4 c2 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2", 32, 1, true, true, 8, false, 4},
+      // (2026-11-21) -DXW_PTR (" p"): the local-memory copy's addresses set once before the loop (ocloc dg2-g10, the
+      // big tile's loop: 410 -> 184 instructions for 33 DPAS); the same results bit for bit
+      {"slm 32x32 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
+      {"slm 32x16 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 1, true, true, 4, false, 4},
+      {"slm 32x32 4x4 c2 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
   };
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")

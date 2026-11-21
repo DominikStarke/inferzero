@@ -205,6 +205,44 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
 #define XS_WR(p, x) intel_sub_group_block_write8((__local uint*)(p), as_uint8(x))
 #endif
+#ifdef XW_PTR
+  // -DXW_PTR (ARC_GEMM_XW_PTR, 2026-11-21, opt-in; the kernel-loop audit, docs/xe2-tuning.md 16): the copy's
+  // addresses set once. ocloc dg2-g10 counted the big tile's loop at 410 instructions for 33 DPAS, most of them
+  // XS_SRC's 64-bit address rebuilt from the chunk index for every unit, and the units' `v < XS_U * XS_CPS` tests in
+  // branches. Here each of this sub-group's units gets its source at the first stage, its step a stage (A's chunks 128
+  // words apart, B's 256) and its place in local memory before the loop; a stage adds the step. Where the units divide
+  // evenly over the sub-groups (the default 32 x 32 with 4 x 4 sub-groups: 64 units, 16 sub-groups) every unit is
+  // real and the test goes. The same words from the same addresses to the same places: bit for bit XW_SLM's results
+  // (the offsets in words from apw / wpw, 32 bits: a work-group's A and B are well under 2^32 words. Whether unit i is
+  //  A or B is fixed at build time where the sub-groups divide both A's units and all units (XS_FIX: the defaults),
+  //  so its base is a constant there and one flag a unit otherwise)
+#define XS_ALL ((XS_U * XS_CPS) % XS_NS == 0)
+#define XS_FIX (XS_ALL && XS_U % XS_NS == 0 && XS_UA % XS_NS == 0)
+#define XS_IS_A(i) (XS_FIX ? ((i) * XS_NS) % XS_U < XS_UA : xs_a[i])
+  uint xs_off[XS_UPS];
+  int xs_dst[XS_UPS];
+  bool xs_a[XS_UPS];
+#pragma unroll
+  for (int i = 0; i < XS_UPS; ++i) {
+    const int v = sid + i * XS_NS, u = v % XS_U, j = v / XS_U, c = ch0 + j;
+    xs_a[i] = u < XS_UA;  // (a unit past the stage's end, v >= XS_U * XS_CPS, is never read)
+    xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
+                        : (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+    xs_dst[i] = j * (XS_AW + XS_BW) + u * 64;
+  }
+#undef XS_LOAD
+#undef XS_STORE
+#define XS_LOAD(ch)                                                                          \
+  _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
+    if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS)                                            \
+      st[i] = as_int8(intel_sub_group_block_read8((XS_IS_A(i) ? apw : wpw) + xs_off[i]));     \
+    xs_off[i] += (XS_IS_A(i) ? 128u : 256u) * XS_CPS;                                         \
+  }
+#define XS_STORE(b)                                                                          \
+  _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
+    if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS) XS_WR(&xs[b][0][0] + xs_dst[i], st[i]);   \
+  }
+#endif
   if (ch0 < ch1) {  // (s_begin / s_end are the same for the whole work-group: its barriers stay uniform)
     XS_LOAD(ch0)
     XS_STORE(0)
