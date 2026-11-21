@@ -54,6 +54,11 @@ between two GPUs per chunk or token.
   context that all of them fit. A stopped request stops between prompt chunks, not inside one.
 - **What it is for:** links too slow for the sums (PCIe 3.0 without peer access, chipset x4 slots, two A770s on
   Windows), cards of different kinds, and models too big for one card without paging.
+- **Unlike cards (2026-11-22):** each stage compiles its kernels for its own GPU (`rcl::device_for` in `zero/clrt.h`)
+  and reads that GPU's features (8 or 16 lanes, XMX, 2D loads), so a B60 and an A770 can share a model. GPUs are taken
+  GPU 0's kind first, then other discrete cards, then integrated ones. On unlike cards each runs its own kernel forms,
+  so the logits are a KL check against one card, not bit for bit. The tensor split stays one kind (its shards share
+  GPU 0's kernels).
 - **What it is not:** faster than one card for a single request. A token visits the GPUs in turn, so generation runs
   at about one card's speed, a little less for the hand-offs.
 - **Choosing the cut:** `--tensor-split a,b,...` gives each GPU's share of the layers, in GPU order (e.g. `1,3`: a

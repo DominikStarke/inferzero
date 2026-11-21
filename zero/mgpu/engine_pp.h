@@ -65,7 +65,7 @@ class PpEngine {
     ClRt rt;
     if (!rt.init()) throw std::runtime_error("cannot start Level Zero");
     std::string err;
-    if (ClRt::open_devices(n, sim(), err) != n) throw std::runtime_error("--gpus " + std::to_string(n) + ": " + err);
+    if (ClRt::open_devices(n, sim(), err, true) != n) throw std::runtime_error("--gpus " + std::to_string(n) + ": " + err);
   }
 
   // host_gb: stage r's weights in host memory (EngineOptions::host_weights_gb; the server's --ctx auto probes; empty or

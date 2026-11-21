@@ -745,6 +745,57 @@ inline bool load(const char* want_name = nullptr, uint32_t want_id = 0) {
   if (err != 0 || !context) return fail();
   return true;
 }
+// The compiler's device and context for another Level Zero GPU (P0, 2026-11-22: a layer split over unlike cards, each
+// stage's kernels compiled for its own GPU): the OpenCL GPU whose CL_DEVICE_ID_INTEL is want_id (else whose name is
+// want_name), with a context of its own, made once and kept for the process. GPU 0's: `device` / `context` above.
+// False when no such OpenCL device is found (the caller keeps GPU 0's)
+struct DevCtx {
+  uint32_t id;
+  void* dev;
+  void* ctx;
+};
+inline bool device_for(const char* want_name, uint32_t want_id, void*& d, void*& c) {
+  static std::mutex mu;
+  static std::vector<DevCtx> known;
+  std::lock_guard<std::mutex> g(mu);
+  for (const DevCtx& k : known)
+    if (k.id == want_id) { d = k.dev, c = k.ctx; return true; }
+  if (!context) return false;
+  cl_uint np = 0;
+  if (getPlatformIDs(0, nullptr, &np) != 0 || !np) return false;
+  std::vector<void*> plats(np);
+  getPlatformIDs(np, plats.data(), nullptr);
+  void* match = nullptr;
+  for (void* p : plats) {
+    if (foreign_platform(platform_name(p))) continue;
+    cl_uint nd = 0;
+    if (getDeviceIDs(p, 1u << 2, 0, nullptr, &nd) != 0 || !nd) continue;
+    std::vector<void*> ds(nd);
+    if (getDeviceIDs(p, 1u << 2, nd, ds.data(), nullptr) != 0) continue;
+    for (void* x : ds) {
+      cl_uint id = 0;
+      char name[256] = {};
+      const bool id_ok = want_id && getDeviceInfo(x, 0x4251 /* CL_DEVICE_ID_INTEL */, sizeof id, &id, nullptr) == 0 && id == want_id;
+      const bool name_ok = want_name && *want_name &&
+                           getDeviceInfo(x, 0x102B /* CL_DEVICE_NAME */, sizeof(name) - 1, name, nullptr) == 0 &&
+                           std::string(name) == want_name;
+      if (id_ok || (name_ok && !match)) match = x;
+      if (id_ok) break;
+    }
+    if (match) break;
+  }
+  if (!match) return false;
+  if (match == device) {
+    d = device, c = context;
+  } else {
+    cl_int err = 0;
+    void* ctx = createContext(nullptr, 1, &match, nullptr, nullptr, &err);
+    if (err != 0 || !ctx) return false;
+    d = match, c = ctx;
+  }
+  known.push_back({want_id, d, c});
+  return true;
+}
 }  // namespace rcl
 }  // namespace zrt
 
@@ -1158,6 +1209,10 @@ struct ClRt {
   cl_device_id device = (cl_device_id)1;
   cl_context ctx = (cl_context)1;
   cl_command_queue queue = (cl_command_queue)1;
+  // (the compiler's device and context of this engine's GPU, set in init: GPU 0's unless a layer split's stage runs on
+  //  a GPU of another kind, zrt::rcl::device_for)
+  void* cldev = nullptr;
+  void* clctx = nullptr;
 
   bool init(bool = true) {
     // (Level Zero first, since 2026-11-14: its GPU 0 decides which OpenCL device compiles the kernels, rcl::load)
@@ -1166,9 +1221,20 @@ struct ClRt {
     p0.stype = ZE_STYPE_DEVICE_PROPERTIES;
     const bool have0 = zeDeviceGetProperties(zrt::dev0.dev, &p0) == ZE_RESULT_SUCCESS;
     if (!zrt::rcl::load(have0 ? p0.name : nullptr, have0 ? p0.deviceId : 0)) { LOG_ERR("cannot load OpenCL.dll (needed to compile kernels): is the Intel graphics driver installed?\n"); return false; }
+    // (this engine's GPU, zrt::D(): GPU 0's compiler, or, on another GPU of a layer split over unlike cards, that
+    //  GPU's own (P0, 2026-11-22), so its capabilities are read and its kernels built for it. One GPU, or GPUs of one
+    //  kind: GPU 0's, as before)
+    cldev = zrt::rcl::device, clctx = zrt::rcl::context;
+    if (zrt::D().dev != zrt::dev0.dev) {
+      ze_device_properties_t pd{};
+      pd.stype = ZE_STYPE_DEVICE_PROPERTIES;
+      if (zeDeviceGetProperties(zrt::D().dev, &pd) == ZE_RESULT_SUCCESS && (!have0 || pd.deviceId != p0.deviceId) &&
+          !zrt::rcl::device_for(pd.name, pd.deviceId, cldev, clctx))
+        LOG_WRN("inferzero: no OpenCL device for GPU %d (%s): its kernels are built for GPU 0's kind\n", zrt::D().index, pd.name);
+    }
     char name[256] = {}, drv[256] = {};
-    zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102B, sizeof(name) - 1, name, nullptr);  // CL_DEVICE_NAME
-    zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102D, sizeof(drv) - 1, drv, nullptr);   // CL_DRIVER_VERSION
+    zrt::rcl::getDeviceInfo(cldev, 0x102B, sizeof(name) - 1, name, nullptr);  // CL_DEVICE_NAME
+    zrt::rcl::getDeviceInfo(cldev, 0x102D, sizeof(drv) - 1, drv, nullptr);   // CL_DRIVER_VERSION
     device_id = std::string(name) + "|" + drv;  // (the same key as the OpenCL engine's kernel cache)
 #ifdef _WIN32
     {  // (2026-11-20: a Windows Update put a February 2024 Intel driver, 31.0.101.5328, in place of 32.0.101.9150 on
@@ -1201,7 +1267,7 @@ struct ClRt {
 #endif
     {  // CL_DEVICE_SUB_GROUP_SIZES_INTEL; ARC_NO_SG8=1 takes the 16-lane kernels anyway (tests)
       size_t sz[8] = {}, ret = 0;
-      if (zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x4108, sizeof sz, sz, &ret) == 0 && ret >= sizeof(size_t)) {
+      if (zrt::rcl::getDeviceInfo(cldev, 0x4108, sizeof sz, sz, &ret) == 0 && ret >= sizeof(size_t)) {
         sg8 = false;
         for (size_t i = 0; i < ret / sizeof(size_t) && i < 8; ++i) sg8 = sg8 || sz[i] == 8;
       }
@@ -1215,12 +1281,13 @@ struct ClRt {
       // (Alchemist: kernels in recorded lists by default, zrt::batch_max; GPU 0's from the same rule as the others',
       //  batch_default_for, on Windows and Linux. Until 2026-11-21 (release .21.06) this line was Windows-only, so
       //  .21.05's Linux default reached only a split model's other GPUs: one A750 stayed unbatched, hakangit, #72)
-      if (zrt::dev0.batch_def < 0) zrt::dev0.batch_def = sg8 && have0 && !(p0.flags & 1u) ? 64 : 0;
+      // (only from GPU 0's own engine: a layer split's stage on another kind reads its own sg8 here)
+      if (zrt::dev0.batch_def < 0 && zrt::D().dev == zrt::dev0.dev) zrt::dev0.batch_def = sg8 && have0 && !(p0.flags & 1u) ? 64 : 0;
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');
       size_t ret = 0;
-      if (zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x1030, ext.size() - 1, ext.data(), &ret) == 0) {
+      if (zrt::rcl::getDeviceInfo(cldev, 0x1030, ext.size() - 1, ext.data(), &ret) == 0) {
         xmx = ext.find("cl_intel_subgroup_matrix_multiply_accumulate") != std::string::npos;
         block2d = ext.find("cl_intel_subgroup_2d_block_io") != std::string::npos;
       }
@@ -1271,7 +1338,10 @@ struct ClRt {
   // GPUs 1..n-1 of the driver next to device 0 (after init), each with its own command list: zrt::devs. sim: n
   // "GPUs" that are all device 0, each with its own list (multi-GPU tests on one GPU, ARC_TP_SIM). Returns the
   // number open, or 0 and why in err (fewer GPUs than asked, others of another kind).
-  static int open_devices(int n, bool sim, std::string& err) {
+  // (mixed: GPUs of other kinds too, after GPU 0's kind, discrete before integrated: a layer split, whose stages are
+  //  engines of their own, each compiling for its GPU (ClRt::init, rcl::device_for; P0, 2026-11-22). A tensor split's
+  //  shards share GPU 0's kernels, so it keeps one kind)
+  static int open_devices(int n, bool sim, std::string& err, bool mixed = false) {
     if (!zrt::ctx || !zrt::driver) { err = "the runtime is not started"; return 0; }
     if ((int)zrt::devs.size() >= n) return n;
     std::vector<ze_device_handle_t> gpus;
@@ -1287,16 +1357,24 @@ struct ClRt {
       p0.stype = ZE_STYPE_DEVICE_PROPERTIES;
       ZE_CHECK(zeDeviceGetProperties(zrt::dev0.dev, &p0));
       int other = 0;  // (GPUs of another kind: the kernels are compiled for GPU 0's, a module of them would not load)
+      std::vector<ze_device_handle_t> others[2];  // (discrete, integrated)
       for (ze_device_handle_t x : all) {
         ze_device_properties_t p{};
         p.stype = ZE_STYPE_DEVICE_PROPERTIES;
         if (x == zrt::dev0.dev || zeDeviceGetProperties(x, &p) != 0 || p.type != 1) continue;
-        if (p.deviceId == p0.deviceId) gpus.push_back(x);
-        else ++other;
+        if (p.deviceId == p0.deviceId) {
+          gpus.push_back(x);
+        } else {
+          ++other;
+          others[(p.flags & 1u) ? 1 : 0].push_back(x);
+        }
       }
+      if (mixed)
+        for (auto& o : others) gpus.insert(gpus.end(), o.begin(), o.end());
       if ((int)gpus.size() < n) {
-        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size()) + " of GPU 0's kind" +
-              (other ? " (and " + std::to_string(other) + " of another kind, which cannot share a model with it)" : "");
+        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size()) +
+              (mixed ? "" : " of GPU 0's kind") +
+              (other && !mixed ? " (and " + std::to_string(other) + " of another kind: --split layer can use them)" : "");
         return 0;
       }
     }
@@ -1356,13 +1434,13 @@ struct ClRt {
       cl_int err = 0;
       const char* s = src.c_str();
       const size_t sn = src.size();
-      void* prog = zrt::rcl::createProgramWithSource(zrt::rcl::context, 1, &s, &sn, &err);
-      err = zrt::rcl::buildProgram(prog, 1, &zrt::rcl::device, opts.c_str(), nullptr, nullptr);
+      void* prog = zrt::rcl::createProgramWithSource(clctx, 1, &s, &sn, &err);
+      err = zrt::rcl::buildProgram(prog, 1, &cldev, opts.c_str(), nullptr, nullptr);
       if (err != 0) {
         size_t ln = 0;
-        zrt::rcl::getProgramBuildInfo(prog, zrt::rcl::device, 0x1183, 0, nullptr, &ln);
+        zrt::rcl::getProgramBuildInfo(prog, cldev, 0x1183, 0, nullptr, &ln);
         std::string log(ln, 0);
-        zrt::rcl::getProgramBuildInfo(prog, zrt::rcl::device, 0x1183, ln, log.data(), nullptr);
+        zrt::rcl::getProgramBuildInfo(prog, cldev, 0x1183, ln, log.data(), nullptr);
         zrt::rcl::releaseProgram(prog);
         if (soft_fail) throw std::runtime_error("kernel build failed: " + log.substr(0, 200));
         zlog::eprintf("build log:\n%s\n", log.c_str());

@@ -169,11 +169,14 @@
   // 1 and off by default (the 140T's default unchanged). Its xw_peak --probe (issue #5, 2026-11-16) reached 85 % of
   // the XMX peak at 32 x 32 with the operands in L1, ~33 % in the engine; with WGX packed 32 x 32 is allowed too
   int xw_wgx() const {
-    static const int v = [] {
-      if (!getenv("ARC_GEMM_XW_WGX")) return zrt::integrated() ? 1 : 4;
+    // (the env once a process; the default per call, from this engine's GPU (P0: a process with an iGPU's engine and
+    //  a card's took the first engine's 1 or 4 for both before 2026-11-22))
+    static const int ve = [] {
+      if (!getenv("ARC_GEMM_XW_WGX")) return 0;
       const int e = atoi(getenv("ARC_GEMM_XW_WGX"));
       return e == 2 || e == 4 || e == 8 ? e : 1;
     }();
+    const int v = ve ? ve : zrt::integrated() ? 1 : 4;
     // (8 lanes: 2 by default in the Arc 140T preset since 2026-11-17: a 140T's 27B 4K prompt 368.3 -> 390.0 tok/s
     //  (4: 383.2; 4 with LOCK 365.8), the same results checked at start (PascalSoftwares, issue #5, release .07))
     static const int v8 = [] {

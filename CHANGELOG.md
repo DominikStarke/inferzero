@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: a layer split over unlike cards (`--split layer` with, e.g., a B60 and an A770)
+
+- **`--gpus N --split layer` takes GPUs of different kinds now** (QUEUE P0). Each GPU's stage compiles its kernels for
+  its own GPU and reads its own GPU's features: 8- or 16-lane, XMX, 2D loads. Before, every engine in a process
+  compiled through GPU 0's compiler, so a split was refused unless all its GPUs were of one kind. The order is GPU
+  0's kind first, then other discrete GPUs, then integrated ones.
+- **The tensor split stays one kind:** its shards share GPU 0's kernels. Its error now says when `--split layer` could
+  use the other GPUs.
+- **Accuracy on unlike cards** is a KL check, not bit for bit: each card runs its own kernel forms. On one kind it is
+  bit for bit as before (`ARC_TP_SIM`: 2 and 3 stages byte for byte one GPU's).
+- Also P0: `ARC_GEMM_XW_WGX`'s default per engine (from its GPU), not once a process.
+- Not measured on real unlike cards yet: skipzx-lab's B60 + A770 asked.
+
 ## 2026-11-22: the B390's 2D GEMM default is Linux only for now
 
 - **Under Windows, a B390 goes back to the plain prompt GEMM form.** gee456's full sweep on his B390 under Windows
