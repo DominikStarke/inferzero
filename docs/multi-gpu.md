@@ -37,6 +37,31 @@ Environment variables, read once per process (the one-GPU switches: [xe2-tuning.
 | `ARC_TP_PARALLEL_LOAD=1`, `ARC_TP_LINKS_SIM=1` | off | the shards loaded together; the links timed under `ARC_TP_SIM` (tests) |
 | `ARC_TP_HANG`, `ARC_TP_OOM`, `ARC_TP_F16_LIMIT`, `ARC_FAKE_OOM` | off | failsafe tests ("When a GPU hangs") |
 
+## Two ways to split: by tensors or by layers (`--split`, 2026-11-21)
+
+`runz --gpus N --split tensor` (the default) is everything below: each layer's matrices are cut over the GPUs, and
+their partial results are summed after every layer. For one request it's the fast form on matching cards with good
+links, as every GPU works on every token.
+
+`runz --gpus N --split layer` gives each GPU whole layers instead (`zero/mgpu/engine_pp.h`, a stage engine per GPU):
+GPU 0 embeds the token and runs the first layers, hands its rows to GPU 1, and so on, and the last GPU runs the norm
+and the head. There are no sums per layer, only one hand-off between two GPUs per chunk or token.
+- **What it is for:** links too slow for the sums (PCIe 3.0 without peer access, chipset x4 slots, two A770s on
+  Windows), cards of different kinds, and models too big for one card without paging.
+- **What it is not:** faster than one card for a single request. A token visits the GPUs in turn, so generation runs
+  at about one card's speed, a little less for the hand-offs.
+- **Choosing the cut:** `--tensor-split a,b,...` gives each GPU's share of the layers (e.g. `1,3`: a quarter on GPU 0).
+  The default is equal shares.
+- **Accuracy:** the same kernels on the same rows in the same order as one GPU, so the logits are the same bit for bit.
+  Checked under `ARC_TP_SIM=1` (every stage on GPU 0) against one GPU, byte for byte over the prompt and every
+  generated token: the 4B and the 27B, 2 and 3 stages, prompts of 40 and 2,290 tokens, chunk by chunk and layer-major
+  (512-token chunks).
+- **Not yet:**
+  - the server (`serverz`);
+  - MoE models, MTP drafting, Gemma, Flash Next and DeepSeek;
+  - the hand-off GPU to GPU (it goes through host memory now, ~20 KB a token for the 27B);
+  - prompts pipelined over the GPUs, and two requests in flight (QUEUE, L2-L5).
+
 ## How it is split
 
 Code, apart from the one-GPU engine: `zero/mgpu/engine_tp_shard.h` (what one shard holds), `zero/mgpu/engine_tp.h`

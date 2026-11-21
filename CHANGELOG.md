@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: split a model over GPUs by layers (`--split layer`, runz, first form)
+
+- **`runz --gpus N --split layer`** gives each GPU whole layers instead of a part of every layer. GPU 0 embeds the
+  token and runs its layers, then hands its rows on to the next GPU; the last GPU runs the norm and the head. There
+  are no sums after every layer.
+  - It's for slow links, mixed cards, and models one card can't hold.
+  - For a single request it isn't faster than one card: a token visits the GPUs in turn.
+  - `--split tensor`, the split by matrices with sums per layer, stays the default and the fast form on matching,
+    well-linked cards.
+- `--tensor-split a,b,...` sets each GPU's share of the layers.
+- The same logits bit for bit as one GPU: checked under `ARC_TP_SIM` byte for byte, with the 4B and the 27B, 2 and 3
+  stages, short and long prompts, and both prompt paths.
+- First form: runz only, Qwen's dense models, no `--mtp`. The hand-off goes through host memory. The server, MoE
+  models, drafting and GPU-to-GPU copies are next.
+
 ## 2026-11-21: the full GEMM sweep for 16-lane GPUs (B-series, Lunar Lake, Panther Lake)
 
 - **`xw_peak --all` now sweeps the 16-lane prompt GEMM too** (`gemm_xw`, which B-series cards, the 140V, the B390 and

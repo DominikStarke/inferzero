@@ -160,6 +160,76 @@ static std::string peak_note(Engine& eng, double gbs) {
   return s;
 }
 
+// --gpus N --split layer: the model's layers over N GPUs (zero/mgpu/engine_pp.h): the prompt (or --bench-pp N), then
+// greedy generation, as run_tp; --tensor-split a,b,...: each GPU's share of the layers
+static int run_pp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<double>& shares,
+                  const std::vector<int>& toks, int n_gen, int bench_pp, const std::string& dump_logits, bool show) {
+  PpEngine pp(model, eo, gpus, shares);
+  Engine& el = pp.last();
+  Vocab vocab(el.gguf());
+  printf("loaded: %d GPUs by layers, %d layers, n_embd %d, vocab %d | GPU buffers", gpus, el.hp.n_layer, el.hp.n_embd,
+         el.hp.n_vocab);
+  for (int r = 0; r < gpus; ++r) printf(" %.2f", pp.gpu_bytes(r) / 1073741824.0);
+  printf(" GiB | chunk %d | ctx %d\n", el.max_chunk, el.ctx);
+  auto ms_since = [](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+  };
+  std::vector<int> prompt = toks;
+  if (bench_pp > 0) {
+    prompt.resize(bench_pp);
+    for (int i = 0; i < bench_pp; ++i) prompt[i] = 1000 + (i * 7919) % 50000;
+  }
+  if (prompt.empty()) { zlog::eprintf("no tokens\n"); return 1; }
+  if (bench_pp > 0) pp.forward(prompt.data(), std::min((int)prompt.size(), 64));  // warm-up (kernels, page-in)
+  const int runs = bench_pp > 0 ? 3 : 1;
+  std::vector<float> lg;
+  for (int r = 0; r < runs; ++r) {
+    if (bench_pp > 0) pp.reset();
+    const auto t0 = std::chrono::steady_clock::now();
+    lg = pp.forward(prompt.data(), (int)prompt.size());
+    const double ms = ms_since(t0);
+    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s\n", prompt.size(), r, ms, prompt.size() / ms * 1000.0);
+  }
+  if (bench_pp <= 0) {
+    std::vector<std::pair<int, float>> tk;
+    top_k(lg, 10, tk);
+    printf("top-10 next token:");
+    for (auto& [id, p] : tk) printf(" %d(%.4f)", id, p);
+    printf("\n");
+  }
+  FILE* dl = dump_logits.empty() ? nullptr : fopen(dump_logits.c_str(), "wb");
+  if (dl) fwrite(lg.data(), sizeof(float), lg.size(), dl);
+  int tok = (int)(std::max_element(lg.begin(), lg.end()) - lg.begin());
+  if (bench_pp > 0) tok = 1000;
+  std::vector<int> gen;
+  std::vector<double> step_ms;
+  const auto t1 = std::chrono::steady_clock::now();
+  for (int i = 0; i < n_gen; ++i) {
+    gen.push_back(tok);
+    if (bench_pp <= 0 && tok == vocab.eos) break;
+    const auto ts = std::chrono::steady_clock::now();
+    const auto& l2 = pp.forward(&tok, 1);
+    step_ms.push_back(ms_since(ts));
+    if (dl) fwrite(l2.data(), sizeof(float), l2.size(), dl);
+    tok = (int)(std::max_element(l2.begin(), l2.end()) - l2.begin());
+  }
+  if (dl) fclose(dl);
+  const double gms = ms_since(t1);
+  if (bench_pp <= 0) {
+    printf("greedy:");
+    for (int id : gen) printf(" %d", id);
+    printf("\n");
+  }
+  if (!step_ms.empty()) {
+    std::vector<double> st = step_ms;
+    std::sort(st.begin(), st.end());
+    printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms\n", step_ms.size(), gms,
+           step_ms.size() / gms * 1000.0, st.front(), st[st.size() / 2]);
+  }
+  if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
+  return 0;
+}
+
 // --gpus N: the model split over N GPUs (zero/engine_tp.h): the prompt (or --bench-pp N), then greedy generation
 static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<int>& toks, int n_gen,
                   int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref, int bench_batch) {
@@ -409,7 +479,11 @@ static int run_main(int argc, char** argv) {
             "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B, Flash Next,\n"
             "                        DeepSeek-V4.1): the prompt or --bench-pp, then greedy generation (ARC_TP_SIM=1: N\n"
             "                        shards on GPU 0, to test the split)\n"
-            "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
+            "  --split tensor|layer  with --gpus: tensor (the default) splits each layer's matrices over the GPUs, with\n"
+            "                        sums every layer; layer gives each GPU whole layers, one hand-off a token (Qwen's dense\n"
+            "                        models for now, no --mtp yet): no sums, so slow links cost little, but one request\n"
+            "                        runs at about one card's speed. --tensor-split a,b,...: each GPU's share of the layers\n"
+            "  --attn-f32           f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any\n"
             "                        Qwen3.5 / 3.6 / 3.8 or Gemma 4 model; default off, or ARC_NPU)\n"
             "profiling:\n"
@@ -474,6 +548,8 @@ static int run_main(int argc, char** argv) {
   EngineOptions eo;
   bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false, must_fit = false;
   int bench_batch = 0;
+  std::string split_mode = "tensor";  // (--split tensor | layer: zero/mgpu/engine_tp.h or engine_pp.h)
+  std::vector<double> split_shares;   // (--tensor-split a,b,...: each GPU's share of the layers with --split layer)
   bool ring_snap_test = false;  // Gemma: a snapshot's ring copy restored after the rings moved on, logits bitwise
   bool snap_test = false;       // (--snap-test: a snapshot restored after other tokens, logits bitwise)
   std::string dump_logits;  // every generation step's logits (f32), to compare two builds / settings bitwise
@@ -543,6 +619,14 @@ static int run_main(int argc, char** argv) {
     else if (a == "--ppl-chunks") ppl_chunks = atoi(next());
     else if (a == "--budget") eo.w8_budget_gb = atof(next()), eo.w8_budget_set = true;
     else if (a == "--gpus") gpus = std::max(1, atoi(next()));
+    else if (a == "--split") {
+      split_mode = next();
+      if (split_mode != "tensor" && split_mode != "layer") { zlog::eprintf("--split: tensor or layer\n"); return 1; }
+    } else if (a == "--tensor-split") {
+      std::stringstream ss(next());
+      std::string t;
+      while (std::getline(ss, t, ',')) split_shares.push_back(atof(t.c_str()));
+    }
     else if (!a.empty() && a[0] != '-' && text_prompt.empty()) text_prompt = a;  // PROMPT (special tokens parsed)
     else { zlog::eprintf("unknown option %s (--help: the options)\n", a.c_str()); return 1; }
   }
@@ -609,6 +693,10 @@ static int run_main(int argc, char** argv) {
     return 0;
   }
   warn_gpu_neighbours();
+  if (gpus > 1 && split_mode == "layer") {
+    if (eo.mtp) { zlog::eprintf("--split layer: no --mtp yet (drafting over the stages: QUEUE)\n"); return 1; }
+    return run_pp(model, eo, gpus, split_shares, toks, n_gen, bench_pp, dump_logits, show);
+  }
   if (gpus > 1) {
     if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);  // (a split model's slots: made at load)
     return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);

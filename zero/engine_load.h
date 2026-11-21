@@ -690,12 +690,18 @@
   void load_weights() {
     // The output head first: the GPU reads a large buffer allocated late in the load (after gigabytes of other
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
-    load_head();
+    // (a layer split's stage, opt.pp_begin / pp_end: its layers only, in layers_ from 0 with each layer's own il; the
+    //  head and the MTP block on the last stage only; Qwen's dense and MoE models, not Gemma or DeepSeek)
+    const int lb = std::max(0, opt.pp_begin), le = opt.pp_end < 0 ? hp.n_layer : std::min(opt.pp_end, hp.n_layer);
+    if ((lb > 0 || le < hp.n_layer) && (hp.gemma || hp.ds41 || hp.hc || hp.moe || hp.ple_layer >= 0 || lb >= le))
+      throw std::runtime_error("--split layer: Qwen's dense models only for now (not MoE, Gemma, DeepSeek or Flash Next) and a "
+                               "non-empty range of layers");
+    if (pp_last()) load_head();
     if (hp.gemma) return load_weights_gemma4();
     if (hp.ds41) return load_weights_ds41();
-    layers_.resize(hp.n_layer);
-    for (int il = 0; il < hp.n_layer; ++il) {
-      Layer& L = layers_[il];
+    layers_.resize(le - lb);
+    for (int il = lb; il < le; ++il) {
+      Layer& L = layers_[il - lb];
       L.il = il;
       const std::string p = "blk." + std::to_string(il) + ".";
       if (hp.hc) {
@@ -762,7 +768,7 @@
     const std::string mp = "blk." + std::to_string(hp.n_layer) + ".";
     const size_t g_mtp = gpu_bytes;
     struct MtpBytes { Engine& e; size_t g0; ~MtpBytes() { e.mem_mtp_ += e.gpu_bytes - g0; } } mtp_bytes{*this, g_mtp};
-    if (opt.mtp && opt.mtp_block && f_.find(mp + "nextn.eh_proj.weight")) {
+    if (opt.mtp && opt.mtp_block && pp_last() && f_.find(mp + "nextn.eh_proj.weight")) {
       has_mtp = mtp_block_ = true;
       mtp_.il = hp.n_layer;
       if (hp.hc) {  // (Flash Next, QUEUE F34: a layer as its others, with the mixers; no PLE)

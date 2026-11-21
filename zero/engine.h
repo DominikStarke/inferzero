@@ -126,6 +126,9 @@ struct EngineOptions {
   int npu = -1;
   // tensor parallel (zero/engine_tp.h, --gpus): this engine is shard tp_rank of a model split over tp_size GPUs
   int tp_rank = 0, tp_size = 1;
+  // a layer split (zero/mgpu/engine_pp.h, --split layer): this engine is a stage holding the layers [pp_begin, pp_end)
+  // only; the first stage embeds, the last has the norm, the head and the MTP block; -1: every layer (no split)
+  int pp_begin = 0, pp_end = -1;
   // weights in host memory (iGPU: the same DRAM, read at ~91 % of device memory's speed, not counted in the GPU share),
   // GiB: < 0 automatic (a dense model whose weights fill more than 85 % of the share: Gemma 4 31B), 0 none
   double host_weights_gb = -1;
@@ -590,8 +593,31 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
 
   // Feeds tokens at the current position; returns the logits for the last token.
+  // ---- a layer split's stage (opt.pp_begin / pp_end, zero/mgpu/engine_pp.h): a stage after the first takes each
+  // chunk's rows from pp_in_ (the stage before's, row t of the call at t * hce floats) instead of the embedding, and a
+  // stage before the last writes its rows to pp_out_ instead of running the head (forward then returns no logits).
+  // The rows past T to Mp are zero, as embed() leaves them: a row's sums never read another row's
+  int pp_base_ = 0;  // (forward_layer_major's segment: its first row of the call)
+  bool pp_first() const { return opt.pp_begin <= 0; }
+  bool pp_last() const { return opt.pp_end < 0 || opt.pp_end >= hp.n_layer; }
+  const float* pp_in_ = nullptr;
+  std::vector<float>* pp_out_ = nullptr;
+  void pp_load(int t0, int T, int Mp, cl_mem dst) {
+    cur_T_ = T;
+    attn_in_ready_ = ffn_in_ready_ = false;
+    const size_t W = hp.hce();
+    std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * W, 0.0f);
+    std::copy(pp_in_ + (size_t)t0 * W, pp_in_ + (size_t)(t0 + T) * W, x_host_.begin());
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dst, CL_TRUE, 0, (size_t)Mp * W * 4, x_host_.data(), 0, nullptr, nullptr));
+  }
+  void pp_save(int t0, int T, cl_mem src) {
+    const size_t W = hp.hce();
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, src, CL_TRUE, 0, (size_t)T * W * 4, pp_out_->data() + (size_t)t0 * W, 0, nullptr,
+                                 nullptr));
+  }
   const std::vector<float>& forward(const int* tokens, int n) {
     TP_MIRROR(forward(tokens, n), TpMirror::kLogits, 0);
+    if (!pp_last()) pp_out_->assign((size_t)n * hp.hce(), 0.0f);  // (a stage before the last: its rows, not logits)
     if (pos + n > ctx) throw std::runtime_error("context overflow");
     if (has_mtp) flush_mtp_pending();
     if (hp.ple_layer >= 0) ple_sync();
@@ -602,9 +628,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       prog_total_ = n;
       for (int s0 = 0; s0 < n; s0 += lm_seg_) {
         prog_base_ = s0;
+        pp_base_ = s0;  // (a layer split's stage: this segment's first row of pp_in_ / pp_out_)
         const auto& l = forward_layer_major(tokens + s0, std::min(lm_seg_, n - s0));
         if (s0 + lm_seg_ >= n) {
-          prog_base_ = prog_total_ = 0;
+          prog_base_ = prog_total_ = pp_base_ = 0;
           return l;
         }
       }
@@ -625,7 +652,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       const int Mp = T >= 128 ? std::min((T + 127) / 128 * 128, max_chunk) : (T + 15) / 16 * 16;
       if (by_layer) keep_block();
       ring_guard(T);  // (Gemma: a snapshot's rings' window copied before this chunk overwrites it)
-      embed(tokens + c0, T, Mp);
+      if (pp_first()) embed(tokens + c0, T, Mp);
+      else pp_load(c0, T, Mp, x_);  // (a layer split's later stage: the stage before's rows)
       media_pos(tokens + c0, T);
       for (auto& L : layers_) {
         run_layer(L, T, Mp);
@@ -633,9 +661,19 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       }
       pos += T;
       x_rows_ = T;
+      if (!pp_last()) {  // (an earlier stage: its rows to the next one, no head)
+        pp_save(c0, T, x_);
+        if (profile) collect_profile();
+        continue;
+      }
       if (mtp_block_) mtp_prefill(tokens + c0, T, Mp, pos - T);
       if (c0 + T >= n) head(T);
       if (profile) collect_profile();
+    }
+    if (!pp_last()) {
+      static const std::vector<float> none;
+      collect_profile();
+      return none;
     }
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                  nullptr, nullptr));
@@ -668,7 +706,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     for (int c = 0; c < nch; ++c) {
       x_ = x_views_[c];
       if (!ple_views_.empty()) ple_emb_ = ple_views_[c];
-      embed(tokens + (size_t)c * max_chunk, chunk_T(c), chunk_Mp(c));
+      if (pp_first()) embed(tokens + (size_t)c * max_chunk, chunk_T(c), chunk_Mp(c));
+      else pp_load(pp_base_ + c * max_chunk, chunk_T(c), chunk_Mp(c), x_views_[c]);  // (a layer split's later stage)
     }
     // (set_media's rotary positions: the segment's rows written once, each chunk reads its part; every write syncs)
     struct NoRpos { int& u; cl_mem& p; cl_mem s; ~NoRpos() { u = 0; p = s; } } no_rpos{use_rpos_, rpos_, rpos_};
@@ -711,6 +750,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     }
     tpo_end();
     pos = pos0 + n;
+    if (!pp_last()) {  // (a layer split's earlier stage: every chunk's rows to the next stage, no head)
+      for (int c = 0; c < nch; ++c) pp_save(pp_base_ + c * max_chunk, chunk_T(c), x_views_[c]);
+      x_ = x_views_[nch - 1];
+      cur_T_ = chunk_T(nch - 1);
+      x_rows_ = cur_T_;
+      static const std::vector<float> none;
+      return none;
+    }
     if (mtp_block_)
       for (int c = 0; c < nch; ++c) {
         x_ = x_views_[c];
@@ -1820,3 +1867,4 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 };
 
 #include "mgpu/engine_tp.h"  // (multi-GPU: TpEngine)
+#include "mgpu/engine_pp.h"  // (multi-GPU by layers: PpEngine, --split layer)
