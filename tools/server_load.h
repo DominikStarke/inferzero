@@ -197,11 +197,12 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (!so.ctx_auto && so.gpus <= 1 && !eng.fits_share()) {
     const double GiB = 1073741824.0;
     const int fit = eng.max_fitting_ctx();
-    LOG_WRN("does not fit: %.2f GiB of GPU memory for a context of %d%s, over the %.2f GiB share less %.1f for the "
+    LOG_WRN("does not fit: %.2f GiB of GPU memory for a context of %d%s%s, over the %.2f GiB share less %.1f for the "
             "driver; expect paging and far lower speeds (%s)\n",
-            eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "", eng.device_mem() / GiB,
-            Engine::driver_slack() / GiB,
-            fit > 0 ? ("--ctx " + std::to_string(fit) + " or --ctx auto fits").c_str()
+            eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "",
+            eng.host_weight_bytes() ? (", " + std::to_string((int)(eng.host_weight_bytes() / 1048576)) + " MiB of the weights in host memory too").c_str() : "",
+            eng.device_mem() / GiB, Engine::driver_slack() / GiB,
+            fit > 0 ? ("--ctx " + std::to_string(fit) + " (every weight on the GPU) or --ctx auto fits").c_str()
                     : "no context fits: a smaller model, or --ctx auto");
   }
   try {  // (the log's model and memory lines, docs/logging.md; /metrics' model_info: never a reason the load fails)

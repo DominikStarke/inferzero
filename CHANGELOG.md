@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-21: the context a "does not fit" warning suggests now fits the first time
+
+- **Fix (issue #45):** following the warning's `--ctx N fits` on a 16 GB A770 took three steps with `--mtp` (92,752 ->
+  73,728 -> 56,320 -> 53,248) and two without.
+  - On a discrete card, a context too big for the card makes the engine keep some of the weights in host memory
+    (read over PCIe), so the GPU's total falls by much less than the context does.
+  - The suggestion now counts those weights too: it's the largest context with every weight on the GPU, where
+    nothing goes to host memory. The warning also says how much of the weights is in host memory.
+  - runz and the server alike. Unchanged where no weights are in host memory (the laptop: the same 55,296).
+- `ARC_FIT_PARTS=1` (runz): the memory count the check reads, by part.
+
 ## 2026-11-21: faster drafting for English and code (opt-in)
 
 - **`ARC_MTP_VOCAB=32768`** (catalog option `mtp_vocab`): with `--mtp`, each drafted token reads only the 32,768 most

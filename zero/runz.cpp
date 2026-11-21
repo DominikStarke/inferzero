@@ -631,12 +631,21 @@ static int run_main(int argc, char** argv) {
      //  ~120 tok/s. The server's --ctx auto stays inside; runz takes the context it is given)
     const double GiB = 1073741824.0, share = (double)eng.device_mem();
     fflush(stdout);
+    if (getenv("ARC_FIT_PARTS")) {  // (diagnostics: the memory count the fit check reads, by part)
+      const auto m = eng.mem_parts(eng.ctx);
+      zlog::eprintf("inferzero: memory: GPU %.3f GiB = loaded %.3f (weights %.3f, MTP %.3f, buffers %.3f, context %.3f at %d) + "
+                    "after the load %.3f; ctx_bytes / %d tokens\n",
+                    eng.gpu_bytes / GiB, eng.loaded_bytes() / GiB, m.weights / GiB, m.mtp / GiB, m.buffers / GiB,
+                    m.context / GiB, eng.ctx, ((double)eng.gpu_bytes - (double)eng.loaded_bytes()) / GiB, eng.ctx);
+    }
     if (!eng.fits_share()) {
       const int fit = eng.max_fitting_ctx();
-      zlog::eprintf("inferzero: does not fit: %.2f GiB of GPU memory for a context of %d%s, over the %.2f GiB share "
+      zlog::eprintf("inferzero: does not fit: %.2f GiB of GPU memory for a context of %d%s%s, over the %.2f GiB share "
                       "less %.1f for the driver; expect paging and far lower speeds (%s)\n",
-              eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "", share / GiB, Engine::driver_slack() / GiB,
-              fit > 0 ? ("--ctx " + std::to_string(fit) + " fits").c_str() : "no context fits: a smaller model or fewer weights on the GPU");
+              eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "",
+              eng.host_weight_bytes() ? (", " + std::to_string((int)(eng.host_weight_bytes() / 1048576)) + " MiB of the weights in host memory too").c_str() : "",
+              share / GiB, Engine::driver_slack() / GiB,
+              fit > 0 ? ("--ctx " + std::to_string(fit) + " fits with every weight on the GPU").c_str() : "no context fits: a smaller model or fewer weights on the GPU");
       if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
     }
   }

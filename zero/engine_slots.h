@@ -85,10 +85,16 @@
   // rows and the draft buffers are in gpu_bytes and in ctx_bytes / slot_bytes, so it is counted as plain is
   // (2026-11-21, issue #45: one --ctx check for runz and the server; 0 when not even 1024 tokens fit)
   bool fits_share() const { return (double)gpu_bytes <= (double)device_mem() - driver_slack(); }
+  // (the weights plan_tight put in host memory count as the GPU's here: at a smaller context it keeps fewer of them
+  //  there, so the GPU's total falls by less than the context's bytes. Without them the first suggestion was not a
+  //  fit: skipzx-lab's A770, the 27B --mtp --chunk 1024, 92,752 -> "73,728 fits" -> 15.17 GiB, three steps to 53,248;
+  //  issue #45, release .21.13. The suggestion is the largest context with every weight on the GPU, where plan_tight
+  //  moves none: one step)
   int max_fitting_ctx() const {
     const double lim = (double)device_mem() - driver_slack();
     const int s = slot_count();
-    const double base = (double)gpu_bytes - (double)ctx_bytes(ctx) - (double)(s - 1) * (double)slot_bytes(ctx);
+    const double base = (double)gpu_bytes + (double)host_weight_bytes() - (double)ctx_bytes(ctx) -
+                        (double)(s - 1) * (double)slot_bytes(ctx);
     int best = 0;
     for (int c = 1024; c <= ctx; c += 1024)
       if (base + (double)ctx_bytes(c) + (double)(s - 1) * (double)slot_bytes(c) <= lim) best = c;
