@@ -142,7 +142,8 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
 140T's preset (H8 on the 8-lane XMX GEMM). Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
 - **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,874 tok/s under Linux with the
   FFN's gate and up in one GEMM launch (skipzx-lab, issue #57, release 2026.11.20.03, where it is the default; 1,800
-  without it); 1,726 on Windows (release 2026.11.17.08; 1,522 on
+  without it); 1,909 on Windows (manoreken2, release 2026.11.21.01; 1,836 with the fused gate / up off; 1,726 on
+  2026.11.17.08, 1,522 on
   2026.11.14.09, 1,322 before the weight prefetch), generation 22.7-23.7 tok/s (two runs,
   2026.11.14.09; 23.7 under Linux, skipzx-lab, issue #58), 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation
   82.4 tok/s, 111.9 with MTP (2026.11.13.11). What each switch measured there: [docs/xe2-tuning.md](docs/xe2-tuning.md).
