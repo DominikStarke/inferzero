@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: model downloads resume correctly after a cut
+
+- **A cut download could grow past its size and start over from nothing** (`scripts\hf-get.ps1`, the Linux
+  launcher's downloads). A 16.67 GB file grew to 17.8 GB after a connection reset and was downloaded again in full.
+  Two causes, both fixed:
+  - curl's own `--retry` with `-C -` resumed from the offset it found at its start, so bytes were written twice. The
+    scripts now make the tries themselves: up to 6, each resuming from the `.part` file's length measured just before.
+  - Two downloads of the same file at once (two windows, or the launcher and a script) appended to one `.part`. Now a
+    lock file (`<file>.part.lock`, `flock` on Linux) refuses the second one with a message.
+- Checked with a forced cut: curl killed mid-file at a limited rate. The same run resumed, the file's SHA-256 matched,
+  and a second run started at the same time was refused. Checked in Windows PowerShell 5.1, PowerShell 7 and bash.
+
 ## 2026-11-21: the B60's own defaults (prompt +4-6 %, generation +2-3 %), and the sweep's verdict
 
 - **A Pro B60, B580 or B50 (the B60's die) now has its own prompt GEMM tile:** 64 x 32 with 8 column sub-groups a

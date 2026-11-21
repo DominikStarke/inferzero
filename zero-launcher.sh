@@ -191,19 +191,45 @@ hf_get() {
     dst="$snap/$f"; part="$dst.part"; size=${SIZE[$f]}
     mkdir -p "$(dirname "$dst")"
     if [ -f "$dst" ] && [ "$(stat -c %s "$dst")" = "$size" ]; then err "    $f is there"; continue; fi
+    # (one download of a file at a time: a second one writing the same .part appended its bytes to the first's, a
+    #  16.67 GB file grew to 17.8 GB and was downloaded again from nothing, 2026-11-21. flock on <file>.part.lock,
+    #  let go when the process ends, however it ends; without flock, no lock)
+    local lk=""
+    if command -v flock >/dev/null; then
+      exec {lk}>"$part.lock"
+      if ! flock -n "$lk"; then
+        exec {lk}>&-
+        err "$f is being downloaded by another window or program now: let that one finish, then run this again"; return 1
+      fi
+    fi
     have=0; [ -f "$part" ] && have=$(stat -c %s "$part")
     if [ "$have" -gt "$size" ]; then rm -f "$part"; have=0; fi
     if [ "$have" -lt "$size" ]; then
       awk -v f="$f" -v s="$size" -v h="$have" 'BEGIN { printf "    %s (%.2f GB%s)\n", f, s / 1e9, h ? sprintf(", resuming at %.2f GB", h / 1e9) : "" }' >&2
-      # (--speed-time: a connection that stalls ends with an error instead of waiting forever; run again to resume)
-      local a=(-L --fail --retry 5 --retry-delay 3 --speed-limit 1 --speed-time 120 --progress-bar -A 'inferzero-launcher' -o "$part")
-      [ "$have" -gt 0 ] && a+=(-C -)
-      [[ "${ARC_HF_RATE:-}" =~ ^[0-9]+[KkMmGg]?$ ]] && a+=(--limit-rate "$ARC_HF_RATE")
-      [ -n "$tok" ] && a+=(-H "Authorization: Bearer $tok")
-      if ! curl "${a[@]}" "https://huggingface.co/$repo/resolve/$commit/$f"; then
-        err "downloading $f failed: run this again, it goes on where it stopped"; return 1
+      # (the tries made here, not by curl's --retry: with -C - curl's own retry resumed from the offset it found at its
+      #  start, so the bytes between it and a cut were written twice. Each try resumes from the .part's length measured
+      #  just before it. --speed-time: a connection that stalls ends with an error instead of waiting forever)
+      local code=0 try a
+      for try in 1 2 3 4 5 6; do
+        have=0; [ -f "$part" ] && have=$(stat -c %s "$part")
+        [ "$have" -ge "$size" ] && break
+        a=(-L --fail --speed-limit 1 --speed-time 120 --progress-bar -A 'inferzero-launcher' -o "$part")
+        [ "$have" -gt 0 ] && a+=(-C "$have")
+        [[ "${ARC_HF_RATE:-}" =~ ^[0-9]+[KkMmGg]?$ ]] && a+=(--limit-rate "$ARC_HF_RATE")
+        [ -n "$tok" ] && a+=(-H "Authorization: Bearer $tok")
+        code=0; curl "${a[@]}" "https://huggingface.co/$repo/resolve/$commit/$f" || code=$?
+        [ "$code" -eq 0 ] && break
+        # (22: --fail's HTTP error, such as a 401 / 404: trying again does not help)
+        { [ "$code" -eq 22 ] || [ "$try" -eq 6 ]; } && break
+        err "    the download stopped (curl exit $code): trying again in 3 s ($try of 5)"
+        sleep 3
+      done
+      if [ "$code" -ne 0 ]; then
+        [ -n "$lk" ] && { exec {lk}>&-; rm -f "$part.lock"; }
+        err "downloading $f failed (curl exit $code): run this again, it goes on where it stopped"; return 1
       fi
     fi
+    [ -n "$lk" ] && { exec {lk}>&-; rm -f "$part.lock"; }
     have=$(stat -c %s "$part")
     [ "$have" = "$size" ] || { err "$f is $have bytes, the repository says $size: run this again"; return 1; }
     if [ ${#SHA[$f]} -eq 64 ]; then
