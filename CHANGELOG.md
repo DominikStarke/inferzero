@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-21: the kernel loops counted for any GPU
+
+- `tools\kernel_isa.ps1` compiles for any Intel GPU now (`-Device dg2-g10`, `bmg-g31`, `ptl-h` ...; `mtl` as
+  before). It also counts DPAS, local-memory and 2D block messages, and with `-Loops` each loop's body, biggest first,
+  with its instructions per DPAS or DP4a.
+- What it found (docs/xe2-tuning.md section 16, the kernel-loop audit's step L2):
+  - **The A770's prompt GEMM is bound by issuing its own loop:** 410 instructions for 33 DPAS (12.4 each), which caps
+    it near 65 % of peak, as hansong80's `xw_peak --probe` measured. Each global load recomputes its 64-bit address,
+    about 20 scalar instructions. A leaner loop is the next opt-in form (QUEUE).
+  - **The B390's GEMM loop uses plain loads:** 1,323 instructions for 128 DPAS, against 317 with the 2D block loads,
+    which are on by default only on discrete cards. Asked on #1 and #74 to measure them (`ARC_GEMM_XW_2D=1`).
+  - gdn_recur's L1 prefetch is absent from the A770's offline build: its guard needs an extension that ocloc doesn't
+    define for dg2. To check on a card.
+
 ## 2026-11-21: the chat template checks without Python; no .py left in the repository
 
 - `tests\test_chat_golden.ps1` replaces `tests/test_chat_render.py` and `tests/test_chat_jinja.py`. It renders the

@@ -1116,3 +1116,44 @@ aborted at start-up (command_stream_receiver.cpp line 1205), so the 2D-store che
 `ARC_IQ3S_TILE=1` (v2, the loads ahead) on the same B65: 22.05 / 21.97 -> 20.65 / 20.72 tok/s, the same logits; the three
 GEMVs 5-8 % slower each. With the B70's 35.24 -> 32.7 (v1), the planar layout loses on both discrete cards measured:
 it stays an off-by-default test switch, and the B65's generation gap is not the codebook decode.
+
+## 16. The kernel loops in the compiler's output (the L-audit's L2, 2026-11-21)
+
+The full sweeps found every switch already at its best (the user: "the hidden costs must be in the kernel loop
+then"). So the heaviest kernels were compiled offline for each GPU (`tools\kernel_isa.ps1 -Device ... -Loops`, ocloc 2026.1)
+and the instructions of their inner loop counted. This needs no GPU. A loop is a branch back to an earlier label; its
+body's counts follow. One `dpas.8x8` keeps the systolic array busy about 8 cycles. A thread issues one instruction at
+a time, so when a loop has many more instructions than that per DPAS, issuing them is the limit, not the XMX.
+
+| Kernel, GPU (build options as the engine's defaults) | Loop: instructions | DPAS / DP4a | Memory messages | Per DPAS |
+|---|---|---|---|---|
+| gemm_xw8, A770 (dg2-g10): the big tile, 32 x 32 through local memory, 4 x 4 sub-groups, EPI2 | 410 | 33 DPAS | 46 (37 local) | 12.4 |
+| gemm_xw, B390 (ptl-h): 32 x 64, plain loads (the iGPU default) | 1,323 | 128 DPAS | 320 | 10.3 |
+| gemm_xw, B390 (ptl-h): 32 x 64, 2D block loads (`ARC_GEMM_XW_2D=1`; the discrete default) | 317 | 128 DPAS | 20 | 2.5 |
+| gemv, IQ3_S tiled, A770 (dg2-g10), 1 row a sub-group | 224 | 8 DP4a | 15 | - |
+| gemv, the same, 2 rows (`ARC_GVROWS=2`) | 406 | 16 DP4a | 27 | - |
+| gdn_recur, A770 (dg2-g10) | 676 | - | 12 | - |
+
+What it shows:
+- **The A770's GEMM is bound by issuing its own loop.** 12.4 instructions a DPAS against ~8 cycles of XMX work caps
+  it near 8 / 12.4 = 65 % of peak. That is what hansong80's `xw_peak --probe` measured with the data in cache
+  (~65 %, issue #45). The 64 % of the prompt the GEMMs take, at 48 % of peak, is this ceiling plus memory stalls.
+  - What fills the loop besides the 33 DPAS: 158 integer instructions, 79 moves, 57 syncs and 36 branches. Each
+    global load recomputes its 64-bit address from the K index, about 20 scalar instructions (an `addc` carry chain
+    through the accumulator, `shl` / `shr` / `or` to split it). The cooperative fills of local memory sit in SIMD
+    branches (`goto` / `join`), one per piece.
+  - The next form to build (opt-in, bit-identical: the same bytes in the same DPAS operands): pointers that advance
+    by a constant each K step, with 32-bit offsets from a base set once before the loop; and the local-memory fill
+    without branches. The target is the B-series' 2.5 a DPAS; at ~6 the ceiling would pass 100 %.
+- **The B390 runs the plain form, four times the 2D form's instructions.** The 2D block loads are on by default only
+  on discrete cards; on iGPUs they were never measured. Asked on #1 and #74 (`ARC_GEMM_XW_2D=1`, checked bit for bit
+  at start).
+- **gdn_recur's L1 prefetch is not in the A770's build.** `-DGDN_L1PF=2` (the discrete default) gives the same code
+  as without it on dg2-g10, since the kernel's guard needs `cl_intel_subgroup_buffer_prefetch`. ocloc may define
+  fewer extensions than the driver does, so the card's own list decides it (`clinfo --all`). If the A770's driver
+  lacks it too, the prefetch has never run there and the B-series' DeltaNet gain cannot come to it this way.
+- The IQ3_S GEMV spends 131 of 224 instructions a superblock on integer work decoding the codebook, against 8 DP4a.
+  Two rows a sub-group nearly double the loop (406), which is why `ARC_GVROWS=2` gains little.
+
+(The counts come from ocloc's own compiler, which can differ slightly from the one in a user's driver. The B60's
+gdn_recur did not build for bmg-g21 offline: "backend compiler failed build", to look at.)
