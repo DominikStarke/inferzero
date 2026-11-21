@@ -249,6 +249,22 @@
   }
   GpuWeight make_weight(uint32_t type, const uint8_t* data, size_t nbytes, int N, int K, int role = kRoles - 1,
                         const cl_mem* view = nullptr) {
+    // (QUEUE Q2, 2026-11-21: a type with no GPU kernel, Q4_1, Q5_0 or Q8_1, is decoded here on the CPU and stored as
+    //  Q8_0, said once per type; it threw "unsupported weight type" before. Q8_0's 8-bit steps are finer than those
+    //  types' 4-5 bits, so little is lost; the memory it takes is said in the line)
+    if (!view && N > 0 && (type == GGML_Q4_1 || type == GGML_Q5_0 || type == GGML_Q8_1) && K % 32 == 0) {
+      const size_t rb = nbytes / (size_t)N;
+      const std::vector<uint8_t> q8 = requant_rows_q8_0(type, data, rb, N, K);
+      static std::mutex said_mu;
+      static std::set<uint32_t> said;
+      {
+        std::lock_guard<std::mutex> g(said_mu);
+        if (said.insert(type).second)
+          zlog::eprintf("inferzero: %s weights have no GPU kernel yet: decoded on the CPU at load and kept as Q8_0 "
+                        "(%.2f -> %.2f bytes a value)\n", ggml_type_name(type), (double)rb / K, 34.0 / 32.0);
+      }
+      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, role, nullptr);
+    }
     GpuWeight w;
     w.role = role;
     w.type = type;
@@ -306,13 +322,23 @@
       throw std::runtime_error("unexpected tensor shape: " + t.name);
     return t;
   }
+  // (one log line per type that has no GPU kernel and is requantized at load; the float types say nothing, as before)
+  static void note_requant(uint32_t t) {
+    if (t != GGML_Q4_1 && t != GGML_Q5_0 && t != GGML_Q8_1) return;
+    static std::mutex mu;
+    static std::set<uint32_t> said;
+    std::lock_guard<std::mutex> g(mu);
+    if (said.insert(t).second)
+      zlog::eprintf("inferzero: %s weights have no GPU kernel yet: decoded on the CPU at load and kept as Q8_0\n",
+                    ggml_type_name(t));
+  }
   GpuWeight load_w(const std::string& name) {
     const GgufTensor& t = mat(T(name));
     const int K = (int)t.dims[0], N = (int)t.dims[1];
-    if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {
-      std::vector<float> v((size_t)N * K);
-      dequant_row(t.type, t.data, N * K, v.data());
-      auto q8 = quantize_rows_q8_0(v.data(), N, K);
+    if (float_type(t.type)) {
+      note_requant(t.type);
+      // (in row blocks: the same bytes as the whole matrix at once, without N x K floats in RAM)
+      const auto q8 = requant_rows_q8_0(t.type, t.data, t.nbytes / (size_t)N, N, K);
       return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, weight_role(name));
     }
     return make_weight(t.type, t.data, t.nbytes, N, K, weight_role(name));
@@ -320,13 +346,16 @@
   // DeltaNet input projections (qkv, z = attn_gate, ab = alpha + beta). When qkv and z have the same quantized type
   // they are uploaded as one stack of rows (with ab, already Q8_0, when they are Q8_0 too): a single token runs one GEMV
   // over all of them (Layer::qz); the matrices are views of it, stored once.
-  static bool float_type(uint32_t t) { return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16; }
+  // ("float": requantized to Q8_0 at load. The float types, and since 2026-11-21 the ones with no GPU kernel, Q4_1,
+  //  Q5_0 and Q8_1, decoded on the CPU: QUEUE Q2)
+  static bool float_type(uint32_t t) {
+    return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16 || t == GGML_Q4_1 || t == GGML_Q5_0 || t == GGML_Q8_1;
+  }
   // a float matrix as the Q8_0 rows load_w would make of it (kept in `keep`), so that it can be stacked with others
   const GgufTensor& as_q8(const GgufTensor& t, GgufTensor& out, std::vector<uint8_t>& keep) {
     mat(t);
-    std::vector<float> v((size_t)t.dims[0] * t.dims[1]);
-    dequant_row(t.type, t.data, (int)v.size(), v.data());
-    keep = quantize_rows_q8_0(v.data(), (int)t.dims[1], (int)t.dims[0]);
+    note_requant(t.type);
+    keep = requant_rows_q8_0(t.type, t.data, t.nbytes / (size_t)t.dims[1], (int)t.dims[1], (int)t.dims[0]);
     out = t;
     out.type = GGML_Q8_0;
     out.data = keep.data();
@@ -412,27 +441,24 @@
   // BF16 / F16 / F32 matrices (Qwen3-ASR's BF16 file) are requantized to Q8_0 row by row, as a single one is.
   GpuWeight load_w_stack(std::initializer_list<std::string> names) {
     const GgufTensor& t0 = T(*names.begin());
-    const bool flt = t0.type == GGML_F32 || t0.type == GGML_F16 || t0.type == GGML_BF16;
+    const bool flt = float_type(t0.type);
+    if (flt) note_requant(t0.type);
     const int K = (int)t0.dims[0];
     std::vector<uint8_t> cat;
-    std::vector<float> v;
     int N = 0;
     for (const std::string& n : names) {
       const GgufTensor& t = T(n);
       if (t.type != t0.type || t.dims[0] != t0.dims[0])
         throw std::runtime_error("load_w_stack: matrices of different shapes or types: " + n);
       if (flt) {
-        v.resize((size_t)(N + t.dims[1]) * K);
-        dequant_row(t.type, t.data, (int)(t.dims[1] * K), v.data() + (size_t)N * K);
+        const auto q = requant_rows_q8_0(t.type, t.data, t.nbytes / (size_t)t.dims[1], (int)t.dims[1], K);
+        cat.insert(cat.end(), q.begin(), q.end());
       } else {
         cat.insert(cat.end(), t.data, t.data + t.nbytes);
       }
       N += (int)t.dims[1];
     }
-    if (flt) {
-      auto q8 = quantize_rows_q8_0(v.data(), N, K);
-      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, weight_role(*names.begin()));
-    }
+    if (flt) return make_weight(GGML_Q8_0, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
     return make_weight(t0.type, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
   }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
@@ -474,7 +500,7 @@
     // (more rows than the model's dimension: the padded copy below has room for Np rows only)
     if (N > Np) throw std::runtime_error("unexpected tensor shape: " + name + " has " + std::to_string(N) + " rows, the model " + std::to_string(Np));
     if (K % 256 == 0 && N == Np) return load_w(name);
-    if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {  // (as load_w: requantized to Q8_0, padded
+    if (float_type(t.type)) {  // (as load_w: requantized to Q8_0, padded
       const int Kp = padded_k(K);                                            //  with zeros to Np rows of Kp values)
       std::vector<float> v((size_t)Np * Kp, 0.0f);
       std::vector<float> row(K);

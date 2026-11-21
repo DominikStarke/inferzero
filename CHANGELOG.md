@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-21: Q4_1, Q5_0 and Q8_1 models load (decoded on the CPU, kept as Q8_0)
+
+- GGUFs whose weights are Q4_1, Q5_0 or Q8_1 now load. These types have no GPU kernel here yet, so their matrices are
+  decoded on the CPU at load and kept as Q8_0, with one line in the log per type; before, loading stopped with
+  "unsupported weight type". Q8_0 has finer steps than those types, so little is lost. The conversion runs 1,024
+  rows at a time, never a whole matrix of floats in RAM (a vocab-sized output head would have been 5 GB; the
+  Researcher's review).
+- Checked on the laptop with Qwen3.5 4B, converted by llama.cpp's llama-quantize from its UD-Q4_K_XL:
+  - Q4_1 against its own f32 reference: KL 0.00188, so the conversion to Q8_0 costs almost nothing;
+  - against the original UD-Q4_K_XL's reference: Q4_1 KL 0.042 and Q5_0 0.020, mostly llama-quantize re-quantizing
+    an already 4-bit model;
+  - a test of each decoder against the source tensor found and fixed a wrong sign in Q5_0's (correlation 0.9991
+    after);
+  - Q8_1 is converted per block too (Q8_0 takes its own scale), so it is close but not exact.
+- Q8_K, TQ1_0 and TQ2_0 are known now, so a file holding them opens; a weight of theirs still stops with a message
+  naming the type.
+- The types that loaded before are unchanged: Qwen3.5 4B and the 27B give byte-identical logits before and after.
+
 ## 2026-11-21: bench/gpu_sweep waits for other GPU runs, and warms drafting with the question
 
 - `gpu_sweep.ps1` / `.sh` wait at start, up to 30 minutes, while another runz, serverz or xw_peak is running. Two
