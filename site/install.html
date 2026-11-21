@@ -37,7 +37,7 @@
   <h1>Install and uninstall</h1>
   <p class="lead">Installing takes about five minutes, plus the model's download. Nothing is installed into Windows itself: removing inferzero is deleting its folders. Check <a href="index.html#need">what you need</a> first.</p>
   <nav class="jump" aria-label="On this page">
-    <a href="#install">Install</a><a href="#uninstall">Uninstall</a><a href="#apps">From your own apps</a>
+    <a href="#install">Install</a><a href="#docker">Docker and Unraid</a><a href="#uninstall">Uninstall</a><a href="#apps">From your own apps</a>
   </nav>
 </div>
 
@@ -62,6 +62,22 @@
         </ol>
       </div>
     </div>
+    <h3 class="sub" id="docker">Docker and Unraid</h3>
+    <div class="steps">
+      <div class="card">
+        <h3>Docker (Linux)</h3>
+        <p>The <code>docker/</code> folder of the Linux package (or the source code) holds a <code>Dockerfile</code> and a <code>compose.yaml</code>. The host needs only the GPU's kernel driver:</p>
+<pre>cd docker
+docker compose up -d
+docker compose logs -f</pre>
+        <p class="note">The chat is then at <code>http://127.0.0.1:8090</code>. <code>compose.yaml</code> sets the model (<code>MODEL: 4b</code>), the number of GPUs and the options; it passes <code>/dev/dri</code> through and keeps the models and compiled kernels in folders on the host. It ran on Unraid with an Arc B580 (tenken, <a href="https://github.com/rizagp/inferzero/issues/40">#40</a>). The Kubernetes file (<code>docker/kubernetes.yaml</code>) is not tested yet.</p>
+      </div>
+      <div class="card">
+        <h3>Unraid</h3>
+        <p>A template kept by catduckgnaf, not by this project: <a href="https://github.com/catduckgnaf/catduck-unraid-templates/blob/main/templates/inferzero.xml">the template</a> and <a href="https://github.com/catduckgnaf/catduck-unraid-templates#inferzero">its setup notes</a>. Their other templates are in Community Applications; Inferzero was not listed there yet on 21 November, so add it from the template meanwhile. Its image, <code>ghcr.io/catduckgnaf/inferzero:2026.11.21.18</code>, is built from that release.</p>
+        <p class="note">So far it was started on an Intel GPU host and found the GPU, but no model has been run with it yet (<a href="https://github.com/rizagp/inferzero/issues/46#issuecomment-7064820396">#46</a>); results are welcome. For several GPUs on Unraid, see <a href="multi-gpu.html#p2pdma">P2PDMA</a>: Unraid's stock kernel lacks it.</p>
+      </div>
+    </div>
     <h3 class="sub" id="uninstall">Uninstall cleanly</h3>
     <div class="steps">
       <div class="card">
@@ -82,7 +98,7 @@
           <li>Delete <code>~/.inferzero</code>: chats, recordings, logs, settings and inferzero's own model files.</li>
           <li>Delete the models from <code>~/.cache/huggingface/hub</code> (or <code>$HF_HOME/hub</code>): the <code>models--…</code> folders it downloaded, keeping those other programs use.</li>
         </ol>
-        <p class="note">Only if you installed the service (<code>--install-service</code>): <code>systemctl --user disable --now inferzero</code>, then delete <code>~/.config/systemd/user/inferzero.service</code>.</p>
+        <p class="note">Only if you installed the service (<code>--install-service</code>): <code>systemctl --user disable --now inferzero</code>, then delete <code>~/.config/systemd/user/inferzero.service</code>. In Docker: <code>docker compose down</code> in the <code>docker</code> folder, then remove the image and the two host folders it used.</p>
       </div>
     </div>
     <div class="card" style="margin-top:16px" id="apps">
