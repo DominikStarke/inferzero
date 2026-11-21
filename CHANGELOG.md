@@ -8,7 +8,7 @@
   - whether the output stays the same;
   - what it measured, and on whose card.
 - The launchers will read it for their options screens (next).
-- `docs/options.md` is the same list for reading, made from that file (`python tools/gen_options_md.py`).
+- `docs/options.md` is the same list for reading, made from that file (`powershell -File toolsgen_options_md.ps1`).
 
 ## 2026-11-21: expert files carry a checksum per layer
 

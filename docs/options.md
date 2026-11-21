@@ -1,6 +1,6 @@
 # Options you can turn on
 
-The switches below are off unless the table says otherwise. Each changes speed or memory; the ones marked "same output" give the same text bit for bit, the others are checked against an f32 reference (KL). The launchers read this list from `scripts/options.tsv`; this page is made from that file (`python tools/gen_options_md.py`).
+The switches below are off unless the table says otherwise. Each changes speed or memory; the ones marked "same output" give the same text bit for bit, the others are checked against an f32 reference (KL). The launchers read this list from `scripts/options.tsv`; this page is made from that file (`powershell -File tools\gen_options_md.ps1`).
 
 Set an environment variable before starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz's command line.
 
