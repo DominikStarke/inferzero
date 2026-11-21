@@ -1128,8 +1128,11 @@ a time, so when a loop has many more instructions than that per DPAS, issuing th
 | Kernel, GPU (build options as the engine's defaults) | Loop: instructions | DPAS / DP4a | Memory messages | Per DPAS |
 |---|---|---|---|---|
 | gemm_xw8, A770 (dg2-g10): the big tile, 32 x 32 through local memory, 4 x 4 sub-groups, EPI2 | 410 | 33 DPAS | 46 (37 local) | 12.4 |
-| gemm_xw, B390 (ptl-h): 32 x 64, plain loads (the iGPU default) | 1,323 | 128 DPAS | 320 | 10.3 |
-| gemm_xw, B390 (ptl-h): 32 x 64, 2D block loads (`ARC_GEMM_XW_2D=1`; the discrete default) | 317 | 128 DPAS | 20 | 2.5 |
+| gemm_xw, B390 (ptl-h): 32 x 64, plain loads without -DX2D and without the prefetch (counted 2026-11-21 as the iGPU default; the engine builds it with -DX2D, next row) | 1,323 | 128 DPAS | 320 | 10.3 |
+| gemm_xw, B390 (ptl-h): plain loads as the engine builds them (-DX2D, the weights prefetched 1 chunk ahead) | 574 | 128 DPAS | 96 | 4.5 |
+| gemm_xw, B390 (ptl-h): 2D block loads, no prefetch | 317 | 128 DPAS | 20 | 2.5 |
+| gemm_xw, B390 (ptl-h): 2D block loads, prefetch 1 chunk ahead | 505 | 128 DPAS | 36 | 3.9 |
+| gemm_xw, 2D block loads with both parts prefetched 2 chunks ahead (the discrete default; ptl-h with `ARC_GEMM_XW_2D=1`) | 645 (ptl-h), 718 (bmg-g31), 821 (bmg-g21 64 x 32, PFD 1) | 128 DPAS | 52-80 | 5.0 / 5.6 / 6.4 |
 | gemv, IQ3_S tiled, A770 (dg2-g10), 1 row a sub-group | 224 | 8 DP4a | 15 | - |
 | gemv, the same, 2 rows (`ARC_GVROWS=2`) | 406 | 16 DP4a | 27 | - |
 | gdn_recur, A770 (dg2-g10) | 676 | - | 12 | - |
@@ -1144,13 +1147,18 @@ What it shows:
     branches (`goto` / `join`), one per piece.
   - The next form to build (opt-in, bit-identical: the same bytes in the same DPAS operands): pointers that advance
     by a constant each K step, with 32-bit offsets from a base set once before the loop; and the local-memory fill
-    without branches. The target is the B-series' 2.5 a DPAS; at ~6 the ceiling would pass 100 %.
+    without branches. The target is the 16-lane 2D loop without its prefetch, 2.5 a DPAS; at ~6 the ceiling would pass 100 %.
   - Built the same day as `ARC_GEMM_XW_PTR=1` (gemm_xw8 `-DXW_PTR`, opt-in): **410 -> 184 instructions, 5.6 a DPAS**,
     9 moves instead of 79, 6 branches instead of 36, no spill; with 2 chunks a stage 989 -> 458. Bit for bit in
     xw_peak and the 27B's logits. Its speed on an A770: asked on #45 (xw_peak's "slm 32x32 4x4 e2" against "... e2 p").
-- **The B390 runs the plain form, four times the 2D form's instructions.** The 2D block loads are on by default only
-  on discrete cards; on iGPUs they were never measured. Asked on #1 and #74 (`ARC_GEMM_XW_2D=1`, checked bit for bit
-  at start).
+- **The prefetch costs more instructions than the loads (recounted the same day with the engine's exact build
+  options).** The B390's plain form as the engine builds it (with -DX2D) is 4.5 a DPAS, not the 10.3 first counted
+  without -DX2D and without the prefetch, and its 2D form 2.5 without the prefetch but 3.9 with 1 chunk ahead and 5.0
+  with both parts 2 ahead. The B-series 2D defaults are 5.6 (bmg-g31) and 6.4 (bmg-g21's 64 x 32): ~3 moves a DPAS
+  and 37-69 branches inside the loop, against 105 moves and 1 branch without the prefetch. So the 2D form is not
+  the B390's big win on instruction count alone (`ARC_GEMM_XW_2D=1`, asked on #1 and #74, decides), and the leaner
+  loop to build is a prefetch whose addresses advance by a constant without tests in the loop (a 2D block
+  prefetch is bounds-checked by the hardware), opt-in and bit-identical (a prefetch reads no value into the sums).
 - **gdn_recur's L1 prefetch is not in the A770's build.** `-DGDN_L1PF=2` (the discrete default) gives the same code
   as without it on dg2-g10, since the kernel's guard needs `cl_intel_subgroup_buffer_prefetch`. ocloc may define
   fewer extensions than the driver does, so the card's own list decides it (`clinfo --all`). If the A770's driver
