@@ -134,6 +134,39 @@
     }
     return g21_ == 1;
   }
+  // The compute runtime's version on Linux, from its CL_DRIVER_VERSION ("26.40.40196": year 26, week 40), as
+  // year * 100 + week; 0 when not known (Windows' drivers number themselves otherwise: 32.0.101.x)
+  int neo_ver() const {
+#ifdef _WIN32
+    return 0;
+#else
+    const size_t bar = cl_.device_id.rfind('|');
+    int a = 0, b = 0;
+    if (bar == std::string::npos || sscanf(cl_.device_id.c_str() + bar + 1, "%d.%d", &a, &b) != 2) return 0;
+    return a >= 20 && a < 100 && b >= 0 && b < 100 ? a * 100 + b : 0;
+#endif
+  }
+  // The B60's own prompt tile (xe2_g21's 64 x 32, 8 column sub-groups, prefetch 1 ahead) only below compute runtime
+  // 26.40: on 26.40.40196 a B60 ran it 10 % slower than the general form (MaineTim, #19, CachyOS: pp4096 1,732.5 /
+  // 1,733.5 against 1,922.0 / 1,922.3; every prompt GEMM 16-19 % slower, the weights' decoding the same, XMX at 100 %
+  // of paper, W8 residency as skipzx-lab's), where skipzx-lab's B60 on 26.05.37020 gained 4.3 % with it (#57). So
+  // likely the newer driver's compiler; from 26.40 the general form, until a second 26.40 B60 says otherwise. Each
+  // switch set by hand still wins; bit for bit either way (the start check)
+  mutable int g21t_ = -1;
+  bool xe2_g21_tile() const {
+    if (g21t_ < 0) {
+      g21t_ = xe2_g21() ? 1 : 0;
+      if (g21t_ && neo_ver() >= 2640) {
+        g21t_ = 0;
+        static std::once_flag said;
+        std::call_once(said, [v = neo_ver()] {
+          zlog::eprintf("inferzero: compute runtime %d.%02d: the B60's die takes the general prompt tile (its own 64 x 32 "
+                        "was 10 %% slower from 26.40, issue #19)\n", v / 100, v % 100);
+        });
+      }
+    }
+    return g21t_ == 1;
+  }
   // A discrete 16-lane card with at most 1,280 GPU threads (the B60's die and the Pro B65, 2026-11-21): the switches
   // that depend on how many threads fill the GPU, each measured there with the same logits or text:
   //  - the one-token GEMVs' rows by type, not by the thread count (ARC_GEMV_WAVE's single-token part, xe2_gemv_rows):

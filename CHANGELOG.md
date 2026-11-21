@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-22: the B60's own prompt tile only below compute runtime 26.40
+
+- **The problem (MaineTim, #19):** a B60 on Linux with compute runtime 26.40.40196 ran the B60's 64 x 32 prompt tile
+  10 % slower than the general form: the 27B's 4K prompt at 1,733 against 1,922 tok/s. Every prompt GEMM was
+  16-19 % slower, while decoding the weights took the same time.
+- **What it isn't:** the weights kept resident are the same as on skipzx-lab's B60, and XMX runs at 100 % of paper.
+  skipzx-lab's B60, on 26.05.37020, is 4.3 % faster with 64 x 32. So the likely cause is the newer driver's compiler.
+- **Now:** on Linux, from compute runtime 26.40, the B60's die takes the general prompt tile. The log says so. Older
+  runtimes and Windows keep 64 x 32. Switches set by hand still win. The results are the same bit for bit either way.
+- **Measured on real cards** (rows in docs/before-after.md):
+  - the layer split over two drivers (a B60 and an A770, #57): it runs, and its top-10 is the B60's;
+  - `--ctx auto` with `--mtp` on an A770 (#45): 40,960 tokens of context instead of 8,192;
+  - `gpu_bench --gemv-layout --rows` on a B60: short launches cost only 2-19 %.
+
 ## 2026-11-22: `ARC_GV_SGNPOP=1`, the GEMV's signs computed instead of looked up (opt-in; skipzx-lab's PR #79)
 
 - **What it does:** IQ3_XXS, IQ2_XXS and IQ2_XS store each group of 8 weights' signs as a 7-bit index into a table
