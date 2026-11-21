@@ -164,12 +164,41 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
   for (int t = 0; t < XW_TG; ++t)
 #pragma unroll
     for (int c = 0; c < XW_NC; ++c) xacc[t][c] = (int8)(0);
+#if XW_PF && defined(XW_PFL) && (XW_PF & 1)
+  // (-DXW_PFL: each column group's weights' first chunk, set once; the loop adds the chunk's offset)
+  __global const uint* xw_pfb[XW_NC];
+#pragma unroll
+#ifdef XW_GU
+  for (int c = 0; c < XW_NC; ++c) xw_pfb[c] = XW_WBASE(c);
+#else
+  for (int c = 0; c < XW_NC; ++c) xw_pfb[c] = wq + (size_t)(g0 + c) * nsb * 4 * (16 * SG);
+#endif
+#endif
 
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
       XW_ARRIVE();
-#if XW_PF
+#if XW_PF && defined(XW_PFL)
+      // ---- -DXW_PFL (2026-11-21, the leaner prefetch; opt-in ARC_GEMM_XW_PFL=1): the same prefetches without tests
+      //      or address arithmetic in the loop. The chunk index is clamped to the piece's last chunk (a prefetch of it
+      //      again is harmless; the activations' 2D surface is bounds-checked anyway), the weights' column-group bases
+      //      are set once before the loop (xw_pfb), and each sub-group's token groups follow from sx by construction
+      //      (t = sx, sx + wgx, ..., clamped), not by a test per group. A prefetch reads no value into the sums: the
+      //      results are the same bit for bit (checked at start as every form)
+      {
+        const int qn = min(s * 4 + j + XW_PFD, s_end * 4 - 1);
+#if XW_PF & 1
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) XW_PREF_W(xw_pfb[c] + (size_t)qn * (16 * SG));
+#endif
+#if (XW_PF & 2) && defined(X2D)
+#pragma unroll
+        for (int i = 0; i < (XW_TG + XW_WGX - 1) / XW_WGX; ++i)  // (the work-group's sub-groups share the rows: XW_TG / wgx each)
+          intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(qn * 64, m0 + 8 * min(sx + i * wgx, XW_TG - 1)));
+#endif
+      }
+#elif XW_PF
       // ---- the chunk XW_PFD ahead into L1 while this one's DPAS run (B60 prefill plan 13.2): bit 1 its weights, bit 2
       //      its activations (2D loads only); a prefetch changes no value. Not past this piece's end (s_end)
       {

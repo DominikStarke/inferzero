@@ -1159,6 +1159,7 @@ What it shows:
   the B390's big win on instruction count alone (`ARC_GEMM_XW_2D=1`, asked on #1 and #74, decides), and the leaner
   loop to build is a prefetch whose addresses advance by a constant without tests in the loop (a 2D block
   prefetch is bounds-checked by the hardware), opt-in and bit-identical (a prefetch reads no value into the sums).
+Built the same day as `ARC_GEMM_XW_PFL=1` (gemm_xw `-DXW_PFL`, opt-in): the B70 / B65 default 718 -> 503 (3.9 a  DPAS, 1 branch), the B60's 64 x 32 821 -> 464 (3.6), the B390's plain form 574 -> 502; bit for bit emulated on the  laptop. Its speed: asked on #57, #47 and #1.
 - **gdn_recur's L1 prefetch is not in the A770's build.** `-DGDN_L1PF=2` (the discrete default) gives the same code
   as without it on dg2-g10, since the kernel's guard needs `cl_intel_subgroup_buffer_prefetch`. ocloc may define
   fewer extensions than the driver does, so the card's own list decides it (`clinfo --all`). If the A770's driver

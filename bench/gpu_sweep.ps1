@@ -76,7 +76,7 @@ $PP = @(
   "ARC_140T_RES|0 1|0 1", "ARC_X16|0 1|0 1", "ARC_GEMM_TM|16 32|16 32", "ARC_GEMM_RG|1 2 4 8|2 4 8", "ARC_GEMM_WGY|2 4 8 16|4 8 16",
   "ARC_GEMM_CG|1 2 4|1 2 4", "ARC_GEMM_WPF|0 2 4 8|0 4", "ARC_GEMM_2D|0 1|0 1", "ARC_GEMM_2D_PF|0 1|0 1",
   "ARC_GEMM_XW_WGX|1 2 4 8|1 4 8", "ARC_GEMM_XW_LOCK|0 1|0 1", "ARC_GEMM_XW_2D|0 1 2|0 1", "ARC_GEMM_XW_PF|0 1 2 3|0 1 3",
-  "ARC_GEMM_XW_PFD|1 2 4 8|1 2 4", "ARC_GEMM_XW_GU|0 1|0 1", "ARC_GEMM_XW_NC_E|1 2|1 2", "ARC_GEMM_SPLIT|0 9 17 34 68|0 17 34",
+  "ARC_GEMM_XW_PFD|1 2 4 8|1 2 4", "ARC_GEMM_XW_PFL|0 1|0 1", "ARC_GEMM_XW_GU|0 1|0 1", "ARC_GEMM_XW_NC_E|1 2|1 2", "ARC_GEMM_SPLIT|0 9 17 34 68|0 17 34",
   "ARC_GEMM_GRF|128 256|128 256", "ARC_H8_GRF|128 256|128 256", "ARC_H8_NORM|0 1|0 1", "ARC_H8_SWI|0 1|0 1", "ARC_H8_REUSE|0 1|0 1",
   "ARC_H8_FUSE|0 1|0 1", "ARC_ATTN_XMX|0 1|0 1", "ARC_ATTN_FX|0 1|0 1", "ARC_ATTN_X8|0 1|0 1", "ARC_GDN_L1PF|0 1 2 4 8 16|0 2 8",
   "ARC_GDN_PF|0 2|0 2", "ARC_GDN_CHUNK|0 1 2 3|0 3", "ARC_W8_PARTIAL_GB|0 auto|0 auto", "--chunk|1024 2048 4096|2048 4096")
@@ -89,7 +89,7 @@ $TILES8 = @("32x16 (default)|", "32x32|ARC_GEMM_XW_NC=2", "16x32|ARC_GEMM_XW_TM=
 $TILES16 = @("32x64 (default)|", "32x32|ARC_GEMM_XW_NC=2", "32x96|ARC_GEMM_XW_NC=6", "32x128|ARC_GEMM_XW_NC=8",
   "16x128|ARC_GEMM_XW_TM=16 ARC_GEMM_XW_NC=8", "64x64|ARC_GEMM_XW_TM=64", "32x64 WGX 1|ARC_GEMM_XW_WGX=1", "32x64 WGX 2|ARC_GEMM_XW_WGX=2")
 $vars = @("ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_BENCH_RUNS", "ARC_GEMM_XW_BIG", "ARC_GEMM_XW_EPI2", "ARC_GEMM_XW_DB",
-  "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS", "ARC_GEMM_XW_PTR", "ARC_GEMM_XW_WGX", "ARC_GEMM_XW_LOCK", "ARC_GEMM_XW_2D", "ARC_GEMM_XW_C_RND", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
+  "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS", "ARC_GEMM_XW_PTR", "ARC_GEMM_XW_WGX", "ARC_GEMM_XW_LOCK", "ARC_GEMM_XW_2D", "ARC_GEMM_XW_C_RND", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD", "ARC_GEMM_XW_PFL") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
 if ($Device) { $env:ZE_AFFINITY_MASK = $Device }
 function Vals([string]$item) { $p = $item -split '\|'; if ($Quick) { $p[2] -split ' ' } else { $p[1] -split ' ' } }
 if (-not $Contexts) { $Contexts = if ($Quick) { "512,4096" } else { "512,4096,32768,max" } }

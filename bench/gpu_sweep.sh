@@ -134,6 +134,7 @@ PP=(
   "ARC_GEMM_XW_2D|0 1 2|0 1"               # 2D block loads / stores
   "ARC_GEMM_XW_PF|0 1 2 3|0 1 3"           # prefetch: 0 off, 1 weights, 2 activations, 3 both
   "ARC_GEMM_XW_PFD|1 2 4 8|1 2 4"          # prefetch distance in chunks
+  "ARC_GEMM_XW_PFL|0 1|0 1"              # the leaner prefetch (16 lanes; no tests or address arithmetic in the loop)
   "ARC_GEMM_XW_GU|0 1|0 1"                 # gate + up in one launch
   "ARC_GEMM_XW_NC_E|1 2|1 2"               # 8 lanes: the n_embd-wide GEMMs' tile width (2: 32 x 32)
   "ARC_GEMM_SPLIT|0 9 17 34 68|0 17 34"    # superblocks per split-K piece (changes the sums: KL)
@@ -176,7 +177,7 @@ UNSET=()
 for item in "${GEN[@]}" "${PP[@]}" "${MOE[@]}"; do n="${item%%|*}"; [[ "$n" == ARC_* ]] && UNSET+=(-u "$n"); done
 UNSET+=(-u ARC_GEMM_XW_TM -u ARC_GEMM_XW_NC -u ARC_BENCH_RUNS -u ARC_GEMM_XW_BIG -u ARC_GEMM_XW_EPI2 -u ARC_GEMM_XW_DB
         -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS -u ARC_GEMM_XW_PTR -u ARC_GEMM_XW_WGX -u ARC_GEMM_XW_LOCK -u ARC_GEMM_XW_2D -u ARC_GEMM_XW_C_RND
-        -u ARC_GEMM_XW_PF -u ARC_GEMM_XW_PFD)
+        -u ARC_GEMM_XW_PF -u ARC_GEMM_XW_PFD -u ARC_GEMM_XW_PFL)
 [ -n "$DEVICE" ] && export ZE_AFFINITY_MASK="$DEVICE"
 
 # progress on stderr (the results on stdout stay clean to paste): the phase, its step of the steps planned, the time so

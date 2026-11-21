@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-21: a leaner prompt GEMM loop for 16-lane GPUs (opt-in `ARC_GEMM_XW_PFL=1`)
+
+- **`ARC_GEMM_XW_PFL=1`** issues the 16-lane prompt GEMM's prefetches without tests or address arithmetic inside the
+  loop. These are B-series cards, the B390 and Lunar Lake. The chunk index is clamped instead of tested, the weights'
+  addresses are set once before the loop, and each sub-group's token rows follow from its index. It's the same
+  prefetches, so the results are the same bit for bit, and they're checked at start as every form is.
+- **The loop for 128 XMX steps**, counted with Intel's offline compiler:
+
+  | form | before | with `ARC_GEMM_XW_PFL=1` | branches |
+  |---|---|---|---|
+  | B70 / B65 default | 718 | 503 | 37 -> 1 |
+  | B60 64 x 32 | 821 | 464 | 69 -> 1 |
+  | B390 / Lunar Lake plain loads | 574 | 502 | 5 -> 1 |
+
+- Its speed needs the cards: asked on the B60, B65 and B390 issues. It becomes a default where it's faster.
+- `bench/gpu_sweep` phase P tries it.
+
 ## 2026-11-21: the QSA 27B reads with its trained indexer (sparse attention on the dense 27B)
 
 - **The QSA-trained Qwen3.8 27B** (a GGUF of Unsloth's tensors plus a trained indexer on its 16 full-attention layers,

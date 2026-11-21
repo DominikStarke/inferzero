@@ -110,9 +110,20 @@
     if (xw_pf_max_def()) return (!x2d_ || xw_emu_) ? 0 : 2;  // (as ARC_GEMM_XW_PF=2 set by hand: 2 & 1 without 2D)
     return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf_v();
   }
+  // ARC_GEMM_XW_PFL=1 (2026-11-21, opt-in; the user: "make gemm leaner"): gemm_xw's prefetch without tests or address
+  // arithmetic in the loop (gemm_xw.cl -DXW_PFL: the chunk index clamped, the weights' bases set once, each sub-group's
+  // token rows by construction). The same prefetches, so the same results bit for bit (checked at start). ocloc, the
+  // loop's instructions for 128 DPAS: bmg-g31's default 718 -> 503 (37 branches -> 1), bmg-g21's 64 x 32 821 -> 464
+  // (69 -> 1), ptl-h's plain form 574 -> 502. 16 lanes only; its speed is for the cards to measure
+  static bool xw_pfl() {
+    static const bool v = getenv("ARC_GEMM_XW_PFL") && atoi(getenv("ARC_GEMM_XW_PFL")) != 0;
+    return v;
+  }
   std::string xw_pf_defs() const {
     const int pf = xw_pf_eff();
-    return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_lanes() == 16 ? xw_pfd_v() : xw_pfd()) : "";
+    return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_lanes() == 16 ? xw_pfd_v() : xw_pfd()) +
+                    (xw_lanes() == 16 && xw_pfl() ? " -DXW_PFL" : "")
+              : "";
   }
   // ARC_GEMM_XW_PACK (8 lanes: the Arc 140T; issue #5, its xw_peak of 2026-11-13: packAW 32 x 16 against the default,
   // the 27B's FFN shapes, 4K 23.4 -> 25.0 TOPS, 512 21.6 -> 24.5): the activations (1), the weights (2) or both (3)
