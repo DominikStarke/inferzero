@@ -46,6 +46,16 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Measured:** the 27B's top token 473 against 470 of 480 against f32 (the laptop, the B390 / 140V path).
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
 
+## H8 in two passes (exact prompts) (`ARC_H8_Q2=1`)
+
+- **What it does:** Each rotated int8 prompt GEMM also runs on what its first rounding left out, so prompts are read as exactly as without H8, on any GPU where H8 runs (B-series, Alchemist, the 140T, Lunar Lake / Panther Lake).
+- **Default:** off.
+- **Best for:** b-series, alchemist, igpu-140t, igpu-xe2, dense.
+- **Cost:** the H8 GEMMs take about twice as long: the laptop's 27B 4K prompt 115-120 -> 62.5 tok/s; a second activation buffer as big as the first.
+- **Output:** slightly different, checked against f32 (KL).
+- **Measured:** the 27B on 480 tokens against f32: KL 0.00112 -> 0.00061 (plain 0.00056), top token 467 -> 474 of 480 (the laptop).
+- **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
+
 ## Flash Next precise mode (`--precise`)
 
 - **What it does:** Flash Next with two int8 passes, f16 keys and values and the routers in BF16: for work that needs exactness.

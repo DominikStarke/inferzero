@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: H8 in two passes, for exact prompts (opt-in)
+
+- **`ARC_H8_Q2=1`** (catalog option `h8_q2`; `zero-server -Opt h8_q2`, `./zero-launcher.sh --opt h8_q2`): H8 reads
+  a prompt in two int8 passes instead of one. The first pass's rounding error is quantized and multiplied through
+  the same weights, then added.
+  - H8's own rounding doubled the KL against f32 on every GPU where it runs. With the second pass it's back at the
+    plain path's level: the laptop's 27B over 480 tokens, KL 0.00112 -> 0.00061 (plain 0.00056), and the same top
+    token as f32 at 474 of 480 positions instead of 467.
+  - The cost: the H8 GEMMs take about twice as long. On the laptop, whose GEMMs are most of the prompt, the 4K prompt
+    goes from 115-120 to 62.5 tok/s. It also needs a second activation buffer as large as the first.
+  - It's for work that needs the exact answer; the default stays as it was, byte for byte.
+
 ## 2026-11-21: after an update into a new folder, the launcher offers to point the shortcut and PATH there
 
 - When inferzero is unpacked into a new folder, the desktop shortcut and the PATH entry (for `zero-server` in a

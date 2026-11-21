@@ -52,7 +52,7 @@
     // router + shared expert gate/up (prompt chunks fuse silu(gate) * up into the up GEMM); one token: one GEMV
     // over the stacked rows when the layer has them (router logits at rgu_out_[0], gate / up in rgu_gu_)
     // (two passes: no fused epilogue; DeepSeek-V4.1: none either, its SwiGLU is clamped in swiglu_quant)
-    const int fused = cur_T_ > 8 && !q2mm_ && !hp.ds41 ? 1 : 0;
+    const int fused = cur_T_ > 8 && !q2mm_ && !h8_q2() && !hp.ds41 ? 1 : 0;  // (ARC_H8_Q2: two passes, no fused epilogue)
     cl_mem rl = rl_, gu = big_;
     if (g4) {
       // (done above)

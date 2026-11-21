@@ -430,7 +430,7 @@
     const int E = hp.n_embd, F = hp.n_ff;
     const int a_in = act32_for(false);
     // prompt chunks: the up GEMM applies silu(gate) * up in its epilogue (no split-K for K = n_embd <= 8192)
-    const int fused = cur_T_ > 8 && E <= 8192 && !q2mm_ && L.up.N ? 1 : 0;  // (two passes: no fused epilogue)
+    const int fused = cur_T_ > 8 && E <= 8192 && !q2mm_ && !h8_q2() && L.up.N ? 1 : 0;  // (two passes: no fused epilogue)
     if (!fused) rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, a_in);
     if (!L.up.N) {  // (gate and up stacked, rows [gate | up] as below: one matmul; Qwen3 dense, see load_weights)
       matmul("gemm_gateup", L.gate, Mp, big_, 2 * F, 0, 0, a_in);

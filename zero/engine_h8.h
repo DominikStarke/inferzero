@@ -32,6 +32,19 @@
   size_t stage_hh_bytes_[kRoles] = {};
   std::map<const GpuWeight*, cl_mem> h8_res_;   // (a resident weight converted in place: its H8 scales)
 
+  // ARC_H8_Q2=1 (2026-11-21, opt-in on every GPU where H8 runs; QUEUE "H8's flips", step 1, the user: "Add opt-in
+  // pass"): H8's activations in two int8 planes, the value's code and its residual (kernels/h8.cl h8r_act -DQ2), each
+  // H8 GEMM run a second time on the residual and added (h8_matmul). H8's own rounding doubled the KL against f32 on
+  // every GPU (the laptop's 27B 0.00056 plain -> 0.00112 H8); this is for exact work, at ~2x the H8 GEMMs' time. The
+  // fused forms that cannot take two passes fall back to their separate kernels while it is on: the norm and the
+  // rotation in one (ARC_H8_NORM), the SwiGLU in the up GEMM's epilogue, gate + up in one launch. H8R only (one scale
+  // per token and column), not ARC_H8_SB. Off: every kernel and its build options as before
+  static bool h8_q2() {
+    static const bool on = getenv("ARC_H8_Q2") && atoi(getenv("ARC_H8_Q2")) != 0 && h8_row();
+    return on;
+  }
+  cl_mem h8_aq2_ = nullptr, h8_asc2_ = nullptr;  // (ARC_H8_Q2: the residual plane, as h8_aq_ / h8_asc_)
+  bool h8_q2_pass_ = false;                      // (the second pass is running: the rotation is already made)
   static bool h8_env() {
     static const bool on = getenv("ARC_H8") && atoi(getenv("ARC_H8")) != 0;
     return on;
@@ -104,6 +117,10 @@
     if (!h8_) return;
     h8_aq_ = buf(M * (size_t)maxK);
     h8_asc_ = buf(M * (size_t)(maxK / 256) * 4);
+    if (h8_q2()) {  // (the second plane: as big as the first; only with ARC_H8_Q2=1)
+      h8_aq2_ = buf(M * (size_t)maxK);
+      h8_asc2_ = buf(M * (size_t)(maxK / 256) * 4);
+    }
     if (h8_row()) return;
     for (int r = 0; r < kRoles; ++r)  // (a role's H8 scales: N * K / 256 floats, an eighth of its W8 header at most)
       if (stage_need_h_[r]) stage_hh_[r] = buf(stage_hh_bytes_[r] = stage_need_h_[r] / 8 + 64);
@@ -278,7 +295,7 @@
   // before where the fused form does not apply
   void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
     const int hb = h8_block(K);
-    if (!h8_norm_env() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
+    if (!h8_norm_env() || h8_q2() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
         next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024) {  // (the row in local memory)
       rmsnorm_quant(x, row_off, w, K, Mp, T, act32);
       return;
@@ -298,6 +315,7 @@
   }
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
+    if (h8_q2_pass_) return;  // (ARC_H8_Q2's second pass: both planes were made by the first)
     // (rmsnorm_h8 left this input rotated: from the f32 values, so per-32 scales or not make no difference)
     if (h8_pre_live_ && !h8_fsrc_ && h8_row() && Mp == h8_pre_M_ && K == h8_pre_K_) return;
     h8_pre_live_ = false;
@@ -311,8 +329,10 @@
     if (h8_row()) {
       // (gemm_xw8's packed order where it will read them, ARC_GEMM_XW_PACK: engine_xw.h xw_pack_a)
       cl_kernel k = h8r_kernel(hb, 0, "h8r_act", (h8_fsrc_ ? std::string(" -DH8F=0") : h8f_defs_) +
-                                                     (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : ""));
+                                                     (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") +
+                                                     (h8_q2() ? " -DQ2" : ""));
       set_args(k, 0, src, asc_, a32, h8_aq_, h8_asc_, M, KK);
+      if (h8_q2()) set_args(k, 7, h8_aq2_, h8_asc2_);  // (after the 7 above: aqh2, asch2)
       const size_t wg = 16 * (size_t)(K / hb);
       size_t gws[1] = {wg * Mp}, lws[1] = {wg};
       run("h8_act", k, 1, gws, lws);
@@ -396,8 +416,22 @@
     const int nsb = K / 256;
     return a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1;
   }
-  // the GEMM (matmul1's prompt path) in H8: the same grid, split-K and epilogues as the W8 GEMM
+  // the GEMM (matmul1's prompt path) in H8: the same grid, split-K and epilogues as the W8 GEMM. With ARC_H8_Q2 a
+  // second pass on the residual plane, added (a = 1): the planes and the scales swapped in, the same kernels, pieces
+  // and weights; the fused SwiGLU (a = 2) is not linear, so it is never asked for then (engine_qwen.h layer_ffn)
   void h8_matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
+    h8_matmul1(name, w, Mp, C, ldc, c_off, a, act32);
+    if (!h8_q2()) return;
+    if (a == 2) throw std::logic_error(std::string("gemm ") + name + ": ARC_H8_Q2 with the fused SwiGLU epilogue");
+    struct Swap {
+      Engine* e;
+      explicit Swap(Engine* en) : e(en) { flip(); e->h8_q2_pass_ = true; }
+      ~Swap() { flip(); e->h8_q2_pass_ = false; }
+      void flip() { std::swap(e->h8_aq_, e->h8_aq2_); std::swap(e->h8_asc_, e->h8_asc2_); }
+    } sw(this);
+    h8_matmul1(name, w, Mp, C, ldc, c_off, 1, act32);
+  }
+  void h8_matmul1(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
     // (H8R: a split's whole dot product is one int32 sum, |sum| <= 127 * 127 * K: past 133,000 values per split it
     //  could overflow. The models' K is 17-22K today and split-K cuts it further; a refusal, not a wrong answer)
     if (h8_row()) {

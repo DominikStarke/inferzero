@@ -1160,3 +1160,12 @@ What it shows:
 
 (The counts come from ocloc's own compiler, which can differ slightly from the one in a user's driver. The B60's
 gdn_recur did not build for bmg-g21 offline: "backend compiler failed build", to look at.)
+
+## 17. H8 in two passes for exact work (`ARC_H8_Q2=1`, 2026-11-21)
+
+H8's int8 rounding of the rotated activations doubles the KL against f32 on every GPU where it runs (the laptop's 27B,
+480 tokens: 0.00056 plain, 0.00112 H8). `ARC_H8_Q2=1` quantizes what that rounding left out into a second int8 plane
+with its own per-token scale, and runs each H8 GEMM a second time on it, adding the result. KL 0.00061, top token
+474 / 480, the plain path's level. For exact work only: about twice the H8 GEMMs' time (the laptop's 4K prompt
+115-120 -> 62.5 tok/s, where the GEMMs are DP4a and most of the prompt), and a second activation buffer. Step 2, one
+kernel reading both planes against the same weights, waits on its speed on XMX cards (the 140V, the B390).
