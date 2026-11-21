@@ -59,6 +59,10 @@ between two GPUs per chunk or token.
   GPU 0's kind first, then other discrete cards, then integrated ones. On unlike cards each runs its own kernel forms,
   so the logits are a KL check against one card, not bit for bit. The tensor split stays one kind (its shards share
   GPU 0's kernels).
+- **Two Level Zero drivers:** Linux's compute runtime can list unlike cards on separate drivers (a B60 on one, an A770
+  on the other, #57). The layer split takes GPUs from every driver, GPU 0's first. A GPU on another driver gets that
+  driver's own context (`Dev::zctx`) for its memory, kernels and lists. The stages hand rows over through host memory,
+  so nothing crosses contexts. The tensor split stays on GPU 0's driver.
 - **What it is not:** faster than one card for a single request. A token visits the GPUs in turn, so generation runs
   at about one card's speed, a little less for the hand-offs.
 - **Choosing the cut:** `--tensor-split a,b,...` gives each GPU's share of the layers, in GPU order (e.g. `1,3`: a

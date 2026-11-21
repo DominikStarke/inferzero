@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-22: a layer split over GPUs on two Level Zero drivers
+
+- **The bug (skipzx-lab, #57):** on Linux, a B60 and an A770 can show up on two Level Zero drivers, one per kind.
+  `--gpus 2 --split layer` only looked at GPU 0's driver, so it said "the driver has 1".
+- **Now:** a layer split looks at the GPUs of every driver, GPU 0's driver first. A GPU on another driver gets that
+  driver's own context, and its memory, kernels, command lists and events are made there. The hand-off between stages
+  already goes through host memory, so nothing crosses contexts. The log says "GPU 1 is on another Level Zero driver
+  than GPU 0: its own context".
+- **Batching on such a GPU:** off by default (`ARC_BATCH`) unless the Level Zero loader exports the list-append call.
+  Otherwise its address would come from GPU 0's driver.
+- **The tensor split stays on GPU 0's driver:** its shards share one context's memory and events.
+- **Checked on the laptop (one driver):** one GPU, and the simulated layer split over 2 and 3 GPUs, are byte for byte
+  as before. The simulated tensor split is byte for byte .22.03's. Two drivers can't be tested here: skipzx-lab asked.
+- Also: `f33_sweep.ps1` does an untimed run before its first timed one (#78). Flash Next's full attention measured on a
+  B60 is in docs/before-after.md.
+
 ## 2026-11-22: `--ctx auto` with `--mtp` trades the prompt chunk for context
 
 - **The problem (skipzx-lab, #45):** on a 16 GB card, the MTP head and the default 4,096-token prompt chunk's buffers

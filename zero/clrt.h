@@ -141,6 +141,9 @@ struct Dev {
   ze_command_list_handle_t rec = nullptr;
   // (this GPU's own ARC_BATCH default, from its own kind: tiered placement P0, 2026-11-20; -1 until known)
   int batch_def = -1;
+  // (a GPU of another Level Zero driver than GPU 0's, a layer split's stage (#57: a B60 and an A770 on two drivers):
+  //  that driver's context, which its memory, modules, lists and events are made in; null: the shared ctx)
+  ze_context_handle_t zctx = nullptr;
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -160,6 +163,9 @@ inline thread_local bool tp_guarded = false;
 inline thread_local bool oom_throws = false;
 inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
+// the context of a GPU's memory, modules, lists and events: its driver's (Dev::zctx), else the one shared ctx
+inline ze_context_handle_t ctx_of(const Dev& d) { return d.zctx ? d.zctx : ctx; }
+inline ze_context_handle_t C() { return ctx_of(D()); }
 // Every free of Level Zero memory the engine makes goes through mem_free, which counts it: clSetKernelArg's cache
 // takes an argument as unchanged only within the same count. Level Zero keeps the allocation a buffer argument was
 // set with, so a buffer freed and another made at the same address (the allocator reuses them) left a kernel whose
@@ -287,11 +293,11 @@ inline ze_command_list_handle_t rec_list(Dev& d) {
       if (gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) { ord = i; break; }  // (the immediate list's group)
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)kPool};
     ze_event_pool_handle_t pool = nullptr;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &d.dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(ctx_of(d), &pd, 1, &d.dev, &pool));
     d.rec_pool.resize(kPool);
     for (int i = 0; i < kPool; ++i) {
       BatchFns::ListDesc ld{0xfu /* ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC */, nullptr, ord, 8 /* in order */};
-      ZE_CHECK(batch_fns().create(ctx, d.dev, &ld, &d.rec_pool[i].l));
+      ZE_CHECK(batch_fns().create(ctx_of(d), d.dev, &ld, &d.rec_pool[i].l));
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, (uint32_t)i, 0x4 /* signal: host scope */, 0};
       ZE_CHECK(zeEventCreate(pool, &ed, &d.rec_pool[i].done));
     }
@@ -404,7 +410,7 @@ inline ze_event_handle_t tp_event(int i) {
   if (!D().tp_ev[0]) {
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, 32};
     ze_event_pool_handle_t pool = nullptr;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(C(), &pd, 1, &D().dev, &pool));
     for (uint32_t k = 0; k < 32; ++k) {
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
       ZE_CHECK(zeEventCreate(pool, &ed, &D().tp_ev[k]));
@@ -429,7 +435,7 @@ inline ze_command_list_handle_t new_copy_list(const char** kind, int* ord_out, i
   ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)ord, (uint32_t)idx, 2 /* in order */,
                              2 /* asynchronous */, 0};
   ze_command_list_handle_t l = nullptr;
-  ZE_CHECK(zeCommandListCreateImmediate(ctx, D().dev, &qd, &l));
+  ZE_CHECK(zeCommandListCreateImmediate(C(), D().dev, &qd, &l));
   *ord_out = ord;
   *idx_out = idx;
   return l;
@@ -441,7 +447,7 @@ inline ze_event_handle_t copy_event(int i) {
   if (!D().copy_ev[0]) {
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, 4};
     ze_event_pool_handle_t pool = nullptr;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(C(), &pd, 1, &D().dev, &pool));
     for (uint32_t k = 0; k < 4; ++k) {
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
       ZE_CHECK(zeEventCreate(pool, &ed, &D().copy_ev[k]));
@@ -520,7 +526,7 @@ inline ze_event_handle_t ev_get() {
     const uint32_t n = 4096;
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 | 0x4 /* host visible, kernel timestamps */, n};
     ze_event_pool_handle_t pool;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(C(), &pd, 1, &D().dev, &pool));
     for (uint32_t i = 0; i < n; ++i) {
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, i, 0x4 /* host scope */, 0};
       ze_event_handle_t e;
@@ -536,11 +542,11 @@ inline void* host_alloc(size_t n) {
   ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
   void* p = nullptr;
   if (oom_throws) {
-    if (zeMemAllocHost(ctx, &hd, n, 4096, &p) != ZE_RESULT_SUCCESS)
+    if (zeMemAllocHost(C(), &hd, n, 4096, &p) != ZE_RESULT_SUCCESS)
       throw std::runtime_error("host allocation of " + std::to_string(n >> 20) + " MB failed");
     return p;
   }
-  ZE_CHECK(zeMemAllocHost(ctx, &hd, n, 4096, &p));
+  ZE_CHECK(zeMemAllocHost(C(), &hd, n, 4096, &p));
   return p;
 }
 inline char* staging(size_t n) {
@@ -549,7 +555,7 @@ inline char* staging(size_t n) {
     //  the old buffer in place)
     const size_t sz = std::max(n, (size_t)1 << 22);
     char* p = (char*)host_alloc(sz);
-    if (D().stage) { sync(); mem_free(ctx, D().stage); }
+    if (D().stage) { sync(); mem_free(C(), D().stage); }
     D().stage = p;
     D().stage_n = sz;
   }
@@ -560,9 +566,9 @@ inline void* device_alloc(size_t n) {
   void* p = nullptr;
   ze_result_t r = ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY;
   if (oom_test && n >= (256u << 20)) oom_test = false;
-  else r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
+  else r = zeMemAllocDevice(C(), &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   for (int i = 0; r != ZE_RESULT_SUCCESS && i < 8 && oom_hook && oom_hook(); ++i)
-    r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
+    r = zeMemAllocDevice(C(), &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   if (r != ZE_RESULT_SUCCESS) {
     char msg[160];
     snprintf(msg, sizeof msg, "device allocation of %.1f MB failed on GPU %d (0x%x; %.2f GiB allocated)", n / 1e6,
@@ -876,7 +882,7 @@ inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_ui
         ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
         zrt::sync();
       }
-      zrt::mem_free(zrt::ctx, p);
+      zrt::mem_free(zrt::C(), p);
       zrt::maps().erase(zrt::maps().begin() + i);
       return CL_SUCCESS;
     }
@@ -903,7 +909,7 @@ inline cl_mem clCreateSubBuffer(cl_mem parent, cl_mem_flags, cl_buffer_create_ty
 inline cl_int clReleaseMemObject(cl_mem m) {
   if (!m) return CL_SUCCESS;
   zrt::Dev& d = m->d ? *m->d : zrt::D();
-  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zrt::mem_free(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
+  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zrt::mem_free(zrt::ctx_of(d), m->ptr); d.device_bytes -= m->size; }
   d.mems.erase(m);
   delete m;
   return CL_SUCCESS;
@@ -1345,35 +1351,57 @@ struct ClRt {
     if (!zrt::ctx || !zrt::driver) { err = "the runtime is not started"; return 0; }
     if ((int)zrt::devs.size() >= n) return n;
     std::vector<ze_device_handle_t> gpus;
+    std::vector<ze_driver_handle_t> gpu_drv;  // (each GPU's driver; empty under ARC_TP_SIM)
     if (sim) {
       gpus.assign(n, zrt::dev0.dev);
     } else {
-      uint32_t c = 0;
-      ZE_CHECK(zeDeviceGet(zrt::driver, &c, nullptr));
-      std::vector<ze_device_handle_t> all(c);
-      ZE_CHECK(zeDeviceGet(zrt::driver, &c, all.data()));
+      // (mixed: the GPUs of every Level Zero driver, GPU 0's driver first. One driver per GPU kind is how Linux's
+      //  compute runtime can list a B60 and an A770 (skipzx-lab, #57: driver 0 the B60, driver 1 the A770), and a
+      //  context belongs to one driver: a GPU of another driver gets that driver's own context below (Dev::zctx).
+      //  A tensor split stays on GPU 0's driver: its shards share one context's memory and events)
+      std::vector<ze_driver_handle_t> drvs{zrt::driver};
+      if (mixed) {
+        uint32_t nd = 0;
+        if (zeDriverGet(&nd, nullptr) == 0 && nd > 1) {
+          std::vector<ze_driver_handle_t> all_d(nd);
+          if (zeDriverGet(&nd, all_d.data()) == 0)
+            for (ze_driver_handle_t dh : all_d)
+              if (dh != zrt::driver) drvs.push_back(dh);
+        }
+      }
       gpus.push_back(zrt::dev0.dev);
+      gpu_drv.push_back(zrt::driver);
       ze_device_properties_t p0{};
       p0.stype = ZE_STYPE_DEVICE_PROPERTIES;
       ZE_CHECK(zeDeviceGetProperties(zrt::dev0.dev, &p0));
       int other = 0;  // (GPUs of another kind: the kernels are compiled for GPU 0's, a module of them would not load)
-      std::vector<ze_device_handle_t> others[2];  // (discrete, integrated)
-      for (ze_device_handle_t x : all) {
-        ze_device_properties_t p{};
-        p.stype = ZE_STYPE_DEVICE_PROPERTIES;
-        if (x == zrt::dev0.dev || zeDeviceGetProperties(x, &p) != 0 || p.type != 1) continue;
-        if (p.deviceId == p0.deviceId) {
-          gpus.push_back(x);
-        } else {
-          ++other;
-          others[(p.flags & 1u) ? 1 : 0].push_back(x);
+      std::vector<std::pair<ze_device_handle_t, ze_driver_handle_t>> same_other, others[2];  // (discrete, integrated)
+      for (ze_driver_handle_t dh : drvs) {
+        uint32_t c = 0;
+        if (zeDeviceGet(dh, &c, nullptr) != 0 || !c) continue;
+        std::vector<ze_device_handle_t> all(c);
+        if (zeDeviceGet(dh, &c, all.data()) != 0) continue;
+        for (ze_device_handle_t x : all) {
+          ze_device_properties_t p{};
+          p.stype = ZE_STYPE_DEVICE_PROPERTIES;
+          if (x == zrt::dev0.dev || zeDeviceGetProperties(x, &p) != 0 || p.type != 1) continue;
+          if (p.deviceId == p0.deviceId && dh == zrt::driver) {
+            gpus.push_back(x);
+            gpu_drv.push_back(dh);
+          } else if (p.deviceId == p0.deviceId) {
+            same_other.push_back({x, dh});
+          } else {
+            ++other;
+            others[(p.flags & 1u) ? 1 : 0].push_back({x, dh});
+          }
         }
       }
       if (mixed)
-        for (auto& o : others) gpus.insert(gpus.end(), o.begin(), o.end());
+        for (auto* o : {&same_other, &others[0], &others[1]})
+          for (auto& g : *o) gpus.push_back(g.first), gpu_drv.push_back(g.second);
       if ((int)gpus.size() < n) {
-        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size()) +
-              (mixed ? "" : " of GPU 0's kind") +
+        err = std::to_string(n) + " GPUs asked for, " + (mixed ? "the drivers have " : "the driver has ") +
+              std::to_string(gpus.size()) + (mixed ? "" : " of GPU 0's kind") +
               (other && !mixed ? " (and " + std::to_string(other) + " of another kind: --split layer can use them)" : "");
         return 0;
       }
@@ -1396,6 +1424,18 @@ struct ClRt {
       zrt::Dev* d = new zrt::Dev{};  // (kept until the process ends, as device 0's state: a later engine reuses it)
       d->dev = gpus[i];
       d->index = i;
+      if (!sim && i < (int)gpu_drv.size() && gpu_drv[i] != zrt::driver) {
+        // (a GPU of another driver: that driver's context, one per driver, kept for the process as zrt::ctx is)
+        static std::vector<std::pair<ze_driver_handle_t, ze_context_handle_t>> drv_ctx;
+        for (auto& f : drv_ctx)
+          if (f.first == gpu_drv[i]) d->zctx = f.second;
+        if (!d->zctx) {
+          ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 0};
+          ZE_CHECK(zeContextCreate(gpu_drv[i], &cd, &d->zctx));
+          drv_ctx.push_back({gpu_drv[i], d->zctx});
+        }
+        zlog::eprintf("inferzero: GPU %d is on another Level Zero driver than GPU 0: its own context\n", i);
+      }
       uint32_t nm = 1;
       ze_device_memory_properties_t mp{};
       mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
@@ -1403,10 +1443,16 @@ struct ClRt {
       d->global_mem = mp.totalSize;
       // (its own ARC_BATCH default, P0; a simulated shard is GPU 0 again: GPU 0's)
       d->batch_def = sim ? std::max(0, zrt::dev0.batch_def) : zrt::batch_default_for(d->dev);
+      // (a GPU of another driver: ARC_BATCH's list append only where the loader exports it, as batch_fns otherwise
+      //  takes its address from GPU 0's driver, which another driver's lists must not be given)
+      if (d->zctx) {
+        void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
+        if (!zl || !plat::dl_sym(zl, "zeCommandListImmediateAppendCommandListsExp")) d->batch_def = 0;
+      }
       if (sim && i < (int)qs.size()) d->q_ord = qs[i].first, d->q_idx = qs[i].second;
       ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)d->q_ord, (uint32_t)d->q_idx,
                                  2 /* in order */, 2 /* asynchronous */, 0};
-      ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, d->dev, &qd, &d->cl));
+      ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx_of(*d), d->dev, &qd, &d->cl));
       if (sim) zlog::eprintf("inferzero: ARC_TP_SIM: shard %d on queue group %d, queue %d\n", i, d->q_ord, d->q_idx);
       zrt::devs.push_back(d);
     }
@@ -1483,7 +1529,7 @@ struct ClRt {
     p->indirect = opts.find("-DXCACHE") != std::string::npos;
     p->opts = opts;
     ze_module_build_log_handle_t log = nullptr;
-    const ze_result_t r = zeModuleCreate(zrt::ctx, zrt::D().dev, &md, &p->m, &log);
+    const ze_result_t r = zeModuleCreate(zrt::C(), zrt::D().dev, &md, &p->m, &log);
     if (r != ZE_RESULT_SUCCESS && cached) {  // a damaged cache file: compiled again from the source
       if (log) zeModuleBuildLogDestroy(log);
       delete p;

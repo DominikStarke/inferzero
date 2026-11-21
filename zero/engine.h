@@ -316,10 +316,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
-    for (void* p : host_ptrs_) zrt::mem_free(zrt::ctx, p);  // (weights in host memory: plan_tight)
+    for (void* p : host_ptrs_) zrt::mem_free(zrt::C(), p);  // (weights in host memory: plan_tight; in this GPU's context)
     host_ptrs_.clear();
     if (mtp_xbuf_) {  // (the MTP head's pinned experts; the expert cache's table row went with xc_ or goes after)
-      zrt::mem_free(zrt::ctx, mtp_xbuf_);
+      zrt::mem_free(zrt::C(), mtp_xbuf_);
       zrt::D().device_bytes -= mtp_xbytes_;
       mtp_xbuf_ = nullptr;
     }
