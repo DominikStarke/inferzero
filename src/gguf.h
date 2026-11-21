@@ -201,6 +201,20 @@ class GgufFile {
     return false;
   }
 
+  // (the file and the byte offset in it of mapped bytes [p, p + n), this file's or a part's: S4's read again, without
+  //  the mapping, after a page could not be read)
+  bool locate(const void* p, size_t n, std::string& file, uint64_t& off) const {
+    const uint8_t* q = (const uint8_t*)p;
+    if (base_ && q >= base_ && n <= size_ && (uint64_t)(q - base_) <= size_ - n) {
+      file = path;
+      off = (uint64_t)(q - base_);
+      return true;
+    }
+    for (const auto& f : parts_)
+      if (f && f->locate(p, n, file, off)) return true;
+    return false;
+  }
+
  private:
   plat::FileMap fm_;  // (the file and its read-only mapping, src/platform.h)
   const uint8_t* base_ = nullptr;

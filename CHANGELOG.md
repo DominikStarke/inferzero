@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: less host work per generated token; an expert file's build survives a bad read
+
+- **Each one-token matrix-vector product keeps its kernel** after its first launch. Before, every launch put together
+  the kernel's name from ~6 strings and looked it up, ~330 times a token. On Windows those allocations share one
+  lock, which a split model's GPU threads wait on. The rest of the fix for split generation (issue #4): the same
+  kernels, logits byte-identical (the 4B, the 4B over 2 simulated GPUs, the 27B, Flash Next). No change on one GPU on
+  the laptop.
+- **A page of the model that can't be read while the expert file is written** (a drive error, a file changed under
+  the build) ended the process before: Windows' in-page error, Linux's SIGBUS.
+  - Now those bytes are read again with ordinary reads, up to 3 tries. If that fails, the build stops with the file
+    and offset, and its finished layers are kept.
+  - A SIGBUS anywhere else still reaches the crash log as before.
+  - Tested: three copies made to fail on purpose, the expert file the same bit for bit; on Linux, a truncated
+    mapping's pages come back as errors.
+
 ## 2026-11-21: a fix for slow generation over several GPUs (to be confirmed on 4 B60s)
 
 - Generation split over several GPUs had become no faster than one card: the 27B over 4 Pro B60s took 48.8 ms a

@@ -673,6 +673,28 @@ struct ExpertStore {
     fclose(f);
     if (!ok || !plat::replace_file(t.c_str(), rs.c_str())) plat::remove_file(t.c_str());
   }
+  // S4 (2026-11-21): a batch's source rows out of the mapping; a page that cannot be read (an in-page error, SIGBUS)
+  // ended the process before. Now the same bytes are read again with read calls, up to 3 tries a second apart, each
+  // said in the log; then the build fails with the file and offset (its .tmp kept, S2). Bit for bit the same bytes
+  // (ARC_XBUILD_TEST_FAULT=1: the first copy acts as if it failed, for tests)
+  static void copy_source(const GgufFile& f, void* dst, const uint8_t* src, size_t n) {
+    static std::atomic<int> test_fault{getenv("ARC_XBUILD_TEST_FAULT") ? atoi(getenv("ARC_XBUILD_TEST_FAULT")) : 0};
+    if (test_fault.load() <= 0 && plat::guarded_copy(dst, src, n)) return;
+    if (test_fault.load() > 0) test_fault.fetch_sub(1);
+    std::string file;
+    uint64_t off = 0;
+    if (!f.locate(src, n, file, off))
+      throw std::runtime_error("a page of the model could not be read while writing the expert file");
+    for (int t = 1; t <= 3; ++t) {
+      zlog::eprintf("inferzero: a page of %s at %.2f GB could not be read through the mapping: reading it again (try %d "
+                    "of 3)\n", file.c_str(), off / 1e9, t);
+      if (plat::read_file_at(file, off, dst, n)) return;
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    throw std::runtime_error("cannot read " + file + " at byte " + std::to_string(off) + " (" + std::to_string(n) +
+                             " bytes) while writing the expert file: the drive or the file is damaged; copy the model "
+                             "again, then start again (the finished layers are kept)");
+  }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
     XBuildStopGuard stop_guard;  // (before the .tmp's owner: it unwinds after the .tmp is removed; D1)
     const auto t0 = std::chrono::steady_clock::now();
@@ -829,7 +851,7 @@ struct ExpertStore {
           for (int k = 0; k < n_sp; ++k) {
             uint64_t lo, hi;
             span_rows(k, e0, ne, lo, hi);
-            memcpy(pb.p + sp[k].at, sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
+            copy_source(f, pb.p + sp[k].at, sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
             // (copied: on Linux those pages leave the process now, not at the end of the pass; B6)
             plat::release_mapped(sp[k].t->data + lo * sp[k].rowb, (size_t)((hi - lo) * sp[k].rowb));
             for (int i = 0; i < 3; ++i)

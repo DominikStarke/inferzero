@@ -24,6 +24,8 @@
 #include <cerrno>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <setjmp.h>  // (sigsetjmp: guarded_copy)
+#include <signal.h>
 #include <sys/file.h>  // (flock: BuildLock)
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -568,6 +570,68 @@ inline void prefetch_mapped(const void* p, size_t n) {
   const uintptr_t pg = 4096, a = (uintptr_t)p & ~(pg - 1);
   madvise((void*)a, n + ((uintptr_t)p - a), MADV_WILLNEED);
 #endif
+}
+// S4 (2026-11-21): a copy out of a file mapping that comes back false when a page cannot be read (a drive error, a
+// file shrunk under the mapping) instead of ending the process: Windows EXCEPTION_IN_PAGE_ERROR caught around the copy,
+// Linux SIGBUS through a handler that jumps back while this thread copies (other threads' SIGBUS as before: the
+// default action). The caller then reads the same bytes with read calls, which return errors (read_file_at)
+#ifdef _WIN32
+inline bool guarded_copy(void* d, const void* s, size_t n) {
+  __try {
+    memcpy(d, s, n);
+    return true;
+  } __except (GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+    return false;
+  }
+}
+#else
+inline thread_local sigjmp_buf* g_bus_jump = nullptr;
+inline struct sigaction g_bus_old{};  // (the handler before: the crash log's, src/crash_log.h)
+extern "C" inline void bus_on_signal(int sig, siginfo_t* si, void* ctx) {
+  if (g_bus_jump) siglongjmp(*g_bus_jump, 1);
+  // (not in a guarded copy: the handler before ours, so the crash log still reports it)
+  if ((g_bus_old.sa_flags & SA_SIGINFO) && g_bus_old.sa_sigaction) {
+    g_bus_old.sa_sigaction(sig, si, ctx);
+    return;
+  }
+  sigaction(SIGBUS, &g_bus_old, nullptr);
+  raise(sig);
+}
+inline bool guarded_copy(void* d, const void* s, size_t n) {
+  static const bool installed = [] {
+    struct sigaction sa{};
+    sa.sa_sigaction = bus_on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
+    return sigaction(SIGBUS, &sa, &g_bus_old) == 0;
+  }();
+  if (!installed) {
+    memcpy(d, s, n);
+    return true;
+  }
+  sigjmp_buf jb;
+  if (sigsetjmp(jb, 1)) {
+    g_bus_jump = nullptr;
+    return false;
+  }
+  g_bus_jump = &jb;
+  memcpy(d, s, n);
+  g_bus_jump = nullptr;
+  return true;
+}
+#endif
+// n bytes of `path` from byte `off` with read calls (no mapping), or false
+inline bool read_file_at(const std::string& path, uint64_t off, void* dst, size_t n) {
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) return false;
+#ifdef _WIN32
+  bool ok = _fseeki64(f, (long long)off, SEEK_SET) == 0;
+#else
+  bool ok = fseeko(f, (off_t)off, SEEK_SET) == 0;
+#endif
+  ok = ok && fread(dst, 1, n, f) == n;
+  fclose(f);
+  return ok;
 }
 // [p, p + n) of a read-only file mapping, already copied out, leaves this process (Linux madvise MADV_DONTNEED on the
 // whole pages inside the range; a later read faults them in again from the file). A pass over a whole GGUF otherwise

@@ -39,6 +39,12 @@ struct GpuWeight {
   cl_mem wq = nullptr, wh = nullptr;  // resident GEMM form (W8, or repacked Q8_0); null = decode just in time
   int gemm_qtype = 0;                 // zero/kernels/gemm.cl QTYPE
   int role = 0;                       // just-in-time W8 staging slot (one per matrix role within a layer)
+  // (matmul1's one-token GEMV, chosen at its first launch and kept: a launch builds no kernel key, ~6 strings, and
+  //  looks nothing up, ~330 times a token; a split model's shard threads shared the heap's lock for them on Windows,
+  //  issue #4, 2026-11-21. g1k[q2_fuse_]; guk: gemv_gu's gate + up kernel, on the gate's weight. The same kernels)
+  mutable cl_kernel g1k[2] = {nullptr, nullptr}, guk = nullptr;
+  mutable int g1rows = 0, gurows = 0;
+  mutable bool g1vk = false, guvk = false;
 };
 
 struct Hparams {
@@ -1273,14 +1279,21 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         &g == &lm_head_ || &u == &lm_head_)
       return false;
     if (g.iq3t != u.iq3t) return false;  // (one kernel for both: one layout, ARC_IQ3S_TILE)
-    bool vk = false;
-    const int grows = gemv1_rows(g, vk);  // (matmul1's kernel and rows for one of the matrices)
-    if (g.N % grows) return false;  // (the up rows must start a sub-group of their own)
+    if (!g.guk) {
+      bool vk = false;
+      const int grows = gemv1_rows(g, vk);  // (matmul1's kernel and rows for one of the matrices)
+      g.gurows = grows;
+      g.guvk = vk;
+      if (g.N % grows) return false;  // (the up rows must start a sub-group of their own: never kernel'd)
+      g.guk = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(g.type) + " -DGROWS=" + std::to_string(grows) +
+                                   head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2" + iq3t_def(g),
+                     vk ? "gemv_v" : "gemv");
+    }
+    const int grows = g.gurows;
+    const bool vk = g.guvk;
     int N = g.N, K = g.K, M = Mp, c_off = 0, a = 0;
     rd_bytes += raw_bytes(g) + raw_bytes(u);
-    cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(g.type) + " -DGROWS=" + std::to_string(grows) +
-                                       head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2" + iq3t_def(g),
-                         vk ? "gemv_v" : "gemv");
+    cl_kernel k = g.guk;
     set_args(k, 0, g.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a, u.raw);
     const size_t sgs = (size_t)N / grows, l1 = vk ? 256 : xe2_gemv_wg(sgs);  // (the work-group of one matrix's launch)
     size_t g1 = (2 * sgs * 16 + l1 - 1) / l1 * l1;
@@ -1292,22 +1305,33 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (cur_T_ == 1) {
       // rows per sub-group: enough sub-groups for small N; very tall matrices (an lm_head of short rows) do better
       // with more sub-groups again (gemv1_rows)
-      bool vk = false;
-      const int grows = gemv1_rows(w, vk);
+      if (act32 && host_cpu_gemv(w, Mp, C, c_off, a)) {  // (a matrix in host memory, ARC_HOST_CPU=1: zero/xe2)
+        rd_bytes += raw_bytes(w);
+        return;
+      }
+      const int fz = q2_fuse_ ? 1 : 0;
+      if (!w.g1k[fz]) {
+        bool vk = false;
+        w.g1rows = gemv1_rows(w, vk);
+        w.g1vk = vk;
+        // (ARC_GV_PROBE=1 / 2: a measurement, not for use, the output is wrong. 1: gemv reads the weights and skips the
+        //  decode (bandwidth of the access pattern); 2: it decodes the row's first superblocks again and again, no
+        //  streaming (the decode's own speed). Compare the `gemm_gate / up / down` rows of --prof-gen. Every type on the
+        //  gemv path, not the output head; gemv_v's types (IQ3_XXS, IQ4_XS, IQ2, Q6_K) run as usual. Probe 1's
+        //  stand-in reads (stride 8 words across lanes) cost local-memory bank conflicts of their own: an upper bound)
+        static const int gv_probe = getenv("ARC_GV_PROBE") ? atoi(getenv("ARC_GV_PROBE")) : 0;
+        const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
+        w.g1k[fz] = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(w.g1rows) +
+                                         head_defs(w) + probe_def + (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) +
+                                         (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w),
+                           vk ? "gemv_v" : "gemv");
+      }
+      const bool vk = w.g1vk;
+      const int grows = w.g1rows;
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
-      if (act32 && host_cpu_gemv(w, M, C, c_off, a)) return;  // (a matrix in host memory, ARC_HOST_CPU=1: zero/xe2)
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
-      // (ARC_GV_PROBE=1 / 2: a measurement, not for use, the output is wrong. 1: gemv reads the weights and skips the
-      //  decode (bandwidth of the access pattern); 2: it decodes the row's first superblocks again and again, no
-      //  streaming (the decode's own speed). Compare the `gemm_gate / up / down` rows of --prof-gen. Every type on the
-      //  gemv path, not the output head; gemv_v's types (IQ3_XXS, IQ4_XS, IQ2, Q6_K) run as usual. Probe 1's
-      //  stand-in reads (stride 8 words across lanes) cost local-memory bank conflicts of their own: an upper bound)
-      static const int gv_probe = getenv("ARC_GV_PROBE") ? atoi(getenv("ARC_GV_PROBE")) : 0;
-      const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
-      cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) + probe_def +
-                                         (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) + (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w),
-                           vk ? "gemv_v" : "gemv");
+      cl_kernel k = w.g1k[fz];
       q2_fused_ = q2_fuse_;
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);
       // (gemv_v stages its tables with the first 64 items of a work-group: it keeps 256)
