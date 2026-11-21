@@ -78,19 +78,21 @@ builds everything, downloads the models you pick and connects the [Pi](https://p
 
 ## Results at a glance
 
-On the laptop (Core Ultra 5 125H, 32 GB, Windows 11; `bench/website_bench.ps1`, 2026-11-09, the 27B's 131K row and
-Gemma's KL again on 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for 256
-tokens, plain and with the model's drafters; KL on 480 tokens of USAGE.md:
+On the laptop (Core Ultra 5 125H, 32 GB LPDDR5x-6400 shared by the CPU and the iGPU: 102 GB/s in theory, 75-77 GB/s
+measured by the GPU, which bounds generation; Windows 11; `bench/website_bench.ps1`, 2026-11-09, the 27B's 131K row
+and Gemma's KL again on 2026-11-10). Every speed is in tokens per second: prompt processing (pp) with the wait for the
+first token in brackets, generation (tg) over 256 tokens, plain and with the model's drafters; KL on 480 tokens of
+USAGE.md:
 
-| Model | 8K prompt | 32K prompt | 131K prompt | Generation | With drafting | KL vs f32 |
+| Model | pp 8K, tok/s (wait) | pp 32K, tok/s (wait) | pp 131K, tok/s (wait) | tg, tok/s | tg with drafting, tok/s | KL vs f32 |
 |---|---|---|---|---|---|---|
-| Qwen3.6 35B-A3B (MoE, experts on the SSD) | 851, 9.6 s | 637, 51 s | 324, 6.7 min | 21.6 | 38.1 (MTP + DFlash2) | 0.0040 |
-| Qwen3.8 Flash Next (MoE, 52 GB of experts on the SSD) | 205, 40 s | 174, 3.1 min | 146, 15 min | 6.3 | 7.6 (DFlash2) | 0.0117 |
-| Qwen3.8 27B (dense) | 135, 61 s | 125, 4.4 min | 81, 27 min | 5.1 | 12.9 (MTP + DFlash2) | 0.0005 |
-| Gemma 4 26B-A4B (MoE) | 232, 35 s | 124, 4.4 min | 44, 50 min | 19.8 | – | 0.0048 |
-| Qwen3.5 9B | 487, 17 s | 435, 75 s | 278, 7.8 min | 11.8 | 21.6 (MTP) | 0.0014 |
-| Gemma 4 E4B | 707, 12 s | 494, 66 s | 222, 9.8 min | 19.1 | 41.8 (drafter) | 0.0027 |
-| Qwen3.5 4B | 896, 9.2 s | 705, 47 s | 366, 6.0 min | 21.0 | 35.8 (MTP) | 0.0010 |
+| Qwen3.6 35B-A3B (MoE, experts on the SSD) | 851 (9.6 s) | 637 (51 s) | 324 (6.7 min) | 21.6 | 38.1 (MTP + DFlash2) | 0.0040 |
+| Qwen3.8 Flash Next (MoE, 52 GB of experts on the SSD) | 205 (40 s) | 174 (3.1 min) | 146 (15 min) | 6.3 | 7.6 (DFlash2) | 0.0117 |
+| Qwen3.8 27B (dense) | 135 (61 s) | 125 (4.4 min) | 81 (27 min) | 5.1 | 12.9 (MTP + DFlash2) | 0.0005 |
+| Gemma 4 26B-A4B (MoE) | 232 (35 s) | 124 (4.4 min) | 44 (50 min) | 19.8 | – | 0.0048 |
+| Qwen3.5 9B | 487 (17 s) | 435 (75 s) | 278 (7.8 min) | 11.8 | 21.6 (MTP) | 0.0014 |
+| Gemma 4 E4B | 707 (12 s) | 494 (66 s) | 222 (9.8 min) | 19.1 | 41.8 (drafter) | 0.0027 |
+| Qwen3.5 4B | 896 (9.2 s) | 705 (47 s) | 366 (6.0 min) | 21.0 | 35.8 (MTP) | 0.0010 |
 
 Flash Next's precise mode (`-Precise`) lowers its KL on prose to 0.0060 (3,584 tokens, 0.0105 by default) at about
 half the prompt speed. The discrete cards' numbers: [Discrete GPUs](#discrete-arc-gpus-experimental).
