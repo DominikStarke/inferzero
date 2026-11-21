@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: 4 drafts a step on Alchemist cards
+
+- **Alchemist (A770, A750, A580) drafts 4 tokens a step by default with `--mtp`,** where it kept the 27B's 7.
+  - skipzx-lab's A770 (#45), the 27B on a coding question: plain 22.02 tok/s, 7 drafts 40.75, **4 drafts 46.08
+    (+13 %)**. 2 to 6 drafts: 42.06 / 45.56 / 46.08 / 45.11 / 43.74.
+  - Every count gave the plain run's text.
+  - The A770's verify pass costs more than a B-series card's (84 ms against a B60's 54), so later drafts pay less
+    there.
+- B-series cards keep 3, and iGPUs keep their counts. `--mtp-drafts N` still overrides.
+
 ## 2026-11-21: a context too big for the GPU is reported the same way with and without drafting, by runz and the server
 
 - **The server checked nothing when `--ctx` was given by hand** (issue #45): a context past the GPU's share paged

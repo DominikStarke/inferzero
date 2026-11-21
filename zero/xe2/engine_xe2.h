@@ -242,7 +242,14 @@
   // 3 since 2026-11-18: the same B70, runz --mtp, a code prompt, 256 asked: drafts 2 / 3 / 4 58.2 / 59.8 / 57.5 tok/s,
   // accepted 75.0 / 70.6 / 60.4 %, 2.38 / 2.79 / 2.88 tokens a pass (joshdev-de, issue #27, 7368768): the 4th draft is
   // accepted too seldom to pay its verification
-  int xe2_mtp_drafts(int d) const { return d == 7 && !zrt::integrated() && cl_.xmx && !cl_.sg8 ? 3 : d; }
+  // Alchemist (discrete, 8-lane XMX) 4 since 2026-11-21: an A770 (xe, 150 W), the 27B on a coding question, 256 tokens,
+  // the full sweep's D phase: plain 22.02 tok/s; drafts 2 / 3 / 4 / 5 / 6 / 7 42.06 / 45.56 / 46.08 / 45.11 / 43.74 /
+  // 40.75 (7 accepted 60.4 %, 4 76.8 %), every text the plain one's (skipzx-lab, issue #45). Its verify pass costs more
+  // than a B-series card's (83.7 ms against a B60's 53.6), so its best count sits between theirs and the laptop's
+  int xe2_mtp_drafts(int d) const {
+    if (d != 7 || zrt::integrated() || !cl_.xmx) return d;
+    return cl_.sg8 ? 4 : 3;
+  }
   int xe2_gdn_l1pf() const {
     static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
     return e >= 0 ? e : (zrt::integrated() ? 0 : 2);
