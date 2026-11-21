@@ -84,7 +84,8 @@ param(
   [switch]$Check,         # version: ask GitHub whether a newer package is out
   [string]$Drafter = "",  # auto | mtp | dflash | off | <DFlash2 folder>
   [string[]]$Opt = @(),   # speed / accuracy options by id (scripts\options.tsv): on, kept for later starts; id=value for a value
-  [string[]]$NoOpt = @()  # the same, off (a default-on option: turned off); zero-server options lists them
+  [string[]]$NoOpt = @(), # the same, off (a default-on option: turned off); zero-server options lists them
+  [string[]]$DefaultOpt = @()  # the same, back to its default (the saved choice forgotten)
 )
 $ErrorActionPreference = "Stop"
 # (an option this script does not have went to $args and was ignored: "-Whispr on" started the server without
@@ -168,6 +169,11 @@ foreach ($s in @($Opt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ }
 foreach ($s in @($NoOpt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
   $o = Find-Opt $s.Trim()
   $optChoice[$o.id] = "off"
+  $optChanged = $true
+}
+foreach ($s in @($DefaultOpt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
+  $o = Find-Opt $s.Trim()
+  if ($optChoice.Contains($o.id)) { $optChoice.Remove($o.id) }
   $optChanged = $true
 }
 if ($optChanged -and -not $DryRun) { [IO.File]::WriteAllText($optFile, ($optChoice | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) }
@@ -493,7 +499,7 @@ Options for start / restart:
   -DryRun                        check everything, print the serverz.exe command line and a GPU memory estimate
                                  (with -Json as JSON), and start or stop nothing
   -Opt <id>[=value][,<id>...]    turn speed / accuracy options on (copy_draft, batch, xcpu, ...; kept for later
-                                 starts); -NoOpt <id> off. zero-server options lists them, what each does and
+                                 starts); -NoOpt <id> off, -DefaultOpt <id> back to its default. zero-server options lists them, what each does and
                                  whether it is for this PC (docs\options.md)
   -Ctx <N|auto>                  context in tokens, or auto = the largest that fits the GPU memory currently
                                  set, less 0.5 GiB for the driver (computed on the first start
@@ -1239,7 +1245,7 @@ $extra += $optFx.flags
 $extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

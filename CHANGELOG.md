@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-21: the launcher's speed and accuracy options
+
+- The Windows launcher's Server options card has a section "Speed and accuracy options": each option of the catalog
+  with a default / on / off choice, what it does, whether its output stays the same, what it costs, and whether it is
+  for this PC (one that is not is greyed, with the reason, not hidden).
+- Start passes the options you changed to `zero-server`, which keeps them for later starts; `-DefaultOpt <id>`
+  puts one back to its default.
+
 ## 2026-11-21: zero-server turns the speed and accuracy options on and off
 
 - `zero-server start -Opt copy_draft` turns an option of the catalog on, `-NoOpt xcpu` off (an option that is on

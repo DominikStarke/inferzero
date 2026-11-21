@@ -434,6 +434,75 @@ $opt.Controls.Add($speechHead); $opt.SetColumnSpan($speechHead, 2)
 [void](Add-Opt "Qwen3-ASR" $asrBox "auto | off (Whisper alone) | a .gguf file")
 [void](Add-Opt "Whisper encoder on" $whDevBox -Advanced)
 [void](Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced)
+# ---- speed and accuracy options (QUEUE O1, 2026-11-21): one row a catalog entry of scripts\options.tsv (zero-server
+# start -Opt / -NoOpt / -DefaultOpt, kept in %USERPROFILE%\.inferzero\options.json), each with what it does and its
+# badges; one not for this PC greyed with the reason, not hidden. Precise mode and the decoded weights have fields of
+# their own above
+$optHead = New-Label "Speed and accuracy options" $true
+$optHead.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 2))
+$opt.Controls.Add($optHead); $opt.SetColumnSpan($optHead, 2)
+$script:catalog = @()
+$catTsv = Join-Path $PSScriptRoot "options.tsv"
+if (Test-Path -LiteralPath $catTsv) {
+  $cl = [IO.File]::ReadAllText($catTsv, (New-Object Text.UTF8Encoding $false)) -split "\r?\n" | Where-Object { $_ -ne "" }
+  $cc = $cl[0] -split "`t"
+  $script:catalog = @(foreach ($l in $cl[1..($cl.Count - 1)]) {
+    $v = $l -split "`t"; $d = [ordered]@{}
+    for ($i = 0; $i -lt $cc.Count; $i++) { $d[$cc[$i]] = $(if ($i -lt $v.Count) { $v[$i] } else { "" }) }
+    [pscustomobject]$d
+  })
+}
+$optJson = Join-Path $env:USERPROFILE ".inferzero\options.json"
+function Read-OptChoice {
+  $c = @{}
+  if (Test-Path -LiteralPath $optJson) { try { (Get-Content -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
+  return $c
+}
+# (as zero-server.ps1 PC-Kinds: which kinds of PC this is, from Windows' display adapters)
+$script:pcKinds = @()
+try {
+  $gs = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.Name -match "Intel" } | ForEach-Object { $_.Name })
+  foreach ($g in $gs) {
+    if ($g -match 'Arc\S* A\d{3}') { $script:pcKinds += "alchemist" }
+    elseif ($g -match 'Arc\S* (Pro )?B\d{2}[0-9]?\b' -and $g -notmatch 'B390') { $script:pcKinds += "b-series" }
+    elseif ($g -match '140V|130V|B390|Xe2') { $script:pcKinds += "igpu-xe2" }
+    elseif ($g -match '140T') { $script:pcKinds += "igpu-140t" }
+    elseif ($g -match 'Arc|Graphics') { $script:pcKinds += "igpu-xe-lpg" }
+  }
+  if (@($gs | Where-Object { $_ -match 'Arc\S* (Pro )?[AB]\d{2}' }).Count -gt 1) { $script:pcKinds += "multi-gpu" }
+} catch {}
+$script:optBoxes = [ordered]@{}
+$kindWords = @{ "alchemist" = "Arc A-series cards"; "b-series" = "Arc B-series cards"; "igpu-xe2" = "Lunar Lake / Panther Lake";
+  "igpu-140t" = "the Arc 140T"; "igpu-xe-lpg" = "Core Ultra (Meteor Lake)"; "multi-gpu" = "several GPUs" }
+foreach ($o in $script:catalog) {
+  if ($o.id -in "fn_precise", "budget") { continue }  # (their own fields above)
+  $box = New-Combo @("default", "on", "off") 80
+  $fit = @($o.best_for -split ';' | Where-Object { $kindWords.ContainsKey($_) })
+  $forHere = -not $fit.Count -or @($fit | Where-Object { $_ -in $script:pcKinds }).Count -gt 0
+  $badges = @()
+  if ($forHere -and $fit.Count) { $badges += "recommended for this PC" }
+  if (-not $forHere) { $badges += "not for this PC (for " + (($fit | ForEach-Object { $kindWords[$_] }) -join ", ") + ")" }
+  $badges += $(if ($o.output -eq "same") { "same output" } else { "slightly different output (checked)" })
+  if ($o.cost -match 'VRAM') { $badges += "uses VRAM: $($o.cost)" }
+  if ($o.status -eq "experimental") { $badges += "experimental" }
+  if ($o.conflicts) { $badges += $o.conflicts }
+  $row = Add-Opt $o.title $box ("default: " + $o.default)
+  $bt = $badges -join (" " + [char]0xB7 + " ")  # (a middle dot; written as a code: Windows PowerShell reads this file as ANSI)
+  $what = New-Label ($o.what + ". " + $bt.Substring(0, 1).ToUpper() + $bt.Substring(1) + "."); $what.ForeColor = $Pal.sub
+  $what.MaximumSize = New-Object System.Drawing.Size((S 560), 0)
+  [void]$row.Controls.Add($what); $row.WrapContents = $true; $row.MaximumSize = New-Object System.Drawing.Size((S 760), 0)
+  if (-not $forHere) { $box.ForeColor = $Pal.sub }
+  $tips.SetToolTip($box, "zero-server -Opt $($o.id) / -NoOpt $($o.id) ($($o.kind) $($o.name)); measured: $($o.measured); docs\options.md")
+  $script:optBoxes[$o.id] = $box
+}
+function Fill-OptBoxes {
+  $c = Read-OptChoice
+  foreach ($id in $script:optBoxes.Keys) {
+    $v = if ($c.ContainsKey($id)) { $c[$id] } else { "default" }
+    $script:optBoxes[$id].SelectedIndex = [math]::Max(0, $script:optBoxes[$id].Items.IndexOf($(if ($v -in "on", "off") { $v } elseif ($v -eq "default") { "default" } else { "on" })))
+  }
+}
+Fill-OptBoxes
 $advChk = New-Check "Show advanced options"
 $advChk.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 4))
 $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
@@ -1098,6 +1167,18 @@ function Get-StartArgs([switch]$Speech) {
     $v = $script:extraArgs[$k]
     if ($v -is [bool]) { if ($v) { $a += "-$k" } } else { $a += @("-$k", $(if ("$v" -match '[\s\\/]') { "`"$v`"" } else { "$v" })) }
   }
+  # (the speed and accuracy options whose box differs from the choice zero-server keeps: on / off / back to default)
+  $saved = Read-OptChoice
+  $on = @(); $off = @(); $def = @()
+  foreach ($id in $script:optBoxes.Keys) {
+    $want = [string]$script:optBoxes[$id].SelectedItem
+    $have = if ($saved.ContainsKey($id)) { $(if ($saved[$id] -eq "off") { "off" } else { "on" }) } else { "default" }
+    if ($want -eq $have) { continue }
+    switch ($want) { "on" { $on += $id } "off" { $off += $id } default { $def += $id } }
+  }
+  if ($on.Count) { $a += @("-Opt", ($on -join ",")) }
+  if ($off.Count) { $a += @("-NoOpt", ($off -join ",")) }
+  if ($def.Count) { $a += @("-DefaultOpt", ($def -join ",")) }
   , $a
 }
 function Start-Selected([switch]$Speech) {
@@ -1574,6 +1655,17 @@ if ($SelfTest) {
         $i = $presetBox.Items.IndexOf($env:ARC_SELFTEST_PRESET)
         if ($i -gt 0) { $presetBox.SelectedIndex = $i }
         [Console]::Out.WriteLine("selftest preset: " + ((Get-StartArgs) -join " ") + "  |  fit: " + $fitLbl.Text + "  |  " + $msg.Text)
+      }
+      # ($env:ARC_SELFTEST_OPTS = "copy_draft=on,xcpu=off": those boxes set, the options scrolled into view, and what Start
+      #  would pass printed)
+      if ($env:ARC_SELFTEST_OPTS) {
+        foreach ($kv in $env:ARC_SELFTEST_OPTS -split ',') {
+          $id, $v = $kv -split '=', 2
+          if ($script:optBoxes.Contains($id)) { $script:optBoxes[$id].SelectedIndex = $script:optBoxes[$id].Items.IndexOf($v) }
+        }
+        $last = @($script:optBoxes.Values)[-1]
+        if ($last) { $opt.ScrollControlIntoView($last) } else { $opt.ScrollControlIntoView($optHead) }
+        [Console]::Out.WriteLine("selftest options: pc " + ($script:pcKinds -join ",") + "; rows " + $script:optBoxes.Count + "; start: " + ((Get-StartArgs) -join " "))
       }
       $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
       $bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
