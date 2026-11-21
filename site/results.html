@@ -213,7 +213,7 @@
       </tbody>
     </table></div>
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 7,174 / 7,007 tok/s, 9B 4,874 / 4,862, 27B 1,610 / 1,754, 35B-A3B 3,236 / 3,995; 128K: 4B 3,137, 27B 905, 35B-A3B 2,129. Flash Next's experts are streamed over the PCIe 3.0 x8 link; <code>ARC_XCPU=1</code> (pull request #55) computes the experts missing from the GPU's cache on the CPU.</p>
-    <p class="note">The 27B on long real prompts (the repository's docs as a question, Linux, skipzx-lab, #45, main 9053735, <code>--mtp</code>): 42,430 tokens 1,433 tok/s, then 39.5 tok/s generated; 92,605 tokens 1,075, then 34.4 (19.5 without drafting); 168,922 tokens 758, then 26.2.</p>
+    <p class="note">The 27B on long real prompts (the repository's docs as a question, Linux, skipzx-lab, #45, main 9053735, <code>--mtp</code>): 42,430 tokens 1,433 tok/s, then 39.5 tok/s generated; 92,605 tokens 1,075, then 34.4 (19.5 without drafting); 168,922 tokens 758, then 26.2. Its full sweep (2026.11.21.02, the defaults): a 32K prompt 1,620 tok/s, the longest that fits on the 24 GB card, 262,144 tokens, 598 tok/s.</p>
   </div>
 </section>
 
