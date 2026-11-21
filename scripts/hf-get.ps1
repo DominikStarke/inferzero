@@ -24,7 +24,7 @@ function Get-Sha256([string]$path) {
 function Get-HfToken {
   if ($env:HF_TOKEN) { return $env:HF_TOKEN }
   $f = Join-Path $env:USERPROFILE ".cache\huggingface\token"
-  if (Test-Path $f) { return (Get-Content $f -Raw).Trim() }
+  if (Test-Path $f) { return (Get-Content -Encoding UTF8 $f -Raw).Trim() }
   return ""
 }
 # A repository file's path inside the snapshot folder, or an error: a name from a pasted link or a repository's own

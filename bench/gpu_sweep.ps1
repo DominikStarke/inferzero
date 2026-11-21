@@ -56,7 +56,7 @@ $inv = [Globalization.CultureInfo]::InvariantCulture
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("inferzero-gpu-sweep-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory $tmp -Force | Out-Null
 $prompt = Join-Path $tmp "prompt.txt"
-$readme = Get-Content (Join-Path $root "README.md") -Raw -ErrorAction SilentlyContinue
+$readme = Get-Content -Encoding UTF8 (Join-Path $root "README.md") -Raw -ErrorAction SilentlyContinue
 if (-not $readme) { $readme = "The quick brown fox. " * 200 }
 [IO.File]::WriteAllText($prompt, $readme.Substring(0, [Math]::Min(9000, $readme.Length)), (New-Object Text.UTF8Encoding $false))
 $question = Join-Path $tmp "question.txt"
@@ -183,7 +183,7 @@ function Measure-It([string]$m, [string]$kind, [string]$sset) {
 }
 function Hash-Of([string]$m, [string]$sset) {
   $hf = Saved-Path "hash|$($script:ph.name)|$m|$sset" ".hash"
-  if (Test-Path $hf) { Show-Progress "(saved) the logits of $sset"; return (Get-Content $hf -Raw).Trim() }
+  if (Test-Path $hf) { Show-Progress "(saved) the logits of $sset"; return (Get-Content -Encoding UTF8 $hf -Raw).Trim() }
   $f = Join-Path $tmp "l.bin"; Remove-Item $f -ErrorAction SilentlyContinue
   $null = Invoke-Runz $m $sset @("--text-file", $prompt, "--n", "8", "--dump-logits", $f)
   $h = if (Test-Path $f) { (Get-FileHash -Algorithm SHA256 $f).Hash.Substring(0, 16) } else { "failed" }
@@ -294,7 +294,7 @@ function Xw-All([string]$m) {
   Get-Content $rep -Encoding UTF8
   # (each winner's switches, the 3 best per chunk size, once each)
   $sets = [ordered]@{}
-  foreach ($l in Get-Content $envf) {
+  foreach ($l in Get-Content -Encoding UTF8 $envf) {
     $p = $l -split ' ', 4
     if ($p.Count -eq 4 -and -not $sets.Contains($p[3])) { $sets[$p[3]] = "x{0} (#{1} at {2} tokens)" -f ($sets.Count + 1), $p[1], $p[0] }
   }

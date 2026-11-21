@@ -116,7 +116,7 @@ $conv = Join-Path (Get-AppDir) "models"  # (setup's converted 35B)
 if (Test-Path -LiteralPath $conv) { $searchRoots += $conv }
 $dirsFile = Join-Path (Get-AppDir) "model-dirs.txt"
 if (Test-Path -LiteralPath $dirsFile) {
-  foreach ($line in Get-Content -LiteralPath $dirsFile) {
+  foreach ($line in Get-Content -Encoding UTF8 -LiteralPath $dirsFile) {
     $d = $line.Trim()
     if (-not $d -or $d.StartsWith("#")) { continue }
     # (a drive that fails, e.g. "access denied" on a broken USB disk: ignored like a missing one)
@@ -186,6 +186,7 @@ function Unit($name, $exe, [string[]]$argv, $pattern) {
   if (-not $ok) { Write-Host $o.TrimEnd() }
   Check $name $ok
 }
+Unit "PowerShell scripts parse in 5.1 and 7, text read as UTF-8" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_ps_compat.ps1") "test_ps_compat: all passed"
 Unit "HTTP parser (malformed requests)" .\bin\test_http.exe @() "test_http: all passed"
 Unit "API compatibility" .\bin\test_api_compat.exe @() "all passed"
 Unit "web tools (HTML to text, result parsing, address filter)" .\bin\test_web_tools.exe @() "test_web_tools: all passed"

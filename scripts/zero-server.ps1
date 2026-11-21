@@ -150,7 +150,7 @@ if (Test-Path -LiteralPath $optTsv) {
 $optFile = Join-Path $stateDir "options.json"
 $optChoice = [ordered]@{}
 if (Test-Path -LiteralPath $optFile) {
-  try { (Get-Content -LiteralPath $optFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $optChoice[$_.Name] = "$($_.Value)" } }
+  try { (Get-Content -Encoding UTF8 -LiteralPath $optFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $optChoice[$_.Name] = "$($_.Value)" } }
   catch { Write-Host "zero-server: $optFile is not valid JSON: the options in it are not used" -ForegroundColor Yellow }
 }
 function Find-Opt([string]$id) {
@@ -227,7 +227,7 @@ function Preset-Path([string]$n) {
 if ($Preset -and $Action -in "start", "restart") {
   $pp = Preset-Path $Preset
   if (-not (Test-Path -LiteralPath $pp)) { throw "-Preset: no preset '$Preset' ($pp); zero-server presets lists them" }
-  try { $po = Get-Content -LiteralPath $pp -Raw | ConvertFrom-Json } catch { throw "preset '$Preset' ($pp) is not valid JSON: $($_.Exception.Message)" }
+  try { $po = Get-Content -Encoding UTF8 -LiteralPath $pp -Raw | ConvertFrom-Json } catch { throw "preset '$Preset' ($pp) is not valid JSON: $($_.Exception.Message)" }
   foreach ($p in $po.PSObject.Properties) {
     $k = @($presetKeys | Where-Object { $_ -eq $p.Name })[0]  # (the script's spelling: -eq ignores case)
     if (-not $k) { throw "preset '$Preset': unknown option '$($p.Name)' ($pp)" }
@@ -335,7 +335,7 @@ function Stop-Arc {
   # the restart loads it instead of processing it again
   try { $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/sessions/save" -TimeoutSec 60 } catch {}
   if (Test-Path $stateFile) {
-    $st = Get-Content $stateFile -Raw | ConvertFrom-Json
+    $st = Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json
     # (only the server of this port: -Port 8091 left the 8090 one, which the state file describes, running)
     if (-not $st.port -or "$($st.port)" -eq "$Port") {
       $p = Get-Process -Id $st.pid -ErrorAction SilentlyContinue
@@ -657,7 +657,7 @@ function Get-Version {
   $pb = Join-Path $root "bin\PREBUILT.txt"
   $v = [ordered]@{ version = ""; commit = ""; built = ""; prebuilt = (Test-Path $pb); folder = $root }
   if ($v.prebuilt) {
-    $l = (Get-Content $pb -TotalCount 1).Trim()
+    $l = (Get-Content -Encoding UTF8 $pb -TotalCount 1).Trim()
     if ($l -match '^(?:arc)?inferzero (\S+) \(built ([^,]+), commit (\w+)\)') { $v.version = $Matches[1]; $v.built = $Matches[2]; $v.commit = $Matches[3] }
   } else {
     try {
@@ -733,7 +733,7 @@ switch ($Action) {
     $servers = @(Get-CimInstance Win32_Process -Filter "Name='serverz.exe'" -ErrorAction SilentlyContinue |
                  Where-Object { "$($_.CommandLine)" -notmatch '\s--(list-models|pack)(\s|$)' })
     if ($servers.Count) {
-      $cur = if (Test-Path $stateFile) { try { Get-Content $stateFile -Raw | ConvertFrom-Json } catch { $null } } else { $null }
+      $cur = if (Test-Path $stateFile) { try { Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json } catch { $null } } else { $null }
       $run = Get-Running
       if ($all.Count -eq 0) { $all = Get-ModelsListed }
       $ids = @($all | Where-Object { Same-Path $_.path $src } | ForEach-Object { $_.alias })
@@ -755,14 +755,14 @@ switch ($Action) {
     #  would load the original, or after remove-original find nothing)
     $toPackage = {
       if ((Test-Path -LiteralPath $lastFile) -and (Test-Path -LiteralPath $pkgGguf)) {
-        $l = "$(Get-Content -LiteralPath $lastFile -Raw)".Trim()
+        $l = "$(Get-Content -Encoding UTF8 -LiteralPath $lastFile -Raw)".Trim()
         if ($l -and (Same-Path $l $src)) { Set-Content -LiteralPath $lastFile $pkgGguf -Encoding utf8; Say "the default model is now its package" }
       } }
     # (the file the package was made from, written by serverz --pack (zero/gguf_pack.h); not the folder's source.txt,
     #  which names the GGUF whose expert file is kept there and is rewritten by any same-named one loaded from elsewhere)
     $madeFrom = {
       $rec = Join-Path $pkgDir "package-source.txt"
-      if (Test-Path -LiteralPath $rec) { "$(Get-Content -LiteralPath $rec | Select-Object -First 1)".Trim() } else { "" } }
+      if (Test-Path -LiteralPath $rec) { "$(Get-Content -Encoding UTF8 -LiteralPath $rec | Select-Object -First 1)".Trim() } else { "" } }
     if ($Action -eq "remove-original") {
       if (-not ((Test-Path -LiteralPath $pkgGguf) -and (Test-Path -LiteralPath $pkgExp))) {
         throw "remove-original: no complete package of $leaf ($pkgGguf and its .experts): zero-server pack -Model it first"
@@ -859,8 +859,8 @@ switch ($Action) {
   }
   { $_ -in "logs", "log" } {
     if (-not (Test-Path $log)) { Say "No log yet ($log): the server has not been started."; return }
-    if ($Follow) { Get-Content -LiteralPath $log -Tail ([math]::Max(1, $Lines)) -Wait }
-    else { Get-Content -LiteralPath $log -Tail ([math]::Max(1, $Lines)) }
+    if ($Follow) { Get-Content -Encoding UTF8 -LiteralPath $log -Tail ([math]::Max(1, $Lines)) -Wait }
+    else { Get-Content -Encoding UTF8 -LiteralPath $log -Tail ([math]::Max(1, $Lines)) }
     return
   }
   { $_ -in "version", "--version" } {
@@ -922,7 +922,7 @@ switch ($Action) {
   "presets" {
     $ps = @(Get-ChildItem -LiteralPath $presetDir -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name)
     $out = [ordered]@{}
-    foreach ($f in $ps) { try { $out[$f.BaseName] = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $out[$f.BaseName] = "not valid JSON" } }
+    foreach ($f in $ps) { try { $out[$f.BaseName] = Get-Content -Encoding UTF8 -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $out[$f.BaseName] = "not valid JSON" } }
     if ($Json) { Out-Json $out; return }
     if (-not $ps.Count) { Write-Host "No presets yet. Save one: zero-server save-preset -Preset <name> -Model 35b -Ctx 65536 ..."; return }
     foreach ($k in $out.Keys) {
@@ -1029,7 +1029,7 @@ switch ($Action) {
     $onPath = [bool](Get-Command zero-server -ErrorAction SilentlyContinue)
     Add-Check "commands" $(if ($onPath) { "ok" } else { "info" }) $(if ($onPath) { "zero-server is on PATH" } else { "zero-server is not on PATH: run it as $root\zero-server.cmd (setup offers to add the folder)" })
     if (Test-Path $log) {
-      $errs = @(Get-Content -LiteralPath $log -Tail 400 -ErrorAction SilentlyContinue | Where-Object { $_ -match '(?i)error|device lost|failed|out of memory' } | Select-Object -Last 5)
+      $errs = @(Get-Content -Encoding UTF8 -LiteralPath $log -Tail 400 -ErrorAction SilentlyContinue | Where-Object { $_ -match '(?i)error|device lost|failed|out of memory' } | Select-Object -Last 5)
       foreach ($e in $errs) { Add-Check "log" "warn" $e }
     }
     if ($Json) { Out-Json $rep.ToArray(); return }  # (@($rep) on a List: "Argument types do not match" in PowerShell 5.1)
@@ -1049,7 +1049,7 @@ switch ($Action) {
     if ($Json) {
       $o = [ordered]@{ running = [bool]$id; base = $base; port = $Port; model = $id; props = $null; state = $null }
       if ($id) { try { $o.props = Invoke-RestMethod "$base/props" -TimeoutSec 2 } catch {} }
-      if ($id -and (Test-Path $stateFile)) { try { $o.state = Get-Content $stateFile -Raw | ConvertFrom-Json } catch {} }
+      if ($id -and (Test-Path $stateFile)) { try { $o.state = Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json } catch {} }
       $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
       $o.saved_conversations = [ordered]@{ count = $files.Count; bytes = [double](($files | Measure-Object Length -Sum).Sum); folder = $sessDir }
       Out-Json $o
@@ -1059,15 +1059,15 @@ switch ($Action) {
       $p = Invoke-RestMethod "$base/props" -TimeoutSec 2
       Say "inferzero server running on $base : model $id"
       if ($p.driver_warning) { Write-Host "  WARNING: $($p.driver_warning)" -ForegroundColor Yellow }  # (2026-11-20)
-      if (Test-Path $lastFile) { Say ("  " + (Get-Content $lastFile -Raw).Trim()) }  # (also after switching in Pi)
+      if (Test-Path $lastFile) { Say ("  " + (Get-Content -Encoding UTF8 $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
-      if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
+      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
         Say "  NPU: on (-Npu on; kept when the model changes and on a restart, off after stop)"
       }
-      if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--precise") {
+      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--precise") {
         Say "  precise mode: on (-Precise; Flash Next; kept like -Npu, -NoPrecise turns it off)"
       }
-      if ((Test-Path $stateFile) -and ($c = (Get-Content $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
+      if ((Test-Path $stateFile) -and ($c = (Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
     } else { Say "inferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
     Say ("Saved conversations: {0} ({1:N1} GiB) in {2}" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1GB), $sessDir)
@@ -1095,8 +1095,8 @@ switch ($Action) {
     $log = Join-Path $stateDir "recorder.log"
     $p = Start-Process $rec -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardError $log
     Start-Sleep -Milliseconds 1500
-    if ($p.HasExited) { Get-Content $log | ForEach-Object { Say $_ }; throw "the recorder did not start" }
-    Get-Content $log | ForEach-Object { Say $_ }
+    if ($p.HasExited) { Get-Content -Encoding UTF8 $log | ForEach-Object { Say $_ }; throw "the recorder did not start" }
+    Get-Content -Encoding UTF8 $log | ForEach-Object { Say $_ }
     Say "zero-server record-stop ends it."
     return
   }
@@ -1107,7 +1107,7 @@ switch ($Action) {
 # ---- start / restart
 if (-not (Test-Path $exe)) { throw "$exe not found: build it with .\build.ps1 zero\serverz.cpp (or run setup)" }
 $running = Get-Running
-$st = if ($running -and (Test-Path $stateFile)) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { $null }
+$st = if ($running -and (Test-Path $stateFile)) { Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json } else { $null }
 $models = Get-Models
 # -Model none: speech to text only (Qwen3-ASR; -Whisper auto for Whisper too), a chat model loaded later by the first
 # chat request naming one (the web UI's model menu)
@@ -1126,7 +1126,7 @@ if ($Model -eq "none" -or (-not $Model -and $Action -eq "restart" -and $running 
   $noConsole = [Console]::IsInputRedirected -or (@([Environment]::GetCommandLineArgs()) -match '^-noni').Count -gt 0
   if ($noConsole) {
     if ($running) { Say "No -Model given: keeping $running."; return }
-    $lp = if (Test-Path $lastFile) { (Get-Content $lastFile -Raw).Trim() } else { "" }
+    $lp = if (Test-Path $lastFile) { (Get-Content -Encoding UTF8 $lastFile -Raw).Trim() } else { "" }
     $m = if ($lp) { $models | Where-Object { $_.supported -and (Same-Path $_.path $lp) } | Select-Object -First 1 } else { $null }
     if (-not $m) { throw "No -Model given and no console to choose one in: zero-server start -Model <shortcut, id or file> (run 'zero-server start' in a console for the list)" }
     Say "No -Model given: starting the model used last, $($m.alias)"
@@ -1409,7 +1409,7 @@ $script:lastProgress = $null  # (kept: more than 40 other lines after it would h
 $showBar = -not [Console]::IsOutputRedirected  # (the launcher runs this hidden, its output in a file: its own bar)
 function Show-LoadProgress {
   if (-not $showBar) { return }
-  $line = Get-Content $log -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
+  $line = Get-Content -Encoding UTF8 $log -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
   if ($line) { $script:lastProgress = $line } else { $line = $script:lastProgress }
   $secs = [int]((Get-Date) - $t0).TotalSeconds
   if ($line -match '^progress: (-?\d+) % (.*)$') {
@@ -1426,7 +1426,7 @@ while ($true) {
   if ($p.HasExited) {
     Write-Progress -Activity $barActivity -Completed
     Write-Host "The server stopped while loading. Last log lines:" -ForegroundColor Red
-    Get-Content $log -Tail 60 | Where-Object { $_ -notmatch '^progress: ' } | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
+    Get-Content -Encoding UTF8 $log -Tail 60 | Where-Object { $_ -notmatch '^progress: ' } | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
     exit 2
   }
@@ -1449,7 +1449,7 @@ if ($true) {
   # the engine's own lines: the expert cache (MoE) or that the model has no experts to stream
   # (the log's prefix, docs/logging.md: "2026-11-12 14:13:05.123 I ", or "I " without the time)
   $pre = '^(?:(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} )?[EWID] )?'
-  $zl = @(Get-Content $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "$pre(?:arc)?inferzero: (expert cache|cache filled|expert file written|memory limit)" })
+  $zl = @(Get-Content -Encoding UTF8 $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "$pre(?:arc)?inferzero: (expert cache|cache filled|expert file written|memory limit)" })
   if ($zl.Count) {
     foreach ($l in $zl) { Say ("  " + ($l -replace "$pre(?:arc)?inferzero: ", "") -replace ", file .*$", "") }
   } elseif (-not $NoStream) {

@@ -455,7 +455,7 @@ if (Test-Path -LiteralPath $catTsv) {
 $optJson = Join-Path $env:USERPROFILE ".inferzero\options.json"
 function Read-OptChoice {
   $c = @{}
-  if (Test-Path -LiteralPath $optJson) { try { (Get-Content -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
+  if (Test-Path -LiteralPath $optJson) { try { (Get-Content -Encoding UTF8 -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
   return $c
 }
 # (as zero-server.ps1 PC-Kinds: which kinds of PC this is, from Windows' display adapters)
@@ -818,7 +818,7 @@ function Update-Status {
   $id = $script:sync.id; $p = $script:sync.props; $busyAct = $script:actProc -and -not $script:actProc.HasExited
   $script:running = $id; $script:props = $p
   $st = $null
-  if (Test-Path $stateFile) { try { $st = Get-Content $stateFile -Raw | ConvertFrom-Json } catch {} }
+  if (Test-Path $stateFile) { try { $st = Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json } catch {} }
   if ($id) {
     $up = ""
     if ($st -and $st.started) { try { $up = "  |  up {0:hh\:mm\:ss}" -f ((Get-Date) - [datetime]$st.started) } catch {} }
@@ -903,7 +903,7 @@ function Update-Log([switch]$Force) {
   $stamp = "$($fi.Length)|$($fi.LastWriteTimeUtc.Ticks)"
   if (-not $Force -and $stamp -eq $script:logStamp) { return }
   $script:logStamp = $stamp
-  $lines = @(Get-Content -LiteralPath $serverLog -Tail 500 -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch '^progress: ' })
+  $lines = @(Get-Content -Encoding UTF8 -LiteralPath $serverLog -Tail 500 -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch '^progress: ' })
   $logBox.Text = $lines -join "`r`n"
   if ($logFollow.Checked) { $logBox.SelectionStart = $logBox.TextLength; $logBox.ScrollToCaret() }
 }
@@ -974,7 +974,7 @@ function Start-List {
 }
 function Show-List {
   $sel = if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag.alias } else { $script:running }
-  $selPath = if (-not $sel -and (Test-Path $lastFile)) { (Get-Content $lastFile -Raw).Trim() } else { $null }
+  $selPath = if (-not $sel -and (Test-Path $lastFile)) { (Get-Content -Encoding UTF8 $lastFile -Raw).Trim() } else { $null }
   $grid.Rows.Clear()
   foreach ($m in $script:models) {
     $mm = $m.memory
@@ -1024,7 +1024,7 @@ function Check-Jobs {
   foreach ($j in @($script:jobs)) {
     if (-not $j.proc.HasExited) { continue }
     $script:jobs.Remove($j)
-    $text = (Get-Content $j.out -Raw -ErrorAction SilentlyContinue) + (Get-Content $j.err -Raw -ErrorAction SilentlyContinue)
+    $text = (Get-Content -Encoding UTF8 $j.out -Raw -ErrorAction SilentlyContinue) + (Get-Content -Encoding UTF8 $j.err -Raw -ErrorAction SilentlyContinue)
     Remove-Item $j.out, $j.err -ErrorAction SilentlyContinue
     try { & $j.done $j.proc.ExitCode "$text" } catch { Show-Bar "Launcher error: $($_.Exception.Message)" "error" -Details "$($_.ScriptStackTrace)" }
   }
@@ -1230,7 +1230,7 @@ function Load-PresetList([string]$select = "") {
 }
 function Apply-Preset([string]$name) {
   $pp = Join-Path $presetDir "$name.json"
-  try { $o = Get-Content -LiteralPath $pp -Raw | ConvertFrom-Json } catch { Show-Bar "Preset '$name' could not be read: $($_.Exception.Message)" "error" -Details $pp; return }
+  try { $o = Get-Content -Encoding UTF8 -LiteralPath $pp -Raw | ConvertFrom-Json } catch { Show-Bar "Preset '$name' could not be read: $($_.Exception.Message)" "error" -Details $pp; return }
   $script:over = @{}; $script:extraArgs = [ordered]@{}
   $model = $null; $unknown = @()
   foreach ($p in $o.PSObject.Properties) {
@@ -1316,7 +1316,7 @@ $settingsFile = Join-Path $stateDir "launcher.json"
 $lastFile = Join-Path $stateDir "last-model.txt"
 if (Test-Path $settingsFile) {
   try {
-    $o = Get-Content $settingsFile -Raw | ConvertFrom-Json
+    $o = Get-Content -Encoding UTF8 $settingsFile -Raw | ConvertFrom-Json
     foreach ($p in $o.PSObject.Properties) { if ($fields.Contains($p.Name)) { $script:over[$p.Name] = $p.Value } }
   } catch {}
 }
@@ -1346,7 +1346,7 @@ $script:upd = @{ enabled = $true; last = ""; latest = ""; url = ""; newer = $fal
 # (the package a check was made for: the data folder is shared by every unpacked package, so a check made by an
 #  older one said "newer" in the new one too for 20 hours: issue #8. Its folder and serverz.exe's time)
 $pkgKey = "$root|" + $(try { (Get-Item -LiteralPath (Join-Path $root "bin\serverz.exe") -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { "" })
-if (Test-Path $updateFile) { try { $u = Get-Content $updateFile -Raw | ConvertFrom-Json; foreach ($p in $u.PSObject.Properties) { $script:upd[$p.Name] = $p.Value } } catch {} }
+if (Test-Path $updateFile) { try { $u = Get-Content -Encoding UTF8 $updateFile -Raw | ConvertFrom-Json; foreach ($p in $u.PSObject.Properties) { $script:upd[$p.Name] = $p.Value } } catch {} }
 function Save-Upd { try { ConvertTo-Json -InputObject $script:upd | Set-Content $updateFile -Encoding utf8 } catch {} }
 function Check-Update([switch]$Manual) {
   if (-not $Manual) {
@@ -1442,7 +1442,7 @@ $trayStop.Add_Click({ $msg.Text = "Stopping the server..."; Start-Action @("stop
 $trayQuit.Add_Click({ $form.Close() })
 $trayStart.Add_Click({
     $r = $null
-    if (Test-Path $lastFile) { $r = Find-Row ((Get-Content $lastFile -Raw).Trim()) }
+    if (Test-Path $lastFile) { $r = Find-Row ((Get-Content -Encoding UTF8 $lastFile -Raw).Trim()) }
     if (-not $r) { Show-Window; $msg.Text = "No default model yet: select one and press Start."; return }
     $grid.ClearSelection(); $r.Selected = $true
     Start-Selected
@@ -1462,7 +1462,7 @@ function Update-Tray($id, $busy) {
 }
 function Update-TrayMenu {
   $r = $null
-  if (Test-Path $lastFile) { try { $r = Find-Row ((Get-Content $lastFile -Raw).Trim()) } catch {} }
+  if (Test-Path $lastFile) { try { $r = Find-Row ((Get-Content -Encoding UTF8 $lastFile -Raw).Trim()) } catch {} }
   $trayStart.Text = if ($r) { "Start $($r.Tag.alias)" } else { "Start the default model" }
 }
 $script:trayHint = $false
@@ -1550,7 +1550,7 @@ function Show-LoadBar {
   try {
     $sf = Get-Item $stateFile -ErrorAction Stop
     if ($sf.LastWriteTime -ge $script:actStart) {
-      $line = Get-Content $serverLog -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
+      $line = Get-Content -Encoding UTF8 $serverLog -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
     }
   } catch {}
   $loadBar.Visible = $true
@@ -1571,8 +1571,8 @@ function Show-LoadBar {
 # what zero-server's exit code means (scripts\zero-server.ps1: 1 wrong option, 2 stopped while loading, 3 timeout,
 # 4 port in use)
 function Show-ActionFailed([int]$code) {
-  $err = Get-Content $script:actErr -Raw -ErrorAction SilentlyContinue
-  $out = @(Get-Content $script:actOut -ErrorAction SilentlyContinue | Where-Object { $_ })
+  $err = Get-Content -Encoding UTF8 $script:actErr -Raw -ErrorAction SilentlyContinue
+  $out = @(Get-Content -Encoding UTF8 $script:actOut -ErrorAction SilentlyContinue | Where-Object { $_ })
   $details = (($out | Select-Object -Last 25) -join "`r`n") + $(if ($err) { "`r`n$err" } else { "" })
   $first = @("$err" -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^\s*(At |\+|CategoryInfo|FullyQualifiedErrorId)' })[0]
   $what = switch ($code) {
@@ -1593,12 +1593,12 @@ $timer.Add_Tick({
       if ($script:listProc -and $script:listProc.HasExited) {
         $script:listProc = $null
         try {
-          $script:models = @(Get-Content $script:listOut -Raw | ConvertFrom-Json | ForEach-Object { $_ })
+          $script:models = @(Get-Content -Encoding UTF8 $script:listOut -Raw | ConvertFrom-Json | ForEach-Object { $_ })
           Show-List
-        } catch { Show-Bar "Could not read the model list: $($_.Exception.Message)" "error" -Details (Get-Content (Join-Path $env:TEMP "zero-launcher-models.err") -Raw -ErrorAction SilentlyContinue) }
+        } catch { Show-Bar "Could not read the model list: $($_.Exception.Message)" "error" -Details (Get-Content -Encoding UTF8 (Join-Path $env:TEMP "zero-launcher-models.err") -Raw -ErrorAction SilentlyContinue) }
       }
       if ($script:actProc) {
-        $last = if (Test-Path $script:actOut) { Get-Content $script:actOut -Tail 1 -ErrorAction SilentlyContinue } else { $null }
+        $last = if (Test-Path $script:actOut) { Get-Content -Encoding UTF8 $script:actOut -Tail 1 -ErrorAction SilentlyContinue } else { $null }
         if ($last) { $msg.Text = "$last" }
         if ($script:actWhat -eq "start" -and -not $script:actProc.HasExited) { Show-LoadBar }
         if ($script:actProc.HasExited) {

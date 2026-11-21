@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-21: every script reads text the same in Windows PowerShell 5.1 and PowerShell 7
+
+- 5.1 read a UTF-8 file without a BOM as the ANSI code page; 7 reads it as UTF-8. So a non-ASCII character in a
+  model path, a preset or a setting came out as 2-3 wrong characters under 5.1. The prompts `bench\gpu_sweep.ps1`
+  and `bench\website_bench.ps1` build from README.md and USAGE.md came out differently too.
+  - Every `Get-Content` of a text file now says `-Encoding UTF8` (59 lines in 13 scripts).
+  - Those two benchmarks' prompts are now the same in both. Under 5.1 they differ from before, so a 5.1 run from
+    before this is not comparable with one after it; 7's are unchanged.
+- `tests	est_ps_compat.ps1` (in run_tests) parses every script with both, and refuses a `Get-Content` without
+  `-Encoding`.
+
 ## 2026-11-21: the launcher's speed and accuracy options
 
 - The Windows launcher's Server options card has a section "Speed and accuracy options": each option of the catalog
