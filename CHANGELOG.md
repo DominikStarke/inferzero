@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: the prompt benchmark in PowerShell
+
+- `bench\prompt_bench.ps1` replaces `bench/prompt_bench.py`: the same request (one landing-page task on every model,
+  a fixed seed, reasoning off), the same saved answer and page, and the same summary record in
+  `bench\results\landing\summary.jsonl`, which `bench\review_data.ps1` reads.
+  - The .py could hang for good: the serverz that zero-server started in the background held its captured output
+    open. The .ps1 waits for zero-server's own process and reads its output from files.
+  - Checked in Windows PowerShell 5.1 and PowerShell 7 on the laptop's 4B (64 tokens): the same answer, tokens and
+    draft counts in both.
+
 ## 2026-11-21: streamed MoE right on every GPU; Alchemist sends kernels in lists on Linux too
 
 - **Fix (issue #74):** on a Panther Lake B390 under Linux, Flash Next generated broken text while its expert cache
