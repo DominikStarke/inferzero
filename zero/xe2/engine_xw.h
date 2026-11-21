@@ -216,7 +216,7 @@
   // Only for 32-token tiles, and by default on Alchemist (discrete 8-lane) since 2026-11-21: hansong80's A770 (#45,
   // main 2a78721, the 27B 4K prompt) gained on every 32 x 16 GEMM (down -10 %, qkv / z -8 %, q -7 %, up -6 %, gate
   // -4 %) and lost on every 16 x 32 one (ssm_out / o +137-139 %, k / v +72-82 %): -4.9 % in all with it everywhere.
-  // ARC_GEMM_XW_DB=0: off, =1: on (for 32-token tiles) on any 8-lane GPU, the 140T included; =2 (opt-in, 2026-11-21):
+  // ARC_GEMM_XW_DB=0: off, =1: on (any tile, as asked; 2026-11-21) on any 8-lane GPU, the 140T included; =2 (opt-in, 2026-11-21):
   // -DXW_DB2, the next B in place and the chunk loop unrolled by 4 (no spill on ocloc dg2 where the =1 form spills
   // unrolled), on every tile, 16 x 32 included
   int xw_db_env() const {
@@ -225,9 +225,9 @@
   }
   bool xw_db(int tm) const {
     const int e = xw_db_env();
-    if (e == 2) return true;
+    if (e == 2 || e == 1) return true;  // (=1 asked: on any tile, as xw_peak --all measures it, 2026-11-21)
     if (tm != 32 || e == 0) return false;
-    return e == 1 || (cl_.sg8 && !zrt::integrated());
+    return cl_.sg8 && !zrt::integrated();
   }
   // ARC_GEMM_XW_SLM=N (opt-in, 8 lanes, 2026-11-21; the A770 plan: B60 speed): gemm_xw8.cl -DXW_SLM, each work-group's
   // packed chunk copied to local memory once and double-buffered, its sub-groups' DPAS fed from there, N token
@@ -261,7 +261,7 @@
   // the per-shape tiles above (xw_tile_for). Decided per call, so a split model's GPU decides for its slice of N.
   // The same sums in the same order: bit for bit, checked at start. ARC_GEMM_XW_BIG=0 off, =1 on any 8-lane GPU
   // (tests); any of ARC_GEMM_XW_TM / _NC / _WGX / _SLM set: off, as asked
-  // (the big tile's shape for the sweep, 2026-11-21, opt-in: ARC_GEMM_XW_SLM_TILE=32x32 / 64x16 / 32x16 the sub-group
+  // (the big tile's shape for the sweep, 2026-11-21, opt-in: ARC_GEMM_XW_SLM_TILE=TMxCOLS (16 / 32 / 64 each) the sub-group
   //  tile, ARC_GEMM_XW_SLM_WG="X,Y" column x token sub-groups (2 / 4 / 8 each, X x Y <= 32), ARC_GEMM_XW_SLM_CPS=1 / 2
   //  / 4 chunks a barrier stage (gemm_xw8 -DXS_CPS). ocloc dg2-g10 at 256 registers, no spill: 32 x 32 4x4 / 4x8 / 8x4
   //  and 64 x 16 4x4 / 8x4 / 8x2 at CPS 1, 32 x 16 8x4 at CPS 1 or 2; CPS 2 spills at 32 x 32 (3.1-3.6 KB) and 64 x 16
@@ -270,10 +270,11 @@
   static const XwBig& xw_big_cfg() {
     static const XwBig c = [] {
       XwBig b;
-      if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {
-        const std::string v = t;
-        if (v == "64x16") b.tm = 64, b.nc = 1;
-        else if (v == "32x16") b.tm = 32, b.nc = 1;
+      if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {  // (TMxCOLS, each 16 / 32 / 64: xw_peak --all's forms)
+        int tm = 0, cols = 0;
+        if (sscanf(t, "%dx%d", &tm, &cols) == 2 && (tm == 16 || tm == 32 || tm == 64) && (cols == 16 || cols == 32 || cols == 64))
+          b.tm = tm, b.nc = cols / 16;
+        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_TILE=%s not TMxCOLS with 16 / 32 / 64 each: 32x32\n", t);
       }
       if (const char* w = getenv("ARC_GEMM_XW_SLM_WG")) {
         int x = 0, y = 0;
@@ -284,6 +285,13 @@
       if (const char* c2 = getenv("ARC_GEMM_XW_SLM_CPS")) {
         const int v = atoi(c2);
         b.cps = v == 2 || v == 4 ? v : 1;
+      }
+      // (two stages of CPS chunks in local memory, 64 KB a work-group on DG2: else the default tile)
+      const long chunk = (long)b.y * (b.tm / 8) * 512 + (long)b.x * b.nc * 1024;
+      if (2 * b.cps * chunk > 65536) {
+        zlog::eprintf("inferzero: the big tile %dx%d, %d,%d, CPS %d needs %ld KB of local memory (64): 32x32, 4,4, CPS 1\n",
+                      b.tm, 16 * b.nc, b.x, b.y, b.cps, 2 * b.cps * chunk / 1024);
+        b = XwBig();
       }
       return b;
     }();
@@ -627,9 +635,13 @@
         if (xw_slm_wgy() && xw_lanes() == 8)  // (skipzx-lab, #45: nothing said it was on)
           zlog::eprintf("inferzero: gemm_xw8: operands through local memory, %d token sub-groups a work-group where they "
                         "divide the tokens (ARC_GEMM_XW_SLM)\n", xw_slm_wgy());
-        if (xw_big_on())
-          zlog::eprintf("inferzero: gemm_xw8: 32 x 32 tiles through local memory where they fit (N a multiple of 128, "
-                        "128-token multiples), the tiles above elsewhere (ARC_GEMM_XW_BIG=0: off)\n");
+        if (xw_big_on()) {
+          const XwBig& b = xw_big_cfg();
+          zlog::eprintf("inferzero: gemm_xw8: %d x %d tiles through local memory, %d x %d sub-groups, %d chunk%s a stage, "
+                        "where they fit (N a multiple of %d, %d-token multiples), the tiles above elsewhere "
+                        "(ARC_GEMM_XW_BIG=0: off)\n", b.tm, 16 * b.nc, b.x, b.y, b.cps, b.cps > 1 ? "s" : "",
+                        16 * b.nc * b.x, b.tm * b.y);
+        }
         if (xw_epi2() && xw_lanes() == 8)
           zlog::eprintf("inferzero: gemm_xw8: the epilogue a row at a time (ARC_GEMM_XW_EPI2)\n");
       } else

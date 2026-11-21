@@ -332,9 +332,9 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
               if (ms < best_ms && !diff_of(v.k, &v, mi, M, best_rg)) best_ms = ms, best = v;
             }
       }
-      printf("  -> %-23s ARC_GEMM_RG=%d%s: %.3f ms (%.1f TOPS)\n", c->name.c_str(), best_rg,
+      printf("  -> %-23s ARC_GEMM_RG=%d%s: %.3f ms (%.1f TOPS)%s\n", c->name.c_str(), best_rg,
              best.pf >= 0 ? (" PF " + std::to_string(best.pf) + " PFD " + std::to_string(best.pfd)).c_str() : "", best_ms,
-             ops1 * M / best_ms / 1e9);
+             ops1 * M / best_ms / 1e9, s3 ? "" : " (stage 3 not run: the default order)");
       if (ef) fprintf(ef, "%d %d %.3f %s ARC_GEMM_RG=%d\n", M, shown, best_ms, best.env().c_str(), best_rg);
     }
   }

@@ -171,6 +171,61 @@ Measured by manoreken2 (issue #4), the newest release that ran each:
 One Pro B70 (friskens, issue #12, 2026-11-13; the release not stated, 2026.11.13.06 asked for), the same 27B: 4K
 prompt 2,107 tok/s, 512 tokens 1,112, generation 32.2 tok/s, 74.9-75.2 with MTP.
 
+## 0. How to sweep a GPU (2026-11-21): `bench\gpu_sweep.ps1`, phase X with `xw_peak --all`
+
+One command measures every switch on any Intel GPU. It can be stopped and run again: it goes on where it stopped.
+
+```powershell
+.\bench\gpu_sweep.ps1 -Model C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+```
+
+- **Phases** `GPXDTKM` (all by default; `-Phases` picks some): G generation, P the prompt, each with H (logits
+  against the defaults) and C (the best combination); X the 8-lane XMX GEMM, below; D drafting; T the XMX tile per
+  GEMM; K where the time goes; M a MoE model's switches (`-MoeModel`).
+- **Contexts** (`-Contexts`, default `512,4096,32768,max`): the prompt lengths that C and X measure, short, medium,
+  long and the longest that runs (262144, else 131072, else 65536). Prompts over 4K run once. `-Contexts 512,4096`
+  is the short version (and `-Quick`'s default).
+- **Going on after a stop**: each finished run is saved in `%USERPROFILE%\.inferzero\gpu-sweep` (one folder per
+  model, device and build of runz) and comes back as it was when the sweep runs again. The folder is removed when the
+  sweep ends; `-Fresh` starts again.
+- **Warm-ups**: every new set of switches first runs a 512-token prompt that is not timed (new kernels build
+  there). Inside xw_peak, every timing follows an untimed launch.
+- **Other programs**: the sweep waits up to 30 minutes for any runz / serverz / xw_peak already running.
+
+**Phase X** (A-series and the Arc 140T: 8-lane XMX; other GPUs skip it):
+
+1. `bin\xw_peak.exe --all` builds every form of the prompt GEMM `gemm_xw8` with both operands packed, about 600:
+   - without local memory: TM 16 / 32 / 64 x NC 1 / 2 / 4 x WGX 1 / 2 / 4 x DB 0 / 1 / 2 x EPI2 0 / 1;
+   - with local memory: TM x NC x 2 / 4 / 8 sub-groups each way x 1 / 2 / 4 chunks a stage x EPI2, where it fits
+     in 64 KB.
+2. Stage 0 drops the forms that spill registers or do not build. Stage 1 times every survivor quickly on the 27B's
+   GEMM shapes (gate, up + SwiGLU, down, qkv, z, ssm_out) at each chunk size of the contexts (512 and 4096).
+3. Stage 2 times the best 10 again and checks each one bit for bit against the plain kernel. Stage 3 tries the best 3
+   with `ARC_GEMM_RG` 1 / 2 / 8 and, without local memory, the prefetch.
+4. Each winner is written as the engine's switches, for example `ARC_GEMM_XW_BIG=1 ARC_GEMM_XW_SLM_TILE=32x64
+   ARC_GEMM_XW_SLM_WG=2,4 ARC_GEMM_XW_SLM_CPS=1 ARC_GEMM_RG=4`.
+5. The model then runs with each winner at every context, the defaults first and last (drift). Each winner's logits
+   are compared with the defaults'. The last lines give the best per context, with the same logits.
+
+`-XwArgs "..."` passes more options to xw_peak (`bin\xw_peak.exe --help`): `--family slm` (only local memory), `--tm
+32`, `--top 20`, or `--limit 40` for a quick look. xw_peak alone:
+
+```powershell
+.\bin\xw_peak.exe --all --ms 512,4096 --env-out winners.txt
+```
+
+**The engine's switches for the forms** (all opt-in, unset nothing changes):
+
+- `ARC_GEMM_XW_SLM_TILE=TMxCOLS` takes any of 16 / 32 / 64 each.
+- A shape that needs more than 64 KB of local memory is refused with a log line, and the default tile is used.
+- `ARC_GEMM_XW_DB=1` turns the double buffer on for every tile, as xw_peak measures it (before: only 32-token tiles).
+
+Checked on the laptop with the A770 preset emulated: 16x32 4x4, 32x64 2x4, 16x16 4x4 with 2 chunks a stage and the
+default, each byte-identical to the default logits (1,024 tokens).
+
+**Time** (estimates, not measured on a card yet): xw_peak --all is mostly its ~600 kernel builds, likely under an
+hour the first time. Phase X in the model adds ~1-2 hours with 32K and the max context.
+
 ## 1. Prompt: `bench\gpu_sweep.ps1 -Phases PTK`
 
 ```powershell

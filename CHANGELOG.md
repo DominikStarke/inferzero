@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-11-21: the whole sweep: every form of the 8-lane XMX GEMM, at every context, and it goes on after a stop
+
+- **`bin\xw_peak.exe --all`** builds every form of the A-series / 140T prompt GEMM (`gemm_xw8`) with both operands
+  packed, about 600: tiles, work-groups, the double buffer, the epilogue and local memory stages. It runs in stages:
+  - stage 0 drops the forms that spill or do not build;
+  - stage 1 times every survivor quickly on the 27B's six GEMM shapes, an untimed launch first;
+  - stage 2 times the best 10 again and checks them bit for bit;
+  - stage 3 tries the best 3 with the row order and the prefetch.
+- It shows a progress bar with the time left. Each part can be chosen (`--family`, `--tm`, `--nc`, `--wg`, `--cps`,
+  `--db`, `--epi2`, `--ms`, `--stages`, `--limit`, `--top`). `--env-out` writes each winner as the engine's switches.
+- **`bench\gpu_sweep.ps1` / `.sh`, phase X** (on by default, 8-lane XMX GPUs only) runs it, then each winner in the
+  model at each context with the logits compared.
+- **`-Contexts`** (default `512,4096,32768,max`; max is the longest of 262K / 131K / 64K that runs) also sets phase
+  C's lengths.
+- **A stopped sweep goes on where it stopped** (each finished run saved under `%USERPROFILE%\.inferzero\gpu-sweep`;
+  `-Fresh` starts again).
+- **Engine, opt-in:**
+  - `ARC_GEMM_XW_SLM_TILE` takes any TMxCOLS of 16 / 32 / 64. A shape over 64 KB of local memory is refused, and the
+    default is used.
+  - `ARC_GEMM_XW_DB=1` works on every tile.
+  - The start-up line names the big tile in use.
+- Unset, nothing changes. The new shapes give byte-identical logits (the laptop, the A770 preset emulated).
+
 ## 2026-11-21: Alchemist: switches for bigger work-groups through local memory, for a sweep
 
 - The A770's big tile (32 x 32, 4 x 4 sub-groups through local memory) can now take other shapes, all opt-in, for a

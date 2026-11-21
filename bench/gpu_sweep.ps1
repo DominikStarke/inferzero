@@ -2,7 +2,7 @@
 # (Arc iGPUs, A-series, B-series, Data Center GPU Max). bench/gpu_sweep.sh is the same for Linux; the two must stay the
 # same (change both together). Paste the whole output into the GitHub issue.
 #   .\bench\gpu_sweep.ps1 -Model <Qwen3.8 27B or another dense gguf> [-MoeModel <35B-A3B or Flash Next gguf>]
-#        [-DFlash <DFlash2 drafter folder>] [-Device N] [-Quick] [-Phases GPDTKM]
+#        [-DFlash <DFlash2 drafter folder>] [-Device N] [-Quick] [-Phases GPXDTKM] [-Contexts 512,4096,32768,max] [-Fresh]
 # It covers the prompt GEMM on DP4a and XMX (W8, H8, f16), the XMX tiles, the GEMVs, attention, DeltaNet, MoE and
 # drafting; bench\f33_sweep.ps1 does the chunked DeltaNet's and XMX attention's KL / emulation checks.
 # Phases (all by default, in this order; -Phases picks some):
@@ -13,7 +13,11 @@
 #      H  each setting's best value: its logits against the defaults (a short prompt, --dump-logits, SHA-256):
 #         "same", or "differs: needs a KL check";
 #      C  the best combination: only each setting's best value, added one at a time from the largest gain down, each
-#         kept only when the run gets faster still; then the defaults against it at tg128 and 512 / 4K / 16K prompts;
+#         kept only when the run gets faster still; then the defaults against it at tg128 and each context's prompt;
+#   X  8-lane XMX GPUs (A-series, the Arc 140T): bin\xw_peak --all, every form of the prompt GEMM (~600 tiles, work-
+#      groups, local memory stages, prefetches; each built, spills dropped, timed after an untimed launch, the best
+#      checked bit for bit), then its best 3 per chunk size as the engine's switches in the model at each context,
+#      each one's logits against the defaults;
 #   D  drafting on a coding question (256 tokens): plain, the MTP block with 2-7 drafts, a DFlash2 drafter (-DFlash),
 #      each one's text checked against plain;
 #   T  the XMX tile per GEMM kind (the prompt's --prof per gemm_* kernel for each tile setting, two rounds in
@@ -23,14 +27,23 @@
 #   M  the MoE model's settings (with -MoeModel), generation and prompt, with its H / C / K.
 # A value wins when it is 2 % faster than the defaults; the defaults are measured again after each sweep (drift).
 # Prompt chunks stay at most 4096 tokens. -Device N: which GPU (ZE_AFFINITY_MASK). The progress (phase, step of steps,
-# time so far and left) shows on the console while it runs. Expect ~1.5-2.5 hours for the 27B (-Quick: ~45 minutes).
+# time so far and left) shows on the console while it runs. Expect ~1.5-2.5 hours for the 27B (-Quick: ~45 minutes),
+# X 1-2 hours more with the long contexts.
+# -Contexts: the prompt lengths of C and X, short to max (default 512,4096,32768,max; -Quick: 512,4096); "max" is the
+# longest of 262144 / 131072 / 65536 that runs. Prompts over 4K run once (ARC_BENCH_RUNS=1). -XwArgs "...": more
+# xw_peak --all options for X (bin\xw_peak --help: --family slm, --tm 32, --limit 40 for a quick look, --top 20).
+# An interrupted sweep goes on where it stopped when run again with the same model, device and build: each finished
+# run is saved in %USERPROFILE%\.inferzero\gpu-sweep (removed when the sweep ends). -Fresh: start again.
 param(
   [Parameter(Mandatory = $true)][string]$Model,
   [string]$MoeModel = "",
   [string]$DFlash = "",
   [string]$Device = "",
-  [string]$Phases = "GPDTKM",
-  [switch]$Quick
+  [string]$Phases = "GPXDTKM",
+  [string]$Contexts = "",
+  [string]$XwArgs = "",
+  [switch]$Quick,
+  [switch]$Fresh
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -75,9 +88,29 @@ $TILES8 = @("32x16 (default)|", "32x32|ARC_GEMM_XW_NC=2", "16x32|ARC_GEMM_XW_TM=
   "16x64|ARC_GEMM_XW_TM=16 ARC_GEMM_XW_NC=4", "64x16|ARC_GEMM_XW_TM=64", "32x16 WGX 1|ARC_GEMM_XW_WGX=1", "32x32 WGX 4|ARC_GEMM_XW_NC=2 ARC_GEMM_XW_WGX=4")
 $TILES16 = @("32x64 (default)|", "32x32|ARC_GEMM_XW_NC=2", "32x96|ARC_GEMM_XW_NC=6", "32x128|ARC_GEMM_XW_NC=8",
   "16x128|ARC_GEMM_XW_TM=16 ARC_GEMM_XW_NC=8", "64x64|ARC_GEMM_XW_TM=64", "32x64 WGX 1|ARC_GEMM_XW_WGX=1", "32x64 WGX 2|ARC_GEMM_XW_WGX=2")
-$vars = @("ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
+$vars = @("ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_BENCH_RUNS", "ARC_GEMM_XW_BIG", "ARC_GEMM_XW_EPI2", "ARC_GEMM_XW_DB",
+  "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
 if ($Device) { $env:ZE_AFFINITY_MASK = $Device }
 function Vals([string]$item) { $p = $item -split '\|'; if ($Quick) { $p[2] -split ' ' } else { $p[1] -split ' ' } }
+if (-not $Contexts) { $Contexts = if ($Quick) { "512,4096" } else { "512,4096,32768,max" } }
+$ctxList = @($Contexts -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+foreach ($c in $ctxList) { if ($c -ne "max" -and -not ($c -match '^\d+$' -and [int]$c -ge 64)) { throw "-Contexts: numbers of at least 64 or max ($c)" } }
+
+# --- the saved runs (going on after an interruption): each finished run's output under a key of the model, its
+# settings, its arguments and how many times that run came before, in a folder per model, device and build
+$stamp = (Get-Item $runz).LastWriteTimeUtc.Ticks
+$state = Join-Path $env:USERPROFILE (".inferzero\gpu-sweep\" + (("{0}-d{1}-{2}" -f (Split-Path $Model -Leaf), $Device, $stamp) -replace '[^A-Za-z0-9._-]', '_'))
+if ($Fresh) { Remove-Item $state -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory $state -Force | Out-Null
+$nSaved = @(Get-ChildItem $state -File -ErrorAction SilentlyContinue).Count
+if ($nSaved) { Write-Host "going on: $nSaved finished runs saved in $state (-Fresh starts again)" -ForegroundColor Yellow }
+$script:seen = @{}
+$sha1 = [Security.Cryptography.SHA1]::Create()
+function Saved-Path([string]$k, [string]$ext) {
+  $script:seen[$k] = 1 + [int]$script:seen[$k]
+  $h = $sha1.ComputeHash([Text.Encoding]::UTF8.GetBytes("$k#$($script:seen[$k])"))
+  Join-Path $state ((([BitConverter]::ToString($h) -replace '-', '').Substring(0, 24)) + $ext)
+}
 
 # --- progress on the console (not in the results): the phase, its step of the steps planned, the time so far and left
 $script:ph = @{ name = ""; step = 0; steps = 0; t0 = [DateTime]::Now }; $allT0 = [DateTime]::Now
@@ -100,6 +133,12 @@ function Show-Progress([string]$what) {
 # count against it. The kernels then come from the cache, so every timed run measures the kernels, not their build.
 $warmed = @{}
 function Invoke-Runz([string]$m, [string]$sset, [string[]]$a) {
+  # (a saved run comes back as it was; a --dump-logits run is not saved, Hash-Of saves its hash)
+  $sf = if ($a -notcontains "--dump-logits") { Saved-Path "$m|$sset|$($a -join ' ')" ".txt" } else { "" }
+  if ($sf -and (Test-Path $sf)) {
+    Show-Progress ("(saved) " + $(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
+    return @(Get-Content $sf -Encoding UTF8)
+  }
   foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
   $extra = @(); $draft = @()
   for ($i = 0; $i -lt $a.Count; $i++) {  # (the drafting flags: their kernels are built only with them)
@@ -122,7 +161,9 @@ function Invoke-Runz([string]$m, [string]$sset, [string[]]$a) {
       else { $null = & $runz $m --bench-pp 512 --n 16 @draft @extra 2>&1 }
     }
     Show-Progress ($(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
-    return (& $runz $m @a @extra 2>&1 | ForEach-Object { "$_" })
+    $out = @(& $runz $m @a @extra 2>&1 | ForEach-Object { "$_" })
+    if ($sf -and $LASTEXITCODE -eq 0) { [IO.File]::WriteAllLines($sf, [string[]]$out, (New-Object Text.UTF8Encoding $false)) }
+    return $out
   } finally {
     $ErrorActionPreference = $eap
     foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
@@ -141,9 +182,35 @@ function Measure-It([string]$m, [string]$kind, [string]$sset) {
   if ($kind -eq "gen") { TG (Invoke-Runz $m $sset @("--bench-pp", "128", "--n", "128")) } else { Best-PP (Invoke-Runz $m $sset @("--bench-pp", "4096", "--n", "0")) }
 }
 function Hash-Of([string]$m, [string]$sset) {
+  $hf = Saved-Path "hash|$m|$sset" ".hash"
+  if (Test-Path $hf) { Show-Progress "(saved) the logits of $sset"; return (Get-Content $hf -Raw).Trim() }
   $f = Join-Path $tmp "l.bin"; Remove-Item $f -ErrorAction SilentlyContinue
   $null = Invoke-Runz $m $sset @("--text-file", $prompt, "--n", "8", "--dump-logits", $f)
-  if (Test-Path $f) { (Get-FileHash -Algorithm SHA256 $f).Hash.Substring(0, 16) } else { "failed" }
+  $h = if (Test-Path $f) { (Get-FileHash -Algorithm SHA256 $f).Hash.Substring(0, 16) } else { "failed" }
+  if ($h -ne "failed") { [IO.File]::WriteAllText($hf, $h) }
+  $h
+}
+# --- the prompt at each context (-Contexts): "max" the longest of 262144 / 131072 / 65536 that runs (found once);
+# over 4K one run (ARC_BENCH_RUNS=1: a 262K prompt takes minutes)
+$script:maxCtx = -1
+function Ctx-Values([string]$m) {
+  $r = @()
+  foreach ($c in $ctxList) {
+    if ($c -ne "max") { $r += [int]$c; continue }
+    if ($script:maxCtx -lt 0) {
+      $script:maxCtx = 0
+      foreach ($t in 262144, 131072, 65536) {
+        if ((Best-PP (Invoke-Runz $m "ARC_BENCH_RUNS=1" @("--bench-pp", "$t", "--n", "0"))) -gt 0) { $script:maxCtx = $t; break }
+      }
+      $script:maxNote = "(max context: {0})" -f $(if ($script:maxCtx) { $script:maxCtx } else { "none of 262144 / 131072 / 65536 runs here" })
+    }
+    if ($script:maxCtx) { $r += $script:maxCtx }
+  }
+  , @($r | Select-Object -Unique)
+}
+function PP-At([string]$m, [string]$sset, [int]$c) {
+  $s = if ($c -gt 4096) { (($sset, "ARC_BENCH_RUNS=1") | Where-Object { $_ }) -join " " } else { $sset }
+  Best-PP (Invoke-Runz $m $s @("--bench-pp", "$c", "--n", "0"))
 }
 function Prof-Rows($o) {
   $on = $false; $rows = [ordered]@{}
@@ -187,7 +254,7 @@ function Check-And-Combine([string]$m, [string]$kind, $win) {
   $ref = Hash-Of $m ""
   foreach ($w in $win) { $h = Hash-Of $m $w.kv; Write-Output ("{0,-28} {1}" -f $w.kv, $(if ($h -eq $ref) { "same" } else { "differs ($h): needs a KL check" })) }
   Write-Output "--- C. the best combination: each setting's best value, added from the largest gain down, kept when faster"
-  Start-Phase "C" ($win.Count + 1 + 2 * $(if ($Quick) { 3 } else { 4 }))
+  Start-Phase "C" ($win.Count + 1 + 2 * (1 + $ctxList.Count))
   $cur = ""; $curR = Measure-It $m $kind ""
   Write-Output ("{0,-40} {1,10}" -f "defaults", (F $curR 2))
   foreach ($w in ($win | Sort-Object { $_.gain } -Descending)) {
@@ -198,14 +265,64 @@ function Check-And-Combine([string]$m, [string]$kind, $win) {
   }
   Write-Output ("the best combination: " + $(if ($cur) { $cur } else { "the defaults" }))
   $both = @(@{ l = "defaults"; s = "" }); if ($cur) { $both += @{ l = "best"; s = $cur } }
+  $cv = Ctx-Values $m; if ($script:maxNote) { Write-Output $script:maxNote; $script:maxNote = "" }
   foreach ($b in $both) {
-    $g = TG (Invoke-Runz $m $b.s @("--bench-pp", "128", "--n", "128"))
-    $p512 = Best-PP (Invoke-Runz $m $b.s @("--bench-pp", "512", "--n", "0"))
-    $p4k = Best-PP (Invoke-Runz $m $b.s @("--bench-pp", "4096", "--n", "0"))
-    $p16 = if ($Quick) { "-" } else { F (Best-PP (Invoke-Runz $m $b.s @("--bench-pp", "16384", "--n", "0"))) }
-    Write-Output ("{0,-9} tg128 {1,8}   pp512 {2,9}   pp4096 {3,9}   pp16384 {4,9}" -f $b.l, (F $g 2), (F $p512), (F $p4k), $p16)
+    $line = "{0,-9} tg128 {1,8}" -f $b.l, (F (TG (Invoke-Runz $m $b.s @("--bench-pp", "128", "--n", "128"))) 2)
+    foreach ($c in $cv) { $line += "   pp{0} {1,9}" -f $c, (F (PP-At $m $b.s $c)) }
+    Write-Output $line
   }
   return $cur
+}
+
+# --- X: every gemm_xw8 form (bin\xw_peak --all), then its winners in the model at each context
+function Xw-All([string]$m) {
+  Write-Output ""; Write-Output "=== X. every form of the 8-lane XMX prompt GEMM (bin\xw_peak --all), then the best in the model at each context"
+  $xp = Join-Path $root "bin\xw_peak.exe"
+  if (-not (Test-Path $xp)) { Write-Output "skipped: bin\xw_peak.exe not found (.\build.ps1 bench\xw_peak.cpp)"; return }
+  $cv = Ctx-Values $m; if ($script:maxNote) { Write-Output $script:maxNote; $script:maxNote = "" }
+  $ms = @($cv | ForEach-Object { [Math]::Min($_, 4096) } | Sort-Object -Unique)  # (the chunk sizes the GEMMs see)
+  $envf = Join-Path $state "xw_env.txt"; $rep = Join-Path $state "xw_report.txt"
+  $xwExtra = @($XwArgs -split ' ' | Where-Object { $_ })
+  if (-not (Test-Path $rep)) {
+    Remove-Item $envf -ErrorAction SilentlyContinue  # (an interrupted xw_peak may have left part of it)
+    Start-Phase "X" 1; Show-Progress "xw_peak --all (its own progress bar)"
+    # (its progress bar on the console through stderr; the report through stdout into the results)
+    $o = @(& $xp --all --ms ($ms -join ',') --kernels (Join-Path $root "zero\kernels") --env-out $envf @xwExtra | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $envf)) { $o; Write-Output "xw_peak --all failed (exit $LASTEXITCODE): X stops here"; return }
+    [IO.File]::WriteAllLines($rep, [string[]]$o, (New-Object Text.UTF8Encoding $false))
+  }
+  Get-Content $rep -Encoding UTF8
+  # (each winner's switches, the 3 best per chunk size, once each)
+  $sets = [ordered]@{}
+  foreach ($l in Get-Content $envf) {
+    $p = $l -split ' ', 4
+    if ($p.Count -eq 4 -and -not $sets.Contains($p[3])) { $sets[$p[3]] = "x{0} (#{1} at {2} tokens)" -f ($sets.Count + 1), $p[1], $p[0] }
+  }
+  if (-not $sets.Count) { Write-Output "(no winner in $envf)"; return }
+  Start-Phase "X" (1 + $sets.Count + $cv.Count * ($sets.Count + 2))
+  Write-Output "--- X. the winners in the model: prompt tok/s at each context (the defaults first and last); logits against the defaults"
+  $ref = Hash-Of $m ""
+  $hash = @{}; foreach ($s in $sets.Keys) { $h = Hash-Of $m $s; $hash[$s] = if ($h -eq $ref) { "same" } else { "differs ($h)" } }
+  $r = @{}; $d0 = @{}; $d1 = @{}
+  foreach ($c in $cv) {
+    $d0[$c] = PP-At $m "" $c
+    foreach ($s in $sets.Keys) { $r["$s|$c"] = PP-At $m $s $c }
+    $d1[$c] = PP-At $m "" $c
+  }
+  $hdr = "{0,-26}" -f "form"; foreach ($c in $cv) { $hdr += " {0,18}" -f "pp$c" }; Write-Output ($hdr + "   logits")
+  $line = "{0,-26}" -f "defaults"; foreach ($c in $cv) { $line += " {0,18}" -f (F $d0[$c]) }; Write-Output $line
+  foreach ($s in $sets.Keys) {
+    $line = "{0,-26}" -f $sets[$s]
+    foreach ($c in $cv) { $line += " {0,18}" -f ((F $r["$s|$c"]) + " " + (Pct $r["$s|$c"] $d0[$c])) }
+    Write-Output ($line + "   " + $hash[$s])
+  }
+  $line = "{0,-26}" -f "defaults again (drift)"; foreach ($c in $cv) { $line += " {0,18}" -f ((F $d1[$c]) + " " + (Pct $d1[$c] $d0[$c])) }; Write-Output $line
+  foreach ($c in $cv) {
+    $b = ""; $bv = [Math]::Max($d0[$c], $d1[$c])
+    foreach ($s in $sets.Keys) { if ($hash[$s] -eq "same" -and $r["$s|$c"] -gt $bv * 1.02) { $bv = $r["$s|$c"]; $b = $s } }
+    Write-Output ("pp{0}: {1}" -f $c, $(if ($b) { "$($sets[$b]) " + (Pct $bv $d0[$c]) + ": $b" } else { "the defaults (no form 2 % faster with the same logits)" }))
+  }
+  foreach ($s in $sets.Keys) { Write-Output ("  {0}: {1}" -f ($sets[$s] -split ' ')[0], $s) }
 }
 
 # --- D: drafting
@@ -300,6 +417,10 @@ $xmx = [bool]($o | Where-Object { $_ -match 'XMX on for the prompt GEMMs|H8 GEMM
 $genBest = ""; $ppBest = ""
 if (Has "G") { $w = Sweep "G. generation" $Model "gen" $GEN; $genBest = Check-And-Combine $Model "gen" $w }
 if (Has "P") { $w = Sweep "P. the prompt" $Model "pp" $PP; $ppBest = Check-And-Combine $Model "pp" $w }
+if (Has "X") {
+  if ($xmx -and $lanes8) { Xw-All $Model }
+  else { Write-Output ""; Write-Output "=== X. skipped: it sweeps the 8-lane XMX GEMM (A-series, the Arc 140T); this GPU's log shows $(if ($xmx) { '16-lane XMX' } else { 'no XMX prompt GEMMs' })" }
+}
 if (Has "D") { Drafting $Model }
 if (Has "T") { if ($xmx) { Tiles $Model $lanes8 } else { Write-Output ""; Write-Output "=== T. skipped: this GPU's log shows no XMX prompt GEMMs (no tiles to choose)" } }
 if (Has "K") {
@@ -315,4 +436,5 @@ if ((Has "M") -and $MoeModel) {
 }
 Write-Progress -Activity "gpu_sweep" -Completed
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $state -Recurse -Force -ErrorAction SilentlyContinue  # (finished: a new run measures again)
 Write-Output ""; Write-Output "done: paste everything above into the issue"

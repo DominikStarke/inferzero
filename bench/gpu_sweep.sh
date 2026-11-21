@@ -3,7 +3,8 @@
 # (Arc iGPUs, A-series, B-series, Data Center GPU Max). bench/gpu_sweep.ps1 is the same for Windows; the two must stay
 # the same (change both together). Paste the whole output into the GitHub issue.
 #   bash bench/gpu_sweep.sh --model <Qwen3.8 27B or another dense gguf> [--moe-model <35B-A3B or Flash Next gguf>]
-#        [--dflash <DFlash2 drafter folder>] [--device N] [--quick] [--phases GPDTKM]
+#        [--dflash <DFlash2 drafter folder>] [--device N] [--quick] [--phases GPXDTKM] [--contexts 512,4096,32768,max]
+#        [--xw-args "..."] [--fresh]
 # It covers the prompt GEMM on DP4a and XMX (W8, H8, f16), the XMX tiles, the GEMVs, attention, DeltaNet, MoE and
 # drafting; bench/f33_sweep.ps1 does the chunked DeltaNet's and XMX attention's KL / emulation checks.
 # Phases (all by default, in this order; --phases picks some):
@@ -18,7 +19,11 @@
 #         a KL check" (such a value can't be a default without one);
 #      C  the best combination: only each setting's best value (a setting with two winning values keeps the faster),
 #         added one at a time from the largest gain down, each kept only when the run gets faster still; then the
-#         defaults against the combination at tg128 and 512 / 4K / 16K prompts;
+#         defaults against the combination at tg128 and each context's prompt;
+#   X  8-lane XMX GPUs (A-series, the Arc 140T): bin/xw_peak --all, every form of the prompt GEMM (~600 tiles, work-
+#      groups, local memory stages, prefetches; each built, spills dropped, timed after an untimed launch, the best
+#      checked bit for bit), then its best 3 per chunk size as the engine's switches in the model at each context,
+#      each one's logits against the defaults;
 #   T  the XMX tile per GEMM kind (the prompt's --prof per gemm_* kernel for each tile setting, two rounds in alternating
 #      order): which tile each of the model's GEMMs wants (down: few columns, a long K; up / gate: many columns);
 #   K  where the time goes: --prof (the prompt) and --prof-gen (generation) by kernel, the defaults against the best
@@ -26,7 +31,13 @@
 # A value wins when it is 2 % faster than the defaults, and the defaults are measured again after each sweep (a drift
 # of a few % means a small win needs an alternated A/B before it counts). Prompt chunks stay at most 4096 tokens.
 # [--device N]: which GPU (ZE_AFFINITY_MASK; with a flat hierarchy every stack of a Max 1550 is one GPU).
-# Needs bash 4.4+, coreutils (sha256sum), awk, grep; runs bin/runz. Expect ~1.5-2.5 hours for the 27B (--quick: ~45 min).
+# --contexts: the prompt lengths of C and X, short to max (default 512,4096,32768,max; --quick: 512,4096); "max" is the
+# longest of 262144 / 131072 / 65536 that runs. Prompts over 4K run once (ARC_BENCH_RUNS=1). --xw-args "...": more
+# xw_peak --all options for X (bin/xw_peak --help: --family slm, --tm 32, --limit 40 for a quick look, --top 20).
+# An interrupted sweep goes on where it stopped when run again with the same model, device and build: each finished
+# run is saved in ~/.inferzero/gpu-sweep (removed when the sweep ends). --fresh: start again.
+# Needs bash 4.4+, coreutils (sha256sum, sha1sum), awk, grep; runs bin/runz. Expect ~1.5-2.5 hours for the 27B (--quick:
+# ~45 min), X 1-2 hours more with the long contexts.
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,14 +45,17 @@ RUNZ="$ROOT/bin/runz"
 die() { echo "$*" >&2; exit 1; }
 usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; }
 
-MODEL=""; MOE_MODEL=""; DEVICE=""; QUICK=0; PHASES="GPDTKM"; DFLASH=""
+MODEL=""; MOE_MODEL=""; DEVICE=""; QUICK=0; PHASES="GPXDTKM"; DFLASH=""; CONTEXTS=""; XW_ARGS=""; FRESH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --model) [ $# -ge 2 ] || die "--model needs a file"; MODEL="$2"; shift 2 ;;
     --moe-model) [ $# -ge 2 ] || die "--moe-model needs a file"; MOE_MODEL="$2"; shift 2 ;;
     --device) [ $# -ge 2 ] || die "--device needs a number"; DEVICE="$2"; shift 2 ;;
-    --phases) [ $# -ge 2 ] || die "--phases needs letters (GPDTKM)"; PHASES="$2"; shift 2 ;;
+    --phases) [ $# -ge 2 ] || die "--phases needs letters (GPXDTKM)"; PHASES="$2"; shift 2 ;;
+    --contexts) [ $# -ge 2 ] || die "--contexts needs a list (512,4096,32768,max)"; CONTEXTS="$2"; shift 2 ;;
+    --xw-args) [ $# -ge 2 ] || die "--xw-args needs options"; XW_ARGS="$2"; shift 2 ;;
+    --fresh) FRESH=1; shift ;;
     --dflash) [ $# -ge 2 ] || die "--dflash needs a folder"; DFLASH="$2"; shift 2 ;;
     --quick) QUICK=1; shift ;;
     *) die "unknown option $1 (--help)" ;;
@@ -54,7 +68,26 @@ done
 [ -z "$DFLASH" ] || [ -d "$DFLASH" ] || die "not a folder: $DFLASH"
 [ -z "$DEVICE" ] || [[ "$DEVICE" =~ ^[0-9]+$ ]] || die "--device: a number"
 command -v sha256sum > /dev/null || die "sha256sum not found"
+command -v sha1sum > /dev/null || die "sha1sum not found"
 has() { [[ "$PHASES" == *"$1"* ]]; }
+[ -n "$CONTEXTS" ] || { if [ "$QUICK" = 1 ]; then CONTEXTS="512,4096"; else CONTEXTS="512,4096,32768,max"; fi; }
+IFS=',' read -r -a CTX_LIST <<< "${CONTEXTS,,}"
+for c in "${CTX_LIST[@]}"; do
+  [ "$c" = max ] || { [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 64 ]; } || die "--contexts: numbers of at least 64 or max ($c)"
+done
+
+# --- the saved runs (going on after an interruption): each finished run's output under a key of the model, its
+# settings, its arguments and how many times that run came before, in a folder per model, device and build
+STATE="$HOME/.inferzero/gpu-sweep/$(printf '%s-d%s-%s' "$(basename -- "$MODEL")" "$DEVICE" "$(stat -c %Y "$RUNZ")" | tr -c 'A-Za-z0-9._\n-' '_')"
+[ "$FRESH" = 1 ] && rm -rf "$STATE"
+mkdir -p "$STATE" || die "cannot make $STATE"
+N_SAVED=$(find "$STATE" -maxdepth 1 -type f | wc -l)
+[ "$N_SAVED" -gt 0 ] && echo "going on: $N_SAVED finished runs saved in $STATE (--fresh starts again)" >&2
+declare -A SEEN
+saved_path() {  # key ext -> SP (call it outside a subshell: it counts)
+  SEEN[$1]=$((${SEEN[$1]:-0} + 1))
+  SP="$STATE/$(printf '%s#%s' "$1" "${SEEN[$1]}" | sha1sum | cut -c1-24)$2"
+}
 
 TMP="$(mktemp -d)" || die "cannot make a temporary folder"
 trap 'rm -rf "$TMP"' EXIT
@@ -141,7 +174,8 @@ TILES16=("32x64 (default)|" "32x32|ARC_GEMM_XW_NC=2" "32x96|ARC_GEMM_XW_NC=6" "3
 # every variable the script may set is unset for each run, so each starts from the defaults
 UNSET=()
 for item in "${GEN[@]}" "${PP[@]}" "${MOE[@]}"; do n="${item%%|*}"; [[ "$n" == ARC_* ]] && UNSET+=(-u "$n"); done
-UNSET+=(-u ARC_GEMM_XW_TM -u ARC_GEMM_XW_NC)
+UNSET+=(-u ARC_GEMM_XW_TM -u ARC_GEMM_XW_NC -u ARC_BENCH_RUNS -u ARC_GEMM_XW_BIG -u ARC_GEMM_XW_EPI2 -u ARC_GEMM_XW_DB
+        -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS)
 [ -n "$DEVICE" ] && export ZE_AFFINITY_MASK="$DEVICE"
 
 # progress on stderr (the results on stdout stay clean to paste): the phase, its step of the steps planned, the time so
@@ -179,6 +213,12 @@ run() {
       --mtp-drafts|--dflash|--draft) d+=("${args[$i]}" "${args[$((i + 1))]:-}"); i=$((i + 1)) ;;
     esac
   done
+  # (a saved run comes back as it was; a --dump-logits run is not saved, hash_of saves its hash)
+  local sf=""
+  if [[ " ${args[*]} " != *" --dump-logits "* ]]; then saved_path "$model|$sset|${args[*]}" ".txt"; sf="$SP"; fi
+  if [ -n "$sf" ] && [ -f "$sf" ]; then
+    progress "(saved) ${sset:-defaults} ${*:1:4}"; cp "$sf" "$OUT"; progress_done; return 0
+  fi
   local key="$model|$sset|${d[*]}"
   if [ -z "${WARMED[$key]:-}" ]; then
     WARMED[$key]=1
@@ -193,6 +233,8 @@ run() {
   fi
   progress "${sset:-defaults} ${*:1:4}"
   env "${UNSET[@]}" "${e[@]}" "$RUNZ" "$model" "$@" "${a[@]}" > "$OUT" 2>&1
+  local rc=$?
+  [ -n "$sf" ] && [ "$rc" = 0 ] && cp "$OUT" "$sf"
   progress_done
 }
 # the values a phase's sweep will run (for its progress)
@@ -220,8 +262,34 @@ measure() {  # model kind sset -> R (tok/s)
   [ -n "$R" ] && [ "$R" != "0.0" ] && [ "$R" != "0.00" ] || R=0
 }
 hash_of() {  # model sset -> H
+  saved_path "hash|$1|$2" ".hash"; local hf="$SP"
+  if [ -f "$hf" ]; then progress "(saved) the logits of $2"; progress_done; H="$(cat "$hf")"; return; fi
+  rm -f "$TMP/l.bin"
   run "$1" "$2" --text-file "$PROMPT" --n 8 --dump-logits "$TMP/l.bin"
   H="$(sha256sum "$TMP/l.bin" 2> /dev/null | cut -c1-16)"; [ -n "$H" ] || H="failed"
+  [ "$H" != failed ] && printf '%s' "$H" > "$hf"
+}
+# --- the prompt at each context (--contexts): "max" the longest of 262144 / 131072 / 65536 that runs (found once);
+# over 4K one run (ARC_BENCH_RUNS=1: a 262K prompt takes minutes)
+MAX_CTX=-1; MAX_NOTE=""
+ctx_values() {  # model -> CV (call it outside a subshell)
+  local c t; CV=()
+  for c in "${CTX_LIST[@]}"; do
+    if [ "$c" != max ]; then [[ " ${CV[*]} " == *" $c "* ]] || CV+=("$c"); continue; fi
+    if [ "$MAX_CTX" -lt 0 ]; then
+      MAX_CTX=0
+      for t in 262144 131072 65536; do
+        run "$1" "ARC_BENCH_RUNS=1" --bench-pp "$t" --n 0
+        [ "$(best_pp)" != "0.0" ] && { MAX_CTX=$t; break; }
+      done
+      if [ "$MAX_CTX" -gt 0 ]; then MAX_NOTE="(max context: $MAX_CTX)"; else MAX_NOTE="(max context: none of 262144 / 131072 / 65536 runs here)"; fi
+    fi
+    [ "$MAX_CTX" -gt 0 ] && { [[ " ${CV[*]} " == *" $MAX_CTX "* ]] || CV+=("$MAX_CTX"); }
+  done
+}
+pp_at() {  # model sset context -> R (tok/s)
+  local s="$2"; [ "$3" -gt 4096 ] && s="${s:+$s }ARC_BENCH_RUNS=1"
+  run "$1" "$s" --bench-pp "$3" --n 0; R="$(best_pp)"
 }
 # the kernel table of the last run ("  name  ms  share%  (n launches)") -> name<TAB>ms lines
 prof_rows() { LC_ALL=C awk '/^GPU time by kernel/ { on = 1; next } on && /^[ \t]+[A-Za-z0-9_]+[ \t]+[0-9.]+ ms/ { print $1 "\t" $2 }' "$OUT"; }
@@ -271,7 +339,7 @@ check_and_combine() {  # model kind
     printf '%-28s %s\n' "$kv" "$([ "$H" = "$ref" ] && echo same || echo "differs ($H): needs a KL check")"
   done
   echo "--- C. the best combination: each setting's best value, added from the largest gain down, kept when faster"
-  phase_start "C" $((${#WINNERS[@]} + 1 + 2 * (QUICK == 1 ? 3 : 4)))
+  phase_start "C" $((${#WINNERS[@]} + 1 + 2 * (1 + ${#CTX_LIST[@]})))
   cur=""; measure "$model" "$kind" ""; cur_r="$R"
   printf '%-40s %10s\n' "defaults" "$cur_r"
   while IFS= read -r line; do
@@ -285,17 +353,73 @@ check_and_combine() {  # model kind
   done < <(printf '%s\n' "${WINNERS[@]}" | sort -t '	' -k1,1 -g -r)
   BEST_SET="$cur"
   echo "the best combination: ${cur:-the defaults}"
-  local g p512 p4k p16k label s
+  local label s c out
   local -a both=("defaults|")
   [ -n "$cur" ] && both+=("best|$cur")
+  ctx_values "$model"; [ -n "$MAX_NOTE" ] && { echo "$MAX_NOTE"; MAX_NOTE=""; }
   for s in "${both[@]}"; do
     label="${s%%|*}"; s="${s#*|}"
-    run "$model" "$s" --bench-pp 128 --n 128; g="$(tg_of)"
-    run "$model" "$s" --bench-pp 512 --n 0; p512="$(best_pp)"
-    run "$model" "$s" --bench-pp 4096 --n 0; p4k="$(best_pp)"
-    if [ "$QUICK" = 1 ]; then p16k="-"; else run "$model" "$s" --bench-pp 16384 --n 0; p16k="$(best_pp)"; fi
-    printf '%-9s tg128 %8s   pp512 %9s   pp4096 %9s   pp16384 %9s\n' "$label" "$g" "$p512" "$p4k" "$p16k"
+    run "$model" "$s" --bench-pp 128 --n 128; out="$(printf '%-9s tg128 %8s' "$label" "$(tg_of)")"
+    for c in "${CV[@]}"; do pp_at "$model" "$s" "$c"; out+="$(printf '   pp%s %9s' "$c" "$R")"; done
+    echo "$out"
   done
+}
+
+# --- X: every gemm_xw8 form (bin/xw_peak --all), then its winners in the model at each context
+xw_all() {  # model
+  local model="$1" xp="$ROOT/bin/xw_peak" envf="$STATE/xw_env.txt" rep="$STATE/xw_report.txt" c s l i
+  echo; echo "=== X. every form of the 8-lane XMX prompt GEMM (bin/xw_peak --all), then the best in the model at each context"
+  [ -x "$xp" ] || { echo "skipped: bin/xw_peak not found (./build.sh xw_peak)"; return; }
+  ctx_values "$model"; [ -n "$MAX_NOTE" ] && { echo "$MAX_NOTE"; MAX_NOTE=""; }
+  local ms; ms="$(for c in "${CV[@]}"; do [ "$c" -gt 4096 ] && echo 4096 || echo "$c"; done | sort -n -u | paste -sd, -)"
+  if [ ! -f "$rep" ]; then
+    rm -f "$envf"  # (an interrupted xw_peak may have left part of it)
+    phase_start "X" 1; progress "xw_peak --all (its own progress bar)"; progress_done
+    # (its progress bar on the terminal through stderr; the report through stdout into the results)
+    # shellcheck disable=SC2086
+    if ! "$xp" --all --ms "$ms" --kernels "$ROOT/zero/kernels" --env-out "$envf" $XW_ARGS > "$TMP/xw.txt" || [ ! -f "$envf" ]; then
+      cat "$TMP/xw.txt"; echo "xw_peak --all failed: X stops here"; return
+    fi
+    cp "$TMP/xw.txt" "$rep"
+  fi
+  cat "$rep"
+  # (each winner's switches, the 3 best per chunk size, once each)
+  local -a SETS=() NAMES=()
+  local m p t rest
+  while read -r m p t rest; do
+    [ -n "$rest" ] || continue
+    [[ " ${SETS[*]} " == *" $rest "* ]] && continue
+    SETS+=("$rest"); NAMES+=("x${#SETS[@]} (#$p at $m tokens)")
+  done < "$envf"
+  [ ${#SETS[@]} -gt 0 ] || { echo "(no winner in $envf)"; return; }
+  phase_start "X" $((1 + ${#SETS[@]} + ${#CV[@]} * (${#SETS[@]} + 2)))
+  echo "--- X. the winners in the model: prompt tok/s at each context (the defaults first and last); logits against the defaults"
+  local ref; hash_of "$model" ""; ref="$H"
+  local -a HS=()
+  for ((i = 0; i < ${#SETS[@]}; i++)); do hash_of "$model" "${SETS[$i]}"; [ "$H" = "$ref" ] && HS+=("same") || HS+=("differs ($H)"); done
+  declare -A RR D0 D1
+  for c in "${CV[@]}"; do
+    pp_at "$model" "" "$c"; D0[$c]="$R"
+    for ((i = 0; i < ${#SETS[@]}; i++)); do pp_at "$model" "${SETS[$i]}" "$c"; RR["$i|$c"]="$R"; done
+    pp_at "$model" "" "$c"; D1[$c]="$R"
+  done
+  local out; out="$(printf '%-26s' form)"; for c in "${CV[@]}"; do out+="$(printf ' %18s' "pp$c")"; done; echo "$out   logits"
+  out="$(printf '%-26s' defaults)"; for c in "${CV[@]}"; do out+="$(printf ' %18s' "${D0[$c]}")"; done; echo "$out"
+  for ((i = 0; i < ${#SETS[@]}; i++)); do
+    out="$(printf '%-26s' "${NAMES[$i]}")"
+    for c in "${CV[@]}"; do out+="$(printf ' %18s' "${RR["$i|$c"]} $(pct "${RR["$i|$c"]}" "${D0[$c]}")")"; done
+    echo "$out   ${HS[$i]}"
+  done
+  out="$(printf '%-26s' "defaults again (drift)")"; for c in "${CV[@]}"; do out+="$(printf ' %18s' "${D1[$c]} $(pct "${D1[$c]}" "${D0[$c]}")")"; done; echo "$out"
+  for c in "${CV[@]}"; do
+    local b=-1 bv="${D0[$c]}"; ge "${D1[$c]}" "$bv" && bv="${D1[$c]}"
+    for ((i = 0; i < ${#SETS[@]}; i++)); do
+      [ "${HS[$i]}" = same ] && ge "${RR["$i|$c"]}" "$(LC_ALL=C awk -v b="$bv" 'BEGIN { print b * 1.02 }')" && { bv="${RR["$i|$c"]}"; b=$i; }
+    done
+    if [ "$b" -ge 0 ]; then echo "pp$c: ${NAMES[$b]} $(pct "$bv" "${D0[$c]}"): ${SETS[$b]}"
+    else echo "pp$c: the defaults (no form 2 % faster with the same logits)"; fi
+  done
+  for ((i = 0; i < ${#SETS[@]}; i++)); do echo "  ${NAMES[$i]%% *}: ${SETS[$i]}"; done
 }
 
 # --- D: drafting, on a coding question (Qwen chat format, thinking off: the answer starts at once)
@@ -413,6 +537,10 @@ XMX=1; grep -aqE 'XMX on for the prompt GEMMs|H8 GEMMs on XMX' "$OUT" || XMX=0
 GEN_BEST=""; PP_BEST=""
 if has G; then sweep "G. generation" "$MODEL" gen GEN; check_and_combine "$MODEL" gen; GEN_BEST="$BEST_SET"; fi
 if has P; then sweep "P. the prompt" "$MODEL" pp PP; check_and_combine "$MODEL" pp; PP_BEST="$BEST_SET"; fi
+if has X; then
+  if [ "$XMX" = 1 ] && [ "$LANES8" = 1 ]; then xw_all "$MODEL"
+  else echo; echo "=== X. skipped: it sweeps the 8-lane XMX GEMM (A-series, the Arc 140T); this GPU's log shows $([ "$XMX" = 1 ] && echo "16-lane XMX" || echo "no XMX prompt GEMMs")"; fi
+fi
 if has D; then drafting "$MODEL"; fi
 if has T; then
   if [ "$XMX" = 1 ]; then tiles "$MODEL"; else echo; echo "=== T. skipped: this GPU's log shows no XMX prompt GEMMs (no tiles to choose)"; fi
@@ -432,4 +560,5 @@ if has M && [ -n "$MOE_MODEL" ]; then
     kernels "$MOE_MODEL" generation "$MG" "MoE generation's best combination"
   fi
 fi
+rm -rf "$STATE"  # (finished: a new run measures again)
 echo; echo "done: paste everything above into the issue"
