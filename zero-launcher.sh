@@ -302,7 +302,7 @@ opt_set() {  # ID CHOICE: on, off, a value, or "" (the default); refuses what th
   on=$(opt_col "$id" on)
   if [ -z "$c" ]; then unset "OPTC[$id]"; return 0; fi
   case "$c" in *[\"\\]*|*[[:cntrl:]]*) err "zero-launcher: --opt $id: a value without quotes, backslashes or control characters"; return 2;; esac
-  if [ "$c" = on ] && [[ "$on" =~ ^[A-Za-z] ]]; then err "zero-launcher: --opt $id needs its value, e.g. --opt $id=12 ($on)"; return 2; fi
+  if [ "$c" = on ] && [[ "$on" == "<"* ]]; then err "zero-launcher: --opt $id needs its value, e.g. --opt $id=12 ($on)"; return 2; fi
   OPTC[$id]=$c
 }
 opt_effect() {  # the choices as OPT_ENV (NAME=value), OPT_FLAGS (serverz arguments) and OPT_WORDS (for the log line)
@@ -318,7 +318,7 @@ opt_effect() {  # the choices as OPT_ENV (NAME=value), OPT_FLAGS (serverz argume
     fi
     v=$c; [ "$c" = on ] && v=$on
     if [ "$kind" = env ]; then OPT_ENV+=("$name=$v")
-    elif [[ "$on" =~ ^[A-Za-z] ]]; then OPT_FLAGS+=("$name" "$v")
+    elif [ -n "$on" ]; then OPT_FLAGS+=("$name" "$v")
     else OPT_FLAGS+=("$name"); fi
     if [ "$c" = on ]; then OPT_WORDS+=("$title"); else OPT_WORDS+=("$title ($c)"); fi
   done
@@ -347,7 +347,7 @@ opt_menu() {  # the menu's options screen: a number to change, Enter to go back
     mapfile -t ids < <(opt_ids)
     if ! [[ "$s" =~ ^[0-9]+$ ]] || [ "$s" -lt 1 ] || [ "$s" -gt ${#ids[@]} ]; then say "no option \"$s\""; continue; fi
     id=${ids[$((s - 1))]}; on=$(opt_col "$id" on)
-    if [[ "$on" =~ ^[A-Za-z] ]]; then
+    if [[ "$on" == "<"* ]]; then
       read -r -p "$id: a value ($on), off, or Enter for the default: " c || return 0
     else
       read -r -p "$id: 1 on, 2 off, Enter the default: " c || return 0

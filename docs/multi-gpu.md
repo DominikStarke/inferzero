@@ -43,21 +43,28 @@ Environment variables, read once per process (the one-GPU switches: [xe2-tuning.
 their partial results are summed after every layer. For one request it's the fast form on matching cards with good
 links, as every GPU works on every token.
 
-`runz --gpus N --split layer` gives each GPU whole layers instead (`zero/mgpu/engine_pp.h`, a stage engine per GPU):
-GPU 0 embeds the token and runs the first layers, hands its rows to GPU 1, and so on, and the last GPU runs the norm
-and the head. There are no sums per layer, only one hand-off between two GPUs per chunk or token.
+`runz --gpus N --split layer` and `serverz --gpus N --split layer` give each GPU whole layers instead
+(`zero/mgpu/engine_pp.h`, a stage engine per GPU). GPU 1 embeds the token and runs the first layers, then hands its
+rows to GPU 2, and so on. GPU 0 runs the last layers, the norm and the head. (GPU 0 has the head because the server
+drives the stage that has the logits, and its threads work on GPU 0.) There are no sums per layer, only one hand-off
+between two GPUs per chunk or token.
+- **In the server:** it drives the last stage, and each call that changes a conversation runs on the earlier stages
+  first, in layer order: prompt chunks, generation steps, `--slots` and their batched steps, binding a slot, resets
+  and snapshots (`zero/mgpu/tp_mirror.h`). `--ctx auto` sizes every stage on its own GPU and takes the smallest
+  context that all of them fit. A stopped request stops between prompt chunks, not inside one.
 - **What it is for:** links too slow for the sums (PCIe 3.0 without peer access, chipset x4 slots, two A770s on
   Windows), cards of different kinds, and models too big for one card without paging.
 - **What it is not:** faster than one card for a single request. A token visits the GPUs in turn, so generation runs
   at about one card's speed, a little less for the hand-offs.
-- **Choosing the cut:** `--tensor-split a,b,...` gives each GPU's share of the layers (e.g. `1,3`: a quarter on GPU 0).
-  The default is equal shares.
+- **Choosing the cut:** `--tensor-split a,b,...` gives each GPU's share of the layers, in GPU order (e.g. `1,3`: a
+  quarter on GPU 0, the last layers). The default is equal shares. The launchers' option "Multi-GPU by layers" sets
+  `--split layer`.
 - **Accuracy:** the same kernels on the same rows in the same order as one GPU, so the logits are the same bit for bit.
   Checked under `ARC_TP_SIM=1` (every stage on GPU 0) against one GPU, byte for byte over the prompt and every
   generated token: the 4B and the 27B, 2 and 3 stages, prompts of 40 and 2,290 tokens, chunk by chunk and layer-major
   (512-token chunks).
 - **Not yet:**
-  - the server (`serverz`);
+  - saved prompts and sessions in the server (as with the tensor split), images;
   - MoE models, MTP drafting, Gemma, Flash Next and DeepSeek;
   - the hand-off GPU to GPU (it goes through host memory now, ~20 KB a token for the 27B);
   - prompts pipelined over the GPUs, and two requests in flight (QUEUE, L2-L5).

@@ -193,8 +193,13 @@ inline std::string options_in_effect(const std::filesystem::path& exe_dir, const
     } else if (kind == "flag") {
       for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] != name) continue;
-        const bool takes = !on.empty() && isalpha((unsigned char)on[0]);
-        add(takes && i + 1 < args.size() ? title + " (" + args[i + 1] + ")" : title);
+        // (on: empty, a switch; "<GiB>", a value the user gives, shown; a word, the value that turns it on: --split
+        //  layer is "Multi-GPU by layers", --split tensor is the default and not named)
+        const std::string val = i + 1 < args.size() ? args[i + 1] : std::string();
+        if (on.empty()) add(title);
+        else if (on[0] == '<') add(title + " (" + val + ")");
+        else if (val == on) add(title);
+        else continue;
         break;
       }
     }

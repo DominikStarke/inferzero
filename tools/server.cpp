@@ -1022,7 +1022,8 @@ int main(int argc, char** argv) {
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
       {"--mtp-drafts", "a number, e.g. 3"}, {"--copy-draft", ""}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
       {"--kernels", "a folder"}, {"--session-cache-gb", "GiB, 0 = off"}, {"--session-dir", "a folder"},
-      {"--slots", "1..8"}, {"--gpus", "1..64"}, {"--no-swap", ""}, {"--no-web-tools", ""},
+      {"--slots", "1..8"}, {"--gpus", "1..64"}, {"--split", "tensor or layer"}, {"--tensor-split", "shares a GPU, e.g. 3,1"},
+      {"--no-swap", ""}, {"--no-web-tools", ""},
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
       {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
       {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
@@ -1143,6 +1144,16 @@ int main(int argc, char** argv) {
     else if (a == "--session-dir") so.sess_dir = next();
     else if (a == "--slots") so.eo.slots = std::clamp(to_int(a, next()), 1, 8);
     else if (a == "--gpus") so.gpus = std::clamp(to_int(a, next()), 1, 64);
+    else if (a == "--split") {  // (zero/mgpu: tensor, each layer's matrices over the GPUs; layer, ranges of layers)
+      const std::string v = next();
+      if (v != "tensor" && v != "layer") throw std::runtime_error(a + ": expected tensor or layer (got " + v + ")");
+      so.split_layer = v == "layer";
+    } else if (a == "--tensor-split") {  // (with --split layer: GPU g's share of the layers)
+      const std::string v = next();
+      so.shares.clear();
+      std::stringstream ss(v);
+      for (std::string t; std::getline(ss, t, ',');) so.shares.push_back(to_double(a, t));
+    }
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
     else if (a == "--whisper") whisper_opt = next(), whisper_given = true;
@@ -1260,7 +1271,7 @@ int main(int argc, char** argv) {
             "  -c, --ctx N|auto      context in tokens (default 40960; auto: the largest that fits the GPU memory)\n"
             "  --port P              port (default 8090);  --host H  address (default 127.0.0.1; 0.0.0.0: this network)\n"
             "  --mtp                 faster answers with the model's own drafts, the same text\n"
-            "  --gpus N              one model over N GPUs\n"
+            "  --gpus N              one model over N GPUs (--split layer: by layers; docs/multi-gpu.md)\n"
             "  --slots N             N conversations at once (1..8)\n"
             "  --precise             Qwen3.8 Flash Next's most accurate mode (prompts about half as fast)\n"
             "  --think-budget N      at most N reasoning tokens a reply\n"
@@ -1315,6 +1326,11 @@ int main(int argc, char** argv) {
             "  --gpus N              the model split over N GPUs (default 1; Qwen3.5 / 3.6 / 3.8 dense, the 35B-A3B, Flash\n"
             "                        Next and DeepSeek-V4.1; docs/multi-gpu.md): text chat with --slots and batched\n"
             "                        steps; no MTP / DFlash2, images, saved prompts or sessions yet\n"
+            "  --split tensor|layer  with --gpus: tensor (the default) splits each layer's matrices over the GPUs (fast on\n"
+            "                        matching, well-linked cards); layer gives each GPU a range of the layers (the last\n"
+            "                        ones on GPU 0), for a model one card cannot hold, at about one card's speed (Qwen\n"
+            "                        dense; text chat with --slots, as the tensor split)\n"
+            "  --tensor-split a,b,.. with --split layer: each GPU's share of the layers (GPU 0's first; default equal)\n"
             "  --slots N             hold N conversations at once (1..8, default 1), each with its own KV cache and states\n"
             "                        of --ctx tokens (auto: the context that fits N of them; MoE with experts on the\n"
             "                        SSD: 128K in all, at least 32K each); requests in different slots take turns step\n"
@@ -2575,7 +2591,7 @@ int main(int argc, char** argv) {
     //  the error. Not loaded again here: a GPU that hung keeps its memory and usually its fault until the driver
     //  resets it, so the way back is a restart of the server)
     std::shared_lock<std::shared_mutex> lk(swap_mu);
-    if (cur && cur->tp && cur->tp->broken() && rq.path == "/health")
+    if (cur && ((cur->tp && cur->tp->broken()) || (cur->pp && cur->pp->broken())) && rq.path == "/health")
       return rs.send(503, "application/json",
                      "{\"status\":\"error\",\"message\":\"a GPU failed or hangs: restart the server (zero-server restart)\"}");
     if (!cur) {  // (a chat request naming no model, or an unknown one, while none is loaded)

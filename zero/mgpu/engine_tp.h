@@ -1613,6 +1613,9 @@ class TpEngine {
   }
 };
 
+// (a layer split's half of the mirror: zero/mgpu/engine_pp.h)
+inline void pp_mirror_start(Engine& last, const std::function<void(Engine&)>& f);
+inline void pp_mirror_finish(Engine& last, bool threw);
 // ---- TpMirror (zero/mgpu/tp_mirror.h): a served shard 0's call on the other shards, then their logits joined
 inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g, int rows) {
   e_ = e;
@@ -1623,6 +1626,17 @@ inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g,
   g_ = g;
   rows_ = rows;
   uncaught_ = std::uncaught_exceptions();
+  if (e->pp_front_) {  // (a layer split: the earlier stages first, zero/mgpu/engine_pp.h)
+    pp_ = true;
+    try {
+      pp_mirror_start(*e, f);
+    } catch (...) {
+      --e->tp_depth_;
+      e_ = nullptr;
+      throw;
+    }
+    return;
+  }
   TpEngine& t = *e->tp_front_;
   if (t.broken()) {
     --e->tp_depth_;
@@ -1656,6 +1670,10 @@ inline void TpMirror::finish() {
   Engine& e = *e_;
   --e.tp_depth_;
   if (nested_) return;
+  if (pp_) {
+    pp_mirror_finish(e, std::uncaught_exceptions() > uncaught_);
+    return;
+  }
   zrt::tp_guarded = was_guarded_;
   TpEngine& t = *e.tp_front_;
   TpComm& c = t.comm();

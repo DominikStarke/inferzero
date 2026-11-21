@@ -21,6 +21,8 @@ grep -q '"xcpu":  "off"' "$T/options.json"; ok $? "json xcpu off"
 grep -q '"budget":  "12"' "$T/options.json"; ok $? "json budget 12"
 
 $L --opt budget --options > /dev/null 2>&1; [ $? -eq 2 ]; ok $? "budget without a value refused"
+$L --opt split_layer --options > /dev/null 2>&1; ok $? "split_layer on without a value accepted"
+$L --default-opt split_layer --options > /dev/null; ok $? "split_layer back to the default"
 $L --opt nosuch --options > /dev/null 2>&1; [ $? -eq 2 ]; ok $? "an unknown id refused"
 $L --opt 'budget=1"2' --options > /dev/null 2>&1; [ $? -eq 2 ]; ok $? "a quote refused"
 grep -q '"budget":  "12"' "$T/options.json"; ok $? "a refused change leaves the file"
@@ -51,6 +53,9 @@ c="${CMD[*]}"
 case "$c" in *"--copy-draft"*) r=0;; *) r=1;; esac; ok $r "copy_draft flag on the command line"
 case "$c" in *"--budget 12"*) r=0;; *) r=1;; esac; ok $r "budget 12 on the command line"
 case "$c" in *"--precise"*) r=1;; *) r=0;; esac; ok $r "a flag chosen off is left out"
+OPTC=([split_layer]=on)
+server_cmd /m.gguf 0
+case "${CMD[*]}" in *"--split layer"*) r=0;; *) r=1;; esac; ok $r "split_layer on -> --split layer (a word in on: its value, not a placeholder)"
 [ ${#OPT_ENV[@]} -eq 0 ]; ok $? "no env from flags"
 
 # the unit carries the env options

@@ -162,7 +162,7 @@ $optChanged = $false
 foreach ($s in @($Opt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
   $id, $val = $s.Trim() -split '=', 2
   $o = Find-Opt $id
-  if ($o.on -match '^[A-Za-z]' -and -not $val) { throw "-Opt ${id}: give its value, e.g. -Opt $id=12 ($($o.on))" }
+  if ($o.on -match '^<' -and -not $val) { throw "-Opt ${id}: give its value, e.g. -Opt $id=12 ($($o.on))" }
   $optChoice[$o.id] = if ($val) { $val.Trim() } else { "on" }
   $optChanged = $true
 }
@@ -190,7 +190,7 @@ function Opt-Effect {
     }
     $val = if ($c -eq "on") { $o.on } else { $c }
     if ($o.kind -eq "env") { $envs[$o.name] = $val }
-    elseif ($o.on -match '^[A-Za-z]') { $flags += @($o.name, $val) }
+    elseif ($o.on -ne "") { $flags += @($o.name, $val) }
     else { $flags += $o.name }
     $words += "$($o.title)$(if ($c -ne 'on') { " ($c)" })"
   }

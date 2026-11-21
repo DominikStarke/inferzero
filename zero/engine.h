@@ -129,6 +129,7 @@ struct EngineOptions {
   // a layer split (zero/mgpu/engine_pp.h, --split layer): this engine is a stage holding the layers [pp_begin, pp_end)
   // only; the first stage embeds, the last has the norm, the head and the MTP block; -1: every layer (no split)
   int pp_begin = 0, pp_end = -1;
+  int pp_size = 1;  // (the split's stage count: under ARC_TP_SIM a stage's memory checks take GPU 0's divided by it)
   // weights in host memory (iGPU: the same DRAM, read at ~91 % of device memory's speed, not counted in the GPU share),
   // GiB: < 0 automatic (a dense model whose weights fill more than 85 % of the share: Gemma 4 31B), 0 none
   double host_weights_gb = -1;
@@ -538,7 +539,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  18 Oct (docs/speed-progress.md): 35B UD-IQ4_XS at 131K keeps 81 % of the experts and answers as fast as at
     //  64K; Flash Next loses 2-6 % from 32K to 131K.)
     if (stream_ && opt.dry) {
-      const double left = (double)device_mem() / (tp_on() && getenv("ARC_TP_SIM") ? opt.tp_size : 1) - driver_slack() -
+      const double left = (double)device_mem() / (tp_on() && getenv("ARC_TP_SIM") ? opt.tp_size : opt.pp_size > 1 && getenv("ARC_TP_SIM") ? opt.pp_size : 1) - driver_slack() -
                           (double)gpu_bytes + (double)ctx_bytes(ctx) -
                           (double)snapshot_bytes() - (double)opt.stream_reserve;
       // (--slots N: 128K of context in all, each slot 128K / N; the floor of 3/4 only as far as it leaves every slot

@@ -299,7 +299,8 @@
       batch_.push_back({slots[b], b, 1, h.pos, h.rope_shift});
     }
     const int Mp = 16;
-    embed(toks.data(), B, Mp);
+    if (pp_first()) embed(toks.data(), B, Mp);
+    else pp_load(0, B, Mp, x_);  // (a layer split's later stage: the stage before's rows, zero/mgpu/engine_pp.h)
     // (DFlash2: every row's features go to the first accumulator; each slot's ring takes its row below)
     pos = 0;
     dfl_cap_lo_ = dfl_cap_base_ = 0;
@@ -308,11 +309,16 @@
     fail_point();
     const std::vector<BatchSeq> seqs = batch_;
     batch_.clear();
-    head_rows(0, B, out_norm_, nullptr);
-    if (batch_logits_host_.size() < (size_t)hp.n_vocab * B) batch_logits_host_.resize((size_t)hp.n_vocab * batch_rows_);
-    // (rows of n_logits(): the vocabulary, or a split model's shard of it)
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * B * 4, batch_logits_host_.data(), 0,
-                                 nullptr, nullptr));
+    if (pp_last()) {
+      head_rows(0, B, out_norm_, nullptr);
+      if (batch_logits_host_.size() < (size_t)hp.n_vocab * B) batch_logits_host_.resize((size_t)hp.n_vocab * batch_rows_);
+      // (rows of n_logits(): the vocabulary, or a split model's shard of it)
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * B * 4, batch_logits_host_.data(), 0,
+                                   nullptr, nullptr));
+    } else {  // (a stage before the last: its rows to the next one, no head)
+      pp_out_->assign((size_t)B * hp.hce(), 0.0f);
+      pp_save(0, B, x_);
+    }
     for (const BatchSeq& q : seqs) {
       point_to(q.slot);
       pos = q.pos;

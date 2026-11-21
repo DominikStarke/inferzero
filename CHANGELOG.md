@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-11-21: the layer split in the server (`serverz --gpus N --split layer`)
+
+- **`serverz --gpus N --split layer`** (and `--tensor-split a,b,...`) serves a model split by layers, as runz runs
+  it. The server's text chat works on it as on the tensor split: prompts, generation, `--slots` with their batched
+  steps.
+  - `--ctx auto` sizes every GPU's stage on that GPU and takes the smallest context that all of them fit.
+  - The server drives the last stage, and each call that changes a conversation runs on the earlier stages first.
+- **The GPUs' order changed, in runz too:** GPU 0 now holds the last layers and the head, and GPU 1 the first layers
+  (the server's threads work on GPU 0). `--tensor-split` shares are in GPU order, so the first share is GPU 0's (the
+  last layers).
+- A split that fails to load (not a Qwen dense model, not enough memory) loads on one GPU instead, as the tensor split
+  does. A GPU failing in the middle of a call leaves the split broken until the server restarts, and `/health` says so.
+- The launchers, `zero-server -Opt split_layer` and Docker's `OPTIONS=split_layer` get it as the option "Multi-GPU by
+  layers".
+- The same answers as one GPU: under `ARC_TP_SIM`, the 4B's answers to two prompts were the same text for 2 and 3
+  stages, one at a time and two at once (batched steps), and runz's logits stayed byte for byte one GPU's.
+- The options catalog now marks a value the user gives in angle brackets (`budget`: `<GiB>`). A word there is the
+  value that turns the option on (`split_layer`: `layer`). Before, any word read as "needs a value", so `-Opt
+  split_layer` would have been refused.
+- Not yet: saved prompts and sessions (off with either split), images, `--mtp`, MoE models.
+
 ## 2026-11-21: split a model over GPUs by layers (`--split layer`, runz, first form)
 
 - **`runz --gpus N --split layer`** gives each GPU whole layers instead of a part of every layer. GPU 0 embeds the

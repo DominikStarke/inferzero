@@ -66,7 +66,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Measured:** KL against f32 under 0.015 (the default mode up to ~0.02 on text work).
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
 
-## Resident weights (`--budget GiB`)
+## Resident weights (`--budget <GiB>`)
 
 - **What it does:** Keep the decoded weights on the card up to this many GiB, instead of decoding them for every prompt chunk.
 - **Default:** the card's free memory, by the model.
@@ -128,3 +128,14 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** the same, bit for bit.
 - **Measured:** an A750: the 4B's generation +4.6 % alone, +2.5 % on top of ARC_BATCH (hakangit, #72).
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
+
+## Multi-GPU by layers (`--split layer`)
+
+- **What it does:** With --gpus 2 or more: each GPU holds a range of the layers instead of a share of every layer, the rows passed from GPU to GPU; for a model one card cannot hold, or links too slow for the tensor split. --tensor-split a,b,... sets each GPU's share (GPU 0 holds the last layers).
+- **Default:** tensor (each layer's matrices over the GPUs).
+- **Best for:** multi-gpu, dense.
+- **Cost:** about one card's speed for one request (a token visits each GPU in turn).
+- **Output:** the same, bit for bit.
+- **Measured:** bit for bit against one GPU (ARC_TP_SIM, the 4B and 27B, 2 and 3 GPUs); an A770 pair not measured yet.
+- **Note:** needs --gpus 2 or more; Qwen dense only; no --mtp, images, saved prompts or sessions yet.
+- **More:** [docs/multi-gpu.md](multi-gpu.md), experimental.
