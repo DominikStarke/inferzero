@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21: batching on one Alchemist card under Linux, as the last release meant
+
+- **Fix (issue #72):** release 2026.11.21.05 meant to send an Alchemist card's kernels in recorded lists under Linux
+  too (`ARC_BATCH=64` by default), but on one GPU it didn't: GPU 0's default was still set only under Windows, so
+  only a split model's other GPUs got it.
+  - hakangit's A750 (i915) on .21.05 with no variable: MTP 68.2 tok/s (4B) / 55.3 (9B), the same as `ARC_BATCH=0`.
+    With `ARC_BATCH=64`: 88.4 / 68.5, which is now the default. 128 gives the same (88.2 / 68.4).
+  - Every drafting run gave the plain run's tokens. Windows is unchanged: the same line, now on both.
+
 ## 2026-11-21: the kernel loops counted for any GPU
 
 - `tools\kernel_isa.ps1` compiles for any Intel GPU now (`-Device dg2-g10`, `bmg-g31`, `ptl-h` ...; `mtl` as

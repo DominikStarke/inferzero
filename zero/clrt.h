@@ -1189,10 +1189,10 @@ struct ClRt {
       static std::atomic<bool> said{false};
       if (!sg8 && !said.exchange(true))
         zlog::eprintf("inferzero: GPU 0 (%s): no 8-lane sub-groups, so the 16-lane kernels\n", name);
-#ifdef _WIN32
-      // (Alchemist: kernels in recorded lists by default, zrt::batch_max; GPU 0's from the same rule as the others')
+      // (Alchemist: kernels in recorded lists by default, zrt::batch_max; GPU 0's from the same rule as the others',
+      //  batch_default_for, on Windows and Linux. Until 2026-11-21 (release .21.06) this line was Windows-only, so
+      //  .21.05's Linux default reached only a split model's other GPUs: one A750 stayed unbatched, hakangit, #72)
       if (zrt::dev0.batch_def < 0) zrt::dev0.batch_def = sg8 && have0 && !(p0.flags & 1u) ? 64 : 0;
-#endif
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');
