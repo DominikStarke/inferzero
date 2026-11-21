@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-21: each encoder says what its GEMMs run on
+
+- The first time an image or audio encoder runs, the log says what its matrix products run on, for example `the vision
+  encoder (Qwen3-VL): int8 GEMMs, two passes, on the prompt GEMM (XMX)`, or `(DP4a)`, or `f16 GEMMs (vit_gemm_f16, no
+  XMX)`. That covers the Qwen3-VL and Gemma 4 vision encoders, the Qwen3 and Gemma 4 audio encoders, and Whisper. On a
+  card owner's log it answers whether the encoders already use the matrix engines, before work starts on putting them
+  there (QUEUE E0). Results are unchanged.
+
 ## 2026-11-21: a start-up check of the GPU's matrix kernels; the launcher's button to Intel's driver page
 
 - **A start-up self-check** for a bad driver whose version looks fine: runz and serverz put a small Q8_0 matrix (64

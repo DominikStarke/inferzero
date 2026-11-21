@@ -455,6 +455,9 @@
   // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
   // 140T preset's, checked apart and kept per kind by the caller (zero/engine.h): a failing H8 kernel then turns H8
   // off, not XMX (self audit 2026-11-08)
+  // what a prompt GEMM of this weight layout runs on (gemm_kernel's rule with xmx = -1), for the encoders' log lines
+  // (E0, 2026-11-21): XMX where it passed its check, on 8-lane GPUs only for the W8 layouts (>= 100)
+  const char* gemm_path_name(int qtype) const { return xmx_ && (!cl_.sg8 || qtype >= 100) ? "XMX" : "DP4a"; }
   // W3 (2026-11-21, QUEUE "a warning when the Intel driver is too old"): a start-up self-check of the GPU's matrix
   // kernels against the CPU, for a bad driver whose version looks fine. A Q8_0 matrix of 64 x 1,024 random values and
   // 4 x gemm_tm() tokens through the DP4a prompt GEMM, against the CPU's sums of the same int8 values in double; the
