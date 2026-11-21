@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: the expert-cache simulators in C++
+
+- `bench\cache_sim.cpp` replaces `zero/cache_sim.py` (routes recorded with `ARC_DUMP_ROUTES`), and
+  `bench\xtrace_sim.cpp` replaces `bench/xtrace_sim.py` (traces recorded with `ARC_XTRACE`). Build them with
+  `.\build.ps1 bench\cache_sim.cpp bench\xtrace_sim.cpp`; they also build with g++ on Linux.
+  - The same policies, options and tables as the .py files. xtrace_sim breaks ties the same way. cache_sim's `lfu`
+    now picks the smallest (layer, expert) among equally used victims; the .py took whichever its hash set listed
+    first, so on ties its lfu rows could differ a little.
+  - Checked on hand-made traces whose counts were worked out by hand: every policy of both tools gives the expected
+    misses. Then on the laptop's Flash Next (256-token prompt, 48 tokens): no policy beats the engine's LRU (slru
+    +0.3 to +5.1 %, fewest uses +0.1 to +5.5 %), and Belady's bound is -42.7 %, as the earlier study found.
+
 ## 2026-11-21: the prompt benchmark in PowerShell
 
 - `bench\prompt_bench.ps1` replaces `bench/prompt_bench.py`: the same request (one landing-page task on every model,

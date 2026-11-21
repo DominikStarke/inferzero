@@ -937,7 +937,7 @@ struct XCache {
     return true;
   }
   // ARC_XTRACE=file (diagnostics): every ensure() call appended to the file, for replaying cache policies offline
-  // (bench/xtrace_sim.py). Per process run: a header (magic, NL, NE, pools; per pool its slots and its keys in LRU
+  // (bench/xtrace_sim.cpp). Per process run: a header (magic, NL, NE, pools; per pool its slots and its keys in LRU
   // order, most recent first; then the layer -> pool map), then per call: layer, prompt flag, n, the n expert ids.
   FILE* trace_ = nullptr;
   bool trace_tried_ = false;
