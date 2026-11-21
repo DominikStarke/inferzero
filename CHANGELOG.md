@@ -9,6 +9,9 @@
   S4's protection (a page that can't be read is read again).
 - The package is the same bit for bit: the test model's package and expert file byte-identical the old way, the new
   way, and with read faults forced. `ARC_XBUILD_PREFETCH=0`: as before.
+- **A package is checked before it's used**: its GGUF is read back and compared with the source (its keys, its
+  tensor list, every kept tensor's bytes). One that differs is never put in place. A write gone wrong on a bad drive
+  then shows at once, not as a broken model later. `ARC_PACK_CHECK=0` skips it.
 
 ## 2026-11-21: less host work per generated token; an expert file's build survives a bad read
 

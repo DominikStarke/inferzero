@@ -116,6 +116,37 @@ struct Result {
   double seconds = 0;
 };
 
+// S8: the package GGUF at `path` against its source: a package, its kept tensors in order with the same names, types,
+// shapes and bytes, and the expert tensors listed as virtual. Throws on the first difference, naming it
+inline void verify_package(const GgufFile& src, const std::string& path, const std::vector<const GgufTensor*>& keep,
+                           const std::vector<std::string>& vnames) {
+  const auto t0 = std::chrono::steady_clock::now();
+  GgufFile pk(path);
+  auto bad = [&](const std::string& what) {
+    throw std::runtime_error("the package " + path + " came out wrong (" + what + "): not used; make it again, and if "
+                             "this repeats, put the models on another drive");
+  };
+  if (!pk.has("inferzero.package")) bad("no inferzero.package key");
+  if (pk.tensors.size() != keep.size() + vnames.size()) bad("its tensor count");
+  uint64_t bytes = 0;
+  for (const GgufTensor* t : keep) {
+    const GgufTensor* p = pk.find(t->name);
+    if (!p || !p->data) bad("tensor " + t->name + " missing");
+    if (p->type != t->type || p->dims != t->dims || p->nbytes != t->nbytes) bad("tensor " + t->name + "'s type or shape");
+    XBuildStopGuard::check("the package check " + path);
+    for (uint64_t o = 0; o < t->nbytes; o += 64ull << 20) {
+      const size_t n = (size_t)std::min<uint64_t>(64ull << 20, t->nbytes - o);
+      if (memcmp(p->data + o, t->data + o, n) != 0) bad("tensor " + t->name + "'s bytes from " + std::to_string(o));
+    }
+    plat::release_mapped(t->data, (size_t)t->nbytes);
+    bytes += t->nbytes;
+  }
+  for (const std::string& v : vnames)
+    if (!pk.find(v)) bad("expert tensor " + v + " not listed");
+  zlog::eprintf("inferzero: the package checked against its source: %zu tensors, %.2f GB the same, %.1f s\n", keep.size(),
+                bytes / 1e9, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+}
+
 // Writes the package of `source` (the first part of a split model, or the only file) under packages_dir().
 inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   namespace fs = std::filesystem;
@@ -320,6 +351,17 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     st.open_or_build(src, source, pre, n_exp, r.experts);
     if (!st.built) zlog::eprintf("inferzero: the expert file was already there: %s\n", r.experts.c_str());
     r.expert_bytes = st.file_bytes;
+  } catch (...) {
+    drop_tmp();
+    throw;
+  }
+  // S8 (2026-11-21): the package GGUF read back before it takes its name: its keys, its tensor table and every kept
+  // tensor's bytes against the source's. A package that differs is never put in place (a write that went wrong
+  // silently: a bad drive, a filesystem that dropped bytes). ARC_PACK_CHECK=0 skips it (it reads the kept tensors of
+  // both files once more)
+  try {
+    static const bool check = !getenv("ARC_PACK_CHECK") || atoi(getenv("ARC_PACK_CHECK")) != 0;
+    if (check) verify_package(src, tmp, keep, vnames);
   } catch (...) {
     drop_tmp();
     throw;
