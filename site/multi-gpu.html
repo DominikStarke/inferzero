@@ -113,7 +113,7 @@ scripts/config --enable PCI_P2PDMA
 make olddefconfig
 grep P2PDMA .config        # must still say =y</pre>
         If <code>olddefconfig</code> turned it off again, a setting it needs is off: P2PDMA needs <code>ZONE_DEVICE</code>, which needs memory hot-plug and hot-remove (<code>MEMORY_HOTPLUG</code>, <code>MEMORY_HOTREMOVE</code>). Enable those the same way, then build and install the kernel as your distribution documents, and reboot into it.</li>
-      <li><b>Unraid:</b> its stock kernel lacks it. catduckgnaf rebuilt the same kernel (6.18.60) with <code>CONFIG_PCI_P2PDMA=y</code>, and direct copies worked (<a href="https://github.com/rizagp/inferzero/issues/59">#59</a>). They now publish it as an <a href="https://github.com/catduckgnaf/unraid-p2p-kernel/releases/tag/v1.0.0">experimental Unraid P2P kernel</a>, with checksums; this build has not been boot-tested yet, so keep a way back to the stock kernel.</li>
+      <li><b>Unraid:</b> its stock kernel lacks it. catduckgnaf rebuilt the same kernel (6.18.60) with <code>CONFIG_PCI_P2PDMA=y</code>, and direct copies worked (<a href="https://github.com/rizagp/inferzero/issues/59">#59</a>). They now publish it as an <a href="https://github.com/catduckgnaf/unraid-p2p-kernel/releases/tag/v1.0.0">experimental Unraid P2P kernel</a>, with checksums. Its Intel-only variant has been boot-tested by its author; the variant with NVIDIA modules has not. It's still experimental, so keep a way back to the stock kernel.</li>
     </ol>
   </div>
 </section>
