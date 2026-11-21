@@ -209,7 +209,7 @@
         stage_h_[r] = buf(stage_have_h_[r] = stage_need_h_[r]);
       }
     if (hp.ds41) alloc_ds41();
-    if (lm_prompts() && !hp.ds41) {
+    if (lm_prompts() && (!hp.ds41 || ds_lm_on())) {  // (DeepSeek-V4.1: with ARC_DS_LM only, zero/engine_ds41.h)
       // residual stream of a layer-major segment (+ one chunk of padding rows)
       lm_seg_ = lm_seg_for(ctx);
       const size_t rows = (size_t)lm_seg_ + max_chunk;
@@ -236,7 +236,7 @@
     x_host_.resize(M * hp.hce());
   }
   // tokens per layer-major prompt segment (Flash Next: 8192, its residual rows are 4 streams wide)
-  int lm_seg_for(int c) const { return std::max(max_chunk, std::min(c, hp.hc ? 8192 : 16384) / max_chunk * max_chunk); }
+  int lm_seg_for(int c) const { return std::max(max_chunk, std::min(c, hp.ds41 ? ds_lm_seg() : hp.hc ? 8192 : 16384) / max_chunk * max_chunk); }
   // Prompts longer than a chunk go layer by layer (forward_layer_major) with just-in-time or streamed weights, and,
   // since 2026-11-14, on a dense split model with resident weights when ARC_TP_OVERLAP=1 (or ARC_TP_LM=1, layer by
   // layer without the overlap, to measure the two apart): the overlap hides the sums behind the next chunk only in

@@ -628,7 +628,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (hp.ple_layer >= 0) ple_sync();
     struct DflCommit { Engine& e; int p0; ~DflCommit() { if (e.dfl_) e.dfl_commit_prompt(p0); } } dfl_commit{*this, pos};
     if (dfl_) dfl_window(pos, n);
-    if (lm_prompts() && n > max_chunk && !hp.n_ple && !hp.ds41) {
+    if (lm_prompts() && n > max_chunk && !hp.n_ple && (!hp.ds41 || ds_lm_on())) {
       // layer-major in segments of up to lm_seg_ tokens (each matrix is decoded once per segment)
       prog_total_ = n;
       for (int s0 = 0; s0 < n; s0 += lm_seg_) {
@@ -708,9 +708,16 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     }
     cl_mem ple_saved = ple_emb_;
     struct PleBack { cl_mem& p; cl_mem s; ~PleBack() { p = s; } } ple_back{ple_emb_, ple_saved};
+    // (DeepSeek-V4.1, ARC_DS_LM: each chunk's own RoPE tables, Engram rows, mixes and selections, zero/engine_ds41.h;
+    //  on any exception the buffers of before again)
+    struct DsBack { Engine& e; ~DsBack() { e.ds_use_chunk(0); } } ds_back{*this};
     for (int c = 0; c < nch; ++c) {
       x_ = x_views_[c];
       if (!ple_views_.empty()) ple_emb_ = ple_views_[c];
+      if (hp.ds41) {  // (ds_prepare's tables are of the chunk's positions)
+        ds_use_chunk(c);
+        pos = pos0 + c * max_chunk;
+      }
       if (pp_first()) embed(tokens + (size_t)c * max_chunk, chunk_T(c), chunk_Mp(c));
       else pp_load(pp_base_ + c * max_chunk, chunk_T(c), chunk_Mp(c), x_views_[c]);  // (a layer split's later stage)
     }
@@ -733,6 +740,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         if (!ple_views_.empty()) ple_emb_ = ple_views_[c];
         cur_T_ = chunk_T(c);
         pos = pos0 + c * max_chunk;
+        if (hp.ds41) ds_use_chunk(c);
         if (rp_seg) {
           rpos_ = from(rp_seg, (size_t)c * max_chunk * 3 * 4);
           use_rpos_ = 1;
@@ -771,6 +779,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     x_ = x_views_[nch - 1];
     cur_T_ = chunk_T(nch - 1);
     x_rows_ = cur_T_;
+    if (hp.ds41) ds_lm_end(nch - 1, chunk_Mp(nch - 1));  // (the head reads the last chunk's FFN mix)
     head(cur_T_);
     // leave the last chunk in x_ as the chunk-by-chunk path does (logits_at() reads its rows)
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, x_saved, 0, 0, (size_t)chunk_Mp(nch - 1) * hp.hce() * 4, 0, nullptr,

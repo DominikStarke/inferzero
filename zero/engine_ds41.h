@@ -41,6 +41,54 @@
   std::vector<int> ds_hist_;        // (the token ids before the current position, newest first, for the Engram hash)
   std::vector<float> ds_eng_host_;
 
+  // K1's rest (QUEUE row "Faster weight decoding"; ARC_DS_LM, opt-in): prompts longer than a chunk go layer by layer
+  // (forward_layer_major), so each matrix and each streamed expert is read once per segment instead of once per
+  // 1,024-token chunk. ARC_DS_LM=1: segments of 4,096 tokens; =N: N tokens (a multiple of the chunk); unset or 0:
+  // chunk by chunk as before. What a chunk carries from one layer to the next has a copy per chunk of the segment
+  // (DsChunkBufs): the RoPE tables and Engram rows (ds_prepare, at the chunk's position), the FFN site's mix (the next
+  // layer's attention input and the head read it), the indexer's selection (the layers that share an index source) and
+  // the candidate map. Within a layer the chunks run in order, so the window rings, the compressor's pending rows and
+  // the compressed caches see the same writes as chunk by chunk: the logits stay the same bit for bit.
+  // Its memory: the segment's residual streams (hc_n x n_embd floats a row, ~320 MB at 4,096 + one chunk on the real
+  // model) and the per-chunk copies, counted in ctx_buf_bytes.
+  static int ds_lm_env() {
+    static const int v = getenv("ARC_DS_LM") ? atoi(getenv("ARC_DS_LM")) : 0;
+    return v;
+  }
+  bool ds_lm_on() const { return hp.ds41 && ds_lm_env() > 0; }
+  int ds_lm_seg() const { return ds_lm_env() == 1 ? 4096 : std::max(ds_lm_env(), 1); }
+  struct DsChunkBufs {
+    cl_mem rt[2] = {}, eng[2] = {}, mixF = nullptr, sel = nullptr, nsel = nullptr, cand = nullptr;
+  };
+  std::vector<DsChunkBufs> ds_cb_;  // (ARC_DS_LM: one set a chunk view of the segment; [0] the buffers of before)
+  int ds_cb_cur_ = 0;
+  size_t ds_chunk_bytes(size_t nb) const {  // (one set of DsChunkBufs, nb: blocks of the candidate map)
+    const size_t M = max_chunk;
+    return 2 * (M + kDsPad) * (hp.n_rot / 2) * 8 + ds_.ple_layers.size() * M * ds_.ncol * ds_.PD * 4 +
+           M * ds_.MIX * 4 + M * std::max(1, ds_.TOPK) * 4 + M * 4 + (M * nb + 3) / 4 * 4;
+  }
+  DsChunkBufs ds_cb_now() const {
+    DsChunkBufs b;
+    b.rt[0] = ds_rt_[0], b.rt[1] = ds_rt_[1], b.eng[0] = ds_eng_[0], b.eng[1] = ds_eng_[1];
+    b.mixF = ds_mixF_, b.sel = ds_sel_, b.nsel = ds_nsel_, b.cand = ds_cand_;
+    return b;
+  }
+  void ds_use_chunk(int c) {
+    if (ds_cb_.empty() || c == ds_cb_cur_) return;
+    const DsChunkBufs& b = ds_cb_.at(c);
+    ds_rt_[0] = b.rt[0], ds_rt_[1] = b.rt[1], ds_eng_[0] = b.eng[0], ds_eng_[1] = b.eng[1];
+    ds_mixF_ = b.mixF, ds_sel_ = b.sel, ds_nsel_ = b.nsel, ds_cand_ = b.cand;
+    ds_cb_cur_ = c;
+  }
+  // after a pass: the last chunk's FFN mix where the head and logits_at() read it, the buffers of before back
+  void ds_lm_end(int last, int Mp) {
+    if (ds_cb_.empty()) return;
+    if (last > 0 && Mp > 0)
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, ds_cb_.at(last).mixF, ds_cb_[0].mixF, 0, 0, (size_t)Mp * ds_.MIX * 4, 0,
+                                   nullptr, nullptr));
+    ds_use_chunk(0);
+  }
+
   // the clamped SwiGLU's define (empty for every other model)
   std::string ds_swi_defs() const { return hp.ds41 && ds_.clamp > 0 ? " -DSWI_CLAMP=" + flt_def(ds_.clamp) : std::string(); }
   static std::string flt_def(float v) {
@@ -266,7 +314,12 @@
     const size_t rows = (size_t)c / min_rt + 64;
     const size_t q = std::max<size_t>(1, std::min<size_t>(M, ((size_t)64 << 20) / rows));
     const size_t nb = (rows + ds_.cand_bs - 1) / ds_.cand_bs;
-    return q * rows * 4 + q * nb * 4 + (M * nb + 3) / 4 * 4;  // ds_sc_, ds_bsc_, ds_cand_
+    size_t n = q * rows * 4 + q * nb * 4 + (M * nb + 3) / 4 * 4;  // ds_sc_, ds_bsc_, ds_cand_
+    if (ds_lm_on()) {  // (ARC_DS_LM: the segment's residual streams and a set of DsChunkBufs a further chunk view)
+      const size_t seg = lm_seg_for(c), views = (seg + M) / M;
+      n += (seg + M) * hp.hce() * 4 + (views - 1) * ds_chunk_bytes(nb);
+    }
+    return n;
   }
 
   void alloc_ds41() {
@@ -307,6 +360,22 @@
     ds_ekv_ = buf(M * (d.HC + 1) * E * 4);
     for (size_t e = 0; e < d.ple_layers.size(); ++e) ds_eng_[e] = buf(M * d.ncol * d.PD * 4);
     ds_eng_host_.resize(M * d.ncol * d.PD);
+    ds_cb_.clear();
+    ds_cb_cur_ = 0;
+    if (ds_lm_on() && lm_prompts()) {  // (ARC_DS_LM: as many sets as alloc_buffers makes chunk views of x_all_)
+      const size_t views = ((size_t)lm_seg_for(ctx) + M) / M;
+      ds_cb_.push_back(ds_cb_now());
+      for (size_t v = 1; v < views; ++v) {
+        DsChunkBufs b;
+        for (int i = 0; i < 2; ++i) b.rt[i] = buf((M + kDsPad) * (hp.n_rot / 2) * 8);
+        for (size_t e = 0; e < d.ple_layers.size(); ++e) b.eng[e] = buf(M * d.ncol * d.PD * 4);
+        b.mixF = buf(M * d.MIX * 4);
+        b.sel = buf(M * std::max(1, d.TOPK) * 4);
+        b.nsel = buf(M * 4);
+        b.cand = buf((M * ds_nbmax_ + 3) / 4 * 4);
+        ds_cb_.push_back(b);
+      }
+    }
   }
 
   // Per chunk (from embed): the RoPE tables of positions pos - kDsPad .. pos + T - 1 (window layers plain, compressed
