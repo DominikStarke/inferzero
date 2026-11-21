@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-21: the server's log names the options in effect
+
+- At start, serverz writes one line naming the speed and accuracy options in effect, by their titles:
+  `options: CPU experts: off; Resident weights (3); Copy drafting; Kernels sent in lists`, or `none (the defaults)`.
+  - It names any option set, however it was chosen: either launcher, `zero-server -Opt`, Docker, or by hand.
+  - The catalog (`scripts/options.tsv`) is read from the package.
+  - A value the catalog doesn't name shows as `(NAME=value)`.
+
 ## 2026-11-21: the speed and accuracy options in the Linux launcher
 
 - **`zero-launcher.sh` has the options** (those in `scripts/options.tsv`, as on Windows):

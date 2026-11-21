@@ -1433,6 +1433,7 @@ int main(int argc, char** argv) {
   if (so.eo.kernel_dir == "kernels" || so.eo.kernel_dir == "zero/kernels") so.eo.kernel_dir = find_dir(so.eo.kernel_dir);
   if (so.webui.empty()) so.webui = find_dir("webui");
   srvstart::print(exe_dir, false);  // (the log's first lines: build, system, switches; tools/server_startup.h)
+  srvstart::print_options(exe_dir, std::vector<std::string>(argv + 1, argv + argc));  // (the catalog's options, in words)
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
   // -m none: speech to text only (transcripts), a chat model loaded later by the first request naming one; with no
   // speech option given, Qwen3-ASR alone (the default transcript model, ~3.7 GB of GPU memory)
