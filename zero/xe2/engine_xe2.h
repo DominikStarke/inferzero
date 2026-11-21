@@ -109,6 +109,21 @@
     if (xehpc_ < 0) xehpc_ = !zrt::integrated() && !cl_.sg8 && zrt::xehpc() ? 1 : 0;
     return xehpc_ == 1;
   }
+  // A discrete Battlemage card of the B60's die (BMG-G21: the Pro B60, the B580, the B50; at most 1,280 GPU threads,
+  // against a Pro B70's 2,048), 2026-11-21: its own defaults where two B60s measured them, each bit-identical:
+  //  - the prompt GEMM's tile 64 x 32 with 8 column sub-groups a work-group, the 2D form's prefetch 1 chunk ahead
+  //    (engine_xw.h xw_tm / xw_nc / xw_wgx / xw_pfd_v): skipzx-lab's phase X (issue #57, Linux, ec99a4a), the 27B
+  //    512 / 4K / 32K prompt 1,109.9 / 1,872.5 / 1,619.3 -> 1,171.8 / 1,954.2 / 1,680.0 tok/s (+5.6 / +4.4 / +3.7 %),
+  //    logits the same at each, 0.0 % drift; the start check proves the form bit for bit as any other;
+  //  - the one-token GEMVs' rows by type, not by the thread count (ARC_GEMV_WAVE's single-token part, xe2_gemv_rows):
+  //    the 27B's generation +3.5 % (skipzx-lab, Linux, 23.29 -> 24.10 tok/s) and +2.4 % (MaineTim, issue #19,
+  //    23.36 -> 23.91), logits the same. Its 2-8-token part (MTP verification) stays, not measured apart.
+  // Each switch set by hand still wins.
+  mutable int g21_ = -1;
+  bool xe2_g21() const {
+    if (g21_ < 0) g21_ = !zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on() && zrt::hw_threads() <= 1280 ? 1 : 0;
+    return g21_ == 1;
+  }
   std::string xe2_moe_grf() const {
     static const char* e = getenv("ARC_MOE_GRF");  // (read once)
     const bool grf128 = e ? std::string(e) == "128" : (!zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on());
@@ -183,7 +198,9 @@
   }
   int xe2_gemv_rows(const GpuWeight& w, int rows) const {
     static const bool fixed = getenv("ARC_GVROWS") != nullptr;
-    const int t = fixed || xehpc_on() ? 0 : xe2_gemv_threads();  // (a Max: one row, as ARC_GVROWS=1, see xehpc_on)
+    static const bool wave_set = getenv("ARC_GEMV_WAVE") != nullptr;
+    // (a Max: one row, as ARC_GVROWS=1, see xehpc_on; the B60's die: by type, see xe2_g21)
+    const int t = fixed || xehpc_on() || (!wave_set && xe2_g21()) ? 0 : xe2_gemv_threads();
     if (t <= 0 || w.N <= t || w.N > 65536) return rows;
     return w.N <= 4 * t ? 4 : 1;
   }

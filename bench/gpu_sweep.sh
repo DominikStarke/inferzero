@@ -413,9 +413,12 @@ xw_all() {  # model
   done
   out="$(printf '%-26s' "defaults again (drift)")"; for c in "${CV[@]}"; do out+="$(printf ' %18s' "${D1[$c]} $(pct "${D1[$c]}" "${D0[$c]}")")"; done; echo "$out"
   for c in "${CV[@]}"; do
-    local b=-1 bv="${D0[$c]}"; ge "${D1[$c]}" "$bv" && bv="${D1[$c]}"
+    # (the bar is 2 % over the defaults, then the fastest form past it: a form had to beat the best one so far by 2 %,
+    #  so a later, faster one was not named; skipzx-lab's B60, issue #57)
+    local b=-1 bv=0 base="${D0[$c]}" thr; ge "${D1[$c]}" "$base" && base="${D1[$c]}"
+    thr="$(LC_ALL=C awk -v b="$base" 'BEGIN { print b * 1.02 }')"
     for ((i = 0; i < ${#SETS[@]}; i++)); do
-      [ "${HS[$i]}" = same ] && ge "${RR["$i|$c"]}" "$(LC_ALL=C awk -v b="$bv" 'BEGIN { print b * 1.02 }')" && { bv="${RR["$i|$c"]}"; b=$i; }
+      [ "${HS[$i]}" = same ] && ge "${RR["$i|$c"]}" "$thr" && ge "${RR["$i|$c"]}" "$bv" && { bv="${RR["$i|$c"]}"; b=$i; }
     done
     if [ "$b" -ge 0 ]; then echo "pp$c: ${NAMES[$b]} $(pct "$bv" "${D0[$c]}"): ${SETS[$b]}"
     else echo "pp$c: the defaults (no form 2 % faster with the same logits)"; fi

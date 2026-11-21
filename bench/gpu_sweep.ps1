@@ -318,8 +318,10 @@ function Xw-All([string]$m) {
   }
   $line = "{0,-26}" -f "defaults again (drift)"; foreach ($c in $cv) { $line += " {0,18}" -f ((F $d1[$c]) + " " + (Pct $d1[$c] $d0[$c])) }; Write-Output $line
   foreach ($c in $cv) {
-    $b = ""; $bv = [Math]::Max($d0[$c], $d1[$c])
-    foreach ($s in $sets.Keys) { if ($hash[$s] -eq "same" -and $r["$s|$c"] -gt $bv * 1.02) { $bv = $r["$s|$c"]; $b = $s } }
+    # (the bar is 2 % over the defaults, then the fastest form past it: a form had to beat the best one so far by 2 %,
+    #  so a later, faster one was not named; skipzx-lab's B60, issue #57)
+    $b = ""; $thr = [Math]::Max($d0[$c], $d1[$c]) * 1.02; $bv = 0
+    foreach ($s in $sets.Keys) { if ($hash[$s] -eq "same" -and $r["$s|$c"] -gt $thr -and $r["$s|$c"] -gt $bv) { $bv = $r["$s|$c"]; $b = $s } }
     Write-Output ("pp{0}: {1}" -f $c, $(if ($b) { "$($sets[$b]) " + (Pct $bv $d0[$c]) + ": $b" } else { "the defaults (no form 2 % faster with the same logits)" }))
   }
   foreach ($s in $sets.Keys) { Write-Output ("  {0}: {1}" -f ($sets[$s] -split ' ')[0], $s) }

@@ -1,6 +1,6 @@
 # Tuning on Arc B-series GPUs (Xe2: B580, Pro B60, Pro B70), the B390, the Arc 140T and Alchemist
 
-The defaults per kind of GPU (2026-11-18, from the code: `zero/xe2/engine_xe2.h`, `engine_xw.h`, `zero/engine_h8.h`,
+The defaults per kind of GPU (2026-11-18, the B60's die 2026-11-21, from the code: `zero/xe2/engine_xe2.h`, `engine_xw.h`, `zero/engine_h8.h`,
 `engine_load.h`, `engine_sessions.h`). "Qwen dense" is Qwen3.5 / 3.6 / 3.8 without experts; MoE models, Gemma 4,
 Flash Next and Qwen3 keep the plain XMX or DP4a GEMM. An iGPU takes its XMX defaults only where XMX passed its
 start-time checks, the speed check included; one that failed runs as a GPU without XMX.
@@ -10,10 +10,10 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | XMX for the prompt GEMMs | on (checked bit for bit at start) | on if the speed check finds it faster | only in the 140T preset (`ARC_XMX_FORCE=1`: `gemm_x8`) | the 140T preset; other models `gemm_x8` if the speed check finds it faster | none |
 | `ARC_140T` (the preset) | – | – | on: Qwen dense, weights decoded just in time | on: Qwen dense; since 2026-11-18 also where the decoded weights would fit (unless `--budget` is given) | – |
 | `ARC_H8` | on: Qwen dense, 4 column groups | on: Qwen dense, 1 column group | in the preset (chunks of 512+ tokens) | in the preset | off |
-| `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
-| `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off | 1 / off | 2 / off | 2 / off | – |
+| `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64; the B60's die, B60 / B580 / B50, 64 x 32 since 2026-11-21) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
+| `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off (the B60's die: 8 / off) | 1 / off | 2 / off | 2 / off | – |
 | `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 0 (opt-in) | – (16 lanes only) | – | – |
-| `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form, 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |
+| `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form (the B60's die: 3 / 1), 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |
 | `ARC_XCPU` (the CPU computes MoE experts missing from the GPU cache, 2026-11-20; on any discrete 16-lane GPU, a Data Center Max too; since 2026-11-21 the same results run to run from the same cache state (the model's `.lru` file; a B60's three runs byte-identical, skipzx-lab #57); before, they moved with the copies' timing) | 1 (a B60 on PCIe 3.0 x8: Flash Next +17 %) | 0 (no gain: the iGPU reads RAM directly) | 0 | 0 (an A770 on x16: no gain) | 0 |
 | `ARC_GEMM_XW_GU` (gate + up in one launch, 2026-11-20) | 1 (a B60: +3.3 / +3.8 % at 4K / 16K, the same logits) | 0 (opt-in) | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PACK` | – | – | 3 | 3 | – |
@@ -29,7 +29,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_ATTN_XMX` / `ARC_ATTN_FX` | on / on | on / on | off / off | off / off | off / off |
 | `ARC_MOE_GEMM_PAD` (Flash Next) | on | off | off | off | off |
 | `ARC_GEMV_DB` / `ARC_GEMV_PF` | DB for dense models, PF for MoE models | off / off | off / off | off / off | off / off |
-| `ARC_GEMV_WAVE` / `_MT` | on / on | off | off | off | off |
+| `ARC_GEMV_WAVE` / `_MT` | on / on (the B60's die: off / on since 2026-11-21) | off | off | off | off |
 | `ARC_GDN_L1PF` | 2 | 0 | 0 | 2 | 0 |
 | `ARC_XALL` (MoE) | on | off | off | on | off |
 | `ARC_BATCH` | off | off | off | 64 on Windows | off |
@@ -1169,3 +1169,25 @@ with its own per-token scale, and runs each H8 GEMM a second time on it, adding 
 474 / 480, the plain path's level. For exact work only: about twice the H8 GEMMs' time (the laptop's 4K prompt
 115-120 -> 62.5 tok/s, where the GEMMs are DP4a and most of the prompt), and a second activation buffer. Step 2, one
 kernel reading both planes against the same weights, waits on its speed on XMX cards (the 140V, the B390).
+
+## 18. The B60's die: its own prompt tile and GEMV rule (2026-11-21, skipzx-lab #57, MaineTim #19)
+
+Two Pro B60s ran the full sweep on the 27B IQ3_S. The B70's defaults were not the B60's best. The B60's die,
+BMG-G21, also makes the B580 and the B50; the engine tells it apart by its GPU threads, at most 1,280 against the
+B70's 2,048 (`xe2_g21`, `zero/xe2/engine_xe2.h`).
+
+- **The prompt GEMM, 64 x 32 tiles, 8 column sub-groups a work-group, the 2D prefetch 1 chunk ahead:** phase X
+  (skipzx-lab, Linux, ec99a4a) timed 336 forms of `gemm_xw` alone, then the best six in the model. This one was
+  the fastest at every context: 512 / 4K / 32K tokens 1,109.9 / 1,872.5 / 1,619.3 -> 1,171.8 / 1,954.2 / 1,680.0
+  tok/s (+5.6 / +4.4 / +3.7 %), the logits the same at each, the two default runs 0.0 % apart. As every form, it is
+  checked bit for bit at start; where C's 2D form differs on a driver, the start check rounds the product first
+  or takes the plain form, as before.
+- **Generation, the one-token GEMVs' rows by type again:** `ARC_GEMV_WAVE` picks rows from the thread count, which
+  took a B70 from 32.3 to 35.2 tok/s. On a B60 it costs: `ARC_GEMV_WAVE=0` was +3.5 % (skipzx-lab, 23.29 -> 24.10
+  tok/s) and +2.4 % (MaineTim, Windows, 23.36 -> 23.91), the logits the same. Its 2-8-token part, for MTP
+  verification, stays on: it was not measured apart.
+- **Not changed:** 4 drafts instead of 3 (+2.4 % on one B60, +0.5 % on the other), `ARC_GVROWS=4` (+2.7 %, below
+  `WAVE=0`).
+
+Each switch set by hand still wins: `ARC_GEMM_XW_TM=32 ARC_GEMM_XW_NC=4 ARC_GEMM_XW_WGX=4 ARC_GEMM_XW_PF=3
+ARC_GEMM_XW_PFD=2 ARC_GEMV_WAVE=1` is the B70's form on a B60.

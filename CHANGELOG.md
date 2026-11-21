@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: the B60's own defaults (prompt +4-6 %, generation +2-3 %), and the sweep's verdict
+
+- **A Pro B60, B580 or B50 (the B60's die) now has its own prompt GEMM tile:** 64 x 32 with 8 column sub-groups a
+  work-group, prefetching 1 chunk ahead. A B60's 27B prompt: 512 / 4K / 32K tokens 1,109.9 / 1,872.5 / 1,619.3 ->
+  1,171.8 / 1,954.2 / 1,680.0 tok/s, the same logits (skipzx-lab, #57).
+- **Its generation** picks the one-token GEMVs' rows by type again, not by the GPU's thread count (the B70's rule):
+  +3.5 % and +2.4 % on two B60s (23.29 -> 24.10, 23.36 -> 23.91 tok/s), the same logits (skipzx-lab #57, MaineTim
+  #19).
+- The B70 and every other GPU keep their defaults: the engine tells the B60's die apart by its 1,280 GPU threads.
+- **`bench/gpu_sweep` phase X named the wrong winner:** a form had to beat the best one so far by 2 %, so a later,
+  faster form was not named (on skipzx-lab's B60 it named x1 while x4 was faster at all three contexts). Now the bar
+  is 2 % over the defaults, and the fastest form past it wins.
+
 ## 2026-11-21: the layer split in the server (`serverz --gpus N --split layer`)
 
 - **`serverz --gpus N --split layer`** (and `--tensor-split a,b,...`) serves a model split by layers, as runz runs

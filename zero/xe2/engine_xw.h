@@ -38,7 +38,7 @@
   //  128 273.7, 32 x 16 at 256 298.6, 16 x 32 at 256 275.9, 32 x 32 at 256 257.9 tok/s; 16 lanes: 32 x 64 at 256)
   int xw_tm() const {
     static const int e = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 0;
-    const int def = 32;
+    const int def = xw_lanes() == 16 && xe2_g21() ? 64 : 32;  // (the B60's die: 64 x 32, see xe2_g21)
     if (e == 16 || e == 32 || e == 64) return e;
     if (e) { static std::once_flag said; std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_TM=%d not supported (16, 32 or 64): %d\n", e, def); }); }
     return def;
@@ -51,7 +51,7 @@
   }
   int xw_nc() const {
     static const int e = getenv("ARC_GEMM_XW_NC") ? atoi(getenv("ARC_GEMM_XW_NC")) : 0;
-    const int def = xw_lanes() == 8 ? 1 : 4;
+    const int def = xw_lanes() == 8 ? 1 : xe2_g21() ? 2 : 4;
     if (e == 0) return def;
     if (e == 1 || e == 2 || e == 4 || (xw_lanes() == 16 && (e == 6 || e == 8))) return e;
     static std::once_flag said;
@@ -98,7 +98,8 @@
     return !set && xehpc_on();
   }
   int xw_pf_v() const { return xw_pf_max_def() ? 2 : xw_pf_2d_def() ? 3 : xw_pf(); }
-  int xw_pfd_v() const { return xw_pf_max_def() ? 1 : xw_pf_2d_def() ? 2 : xw_pfd(); }
+  // (the B60's die: 1 chunk ahead in the 2D form, see xe2_g21)
+  int xw_pfd_v() const { return xw_pf_max_def() ? 1 : xw_pf_2d_def() ? (xe2_g21() ? 1 : 2) : xw_pfd(); }
   // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
   int xw_pf_eff() const {
     // (8 lanes, gemm_xw8: the weights' part by default in the 140T preset (p140_, also Alchemist cards) since
@@ -163,7 +164,7 @@
     }();
     // (a Data Center GPU Max: 8 by default, see xehpc_on in zero/xe2/engine_xe2.h)
     static const bool set = getenv("ARC_GEMM_XW_WGX") != nullptr;
-    if (xw_lanes() == 16) return !set && xehpc_on() ? 8 : v;
+    if (xw_lanes() == 16) return !set && (xehpc_on() || xe2_g21()) ? 8 : v;  // (the B60's die: 8, see xe2_g21)
     return v8 ? v8 : p140_ ? 2 : 1;
   }
   bool xw_lock() const {
