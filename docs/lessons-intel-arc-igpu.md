@@ -233,7 +233,7 @@ small spill can cost less than losing 3 of 7 threads per EU.
 the native binary; the module has to ask for it itself (`-ze-opt-large-register-file` in `zeModuleCreate`). Without
 that, decode attention at head size 256 spilled 4 KB per thread and took 3.6 instead of 1.9 ms per layer at 64K.
 
-**Reading the assembly** (`tools/kernel_isa.py`: Intel's `ocloc` compiles for Meteor Lake and disassembles; the
+**Reading the assembly** (`tools/kernel_isa.ps1`: Intel's `ocloc` compiles for Meteor Lake and disassembles; the
 driver's own binaries in inferzero's kernel cache can be disassembled the same way, and they differ from ocloc's newer
 compiler). The prompt GEMM's hot loop (W8 per-32 scales, 256 GRF) is 1,957 instructions per superblock, 52 % DP4a;
 136 `mach` + extra `mul` come from `sc * acc`, an int32 multiply this GPU emulates. Removing it (a 16-bit scale, or
