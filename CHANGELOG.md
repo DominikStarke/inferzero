@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-21: the A770's leaner prompt GEMM loop, on by default
+
+- **`ARC_GEMM_XW_PTR` is on by default on Alchemist cards** (A770, A750, A580; `=0` turns it off). It was opt-in in
+  2026.11.21.07.
+  - skipzx-lab's A770 (#45): the 27B's 4K prompt went 1,432 -> 1,528 tok/s (+6.7 %, the same in two rounds). The
+    three FFN GEMMs are 7-14 % faster. xw_peak went from 45 % of the card's peak to 49 %.
+  - The logits are the same bit for bit on the card.
+- iGPUs (the 140T) keep it opt-in until measured.
+- The same A770's driver has no `cl_intel_subgroup_buffer_prefetch`, so DeltaNet's L1 prefetch can't run on
+  Alchemist. That isn't a build-guard bug.
+
 ## 2026-11-21: 4 drafts a step on Alchemist cards
 
 - **Alchemist (A770, A750, A580) drafts 4 tokens a step by default with `--mtp`,** where it kept the 27B's 7.

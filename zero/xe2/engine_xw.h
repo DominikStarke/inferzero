@@ -305,9 +305,13 @@
   // copy with its addresses set once before the loop (gemm_xw8.cl -DXW_PTR). ocloc dg2-g10, the big tile's K loop:
   // 410 -> 184 instructions for its 33 DPAS (12.4 -> 5.6 each), no spill: the loop was bound by issuing them. The
   // same words to the same places: bit for bit, as the start check confirms
+  // On by default on Alchemist since 2026-11-21 (=0 off): skipzx-lab's A770 (xe, 150 W, .21.07, #45), the 27B 4K prompt
+  // 1,432.6 / 1,431.8 -> 1,527.8 / 1,528.0 tok/s (+6.7 %, rounds 0 / 1 / 0 / 1), down / up / gate 444.3 / 437.6 / 382.9
+  // -> 413.9 / 386.8 / 329.7 ms, xw_peak 103.5 -> 114.9 T "identical", the logits' sha256 the same. The 140T (an iGPU,
+  // whose big tile is opt-in): only with =1, until measured
   bool xw_ptr() const {
-    static const bool on = getenv("ARC_GEMM_XW_PTR") && atoi(getenv("ARC_GEMM_XW_PTR")) != 0;
-    return on;
+    static const int e = getenv("ARC_GEMM_XW_PTR") ? (atoi(getenv("ARC_GEMM_XW_PTR")) != 0 ? 1 : 0) : -1;
+    return e >= 0 ? e == 1 : cl_.sg8 && !zrt::integrated();
   }
   bool xw_big_on() const {
     static const int env = getenv("ARC_GEMM_XW_BIG") ? atoi(getenv("ARC_GEMM_XW_BIG")) : -1;
