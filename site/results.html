@@ -130,6 +130,7 @@
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 4,518 / 5,000 tok/s, 9B 2,794 / 3,249, 27B 1,131 / 1,205, 35B-A3B 1,830 / 2,966 (131K: 1,133, generation 35.4; its whole 262K context: 709 tok/s, then 32.3). Generation at a 128-token depth and a 256-token coding answer.</p>
     <p class="note">The 27B's Linux prompt (skipzx-lab, #45, cool runs with a pause between them): 1,217 tok/s at 4K before 2026.11.20; a tile per GEMM shape and the 32 x 16 GEMMs' reads one step ahead took it to 1,282-1,289 (16K 1,190), against 1,242 with the read-ahead off; a 32 x 32 tile through local memory with the epilogue a row at a time to 1,488 (16K 1,358), its GEMMs at 50 % of the card's int8 peak; as the default, 1,491 (16K 1,369; with it off 1,326). Drafting on a real coding prompt (ChatML, 256 tokens): 22.4 tok/s plain, 48.6 with MTP, 72.8 % of drafts accepted; the B60 in the same box 23.3 and 54.3, 92.6 %.</p>
     <p class="note">The 27B's generation is with kernels sent in recorded lists (<code>ARC_BATCH=64</code>), the default on Alchemist under Windows since 2026.11.18.08; 12.6-12.8 tok/s before. With it, the 27B's drafting no longer adds speed (20.4 tok/s against 21.4 plain on a 512-token prompt).</p>
+    <p class="note">The 27B on long real prompts (Linux, 150 W, skipzx-lab, #45, main 9053735, <code>--mtp --chunk 1024</code>): 42,430 tokens 963 tok/s, then 30.4 tok/s generated; at 92,605 tokens its buffers pass the card's 16 GB and it pages (617 / 11.2). The full sweep's generation phase on this card (xe driver): only <code>ARC_GVROWS=2</code> faster than the defaults (+2.5 %, the same logits).</p>
     <p class="note">The whole sweep of the prompt GEMM's forms (<code>bench\gpu_sweep.ps1 -Phases X</code>, release 2026.11.21.02, hansong80, Windows): the best form alone 109.8 TOPS (48 % of the int8 peak) against the default's 107.9; in the model none more than 2 % faster than the defaults at both 512 and 4K tokens (the drift between two default runs 3.8 % / 0.5 %): the defaults stay.</p>
   </div>
 </section>
@@ -142,7 +143,7 @@
       <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
       <tbody>
         <tr><td>Qwen3.5 4B</td><td class="n">4,607-4,615</td><td class="n">44.6-45.8</td><td class="n">68.4 <small>(MTP, 75 % of drafts accepted)</small></td><td>2026.11.21.01, its defaults</td></tr>
-        <tr><td>Qwen3.5 4B, the sweep's best switches <small>(<code>ARC_BATCH=128 ARC_GEMV_GU=1 ARC_GEMV_DB=1</code>)</small></td><td class="n">5,553 <small>(512: 2,821)</small></td><td class="n">70.8</td><td class="n">–</td><td>2026.11.21.02, the same logits as the defaults (46.0 / 5,353 / 2,465 there)</td></tr>
+        <tr><td>Qwen3.5 4B, the sweep's best switches <small>(<code>ARC_BATCH=128 ARC_GEMV_GU=1 ARC_GEMV_DB=1</code>; batching the default on Linux since 2026.11.21.05)</small></td><td class="n">5,553 <small>(512: 2,821)</small></td><td class="n">70.8</td><td class="n">88.2-88.8 <small>(MTP, the same tokens as plain)</small></td><td>2026.11.21.02, the same logits as the defaults (46.0 / 5,353 / 2,465 there)</td></tr>
       </tbody>
     </table></div>
     <p class="note">Generation at 128 tokens; drafting on a 26-token list prompt, the same 128 tokens as plain decoding. The card's own measured peaks (<code>gpu_bench</code>): 202 int8 XMX TOPS, 407 GB/s. The i915 driver: sending kernels in recorded lists (<code>ARC_BATCH</code>, the default on Alchemist under Windows) gives generation +45 % here; whether it becomes the Linux default too waits on an A770 with the xe driver.</p>
@@ -187,6 +188,7 @@
       <tbody>
         <tr><td>Ornith 1.5 35B-A3B Q4_K_M (a Qwen3.6 35B-A3B fine-tune)</td><td class="n">~1,670</td><td class="n">40-46</td><td>2026.11.16.16</td></tr>
         <tr><td>Gemma 4 26B-A4B QAT Q4_0</td><td class="n">~660</td><td class="n">33-38</td><td>2026.11.16.16</td></tr>
+        <tr><td>Qwen3.8 27B IQ3_S <small>(Docker on Ubuntu 24.04, Linux 6.18, xe driver)</small></td><td class="n">1,056-1,073 <small>4K</small></td><td class="n">13.2-13.5 <small>(30.3 with drafting, 3 drafts the best of 2-7)</small></td><td>2026.11.21.02, the full sweep: no switch faster than its default</td></tr>
       </tbody>
     </table></div>
     <p class="note">serverz answers of 400 tokens, prompts of a chat's size.</p>
@@ -210,6 +212,7 @@
       </tbody>
     </table></div>
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 7,174 / 7,007 tok/s, 9B 4,874 / 4,862, 27B 1,610 / 1,754, 35B-A3B 3,236 / 3,995; 128K: 4B 3,137, 27B 905, 35B-A3B 2,129. Flash Next's experts are streamed over the PCIe 3.0 x8 link; <code>ARC_XCPU=1</code> (pull request #55) computes the experts missing from the GPU's cache on the CPU.</p>
+    <p class="note">The 27B on long real prompts (the repository's docs as a question, Linux, skipzx-lab, #45, main 9053735, <code>--mtp</code>): 42,430 tokens 1,433 tok/s, then 39.5 tok/s generated; 92,605 tokens 1,075, then 34.4 (19.5 without drafting); 168,922 tokens 758, then 26.2.</p>
   </div>
 </section>
 
