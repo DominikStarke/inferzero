@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: an expert file's build goes on where it stopped
+
+- Writing a MoE model's expert file (once per model: Flash Next 52 GB, tens of minutes) began again from zero after
+  any stop. Now it goes on from the next layer, whether the stop was Ctrl+C, a stopped container, a power cut or a
+  full disk.
+  - After each layer the file is flushed to the drive, and a small `.tmp.done` file records where the next layer
+    starts.
+  - The next start takes it up only when that record and the `.tmp`'s header match this model's build exactly;
+    anything else is removed and built from zero, as before.
+- The finished file is the same bit for bit: a test model's expert file stopped after 2 of its 10 layers and finished
+  at the next start, byte-identical to one built in one go.
+- `ARC_XBUILD_RESUME=0` turns it off. (`ARC_XBUILD_TEST_STOP=N` stops a build after N layers, for tests.)
+
 ## 2026-11-21: a test for Flash Next's stray words: f16 keys alone, and a counter
 
 - **`ARC_FN_KV16=1`** (a test switch): Flash Next's default mode with one part of precise mode, the attention's K / V

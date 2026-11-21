@@ -166,13 +166,16 @@ struct XBuildStopGuard {
     const int sig = g_xbuild_sig.exchange(0);
     if (sig) std::raise(sig);
   }
-  static void check(const std::string& what) {
+  // (resumable: the expert file, whose .tmp is kept after a finished layer and taken up again at the next start, S2)
+  static void check(const std::string& what, bool resumable = false) {
     if (g_xbuild_stall.load())  // (S1: BuildWatch saw no data for its limit)
       throw std::runtime_error("the source drive stopped answering while writing " + what +
-                               ": its .tmp removed; copy the model to an internal SSD and start again");
+                               ": copy the model to an internal SSD and start again");
     if (g_xbuild_sig.load())
       throw std::runtime_error("stopped by " + std::string(g_xbuild_sig.load() == SIGTERM ? "SIGTERM" : "Ctrl+C / SIGINT") +
-                               " while writing " + what + ": its .tmp removed, the next start begins it again");
+                               " while writing " + what +
+                               (resumable ? ": the next start goes on from its last finished layer"
+                                          : ": its .tmp removed, the next start begins it again"));
   }
 };
 
@@ -607,52 +610,124 @@ struct ExpertStore {
     if (ok && package) check_autoround_expert_revision(*package, h.fingerprint);
     return same;
   }
+  // S2: where a stopped build of this file goes on. rs holds {kResumeMagic, 1, fp, file_bytes, layers, next layer,
+  // its offset}; the .tmp must be at least that long and begin with this build's header (hb, `first` bytes)
+  static constexpr uint32_t kResumeMagic = 0x31535258;  // "XRS1"
+  struct Resume { uint32_t magic, version; uint64_t fp, bytes, layers, next, off; };
+  bool resume_point(const std::string& tmp, const std::string& rs, uint64_t fp, const uint8_t* hb, uint64_t first,
+                    size_t& next, uint64_t& off) const {
+    static const bool on = !getenv("ARC_XBUILD_RESUME") || atoi(getenv("ARC_XBUILD_RESUME")) != 0;
+    if (!on) return false;
+    Resume r{};
+    {
+      FILE* f = fopen(rs.c_str(), "rb");
+      if (!f) return false;
+      const bool got = fread(&r, sizeof r, 1, f) == 1;
+      fclose(f);
+      if (!got) return false;
+    }
+    if (r.magic != kResumeMagic || r.version != 1 || r.fp != fp || r.bytes != file_bytes || r.layers != layers.size() ||
+        r.next > layers.size() || r.off < first || r.off > file_bytes || r.off % kAlign)
+      return false;
+    // (the next layer with experts starts at r.off; past the last one, r.off is the file's end)
+    size_t n = (size_t)r.next;
+    while (n < layers.size() && !layers[n].rec) ++n;
+    if (n < layers.size() ? layers[n].off != r.off : r.off != file_bytes) return false;
+    std::error_code e;
+    const uintmax_t have = std::filesystem::file_size(std::filesystem::path(tmp), e);
+    if (e || have < r.off) return false;
+    std::vector<uint8_t> h((size_t)first);
+    FILE* f = fopen(tmp.c_str(), "rb");
+    if (!f) return false;
+    const bool same = fread(h.data(), 1, h.size(), f) == h.size() && memcmp(h.data(), hb, h.size()) == 0;
+    fclose(f);
+    if (!same) return false;
+    next = n;
+    off = r.off;
+    return true;
+  }
+  static void write_resume(const std::string& rs, uint64_t fp, uint64_t bytes, uint64_t nlayers, size_t next, uint64_t off) {
+    const Resume r{kResumeMagic, 1, fp, bytes, nlayers, (uint64_t)next, off};
+    const std::string t = rs + ".new";
+    FILE* f = fopen(t.c_str(), "wb");
+    if (!f) return;  // (no record: a stop then begins again from zero, as before S2)
+    const bool ok = fwrite(&r, sizeof r, 1, f) == 1 && fflush(f) == 0;
+    fclose(f);
+    if (!ok || !plat::replace_file(t.c_str(), rs.c_str())) plat::remove_file(t.c_str());
+  }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
     XBuildStopGuard stop_guard;  // (before the .tmp's owner: it unwinds after the .tmp is removed; D1)
     const auto t0 = std::chrono::steady_clock::now();
     zlog::eprintf("inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
-    const std::string tmp = path + ".tmp";
+    const std::string tmp = path + ".tmp", rs = tmp + ".done";
     plat::KeepAwake awake;  // (S11: a laptop left alone slept mid-build)
     const plat::BuildLock lock(tmp + ".lock");  // (A9: held until the .tmp is renamed or removed below)
-    drop_stale_tmp(tmp, lock);                  // (S7)
-    need_free_space(path, file_bytes, "the expert file");  // (S3: before anything is written)
-    BuildWatch watch("the expert file", f.path, tmp);      // (S1: a drive that stops answering)
-    // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
-    // RAM (3.9 GB left, paging) on the 32 GB laptop
-    // (the .tmp file goes away if the build fails half way: it is as large as the expert file)
-    // (src/platform.h DirectWriter: unbuffered, write-through; Linux O_DIRECT)
-    struct Tmp {
-      plat::DirectWriter w;
-      std::string path;
-      bool done = false;
-      ~Tmp() {
-        w.close();
-        if (!done) plat::remove_file(path.c_str());
-      }
-    } out{{}, tmp};
-    if (!out.w.open(tmp.c_str())) {
-      out.done = true;
-      throw std::runtime_error("cannot write " + tmp);
-    }
-    auto put = [&](const void* p, uint64_t n) {
-      if (!out.w.write(p, n)) throw std::runtime_error("write failed: " + tmp);
-    };
-    // header (+ layer table), padded to the first layer's offset
+    if (!lock.held())
+      throw std::runtime_error("another inferzero is writing " + tmp + " now: wait for it to finish, or stop it");
+    // the header (+ layer table), padded to the first layer's offset
+    uint64_t first = kAlign;
+    for (auto& L : layers) if (L.rec) { first = L.off; break; }
+    uint8_t* hb = (uint8_t*)plat::page_alloc(first);  // (zeroed: the header's padding)
+    if (!hb) throw std::runtime_error("out of memory writing the expert file");
+    struct Free { void* p; size_t n; ~Free() { plat::page_free(p, n); } } free_hb{hb, (size_t)first};
     {
-      uint64_t first = kAlign;
-      for (auto& L : layers) if (L.rec) { first = L.off; break; }
-      uint8_t* hb = (uint8_t*)plat::page_alloc(first);  // (zeroed: the header's padding)
-      if (!hb) throw std::runtime_error("out of memory writing the expert file");
       Header h{kMagic, kVersion, fp, layers.size(), (uint64_t)n_expert, file_bytes};
       memcpy(hb, &h, sizeof h);
       memcpy(hb + sizeof h, layers.data(), layers.size() * sizeof(LayerInfo));
-      struct Free { void* p; size_t n; ~Free() { plat::page_free(p, n); } } free_hb{hb, (size_t)first};
-      put(hb, first);
     }
+    // S2 (2026-11-21): a build stopped after some layers (Ctrl+C, SIGTERM, a power cut, a full disk) goes on from the
+    // next layer: after each layer the .tmp is synced and `rs` says where the next one starts. Taken up only when
+    // `rs` names this build (fingerprint, size, layers) and the .tmp's header is this build's, byte for byte; the
+    // same bytes are written either way, so the file is the same. Anything else: the .tmp removed as before (S7)
+    size_t start_l = 0;
+    uint64_t pos = 0;
+    const bool resume = resume_point(tmp, rs, fp, hb, first, start_l, pos);
+    if (!resume) {
+      plat::remove_file(rs.c_str());
+      drop_stale_tmp(tmp, lock);  // (S7)
+    }
+    need_free_space(path, file_bytes - pos, "the expert file");  // (S3: before anything is written)
+    BuildWatch watch("the expert file", f.path, tmp);            // (S1: a drive that stops answering)
+    // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
+    // RAM (3.9 GB left, paging) on the 32 GB laptop
+    // (the .tmp file goes away if the build fails before its first layer is done; after it, it is kept for S2)
+    // (src/platform.h DirectWriter: unbuffered, write-through; Linux O_DIRECT)
+    struct Tmp {
+      plat::DirectWriter w;
+      std::string path, rs;
+      bool done = false, keep = false;
+      ~Tmp() {
+        w.close();
+        if (done) return;
+        if (keep) {
+          zlog::eprintf("%sinferzero: kept %s with its finished layers: the next start goes on from there\n",
+                        loadp::st().on ? "" : "\n", path.c_str());  // (the tools' layer counter is a \r line)
+          return;
+        }
+        plat::remove_file(path.c_str());
+        plat::remove_file(rs.c_str());
+      }
+    } out{{}, tmp, rs};
+    if (!(resume ? out.w.open_at(tmp.c_str(), pos) : out.w.open(tmp.c_str()))) {
+      out.done = true;
+      throw std::runtime_error("cannot write " + tmp);
+    }
+    out.keep = resume;
+    auto put = [&](const void* p, uint64_t n) {
+      if (!out.w.write(p, n)) throw std::runtime_error("write failed: " + tmp);
+      pos += n;
+    };
+    if (!resume) put(hb, first);
     const int G = 32;  // experts converted per batch (in parallel)
     size_t n_done = 0, n_all = 0;  // (layers with experts: the progress)
-    for (const std::string& p : prefixes) n_all += !p.empty();
     for (size_t l = 0; l < prefixes.size(); ++l) {
+      n_all += !prefixes[l].empty();
+      n_done += !prefixes[l].empty() && l < start_l;
+    }
+    if (resume)
+      zlog::eprintf("inferzero: going on with %s from layer %zu / %zu (%.1f of %.1f GB written before)\n", tmp.c_str(),
+                    n_done + 1, n_all, pos / 1e9, file_bytes / 1e9);
+    for (size_t l = start_l; l < prefixes.size(); ++l) {
       if (prefixes[l].empty()) continue;
       const LayerInfo& L = layers[l];
       Src m[3];
@@ -723,7 +798,7 @@ struct ExpertStore {
       if (pool_on && !pb.p) zlog::eprintf("inferzero: no %.0f MB for the expert file's read buffer: reading in place\n", pool_n / 1e6);
       if (pool) prefetch_batch(0);
       for (int e0 = 0; e0 < n_expert; e0 += G) {
-        XBuildStopGuard::check("the expert file " + path);
+        XBuildStopGuard::check("the expert file " + path, out.keep);
         const int ne = std::min(G, n_expert - e0);
         memset(buf, 0, (size_t)ne * L.rec);
         // where matrix i's rows are read from: the mapping from row 0, or this batch's copy from row lo_row[i]
@@ -771,15 +846,26 @@ struct ExpertStore {
       }
       // the layer's GGUF pages leave the working set (they stay in the standby list, which Windows can reuse)
       plat::trim_working_set();
+      // (S2: the layer on the drive, then the place the next one starts)
+      if (!out.w.sync()) throw std::runtime_error("write failed: " + tmp);
+      write_resume(rs, fp, file_bytes, layers.size(), l + 1, pos);
+      out.keep = true;
       ++n_done;
+      // (tests: ARC_XBUILD_TEST_STOP=N stops after N finished layers of this build as Ctrl+C would)
+      static const int test_stop = getenv("ARC_XBUILD_TEST_STOP") ? atoi(getenv("ARC_XBUILD_TEST_STOP")) : 0;
+      if (test_stop > 0 && !resume && n_done == (size_t)test_stop) g_xbuild_sig.store(SIGINT);
       if (loadp::st().on) loadp::step("writing the expert file (once per model)", (double)n_done, (double)n_all);
       else zlog::eprintf("\r  layer %zu / %zu", n_done, n_all);  // (the command-line tools: their own line)
     }
     if (!loadp::st().on) zlog::eprintf("\n");
     out.w.close();
+    if (pos != file_bytes)  // (every layer written: the offsets the layer table gives, end to end)
+      throw std::runtime_error("the expert file " + tmp + " came out " + std::to_string(pos) + " bytes, not " +
+                               std::to_string(file_bytes));
     if (!plat::replace_file(tmp.c_str(), path.c_str()))  // (an old file of the same name: replaced)
       throw std::runtime_error("cannot rename " + tmp + " (" + std::to_string(plat::last_error()) + ")");
     out.done = true;
+    plat::remove_file(rs.c_str());
     build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     built = true;
   }

@@ -371,6 +371,40 @@ class DirectWriter {
     return fd_ >= 0;
 #endif
   }
+  // An existing file, not truncated, written on from byte `off` (a 4 KB multiple): an expert file's build going on
+  // after a stop (S2, 2026-11-21)
+  bool open_at(const char* path, uint64_t off) {
+    close();
+#ifdef _WIN32
+    h_ = CreateFileA(path, GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (h_ == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)off;
+    if (!SetFilePointerEx(h_, li, nullptr, FILE_BEGIN)) {
+      close();
+      return false;
+    }
+    return true;
+#else
+    fd_ = ::open(path, O_WRONLY | O_DIRECT | O_CLOEXEC);
+    if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_WRONLY | O_CLOEXEC);
+    if (fd_ < 0) return false;
+    if (::lseek(fd_, (off_t)off, SEEK_SET) != (off_t)off) {
+      close();
+      return false;
+    }
+    return true;
+#endif
+  }
+  // what was written is on the drive (Windows: write-through already, the flush is cheap; Linux: O_DIRECT bypasses
+  // the cache but not the drive's own, fdatasync)
+  bool sync() {
+#ifdef _WIN32
+    return FlushFileBuffers(h_) != 0;
+#else
+    return ::fdatasync(fd_) == 0;
+#endif
+  }
   bool is_open() const {
 #ifdef _WIN32
     return h_ != INVALID_HANDLE_VALUE;
