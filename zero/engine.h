@@ -1262,7 +1262,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
     //  109.7 -> 104.4; 2 rows slower, 4 slower still (TheUniKian, issue #45, 2026-11-19). Bit-identical: a row's sums do
     //  not depend on its sub-group (the laptop's 8-lane path, the 27B's logits equal). ARC_GVROWS=N sets it)
-    //  Only where the kernels are not batched (ARC_BATCH off: Alchemist on Linux): with ARC_BATCH=64, the default on
+    //  Only where the kernels are not batched (ARC_BATCH off; Alchemist is batched by default on Windows and, since 2026-11-21, Linux): with ARC_BATCH=64, the default on
     //  Windows, the step is not bound by the kernels' time and the gain is gone (hansong80's A770, two rounds: unbatched
     //  12.62 -> 13.20 tok/s, +4.8 %; batched 21.40 -> 21.19, -0.6 %; issue #45)
     static const bool gvrows_env = getenv("ARC_GVROWS") != nullptr;

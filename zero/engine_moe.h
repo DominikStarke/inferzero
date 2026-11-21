@@ -364,11 +364,12 @@
     //      from run to run, ARC_XSPLIT=0 right; skipzx-lab). Here the finished row is copied into a GPU buffer,
     //      which the missed experts' kernels read instead: the same addresses, the same results bit for bit; one
     //      host wait more a split layer. ARC_XSPLIT_TAB=1: this; 2: only that wait (the row in host memory, a test);
-    //      0: as before. Default 1 on Alchemist (8-lane discrete cards), 0 elsewhere (Battlemage and the iGPUs gave
-    //      the right text)
+    //      0: as before. Default 1 on every GPU since 2026-11-21: first only on Alchemist, but a Panther Lake B390 under
+    //      Linux showed the same race (issue #74: Flash Next with a cold cache, KL against f32 0.88 mean / 10.3 max,
+    //      10 of 13 top tokens; with 1: 0.0075 / 0.026, 13 of 13, as ARC_XSPLIT=0). Nothing in it is Alchemist's: the
+    //      read is the same on every GPU. (Also no longer computed from the first engine's GPU for all of a split)
     if (tiles == xt_miss_ && xt_miss_) {
-      static const int xs_tab = getenv("ARC_XSPLIT_TAB") ? atoi(getenv("ARC_XSPLIT_TAB"))
-                                                         : (!zrt::integrated() && cl_.sg8 ? 1 : 0);
+      static const int xs_tab = getenv("ARC_XSPLIT_TAB") ? atoi(getenv("ARC_XSPLIT_TAB")) : 1;
       if (xs_tab == 1) {
         const size_t nb = (size_t)hp.n_expert * 8;
         if (!xt_tab_) xt_tab_ = buf(nb);

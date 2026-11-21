@@ -91,11 +91,11 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 ## Kernels sent in lists (`ARC_BATCH=64`)
 
 - **What it does:** A token's kernels sent to the GPU in recorded lists instead of one by one.
-- **Default:** 64 on Alchemist under Windows, off elsewhere.
+- **Default:** 64 on Alchemist (Windows and Linux), off elsewhere.
 - **Best for:** alchemist.
 - **Cost:** none.
 - **Output:** the same, bit for bit.
-- **Measured:** an A750 on Linux (i915): the 4B's generation 46.0 -> 66.6 tok/s (hakangit, #72); two A770s on Windows 12.7 -> 21.6.
+- **Measured:** an A750 on Linux (i915): the 4B 46.0 -> 66.6 tok/s, with MTP 68.4 -> 88.5 (hakangit, #72); an A770 on Linux (xe): no change (skipzx-lab, #45); two A770s on Windows 12.7 -> 21.6.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
 
 ## Gate and up in one launch (`ARC_GEMV_GU=1`)

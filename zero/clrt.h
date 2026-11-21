@@ -187,7 +187,7 @@ inline bool (*oom_hook)() = nullptr;
 // immediate list (copies, fills, barriers, waits) first appends the list being recorded (imm(), sync()). Kernels
 // that signal an event (profiling, ARC_ZE_WATCH) and ARC_ZE_SYNC_EACH go to the immediate list as before.
 // (the default without ARC_BATCH, set when GPU 0 is known (Ctx::init): 64 on Alchemist (a discrete GPU with 8-lane
-//  sub-groups) on Windows, 0 elsewhere. Two A770s on Windows, the 27B's generation 12.67 -> 21.58 and 14.33 -> 22.66
+//  sub-groups) on Windows and, since 2026-11-21, Linux; 0 elsewhere. Two A770s on Windows, the 27B's generation 12.67 -> 21.58 and 14.33 -> 22.66
 //  tok/s, the logits the same (hansong80, TheUniKian, issue #45, 2026-11-18): a kernel appended on its own cost
 //  33-44 us there (replay_probe), against 2.5 recorded. ARC_BATCH=0 turns it off)
 // (per GPU since 2026-11-20, tiered placement P0: each Dev's batch_def, set from that GPU's own kind when it opens
@@ -200,8 +200,11 @@ inline int batch_env() {
 inline int batch_max(const Dev& d) { return batch_env() >= 0 ? batch_env() : std::max(0, d.batch_def); }
 inline int batch_max();
 // a GPU's default: 64 on a discrete GPU with 8-lane sub-groups (Alchemist) under Windows, 0 elsewhere
+// (Linux too since 2026-11-21: an A750 with the i915 driver, the 4B's generation 46.0 -> 66.6 tok/s, with MTP 68.4 ->
+//  88.5 with GU / DB as well (hakangit, issue #72); an A770 with the xe driver neither gains nor loses (128: -0.5 %
+//  against a 1.7 % drift; skipzx-lab, #45). The same commands in the same order: the same results)
 inline int batch_default_for(ze_device_handle_t dev) {
-#ifdef _WIN32
+  {
   ze_device_properties_t p{};
   p.stype = ZE_STYPE_DEVICE_PROPERTIES;
   ze_device_compute_properties_t cp{};
@@ -211,10 +214,7 @@ inline int batch_default_for(ze_device_handle_t dev) {
   for (uint32_t i = 0; i < cp.numSubGroupSizes && i < ZE_SUBGROUPSIZE_COUNT; ++i) sg8 = sg8 || cp.subGroupSizes[i] == 8;
   if (getenv("ARC_NO_SG8") && atoi(getenv("ARC_NO_SG8")) != 0) sg8 = false;
   return sg8 && !(p.flags & 1u) ? 64 : 0;  // (flags bit 0: integrated)
-#else
-  (void)dev;
-  return 0;
-#endif
+  }
 }
 struct BatchFns {
   struct ListDesc { ze_structure_type_t stype; const void* pNext; uint32_t ordinal, flags; };

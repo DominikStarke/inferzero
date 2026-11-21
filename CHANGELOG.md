@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-21: streamed MoE right on every GPU; Alchemist sends kernels in lists on Linux too
+
+- **Fix (issue #74):** on a Panther Lake B390 under Linux, Flash Next generated broken text while its expert cache
+  was cold: stray CJK characters, words cut in the middle (KL against f32 0.88 mean, 10 of 13 top tokens). It was
+  the race of #56: a token's missed experts read their address row while the host was still writing it.
+  - The fix of #56 (the row copied to the GPU first, `ARC_XSPLIT_TAB=1`) was the default only on Alchemist. It is
+    the default on every GPU now. With it the reporter measured KL 0.0075 and 13 of 13 top tokens, the same as with
+    no split at all.
+  - The same results bit for bit where the race didn't strike (the laptop's Flash Next, 64 tokens after a 3,584-token
+    prompt). It costs one more host wait per split layer: about 4 % of generation on the laptop, whose experts stream
+    from its SSD.
+- **Alchemist cards (A770, A750, A580) under Linux send a token's kernels in recorded lists**, as under Windows since
+  2026-11-18.
+  - An A750 with the i915 driver: the 4B's generation 46.0 -> 66.3 tok/s (128 per list: 66.6), with MTP 68.4 -> 88.5
+    (hakangit, #72).
+  - An A770 with the xe driver: no change either way (skipzx-lab, #45).
+  - The same commands in the same order, so the same results. The one-row matrix-vector rule for unbatched Alchemist
+    no longer applies there (the same sums, other rows a sub-group).
+- `AGENTS.md`: no Python anywhere in the repository; every `.ps1` works in Windows PowerShell 5.1 and 7.
+
 ## 2026-11-21: every script reads text the same in Windows PowerShell 5.1 and PowerShell 7
 
 - 5.1 read a UTF-8 file without a BOM as the ANSI code page; 7 reads it as UTF-8. So a non-ASCII character in a
