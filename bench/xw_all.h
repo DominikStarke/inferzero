@@ -53,7 +53,8 @@ struct Cand {
     std::string e = "ARC_GEMM_XW_EPI2=" + std::to_string(epi2 ? 1 : 0);
     if (slm)
       e += " ARC_GEMM_XW_BIG=1 ARC_GEMM_XW_SLM_TILE=" + std::to_string(tm) + "x" + std::to_string(16 * nc) +
-           " ARC_GEMM_XW_SLM_WG=" + std::to_string(wgx) + "," + std::to_string(wgy) + " ARC_GEMM_XW_SLM_CPS=" + std::to_string(cps);
+           " ARC_GEMM_XW_SLM_WG=" + std::to_string(wgx) + "," + std::to_string(wgy) + " ARC_GEMM_XW_SLM_CPS=" + std::to_string(cps) +
+           " ARC_GEMM_XW_PTR=1";  // (the forms are timed with -DXW_PTR; an iGPU's engine has it off unless asked)
     else
       e += " ARC_GEMM_XW_BIG=0 ARC_GEMM_XW_TM=" + std::to_string(tm) + " ARC_GEMM_XW_NC=" + std::to_string(nc) +
            " ARC_GEMM_XW_WGX=" + std::to_string(wgx) + " ARC_GEMM_XW_DB=" + std::to_string(db) +

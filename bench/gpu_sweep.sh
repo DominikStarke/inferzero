@@ -175,7 +175,7 @@ TILES16=("32x64 (default)|" "32x32|ARC_GEMM_XW_NC=2" "32x96|ARC_GEMM_XW_NC=6" "3
 UNSET=()
 for item in "${GEN[@]}" "${PP[@]}" "${MOE[@]}"; do n="${item%%|*}"; [[ "$n" == ARC_* ]] && UNSET+=(-u "$n"); done
 UNSET+=(-u ARC_GEMM_XW_TM -u ARC_GEMM_XW_NC -u ARC_BENCH_RUNS -u ARC_GEMM_XW_BIG -u ARC_GEMM_XW_EPI2 -u ARC_GEMM_XW_DB
-        -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS)
+        -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS -u ARC_GEMM_XW_PTR)
 [ -n "$DEVICE" ] && export ZE_AFFINITY_MASK="$DEVICE"
 
 # progress on stderr (the results on stdout stay clean to paste): the phase, its step of the steps planned, the time so
