@@ -79,6 +79,10 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    how). Neither is tested yet: please report on GitHub how they run. If the GPU is not usable inside the
    container, `compose.yaml` has two commented lines to try: `ipc: host` first, `privileged: true` only if that is
    not enough (issue #40).
+   On Unraid there is also a community template, kept by catduckgnaf, not by this project: [the Inferzero
+   template](https://github.com/catduckgnaf/catduck-unraid-templates/blob/main/templates/inferzero.xml) and [its setup
+   notes](https://github.com/catduckgnaf/catduck-unraid-templates#inferzero), with an image built from release
+   2026.11.21.18 (issue #46). Its maintainer has started it on an Intel GPU host but not run a model with it yet.
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz`, `mgpu_probe`, `ref_forward` (the f32
 reference for KL checks) and `gpu_bench` into `bin/`. The benchmarks have Linux versions in bash: `bench/website_bench.sh`,
