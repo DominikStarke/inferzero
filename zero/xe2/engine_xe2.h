@@ -156,14 +156,23 @@
   bool xe2_g21_tile() const {
     if (g21t_ < 0) {
       g21t_ = xe2_g21() ? 1 : 0;
-      if (g21t_ && neo_ver() >= 2640) {
-        g21t_ = 0;
+      const int v = neo_ver();
+      if (g21t_ && v >= 2640) g21t_ = 0;
+#ifndef _WIN32
+      if (xe2_g21()) {  // (said in every case on Linux, the version read or not: issue #19's runs must show which rule ran)
         static std::once_flag said;
-        std::call_once(said, [v = neo_ver()] {
-          zlog::eprintf("inferzero: compute runtime %d.%02d: the B60's die takes the general prompt tile (its own 64 x 32 "
-                        "was 10 %% slower from 26.40, issue #19)\n", v / 100, v % 100);
+        const std::string drv = cl_.device_id.substr(cl_.device_id.rfind('|') + 1);
+        std::call_once(said, [&] {
+          if (!v)
+            zlog::eprintf("inferzero: compute runtime version not read (driver string \"%s\"): the B60's die keeps its 64 x "
+                          "32 prompt tile\n", drv.c_str());
+          else
+            zlog::eprintf("inferzero: compute runtime %d.%02d (%s): the B60's die takes %s\n", v / 100, v % 100, drv.c_str(),
+                          v >= 2640 ? "the general prompt tile (its own 64 x 32 was 10 % slower from 26.40, issue #19)"
+                                    : "its own 64 x 32 prompt tile");
         });
       }
+#endif
     }
     return g21t_ == 1;
   }
