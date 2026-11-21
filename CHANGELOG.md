@@ -8,7 +8,7 @@
   - Every `Get-Content` of a text file now says `-Encoding UTF8` (59 lines in 13 scripts).
   - Those two benchmarks' prompts are now the same in both. Under 5.1 they differ from before, so a 5.1 run from
     before this is not comparable with one after it; 7's are unchanged.
-- `tests	est_ps_compat.ps1` (in run_tests) parses every script with both, and refuses a `Get-Content` without
+- `tests\test_ps_compat.ps1` (in run_tests) parses every script with both, and refuses a `Get-Content` without
   `-Encoding`.
 
 ## 2026-11-21: the launcher's speed and accuracy options
