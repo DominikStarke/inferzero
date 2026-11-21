@@ -202,7 +202,7 @@ struct XCache {
     try {
       // (self audit 2026-11-20 A5: the background fills' copy list waited for, then it and its events destroyed: one
       //  list and 512 events were left behind at every model switch)
-      for (const Fill& F : fills_) ZE_CHECK(zeEventHostSynchronize(F.done, UINT64_MAX));
+      for (const Fill& F : fills_) zrt::event_wait(F.done);  // (guarded: a split model's abort ends it, then return)
       fills_.clear();
       zrt::sync();
     } catch (const std::exception&) {
@@ -586,7 +586,10 @@ struct XCache {
         //  the SSD 26-28 -> 13 GB a later request; with the fill in the tier, much of the tier held copies of what the
         //  cache had. ARC_XRAM_FILL=1: into the tier as before, =0: never)
         static const int fill_env = getenv("ARC_XRAM_FILL") ? (atoi(getenv("ARC_XRAM_FILL")) != 0 ? 1 : 0) : -1;
-        const bool fill_tier = fill_env >= 0 ? fill_env == 1 : st.ram_capacity() + (uint64_t)fill >= st.file_bytes;
+        // (against this GPU's share of the experts: a split model's cache and tier hold only its own [lo_, hi_);
+        //  the Researcher's review, 2026-11-21)
+        const uint64_t share = NE > 0 ? (uint64_t)((double)st.file_bytes * nloc() / NE) : st.file_bytes;
+        const bool fill_tier = fill_env >= 0 ? fill_env == 1 : st.ram_capacity() + (uint64_t)fill >= share;
         st.read(reqs, 0, false, fill_tier);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
           // A pinned source holds the layer's record, not its pool's padded slot.
@@ -607,7 +610,8 @@ struct XCache {
   // reads a victim slot), then signals its own; its slots stay out of the LRU list and its experts uncached (the CPU
   // takes them) until fill_commit sees that event, and the compute list waits on it before the next kernels (the
   // device-scope wait has the compute side see the copied memory, as for copy_event).
-  struct Fill { std::vector<std::pair<int, int>> ent; ze_event_handle_t start = nullptr, done = nullptr; };
+  // (layer, tok: where it was queued, for fill_commit_at)
+  struct Fill { std::vector<std::pair<int, int>> ent; ze_event_handle_t start = nullptr, done = nullptr; int layer = -1; uint64_t tok = 0; };
   std::deque<Fill> fills_;
   std::vector<uint8_t> fill_pend_;  // key -> in a batch not committed yet
   ze_command_list_handle_t fill_list_ = nullptr;
@@ -632,7 +636,7 @@ struct XCache {
     return e;
   }
   // layer l's experts ids[0..n): those in the RAM tier copied into victim slots in the background
-  void fill(int l, const int* ids, size_t n) {
+  void fill(int l, const int* ids, size_t n, uint64_t tok = 0) {
     if (pool_of.empty() || pool_of[l] < 0 || fills_.size() >= kFillMax) return;
     // (self audit 2026-11-20 A4: not while a deep prefetch runs on its thread: the least recent slot taken below could
     //  be one it is writing. A fill is only a head start for later tokens; the miss is computed by the CPU either way)
@@ -640,6 +644,7 @@ struct XCache {
     if (fill_pend_.empty()) fill_pend_.assign((size_t)NL * NE, 0);
     Pool& P = pools[pool_of[l]];
     Fill F;
+    F.layer = l, F.tok = tok;
     std::vector<std::pair<char*, const void*>> cp;
     for (size_t i = 0; i < n; ++i) {
       const int e = ids[i];
@@ -690,12 +695,27 @@ struct XCache {
   }
   // every batch in flight finished and committed (shrink, the destructor: no copy may still write a slot then)
   void fill_drain() {
-    for (const Fill& F : fills_) ZE_CHECK(zeEventHostSynchronize(F.done, UINT64_MAX));
+    for (const Fill& F : fills_) zrt::event_wait(F.done);  // (guarded, as fill_commit_at)
     fill_commit();
   }
   // the finished batches' experts entered as cached (most recent), the compute list waiting on their events first
   void fill_commit() {
-    while (!fills_.empty() && zeEventHostSynchronize(fills_.front().done, 0) == ZE_RESULT_SUCCESS) {  // (timeout 0: a query)
+    while (!fills_.empty() && zeEventHostSynchronize(fills_.front().done, 0) == ZE_RESULT_SUCCESS)  // (timeout 0: a query)
+      commit_front();
+  }
+  // At layer l of token tok, the batches queued at layers <= l of earlier tokens, waited for (ARC_XCPU, 2026-11-21:
+  // results the same run to run). Committing whatever had finished (fill_commit, a query) made which experts the CPU
+  // takes depend on the copies' timing, so a temp-0 output could differ between runs; now a token's split depends only
+  // on the tokens before it. The batches are queued in (token, layer) order, each one at least a token old when its
+  // layer comes again: the wait is for copies that have nearly always finished
+  void fill_commit_at(int l, uint64_t tok) {
+    while (!fills_.empty() && fills_.front().tok < tok && fills_.front().layer <= l) {
+      zrt::event_wait(fills_.front().done);  // (guarded: a split model's abort ends it, the Researcher's review)
+      commit_front();
+    }
+  }
+  void commit_front() {
+    {
       Fill& F = fills_.front();
       ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), nullptr, 1, &F.done));
       for (auto [key, s] : F.ent) {
@@ -812,6 +832,11 @@ struct XCache {
     ze_event_handle_t pev[2] = {zrt::copy_event(2), zrt::copy_event(3)};
     ZE_CHECK(zeEventHostReset(ev));
     pf_wait_[h] = X;
+    {  // (their RAM tier records taken here, in order: the thread takes none, ExpertStore::reserve)
+      std::vector<int> es;
+      for (const auto& t : todo) es.push_back(t.first);
+      st.reserve(X, es);
+    }
     // (the layer's record, not the pool's padded slot: a source in the RAM tier holds only the record)
     const uint64_t rec = st.layers[X].rec;
     try {
@@ -835,7 +860,7 @@ struct XCache {
         const size_t b1 = std::min(todo.size(), b0 + R);
         reqs.clear();
         for (size_t j = b0; j < b1; ++j) reqs.push_back({X, todo[j].first, base + (j - b0) * stage_rec});
-        st.read(reqs, 1);
+        st.read(reqs, 1, false, false);  // (no new tier records on this thread: reserved above)
         for (size_t j = b0; j < b1; ++j)
           ZE_CHECK(zeCommandListAppendMemoryCopy(cc, todo[j].second, reqs[j - b0].src, rec, nullptr, 0, nullptr));
         ZE_CHECK(zeCommandListAppendBarrier(cc, pe, 0, nullptr));
@@ -879,6 +904,7 @@ struct XCache {
     }
     if (pf_reqs_.empty()) return;
     pf_reads += pf_reqs_.size();
+    st.reserve(X, stage_e[h]);  // (their RAM tier records taken here, in order: the thread takes none)
     start_read();
   }
   // the reads of pf_reqs_ on the prefetch thread (an error goes to join(), not std::terminate); no thread: none
@@ -887,7 +913,7 @@ struct XCache {
       pf_ = std::thread([this] {
         const auto t0 = std::chrono::steady_clock::now();
         try {
-          st.read(pf_reqs_);
+          st.read(pf_reqs_, 0, false, false);  // (the tier records reserved by prefetch(), none taken here)
           for (const auto& r : pf_reqs_) stage_src[pf_half_].push_back(r.src);
         } catch (const std::exception& e) {
           pf_err_ = std::string("expert prefetch: ") + e.what();

@@ -304,9 +304,11 @@
         CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
       xt_hit_h_.assign(1, 0);
       xt_miss_h_.assign(1, 0);
-      if (xcpu) {  // (the background fills that finished: cached from here on)
+      if (xcpu) {  // (the background fills of this layer from earlier tokens: cached from here on, xcache.h fill_commit_at)
         const auto tf = std::chrono::steady_clock::now();
-        xc_->fill_commit();
+        if (L.il <= xcpu_prev_il_) ++xcpu_tok_;  // (a layer at or below the last one: the next token)
+        xcpu_prev_il_ = L.il;
+        xc_->fill_commit_at(L.il, xcpu_tok_);
         xcpu_fill_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf).count();
       }
       for (int t = 0; t < tl1[0] && t < NU; ++t) {
@@ -427,7 +429,7 @@
       const auto tf = std::chrono::steady_clock::now();
       std::vector<int> ids;
       for (auto& m : xmiss) ids.push_back(m.first);
-      xc_->fill(L.il, ids.data(), ids.size());
+      xc_->fill(L.il, ids.data(), ids.size(), xcpu_tok_);
       xcpu_fill_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf).count();
     }
     // (debug, ARC_DBG_MOE=layer: that layer's shared-expert output, its gate and the FFN output of the last row)

@@ -34,6 +34,8 @@ float* xcpu_y_ = nullptr;  // (host memory the GPU copies from: NU rows of n_emb
 uint8_t* xcpu_in_ = nullptr;  // (host memory the inputs are copied into)
 uint64_t xcpu_n_ = 0, xcpu_ram_ = 0;  // (experts computed; of them read from the RAM tier)
 double xcpu_ms_ = 0, xcpu_rd_ms_ = 0, xcpu_fill_ms_ = 0;  // (compute + copies; the input reads; fills and commits)
+uint64_t xcpu_tok_ = 1;           // (one-token steps counted, for the fills' fixed commit points: xcache.h fill_commit_at)
+int xcpu_prev_il_ = 1 << 30;      // (the last MoE layer of the step)
 
 // On by default on discrete Battlemage cards (16-lane, the B-series) since 2026-11-20 (the user): a Pro B60 on PCIe
 // 3.0 x8, Flash Next IQ3_S, a ~4,200-token prompt then 256 tokens, 22.5 -> 26.3 tok/s (+17 %, three pairs; skipzx-lab,

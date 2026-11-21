@@ -333,6 +333,21 @@ struct ExpertStore {
       ram_n_ = layers.size() * (size_t)n_expert;
       ram_rec_.reset(new std::atomic<char*>[ram_n_]);
       for (size_t i = 0; i < ram_n_; ++i) ram_rec_[i].store(nullptr, std::memory_order_relaxed);
+      ram_resv_.assign(ram_n_, nullptr);
+    }
+  }
+  // The tier's records for layer l's experts es, taken now on the caller's thread for reads a prefetch thread does
+  // next (read() with keep = false then fills these and takes no others). Which records enter the tier then depends
+  // only on the order of the calls, not on two threads' timing near the cap: ARC_XCPU, whose choice of experts
+  // follows the tier, gives the same results run to run (2026-11-21). A record not read leaves its slot pending.
+  void reserve(int l, const std::vector<int>& es) {
+    if (!ram_rec_ || l < 0 || (size_t)l >= layers.size()) return;
+    for (int e : es) {
+      if (e < 0 || e >= n_expert) continue;
+      const size_t key = (size_t)l * n_expert + e;
+      std::atomic<char*>& slot = ram_rec_[key];
+      if (slot.load(std::memory_order_acquire)) continue;  // (there, or being read)
+      if (char* home = ram_take(slot, layers[l].rec)) ram_resv_[key] = home;
     }
   }
   uint64_t ram_capacity() const {  // (the tier's size; 0: none)
@@ -371,7 +386,8 @@ struct ExpertStore {
     todo.clear(), at.clear();
     for (size_t i = 0; i < reqs.size(); ++i) {
       Req& r = reqs[i];
-      std::atomic<char*>& slot = ram_rec_[(size_t)r.layer * n_expert + r.expert];
+      const size_t key = (size_t)r.layer * n_expert + r.expert;
+      std::atomic<char*>& slot = ram_rec_[key];
       char* m = slot.load(std::memory_order_acquire);
       if (m && m != kPending) {
         r.src = m;
@@ -379,7 +395,10 @@ struct ExpertStore {
         if (to_dst) memcpy(r.dst, m, layers[r.layer].rec), r.src = r.dst;
         continue;
       }
-      char* home = m || !keep ? nullptr : ram_take(slot, layers[r.layer].rec);
+      // (a record reserve() set aside for this read: read into it and published below)
+      char* home = nullptr;
+      if (m == kPending && ram_resv_[key]) home = ram_resv_[key], ram_resv_[key] = nullptr;
+      else if (!m && keep) home = ram_take(slot, layers[r.layer].rec);
       todo.push_back({r.layer, r.expert, home ? home : r.dst});
       at.push_back(i);
     }
@@ -424,6 +443,9 @@ struct ExpertStore {
     return r;
   }
   std::unique_ptr<std::atomic<char*>[]> ram_rec_;  // (layer * n_expert + expert -> its record in RAM, kPending, null)
+  // (key -> the record reserve() set aside, until read() claims it: written before the prefetch thread starts, then
+  //  only by that thread for its own keys)
+  std::vector<char*> ram_resv_;
   size_t ram_n_ = 0;
   uint64_t ram_cap_ = 0, ram_used_ = 0, ram_left_ = 0;
   char* ram_next_ = nullptr;

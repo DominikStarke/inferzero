@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-11-21: ARC_XCPU's choice of experts no longer depends on timing; guarded waits; the RAM tier rule per GPU
+
+- **ARC_XCPU** (on by default on discrete 16-lane cards) computes on the CPU the experts that are missing from the
+  GPU's cache, and copies them into the cache in the background. Which experts the CPU takes depended on two kinds of
+  timing, so a temp-0 output could differ between two runs with the same start:
+  - the background copies were committed whenever they had finished (a query at every layer). Now each one is
+    committed at a fixed point: at its layer in the next token, after waiting for it, which it has nearly always
+    finished by then;
+  - near the RAM tier's cap, the main thread and the prefetch threads raced for its last records. Now the main
+    thread takes the records for each prefetch, in order, before its thread starts, and the threads take none.
+- **Checked on the laptop** (Flash Next, ARC_XCPU forced on, a 2 GiB tier, an 8 GiB cache, 256 tokens and 64
+  generated, every run from the same saved cache state): three runs byte-identical, 116 experts on the CPU each time.
+  The code before this was also identical there (115 each): on an iGPU the copies finish too quickly for the timing to
+  show. The race was seen on B-series cards over PCIe, where it is to be confirmed. With ARC_XCPU on, the results
+  differ from before by which expert the CPU takes (one in 116 here), within the KL measured for ARC_XCPU. Without it,
+  nothing changes.
+- Note for anyone comparing runs: the expert cache saves its contents at the end of a run (the model's `.lru` file)
+  and fills from it at the next start, so two runs start from different caches unless that file is the same.
+- The waits for the background copies honour a split model's abort, as the other waits do: a GPU that fails ends
+  the run with an error instead of hanging the other GPUs (the Researcher's review).
+- The start-up fill's RAM tier rule (`ARC_XRAM_FILL`) compares against each GPU's own share of the experts on a split
+  model, not the whole file (the Researcher's review). One GPU: unchanged.
+
 ## 2026-11-21: `ARC_XHIST=1`, the prompt's missing experts by tokens; `ARC_ATTN_X8=1` only where XMX passed its checks
 
 - `ARC_XHIST=1` (diagnostics): at the end of a run with streamed experts, the prompt's experts that were not in the
