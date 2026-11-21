@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $utf8 = New-Object Text.UTF8Encoding $false
-$lines = [IO.File]::ReadAllText((Join-Path $root "scripts\options.tsv"), $utf8) -split "`n" | Where-Object { $_ -ne "" }
+$lines = [IO.File]::ReadAllText((Join-Path $root "scripts\options.tsv"), $utf8) -split "\r?\n" | Where-Object { $_ -ne "" }  # (LF or CRLF)
 $cols = $lines[0] -split "`t"
 $rows = foreach ($l in $lines[1..($lines.Count - 1)]) {
   $v = $l -split "`t"
