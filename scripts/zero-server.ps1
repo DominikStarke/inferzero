@@ -196,20 +196,9 @@ function Opt-Effect {
   }
   return @{ envs = $envs; flags = $flags; words = $words }
 }
-# which kinds of PC this one is, from Windows' display adapters (the catalog's best_for words)
-function PC-Kinds {
-  $k = @()
-  $gs = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Intel" } | ForEach-Object { $_.Name })
-  foreach ($g in $gs) {
-    if ($g -match 'Arc\S* A\d{3}') { $k += "alchemist" }
-    elseif ($g -match 'Arc\S* (Pro )?B\d{2}[0-9]?\b' -and $g -notmatch 'B390') { $k += "b-series" }
-    elseif ($g -match '140V|130V|B390|Xe2') { $k += "igpu-xe2" }
-    elseif ($g -match '140T') { $k += "igpu-140t" }  # (Xe-LPG Plus: 8-lane XMX, the 140T preset)
-    elseif ($g -match 'Arc|Graphics') { $k += "igpu-xe-lpg" }
-  }
-  if (@($gs | Where-Object { $_ -match 'Arc\S* (Pro )?[AB]\d{2}' }).Count -gt 1) { $k += "multi-gpu" }
-  return @($k | Select-Object -Unique)
-}
+# which kinds of PC this one is (the catalog's best_for words): scripts\pc-kinds.ps1, shared with the launcher
+. (Join-Path $PSScriptRoot "pc-kinds.ps1")
+function PC-Kinds { Get-PcKinds }
 
 # ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
 # zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;

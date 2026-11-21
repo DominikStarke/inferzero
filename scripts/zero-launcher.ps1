@@ -458,19 +458,9 @@ function Read-OptChoice {
   if (Test-Path -LiteralPath $optJson) { try { (Get-Content -Encoding UTF8 -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
   return $c
 }
-# (as zero-server.ps1 PC-Kinds: which kinds of PC this is, from Windows' display adapters)
-$script:pcKinds = @()
-try {
-  $gs = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.Name -match "Intel" } | ForEach-Object { $_.Name })
-  foreach ($g in $gs) {
-    if ($g -match 'Arc\S* A\d{3}') { $script:pcKinds += "alchemist" }
-    elseif ($g -match 'Arc\S* (Pro )?B\d{2}[0-9]?\b' -and $g -notmatch 'B390') { $script:pcKinds += "b-series" }
-    elseif ($g -match '140V|130V|B390|Xe2') { $script:pcKinds += "igpu-xe2" }
-    elseif ($g -match '140T') { $script:pcKinds += "igpu-140t" }
-    elseif ($g -match 'Arc|Graphics') { $script:pcKinds += "igpu-xe-lpg" }
-  }
-  if (@($gs | Where-Object { $_ -match 'Arc\S* (Pro )?[AB]\d{2}' }).Count -gt 1) { $script:pcKinds += "multi-gpu" }
-} catch {}
+# (which kinds of PC this is: scripts\pc-kinds.ps1, shared with zero-server options)
+. (Join-Path $PSScriptRoot "pc-kinds.ps1")
+$script:pcKinds = @(); try { $script:pcKinds = @(Get-PcKinds) } catch {}
 $script:optBoxes = [ordered]@{}
 $kindWords = @{ "alchemist" = "Arc A-series cards"; "b-series" = "Arc B-series cards"; "igpu-xe2" = "Lunar Lake / Panther Lake";
   "igpu-140t" = "the Arc 140T"; "igpu-xe-lpg" = "Core Ultra (Meteor Lake)"; "multi-gpu" = "several GPUs" }
