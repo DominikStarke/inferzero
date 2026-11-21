@@ -134,7 +134,7 @@ function Show-Progress([string]$what) {
 $warmed = @{}
 function Invoke-Runz([string]$m, [string]$sset, [string[]]$a) {
   # (a saved run comes back as it was; a --dump-logits run is not saved, Hash-Of saves its hash)
-  $sf = if ($a -notcontains "--dump-logits") { Saved-Path "$m|$sset|$($a -join ' ')" ".txt" } else { "" }
+  $sf = if ($a -notcontains "--dump-logits") { Saved-Path "$($script:ph.name)|$m|$sset|$($a -join ' ')" ".txt" } else { "" }
   if ($sf -and (Test-Path $sf)) {
     Show-Progress ("(saved) " + $(if ($sset) { $sset } else { "defaults" }) + " " + ($a[0..([Math]::Min(3, $a.Count - 1))] -join " "))
     return @(Get-Content $sf -Encoding UTF8)
@@ -182,7 +182,7 @@ function Measure-It([string]$m, [string]$kind, [string]$sset) {
   if ($kind -eq "gen") { TG (Invoke-Runz $m $sset @("--bench-pp", "128", "--n", "128")) } else { Best-PP (Invoke-Runz $m $sset @("--bench-pp", "4096", "--n", "0")) }
 }
 function Hash-Of([string]$m, [string]$sset) {
-  $hf = Saved-Path "hash|$m|$sset" ".hash"
+  $hf = Saved-Path "hash|$($script:ph.name)|$m|$sset" ".hash"
   if (Test-Path $hf) { Show-Progress "(saved) the logits of $sset"; return (Get-Content $hf -Raw).Trim() }
   $f = Join-Path $tmp "l.bin"; Remove-Item $f -ErrorAction SilentlyContinue
   $null = Invoke-Runz $m $sset @("--text-file", $prompt, "--n", "8", "--dump-logits", $f)
@@ -280,7 +280,7 @@ function Xw-All([string]$m) {
   $xp = Join-Path $root "bin\xw_peak.exe"
   if (-not (Test-Path $xp)) { Write-Output "skipped: bin\xw_peak.exe not found (.\build.ps1 bench\xw_peak.cpp)"; return }
   $cv = Ctx-Values $m; if ($script:maxNote) { Write-Output $script:maxNote; $script:maxNote = "" }
-  $ms = @($cv | ForEach-Object { [Math]::Min($_, 4096) } | Sort-Object -Unique)  # (the chunk sizes the GEMMs see)
+  $ms = @($cv | ForEach-Object { [Math]::Floor([Math]::Min($_, 4096) / 32) * 32 } | Sort-Object -Unique)  # (the chunk sizes the GEMMs see, multiples of 32 as xw_peak takes them)
   $envf = Join-Path $state "xw_env.txt"; $rep = Join-Path $state "xw_report.txt"
   $xwExtra = @($XwArgs -split ' ' | Where-Object { $_ })
   if (-not (Test-Path $rep)) {

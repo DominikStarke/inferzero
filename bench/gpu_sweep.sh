@@ -215,7 +215,7 @@ run() {
   done
   # (a saved run comes back as it was; a --dump-logits run is not saved, hash_of saves its hash)
   local sf=""
-  if [[ " ${args[*]} " != *" --dump-logits "* ]]; then saved_path "$model|$sset|${args[*]}" ".txt"; sf="$SP"; fi
+  if [[ " ${args[*]} " != *" --dump-logits "* ]]; then saved_path "$PH_NAME|$model|$sset|${args[*]}" ".txt"; sf="$SP"; fi
   if [ -n "$sf" ] && [ -f "$sf" ]; then
     progress "(saved) ${sset:-defaults} ${*:1:4}"; cp "$sf" "$OUT"; progress_done; return 0
   fi
@@ -262,7 +262,7 @@ measure() {  # model kind sset -> R (tok/s)
   [ -n "$R" ] && [ "$R" != "0.0" ] && [ "$R" != "0.00" ] || R=0
 }
 hash_of() {  # model sset -> H
-  saved_path "hash|$1|$2" ".hash"; local hf="$SP"
+  saved_path "hash|$PH_NAME|$1|$2" ".hash"; local hf="$SP"
   if [ -f "$hf" ]; then progress "(saved) the logits of $2"; progress_done; H="$(cat "$hf")"; return; fi
   rm -f "$TMP/l.bin"
   run "$1" "$2" --text-file "$PROMPT" --n 8 --dump-logits "$TMP/l.bin"
@@ -371,7 +371,7 @@ xw_all() {  # model
   echo; echo "=== X. every form of the 8-lane XMX prompt GEMM (bin/xw_peak --all), then the best in the model at each context"
   [ -x "$xp" ] || { echo "skipped: bin/xw_peak not found (./build.sh xw_peak)"; return; }
   ctx_values "$model"; [ -n "$MAX_NOTE" ] && { echo "$MAX_NOTE"; MAX_NOTE=""; }
-  local ms; ms="$(for c in "${CV[@]}"; do [ "$c" -gt 4096 ] && echo 4096 || echo "$c"; done | sort -n -u | paste -sd, -)"
+  local ms; ms="$(for c in "${CV[@]}"; do [ "$c" -gt 4096 ] && echo 4096 || echo $((c / 32 * 32)); done | sort -n -u | paste -sd, -)"
   if [ ! -f "$rep" ]; then
     rm -f "$envf"  # (an interrupted xw_peak may have left part of it)
     phase_start "X" 1; progress "xw_peak --all (its own progress bar)"; progress_done
