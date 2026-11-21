@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: a start-up check of the GPU's matrix kernels; the launcher's button to Intel's driver page
+
+- **A start-up self-check** for a bad driver whose version looks fine: runz and serverz put a small Q8_0 matrix (64
+  x 1,024 random values) and a few tokens through the GPU's prompt GEMM, and compare with the CPU's result of the
+  same int8 values. A relative error past 1e-3, or a value that is not a number, gives the same warning as an old
+  driver: in the log, in the web UI's bar and in the launcher. It never refuses to start. It runs once per process and
+  takes a few milliseconds. The XMX kernels were already checked against this one at start, bit for bit, so this also
+  covers them. On the laptop (32.0.101.9175) the error is 1.7e-07. `ARC_SELF_CHECK=0` skips it; `=2` shows the
+  warning as if it had failed (a test).
+- **The Windows launcher** shows a bar with a button to Intel's driver page when the server reports an old driver or
+  a failed check, once per server start.
+
 ## 2026-11-21: ARC_XCPU's choice of experts no longer depends on timing; guarded waits; the RAM tier rule per GPU
 
 - **ARC_XCPU** (on by default on discrete 16-lane cards) computes on the CPU the experts that are missing from the

@@ -760,6 +760,11 @@ function Update-Status {
     if ($p -and $p.driver_warning) {
       $status.Text += "  |  OLD GRAPHICS DRIVER: answers may be wrong (details below)"
       $status.ForeColor = $Pal.warn
+      # (once per server start: a bar with a button to Intel's driver page, W2's last part, 2026-11-21)
+      if ($script:drvBarFor -ne $id) {
+        $script:drvBarFor = $id
+        Show-Bar "Windows Update may have installed an old Intel graphics driver: answers may be wrong. Install Intel's current driver, then restart." "warn" -Details $p.driver_warning -ActionText "Intel's driver page" -Action { Start-Process "https://www.intel.com/content/www/us/en/download/785597/intel-arc-iris-xe-graphics-windows.html" }
+      }
     }
   } elseif ($busyAct) {
     $status.Text = "Loading / stopping..."

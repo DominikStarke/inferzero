@@ -455,6 +455,93 @@
   // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
   // 140T preset's, checked apart and kept per kind by the caller (zero/engine.h): a failing H8 kernel then turns H8
   // off, not XMX (self audit 2026-11-08)
+  // W3 (2026-11-21, QUEUE "a warning when the Intel driver is too old"): a start-up self-check of the GPU's matrix
+  // kernels against the CPU, for a bad driver whose version looks fine. A Q8_0 matrix of 64 x 1,024 random values and
+  // 4 x gemm_tm() tokens through the DP4a prompt GEMM, against the CPU's sums of the same int8 values in double; the
+  // XMX kernels are compared with this one bit for bit by xmx_check. A relative error past 1e-3 or a value that is not
+  // finite gives the same warning as an old driver (the log, the web UI and the launchers, through driver_warning),
+  // never a refusal to start. Once per process, a few ms; ARC_SELF_CHECK=0 skips it, =2 warns as if it had failed
+  void gemm_self_check() {
+    static std::once_flag once;
+    std::call_once(once, [this] {
+      if (getenv("ARC_SELF_CHECK") && atoi(getenv("ARC_SELF_CHECK")) == 0) return;
+      const int M = 4 * gemm_tm(), N = 64, K = 1024, nsb = K / 256;
+      uint32_t seed = 2026112;
+      auto rndf = [&](float lo, float span) {
+        seed = seed * 1664525u + 1013904223u;
+        return lo + (float)(seed % 100000) * (span / 100000.0f);
+      };
+      std::vector<float> w((size_t)N * K), x((size_t)M * K);
+      for (auto& v : w) v = rndf(-1.0f, 2.0f);
+      for (auto& v : x) v = rndf(-2.0f, 4.0f);
+      const std::vector<uint8_t> q = quantize_rows_q8_0(w.data(), N, K);
+      RepackedWeight rw;
+      repack_rows(GGML_Q8_0, q.data(), K, 0, N, rw);
+      std::vector<int8_t> aq((size_t)M * K);
+      std::vector<float> asc((size_t)(K / 32) * M);
+      std::vector<uint16_t> ab((size_t)(K / 16) * M);
+      quantize_act_cpu(x.data(), M, K, aq.data(), asc.data(), ab.data(), true);
+      // the CPU's result: the weights as stored, times the activations as quantized, in double
+      std::vector<float> wf((size_t)N * K);
+      const size_t rb = (size_t)nsb * gguf_sb_bytes(GGML_Q8_0);
+      for (int n = 0; n < N; ++n) dequant_row(GGML_Q8_0, q.data() + (size_t)n * rb, K, wf.data() + (size_t)n * K);
+      std::vector<double> ref((size_t)M * N);
+      double refmax = 0;
+      for (int m = 0; m < M; ++m)
+        for (int n = 0; n < N; ++n) {
+          double s = 0;
+          for (int k = 0; k < K; ++k)
+            s += (double)wf[(size_t)n * K + k] * ((double)aq[(size_t)m * K + k] * asc[(size_t)(k / 32) * M + m]);
+          ref[(size_t)m * N + n] = s;
+          refmax = std::max(refmax, std::fabs(s));
+        }
+      std::vector<float> got((size_t)M * N, 0.0f);
+      cl_mem bq = nullptr, bh = nullptr, ba = nullptr, bs = nullptr, bb = nullptr, bc = nullptr;
+      struct FreeAll {
+        Engine* e;
+        std::vector<cl_mem*> v;
+        ~FreeAll() { for (cl_mem* m : v) e->free_buf(*m); }
+      } free_all{this, {&bq, &bh, &ba, &bs, &bb, &bc}};
+      try {
+        bq = buf(rw.wq.size() * 4, rw.wq.data());
+        bh = buf(rw.wh.size() * 4, rw.wh.data());
+        ba = buf(aq.size(), aq.data());
+        bs = buf(asc.size() * 4, asc.data());
+        bb = buf(ab.size() * 2, ab.data());
+        bc = buf(got.size() * 4);
+        cl_kernel k = gemm_kernel(GGML_Q8_0, true, 0, 1);
+        int MM = M, NN = N, KK = K, ldc = N, coff = 0, acc = 0, rg = 1, s0 = 0, s1 = nsb;
+        set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, acc, rg, s0, s1);
+        size_t gws[2] = {(size_t)N * (M / gemm_tm()), 1}, lws[2] = {16, 1};
+        run("self_check", k, 2, gws, lws);
+        CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, got.size() * 4, got.data(), 0, nullptr, nullptr));
+      } catch (const std::exception& e) {
+        LOG_WRN("inferzero: the GPU self-check could not run (%s): not checked\n", e.what());
+        return;
+      }
+      double err = 0;
+      bool finite = true;
+      for (size_t i = 0; i < got.size(); ++i) {
+        if (!std::isfinite(got[i])) { finite = false; break; }
+        err = std::max(err, std::fabs((double)got[i] - ref[i]));
+      }
+      double rel = err / std::max(1e-9, refmax);
+      const double measured = rel;
+      const bool test = getenv("ARC_SELF_CHECK") && atoi(getenv("ARC_SELF_CHECK")) == 2;  // (=2: a test of the warning)
+      if (test) rel = 1.0;
+      if (finite && rel <= 1e-3) return;
+      char d[160];
+      if (test) snprintf(d, sizeof d, "a test: ARC_SELF_CHECK=2; measured %.2g", measured);
+      else snprintf(d, sizeof d, finite ? "a relative error of %.2g" : "values that are not numbers", rel);
+      LOG_WRN("inferzero: the GPU's matrix kernels gave wrong results in the start-up check (%s against the CPU): "
+              "answers will be wrong. Install Intel's current Arc / Core Ultra graphics driver\n", d);
+      std::lock_guard<std::mutex> g(ClRt::driver_warning_mu());
+      std::string& w8 = ClRt::driver_warning();
+      if (!w8.empty()) w8 += " ";
+      w8 += std::string("The GPU's matrix kernels gave wrong results in a start-up check (") + d +
+            " against the CPU): answers will be wrong. Install Intel's current Arc / Core Ultra graphics driver.";
+    });
+  }
   bool xmx_check(int mode = 0) {
     // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)
     // (N: 4 column groups, so ARC_GEMM_CG up to 4 is checked too)

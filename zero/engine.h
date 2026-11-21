@@ -402,6 +402,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  the start-time speed check on its small shape had picked XMX. Off, the GPU runs as with ARC_NO_XMX)
     //  (discrete cards with 8-lane DPAS, the Alchemist A-series: XMX checked, then timed on a model-sized GEMM in
     //  xmx_check as an iGPU is; no one has measured gemm_x8 on one. Self audit 2026-11-08: the gate had caught them too)
+    if (!opt.dry) gemm_self_check();  // (W3: the DP4a GEMM against the CPU, a bad driver; zero/engine_setup.h)
     const bool xmx_force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
     const bool sg8_igpu = cl_.sg8 && zrt::integrated();
     if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !p140_ && !getenv("ARC_XMX_TRY")) {
