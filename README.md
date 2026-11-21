@@ -180,11 +180,11 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
   35B-A3B: 4K prompt 1,370 tok/s, generation 26 tok/s, 46 with MTP.
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel):
   - 4 Pro B60s on Windows (issue #4; no peer access there, so the sums go through host memory): the 27B's 4K prompt
-    1,597 / 1,724 / 1,888 tok/s over 2 / 3 / 4 cards (2026.11.13.05 and .11, before the weight prefetch), generation
-    35.7 / 43 / 53 tok/s (run of 2026-10-31). Long prompts over 4 (2026.11.14.05, the middle of three passes):
+    1,902 / 1,996 / 2,195 tok/s over 2 / 3 / 4 cards (release 2026.11.21.01; one card 1,837), generation
+    35.7 / 43 / 53 tok/s (run of 2026-10-31; 19.0 / 19.0 / 18.6 on 2026.11.21.01, a regression being fixed, #4). The
+    35B-A3B's 4K prompt over 4: 4,704 tok/s. Long prompts over 4 (2026.11.14.05, the middle of three passes):
     64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s (the 35B), 1,258 / 970 / 640 (the 27B) and 948 / 778 / 526
-    (Flash Next); after 131K the 27B generates 32 tok/s. The 35B's 4K
-    prompt over 4: 4,264 tok/s (2026-11-02).
+    (Flash Next); after 131K the 27B generates 32 tok/s.
   - 2 Pro B60s on Linux (scenic6942, [issue #17](https://github.com/rizagp/inferzero/issues/17), PCIe 4.0 x8 each):
     the sums go straight from GPU to GPU (`ARC_TP_P2P`, chosen at load since 2026.11.14.06): 4K prompt 1,630 tok/s
     against 1,442 through host memory, generation 37.8 tok/s, the same logits.

@@ -277,6 +277,19 @@
         <tr><td>DeepSeek-V4.1-Flash IQ2_XS, generation</td><td class="n">10.3</td><td class="n">18.0</td><td class="n">16.6</td><td class="n">17.6</td></tr>
       </tbody>
     </table></div>
+    <h3 class="sub">Release 2026.11.21.01, every model over 1-4 cards (prompt 4K / generation, tok/s)</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B IQ3_S</td><td class="n">1,837 / 22.5</td><td class="n">1,902 / 19.0</td><td class="n">1,996 / 19.0</td><td class="n">2,195 / 18.6</td></tr>
+        <tr><td>Qwen3.6 35B-A3B UD-IQ4_XS</td><td class="n">3,464 / 39.0</td><td class="n">4,032 / 27.9</td><td class="n">4,352 / 24.7</td><td class="n">4,704 / 25.1</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_S</td><td class="n">770 / 10.9</td><td class="n">959 / 15.5</td><td class="n">1,048 / 15.6</td><td class="n">1,095 / 15.1</td></tr>
+        <tr><td>Qwen3.8 Flash Next Q8_0</td><td class="n">409 / 9.6</td><td class="n">420 / 7.6</td><td class="n">766 / 10.3</td><td class="n">912 / 10.8</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash IQ2_XS</td><td class="n">86 / 4.7</td><td class="n">105 / 5.6</td><td class="n">190 / 6.6</td><td class="n">251 / 7.3</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash UD-Q8_K_XL</td><td class="n">59 / 3.9</td><td class="n">46 / 3.5</td><td class="n">54 / 4.2</td><td class="n">64 / 4.3</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">#4</a>, <code>--bench-pp 4096 --n 16 --gpus N</code>, Windows. The split's generation is slower here than in the older runs above (the 27B over 4 cards: a median step of 48.8 ms, against 18.4 ms on 2026-11-07, of which 7 ms waiting for the sums): a regression after release 2026.11.14.05, being looked into on #4.</p>
     <p class="note">Releases: the 27B's split prompts 2026.11.13.05 / .11 and its split generation a run of 2026-10-31, both older than the one-card figures; DeepSeek 2026.11.14.09 (machine with 1 TB of RAM). Long prompts over 4 cards (2026.11.14.05): 64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s for the 35B-A3B, 1,258 / 970 / 640 for the 27B and 948 / 778 / 526 for Flash Next; the 35B-A3B's 4K prompt 4,264 tok/s.</p>
   </div>
 </section>
