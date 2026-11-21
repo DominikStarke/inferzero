@@ -10,7 +10,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | XMX for the prompt GEMMs | on (checked bit for bit at start) | on if the speed check finds it faster | only in the 140T preset (`ARC_XMX_FORCE=1`: `gemm_x8`) | the 140T preset; other models `gemm_x8` if the speed check finds it faster | none |
 | `ARC_140T` (the preset) | – | – | on: Qwen dense, weights decoded just in time | on: Qwen dense; since 2026-11-18 also where the decoded weights would fit (unless `--budget` is given) | – |
 | `ARC_H8` | on: Qwen dense, 4 column groups | on: Qwen dense, 1 column group | in the preset (chunks of 512+ tokens) | in the preset | off |
-| `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64; the B60's die, B60 / B580 / B50, 64 x 32 since 2026-11-21, but 32 x 64 on Linux from compute runtime 26.40, where 64 x 32 was 10 % slower, #19) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
+| `ARC_GEMM_XW` | on with H8 (`gemm_xw` 32 x 64; the B60's die, B60 / B580 / B50, 64 x 32 since 2026-11-21; on Linux from compute runtime 26.40 with the lean loop, ARC_GEMM_XW_PFL=1, without which it was 10 % slower there, #19 / #57) | on with H8 (`gemm_xw` 32 x 64) | in the preset (`gemm_xw8` 32 x 16) | in the preset (`gemm_xw8` 32 x 16) | – |
 | `ARC_GEMM_XW_WGX` / `_LOCK` | 4 / off (the B60's die: 8 / off) | 1 / off | 2 / off | 2 / off | – |
 | `ARC_GEMM_XW_2D` | 1 (a failed check: the plain form) | 1 on Panther Lake under Linux (the B390, since 2026-11-22: +16-18 % at 4K); 0 under Windows (-12.8 % on a B390 there) and on Lunar Lake | – (16 lanes only) | – | – |
 | `ARC_GEMM_XW_PF` / `_PFD` | 3 / 2 with the 2D form (the B60's die: 3 / 1), 1 / 1 without | 1 / 1 | 1 / 1 | 1 / 1 | – |

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-22: the B60 on compute runtime 26.40 keeps its 64 x 32 tile, with the lean loop
+
+- **On Linux with compute runtime 26.40 or newer, the B60's die keeps its own 64 x 32 prompt tile and adds the lean
+  loop** (`ARC_GEMM_XW_PFL=1`). Since .22.09 it had taken the general tile there.
+- **Two B60s on 26.40.40196, the 27B's 4K prompt:**
+  - skipzx-lab (#57): 1,984.6-1,991.8 tok/s against 1,946.3-1,949.4 for .22.09's form, +2.2 % in every pair;
+  - MaineTim (#19): 1,984.5 / 1,984.6.
+  - That's +3.5 % over the general tile without the lean loop, and +14.5 % over 64 x 32 without it.
+- **The results are the same bit for bit.**
+- **Below 26.40, and on Windows, nothing changes:** 64 x 32 without the lean loop.
+
 ## 2026-11-22: the lean prompt loop on a B60 with compute runtime 26.40
 
 - **On Linux with compute runtime 26.40 or newer, the B60's die now runs the lean prompt loop** (`ARC_GEMM_XW_PFL=1`)

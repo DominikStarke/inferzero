@@ -146,35 +146,37 @@
     return a >= 20 && a < 100 && b >= 0 && b < 100 ? a * 100 + b : 0;
 #endif
   }
-  // The B60's own prompt tile (xe2_g21's 64 x 32, 8 column sub-groups, prefetch 1 ahead) only below compute runtime
-  // 26.40: on 26.40.40196 a B60 ran it 10 % slower than the general form (MaineTim, #19, CachyOS: pp4096 1,732.5 /
-  // 1,733.5 against 1,922.0 / 1,922.3; every prompt GEMM 16-19 % slower, the weights' decoding the same, XMX at 100 %
-  // of paper, W8 residency as skipzx-lab's), where skipzx-lab's B60 on 26.05.37020 gained 4.3 % with it (#57). So
-  // likely the newer driver's compiler; from 26.40 the general form, until a second 26.40 B60 says otherwise. Each
-  // switch set by hand still wins; bit for bit either way (the start check)
-  mutable int g21t_ = -1;
-  bool xe2_g21_tile() const {
-    if (g21t_ < 0) {
-      g21t_ = xe2_g21() ? 1 : 0;
+  // The B60's own prompt tile (xe2_g21's 64 x 32, 8 column sub-groups, prefetch 1 ahead), on every compute runtime,
+  // with the lean prompt loop (ARC_GEMM_XW_PFL=1, engine_xw.h xw_pfl_form) from 26.40 on Linux (xe2_g21_lean). On
+  // 26.40.40196 the plain 64 x 32 loop was 10 % slower than the general 32 x 64 form, with no spill (two B60s:
+  // MaineTim #19 1,732.5 against 1,922.0; skipzx-lab #57 1,731.8-1,738.1 against 1,916.4-1,923.1), and 64 x 32 with the
+  // lean loop the fastest there: 1,984.5 / 1,984.6 (MaineTim) and 1,984.6-1,991.8 against 32 x 64 + lean 1,946.3-1,949.4
+  // in four pairs (skipzx-lab), +2.2 % every pair, +3.5 % over the plain 32 x 64. Below 26.40 (26.05.37020) the lean
+  // loop cost 64 x 32 6.6 %, so it stays off there. Each switch set by hand still wins; bit for bit either way (the
+  // start check; both cards' logits 9333c5551ddebfb2)
+  bool xe2_g21_tile() const { return xe2_g21(); }
+  mutable int g21l_ = -1;
+  bool xe2_g21_lean() const {
+    if (g21l_ < 0) {
       const int v = neo_ver();
-      if (g21t_ && v >= 2640) g21t_ = 0;
+      g21l_ = xe2_g21() && v >= 2640 ? 1 : 0;
 #ifndef _WIN32
       if (xe2_g21()) {  // (said in every case on Linux, the version read or not: issue #19's runs must show which rule ran)
         static std::once_flag said;
         const std::string drv = cl_.device_id.substr(cl_.device_id.rfind('|') + 1);
         std::call_once(said, [&] {
           if (!v)
-            zlog::eprintf("inferzero: compute runtime version not read (driver string \"%s\"): the B60's die keeps its 64 x "
-                          "32 prompt tile\n", drv.c_str());
+            zlog::eprintf("inferzero: compute runtime version not read (driver string \"%s\"): the B60's die's 64 x 32 "
+                          "prompt tile without the lean loop\n", drv.c_str());
           else
-            zlog::eprintf("inferzero: compute runtime %d.%02d (%s): the B60's die takes %s\n", v / 100, v % 100, drv.c_str(),
-                          v >= 2640 ? "the general prompt tile (its own 64 x 32 was 10 % slower from 26.40, issue #19)"
-                                    : "its own 64 x 32 prompt tile");
+            zlog::eprintf("inferzero: compute runtime %d.%02d (%s): the B60's die's 64 x 32 prompt tile %s\n", v / 100,
+                          v % 100, drv.c_str(),
+                          v >= 2640 ? "with the lean loop (from 26.40, issues #19 / #57)" : "without the lean loop");
         });
       }
 #endif
     }
-    return g21t_ == 1;
+    return g21l_ == 1;
   }
   // A discrete 16-lane card with at most 1,280 GPU threads (the B60's die and the Pro B65, 2026-11-21): the switches
   // that depend on how many threads fill the GPU, each measured there with the same logits or text:
