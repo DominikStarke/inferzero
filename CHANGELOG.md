@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-22: `bench/stray_words.ps1` counts Simplified Chinese characters in Japanese answers
+
+- **A new count, `simp`:** Han characters that Japanese text can't hold, meaning they aren't in code page 932
+  (Shift-JIS). In practice these are Simplified Chinese forms. No hand-made list is needed, and the characters Japanese
+  shares with Chinese aren't counted. A hand-made list on #4 had two of those in it.
+- **Answer and thinking apart:** when a file has "=== thinking" and "=== answer" lines, `simp` counts the answer and
+  `simp_think` the thinking. Checked in Windows PowerShell 5.1 and PowerShell 7.
+- **From #4:** manoreken2's Flash Next answers had them mainly when sampling (min_p), and in the thinking part. So it's
+  the model's habit at temperature, not the engine's precision. An opt-in ban for Japanese answers is a QUEUE idea for
+  the user to decide.
+
 ## 2026-11-22: the B60 on compute runtime 26.40 keeps its 64 x 32 tile, with the lean loop
 
 - **On Linux with compute runtime 26.40 or newer, the B60's die keeps its own 64 x 32 prompt tile and adds the lean
