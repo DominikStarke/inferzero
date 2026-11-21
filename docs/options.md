@@ -48,12 +48,12 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 
 ## More precise prompt reading (`ARC_H8_Q2=1`)
 
-- **What it does:** Reads the prompt with a second int8 pass that carries what the first one rounds away (about 15 bits instead of 8), close to the unrotated path's accuracy, on any GPU where H8 runs (B-series, Alchemist, the 140T, Lunar Lake / Panther Lake). Generation is unchanged.
+- **What it does:** Reads the prompt with a second int8 pass that carries what the first one rounds away, so the prompt is read much closer to full precision. About half the prompt speed on GPUs without XMX, less of a slowdown on XMX cards. Generation is unchanged. It runs wherever H8 does (B-series, Alchemist, the 140T, Lunar Lake / Panther Lake).
 - **Default:** off.
 - **Best for:** b-series, alchemist, igpu-140t, igpu-xe2, dense.
-- **Cost:** about 2x prompt GEMM time: on the laptop the 27B 4K prompt 117 -> 62 tok/s, less on XMX cards; a second activation buffer as big as the first.
+- **Cost:** slower but more precise.
 - **Output:** slightly different, checked against f32 (KL).
-- **Measured:** the 27B on 480 tokens against f32: KL 0.00112 -> 0.00061 (plain 0.00056), top token 467 -> 474 of 480 (the laptop).
+- **Measured:** the laptop (no XMX), the 27B on 480 tokens against f32: KL 0.00112 -> 0.00061 (plain 0.00056), top token 467 -> 474 of 480; its 4K prompt 117 -> 62 tok/s.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
 
 ## Flash Next precise mode (`--precise`)
