@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-21: expert-file and package builds stop when the source drive stops answering (S1); B3, B5
+
+- **A stall watchdog (S1):** writing an expert file or a package reads a whole GGUF, and some drives hang under it (a
+  D: drive did on 2026-11-19), which used to hang the build for good. Now:
+  - when no data comes from the source for 60 s, the log names the drive and advises copying the model to an internal
+    SSD;
+  - the build stops at its next check with a clear error, removes its `.tmp`, and a server stays up;
+  - only a read that never returns (3x the limit) ends the process, with exit code 4. The next start removes a
+    leftover `.tmp`, as before.
+  - Packages are written in 64 MB pieces, each counted as progress, so a slow USB disk is never taken for a hung one.
+    `ARC_XBUILD_STALL_S=N` sets the limit; 0 waits forever. Checked by a forced stall (`ARC_XBUILD_STALL_TEST=1`): the
+    error, then nothing left in the destination.
+- **B3:** the 4 alignment bytes in each layer entry of the expert file's header are now written as zeros. Before, they
+  were whatever the compiler left, so two builds could differ by them. Same size and layout: files already written
+  read as before. Checked: packing Gemma 4 26B gave an expert file byte-identical (SHA-256) to the one already there.
+- **B5:** a failed write of the expert folder's `source.txt` is now reported. Only the cleanup of orphaned folders
+  reads it.
+- B4 / S18, paths with any characters and longer than 260 on Windows, were already done: every exe embeds a UTF-8
+  code page and long-path manifest (e82fa74).
+- The start-up GEMM self-check (W3) now runs once per engine, not once per process, so each GPU of a split over unlike
+  cards is checked (the Researcher's review).
+
 ## 2026-11-21: each encoder says what its GEMMs run on
 
 - The first time an image or audio encoder runs, the log says what its matrix products run on, for example `the vision

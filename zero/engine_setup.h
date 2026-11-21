@@ -464,9 +464,13 @@
   // XMX kernels are compared with this one bit for bit by xmx_check. A relative error past 1e-3 or a value that is not
   // finite gives the same warning as an old driver (the log, the web UI and the launchers, through driver_warning),
   // never a refusal to start. Once per process, a few ms; ARC_SELF_CHECK=0 skips it, =2 warns as if it had failed
+  // (once per engine, not per process: a split over unlike GPUs, or a driver per device, checks each one; the
+  //  Researcher's review. A model loaded again checks again, a few ms)
+  bool self_checked_ = false;
   void gemm_self_check() {
-    static std::once_flag once;
-    std::call_once(once, [this] {
+    if (self_checked_) return;
+    self_checked_ = true;
+    [this] {
       if (getenv("ARC_SELF_CHECK") && atoi(getenv("ARC_SELF_CHECK")) == 0) return;
       const int M = 4 * gemm_tm(), N = 64, K = 1024, nsb = K / 256;
       uint32_t seed = 2026112;
@@ -543,7 +547,7 @@
       if (!w8.empty()) w8 += " ";
       w8 += std::string("The GPU's matrix kernels gave wrong results in a start-up check (") + d +
             " against the CPU): answers will be wrong. Install Intel's current Arc / Core Ultra graphics driver.";
-    });
+    }();
   }
   bool xmx_check(int mode = 0) {
     // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)

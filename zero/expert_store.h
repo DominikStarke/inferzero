@@ -8,7 +8,10 @@
 // and reused otherwise; it can be deleted at any time.
 #pragma once
 #include <atomic>
+#include <condition_variable>
 #include <csignal>
+#include <filesystem>
+#include <thread>
 #include "../src/app_dir.h"
 #include "../src/gguf.h"
 #include "../src/autoround_revision.h"
@@ -73,6 +76,70 @@ inline void need_free_space(const std::string& path, uint64_t bytes, const char*
 //  (a pack beside a load) no longer restore each other's handlers out of order; the first installs, the last restores
 //  and hands the signal on. A signal the process ignored (SIG_IGN, e.g. nohup's SIGINT) stays ignored: a build is not
 //  stopped by it)
+// S1 (2026-11-21, QUEUE "pack and expert-file failsafes"): a stall watchdog for the builds that read a whole source
+// GGUF (the expert file, a package). A drive that hangs under the build's reads (D: did, on 2026-11-19) blocks the
+// read itself, a page fault in a mapping or a read call, so no flag checked between batches is reached. A thread
+// waits for the build's ticks: none for ARC_XBUILD_STALL_S seconds (60; 0 off) means the drive has stopped answering.
+// It says which drive and sets g_xbuild_stall, which the build's next check (XBuildStopGuard::check) turns into an
+// error: that load fails and the server stays up. A read that never returns gets there never, so after 3x the limit
+// it removes the .tmp if it can and ends the process with code 4 (a hang that never ends is worse; the Researcher's
+// review: a stall must not take a server's open chats along when the build can still stop by itself). A .tmp left
+// behind is removed at the next start (S7).
+inline std::atomic<bool> g_xbuild_stall{false};
+struct BuildWatch {
+  std::atomic<uint64_t> beats{0};
+  std::mutex m;
+  std::condition_variable cv;
+  bool done = false;
+  std::thread th;
+  BuildWatch(const std::string& what, const std::string& source, const std::string& tmp) {
+    static const int lim = getenv("ARC_XBUILD_STALL_S") ? atoi(getenv("ARC_XBUILD_STALL_S")) : 60;
+    if (lim <= 0) return;
+    g_xbuild_stall.store(false);
+    th = std::thread([this, what, source, tmp] {
+      uint64_t last = beats.load();
+      auto since = std::chrono::steady_clock::now();
+      bool said = false;
+      const std::string drive = std::filesystem::path(source).root_name().string();
+      const char* dname = drive.empty() ? source.c_str() : drive.c_str();
+      std::unique_lock<std::mutex> lk(m);
+      while (!done) {
+        cv.wait_for(lk, std::chrono::seconds(1));
+        if (done) break;
+        const uint64_t b = beats.load();
+        if (b != last) {
+          last = b;
+          since = std::chrono::steady_clock::now();
+          continue;
+        }
+        const auto idle = std::chrono::steady_clock::now() - since;
+        if (!said && idle >= std::chrono::seconds(lim)) {
+          said = true;
+          LOG_ERR("inferzero: writing %s: no data read from %s for %d s (%s). The drive has stopped answering; some "
+                  "drives hang under this many random reads. Stopping; copy the model to an internal SSD and start "
+                  "again (ARC_XBUILD_STALL_S=N waits N seconds, 0 forever)\n", what.c_str(), dname, lim, source.c_str());
+          g_xbuild_stall.store(true);  // (the build's next check throws: XBuildStopGuard::check)
+        }
+        if (idle < std::chrono::seconds(3 * lim)) continue;
+        LOG_ERR("inferzero: the read from %s has not returned for %d s: ending the process (code 4)\n", dname, 3 * lim);
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);  // (it may still be open: then the next start removes it, S7)
+        fflush(nullptr);
+        std::_Exit(4);
+      }
+    });
+  }
+  void tick() { beats.fetch_add(1, std::memory_order_relaxed); }
+  ~BuildWatch() {
+    {
+      std::lock_guard<std::mutex> g(m);
+      done = true;
+    }
+    cv.notify_all();
+    if (th.joinable()) th.join();
+  }
+};
+
 struct XBuildStopGuard {
   static std::mutex& mu() { static std::mutex m; return m; }
   static inline int depth = 0;
@@ -100,6 +167,9 @@ struct XBuildStopGuard {
     if (sig) std::raise(sig);
   }
   static void check(const std::string& what) {
+    if (g_xbuild_stall.load())  // (S1: BuildWatch saw no data for its limit)
+      throw std::runtime_error("the source drive stopped answering while writing " + what +
+                               ": its .tmp removed; copy the model to an internal SSD and start again");
     if (g_xbuild_sig.load())
       throw std::runtime_error("stopped by " + std::string(g_xbuild_sig.load() == SIGTERM ? "SIGTERM" : "Ctrl+C / SIGINT") +
                                " while writing " + what + ": its .tmp removed, the next start begins it again");
@@ -109,6 +179,10 @@ struct XBuildStopGuard {
 struct ExpertStore {
   struct LayerInfo {
     uint32_t type[3] = {};  // gate, up, down GGUF types
+    // (the 4 bytes the alignment of part[] puts here, a field so they are written as zeros: the header is memcpy'd
+    //  to the file, and they were left unset, so the same model gave different expert files (B3, 2026-11-21). The
+    //  layout and size are as before: files written before read the same)
+    uint32_t pad = 0;
     uint64_t part[3] = {};  // bytes of each matrix of one expert (GPU raw form)
     uint64_t rec = 0;       // bytes of one expert record (multiple of 4096)
     uint64_t off = 0;       // file offset of the layer's expert 0
@@ -120,6 +194,7 @@ struct ExpertStore {
       return rec == other.rec && off == other.off;
     }
   };
+  static_assert(sizeof(LayerInfo) == 56, "the expert file's layer entry: 56 bytes, as files already written");
   std::vector<LayerInfo> layers;  // by layer index; rec == 0: not a MoE layer
   int n_expert = 0;
   std::string path;
@@ -196,6 +271,12 @@ struct ExpertStore {
       const fs::path full = fs::absolute(fs::path(gguf_path), e2);
       std::ofstream src_txt(own_dir / "source.txt", std::ios::binary | std::ios::trunc);
       src_txt << (e2 ? gguf_path : full.string()) << "\r\n";
+      src_txt.flush();
+      // (B5, 2026-11-21: checked. The expert file is fine without it; only the cleanup of orphaned folders reads it)
+      if (!src_txt)
+        LOG_WRN("inferzero: could not write %s (a full disk or no permission): the expert file is fine, but this "
+                "folder will not be recognized as belonging to its GGUF when cleaning up\n",
+                (own_dir / "source.txt").string().c_str());
     }
     note_orphans();
     return path;
@@ -535,6 +616,7 @@ struct ExpertStore {
     const plat::BuildLock lock(tmp + ".lock");  // (A9: held until the .tmp is renamed or removed below)
     drop_stale_tmp(tmp, lock);                  // (S7)
     need_free_space(path, file_bytes, "the expert file");  // (S3: before anything is written)
+    BuildWatch watch("the expert file", f.path, tmp);      // (S1: a drive that stops answering)
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop
     // (the .tmp file goes away if the build fails half way: it is as large as the expert file)
@@ -685,6 +767,7 @@ struct ExpertStore {
           }
         }
         put(buf, (uint64_t)ne * L.rec);
+        watch.tick();
       }
       // the layer's GGUF pages leave the working set (they stay in the standby list, which Windows can reuse)
       plat::trim_working_set();

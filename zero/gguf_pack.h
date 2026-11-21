@@ -274,9 +274,20 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
       off += (t->nbytes + align - 1) / align * align;
     }
     w.pad(align);
+    BuildWatch watch("the package", source, tmp);  // (S1: a drive that stops answering)
+    // (ARC_XBUILD_STALL_TEST=1: a test of S1, the build waits past the watch's limit once, as a drive that hangs)
+    if (getenv("ARC_XBUILD_STALL_TEST") && atoi(getenv("ARC_XBUILD_STALL_TEST")) == 1) {
+      const int lim = getenv("ARC_XBUILD_STALL_S") ? atoi(getenv("ARC_XBUILD_STALL_S")) : 60;
+      std::this_thread::sleep_for(std::chrono::seconds(lim + 2));
+    }
     for (const GgufTensor* t : keep) {
       XBuildStopGuard::check("the package " + tmp);
-      w.put(t->data, t->nbytes);
+      // (in pieces of 64 MB, each a tick: a 2 GB tensor from a slow USB disk takes longer than the watch's limit)
+      for (uint64_t o = 0; o < t->nbytes; o += 64ull << 20) {
+        w.put(t->data + o, (size_t)std::min<uint64_t>(64ull << 20, t->nbytes - o));
+        watch.tick();
+        XBuildStopGuard::check("the package " + tmp);  // (S1: a stall seen meanwhile stops here)
+      }
       plat::release_mapped(t->data, (size_t)t->nbytes);  // (written: its pages leave the process on Linux; B6)
       w.pad(align);
     }
