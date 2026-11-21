@@ -19,10 +19,10 @@
   <div class="wrap">
     <a class="brand" href="#top" aria-label="inferzero, top of the page"><svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>inferzero</a>
     <nav aria-label="Main">
-      <a href="#start">Install</a>
+      <a href="install.html">Install</a>
       <a href="results.html">Results</a>
       <a href="multi-gpu.html">Several GPUs</a>
-      <a href="#open">Help out</a>
+      <a href="help.html">Help out</a>
     </nav>
     <div class="hdr-right">
       <a class="gh" href="https://github.com/rizagp/inferzero">GitHub</a>
@@ -95,58 +95,18 @@
 <section id="start">
   <div class="wrap">
     <div class="intro">
-      <h2>Install and uninstall</h2>
-      <p>Installing takes about five minutes, plus the model's download. Nothing is installed into Windows itself: removing inferzero is deleting its folders.</p>
+      <h2>Get started</h2>
+      <p>About five minutes, plus the model's download. Nothing is installed into Windows itself: removing inferzero is deleting its folders.</p>
     </div>
-    <h3 class="sub" id="install">Install</h3>
-    <div class="steps">
-      <div class="card">
-        <h3>Windows</h3>
-        <ol class="go">
-          <li>Download <code>inferzero-…-win64.zip</code> from the <a href="https://github.com/rizagp/inferzero/releases/latest">latest release</a> and unpack it anywhere.</li>
-          <li>Double-click <code>zero-launcher.cmd</code>. (Windows may ask once: "More info", then "Run anyway".)</li>
-          <li>Pick a model (the one that suits your RAM is ticked) and press <b>Download and start</b>. The chat opens in your browser.</li>
-        </ol>
-      </div>
-      <div class="card">
-        <h3>Linux</h3>
-        <ol class="go">
-          <li>Download <code>inferzero-…-linux-x64.tar.gz</code> from the <a href="https://github.com/rizagp/inferzero/releases/latest">latest release</a> and unpack it.</li>
-          <li>Run <code>./zero-launcher.sh</code>: a menu in the terminal.</li>
-          <li>Pick a model; it downloads it and starts the server. Open the address it shows in your browser.</li>
-        </ol>
-      </div>
-    </div>
-    <h3 class="sub" id="uninstall">Uninstall cleanly</h3>
-    <div class="steps">
-      <div class="card">
-        <h3>Windows</h3>
-        <ol class="go">
-          <li>Stop the server: <b>Stop server</b> in the launcher (or the tray icon's <b>Stop the server</b>), then close the launcher.</li>
-          <li>Delete the folder you unpacked.</li>
-          <li>Delete <code>%USERPROFILE%\.inferzero</code>: your chats, recordings and transcripts, logs, settings and inferzero's own model files. Copy out anything you want to keep first.</li>
-          <li>Delete the models from <code>%USERPROFILE%\.cache\huggingface\hub</code>: the <code>models--…</code> folders it downloaded. Other AI programs share this folder, so keep the ones they use.</li>
-        </ol>
-        <p class="note">Only if you used <code>setup.cmd</code>: remove the folder from your <b>Path</b> (Settings › System › About › Advanced system settings › Environment Variables), and if you connected Pi, delete <code>zero-pi.cmd</code> and <code>zero-server.cmd</code> from <code>%USERPROFILE%\.pi\agent\bin</code> and the "inferzero" entry from <code>%USERPROFILE%\.pi\agent\models.json</code>.</p>
-      </div>
-      <div class="card">
-        <h3>Linux</h3>
-        <ol class="go">
-          <li>Stop the server (Ctrl+C in the launcher's terminal).</li>
-          <li>Delete the folder you unpacked.</li>
-          <li>Delete <code>~/.inferzero</code>: chats, recordings, logs, settings and inferzero's own model files.</li>
-          <li>Delete the models from <code>~/.cache/huggingface/hub</code> (or <code>$HF_HOME/hub</code>): the <code>models--…</code> folders it downloaded, keeping those other programs use.</li>
-        </ol>
-        <p class="note">Only if you installed the service (<code>--install-service</code>): <code>systemctl --user disable --now inferzero</code>, then delete <code>~/.config/systemd/user/inferzero.service</code>.</p>
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h3>From your own apps</h3>
-      <p>While it runs, the server answers at <code>http://127.0.0.1:8090</code> like the OpenAI API:</p>
-<pre>curl http://127.0.0.1:8090/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'</pre>
-      <p class="note">Step by step, with every option: the <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">usage guide</a>. Building from source: <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">install and build</a>.</p>
+    <ol class="go">
+      <li>Download the zip (Windows) or the tar.gz (Linux) from the <a href="https://github.com/rizagp/inferzero/releases/latest">latest release</a> and unpack it anywhere.</li>
+      <li>Start <code>zero-launcher.cmd</code> (Windows) or <code>./zero-launcher.sh</code> (Linux).</li>
+      <li>Pick a model. It downloads, and the chat opens in your browser.</li>
+    </ol>
+    <div class="btns" style="margin-top:18px">
+      <a class="btn p" href="install.html">Step by step</a>
+      <a class="btn s" href="install.html#uninstall">How to uninstall</a>
+      <a class="btn s" href="install.html#apps">Use it from your apps</a>
     </div>
   </div>
 </section>
@@ -191,7 +151,7 @@
         <li>Built in the open, and still far from what Intel's chips can do. You can help: run one benchmark on your hardware and share it, report a problem, or improve the code.</li>
       </ul>
       <div class="btns">
-        <a class="btn p" href="https://github.com/rizagp/inferzero/blob/main/CONTRIBUTING.md">How to help</a>
+        <a class="btn p" href="help.html">How to help</a>
         <a class="btn s" href="https://github.com/rizagp/inferzero/issues">Report a problem</a>
         <a class="btn s" href="https://github.com/rizagp/inferzero">Source code</a>
       </div>
