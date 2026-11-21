@@ -153,7 +153,7 @@ static uint32_t rnd() { g_seed = g_seed * 1664525u + 1013904223u; return g_seed;
 #include "xw_all.h"  // (--all: every packed form, staged; 2026-11-21)
 
 int main(int argc, char** argv) {
-  int M = 4096, iters = 10, wgx = 1;
+  int M = 4096, iters = 10, wgx = 1, lanes = 0;
   bool force_emu = false, probe = false, lock = false, all_mode = false;
   AllSel sel;
   std::vector<int> Ms;
@@ -202,10 +202,18 @@ int main(int argc, char** argv) {
              "  --stages 0123   which stages (0 and 1 always run before 2 and 3)\n"
              "  --family plain,slm  --tm 16,32,64  --nc 1,2,4  --wg 4x4,8x4  --cps 1,2,4  --db 0,1,2  --epi2 0,1\n"
              "                  only those forms;  --limit N  the first N (a quick test);  --top N  stage 2's (10)\n"
-             "  --env-out FILE  each winner as the engine's switches, a line per token count and place\n");
+             "  --env-out FILE  each winner as the engine's switches, a line per token count and place\n"
+             "  --lanes 16      --all for the 16-lane XMX GEMM (gemm_xw.cl: B-series, Lunar Lake / Panther Lake, a Max):\n"
+             "                  TM 16 / 32 / 64 x NC 1 / 2 / 4 / 6 / 8 x WGX 1 / 2 / 4 / 8 x the lock, and with 2D block\n"
+             "                  loads each 2D form (--family plain,2d); the default where the GPU has no 8-lane\n"
+             "                  sub-groups. Elsewhere the DPAS is emulated (correctness only). The peak: bin/gpu_bench\n");
       return 0;
     } else if (a == "--probe") probe = true;
     else if (a == "--all") all_mode = true;
+    else if (a == "--lanes" && i + 1 < argc) {
+      lanes = atoi(argv[++i]);
+      if (lanes != 8 && lanes != 16) { fprintf(stderr, "--lanes must be 8 or 16\n"); return 2; }
+    }
     else if (a == "--ms" && i + 1 < argc) { for (int v : AllSel::ints(argv[++i])) Ms.push_back(v); }
     else if (a == "--stages" && i + 1 < argc) sel.stages = argv[++i];
     else if (a == "--family" && i + 1 < argc) sel.family = AllSel::strs(argv[++i]);
@@ -252,11 +260,18 @@ int main(int argc, char** argv) {
   zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x1002, sizeof(eus), &eus, nullptr);
   zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x100C, sizeof(mhz), &mhz, nullptr);
   printf("xw_peak: %s, %u EUs, %u MHz, driver %s\n", name, eus, mhz, drv);
-  if (!cl.sg8) {
-    printf("This GPU has no 8-lane sub-groups: gemm_xw8 is the 8-lane kernel (Arc 140T, Xe-LPG); nothing to measure.\n");
+  if (!lanes) lanes = cl.sg8 ? 8 : 16;  // (16 lanes where there are no 8-lane sub-groups: B-series, Xe2 / Xe3 iGPUs)
+  if (lanes == 8 && !cl.sg8) {
+    printf("This GPU has no 8-lane sub-groups: gemm_xw8 is the 8-lane kernel (Arc 140T, Xe-LPG); --all --lanes 16 sweeps "
+           "this GPU's gemm_xw.\n");
     return 0;
   }
-  const bool emu = force_emu || !cl.xmx;
+  if (lanes == 16 && !all_mode) {
+    printf("--lanes 16 is for --all (the 16-lane GEMM's forms); the default and --probe are the 8-lane kernel's\n");
+    return 2;
+  }
+  // (16 lanes: emulated where the GPU has no 16-lane XMX, as the engine's xw_emu_: no XMX, or 8-lane DPAS only)
+  const bool emu = force_emu || !cl.xmx || (lanes == 16 && cl.sg8);
   cl.soft_fail = true;
   std::vector<int> host(256);
   for (int i = 0; i < 256; ++i) host[i] = (int)((0x01020304u * (uint32_t)(i + 1)) ^ 0x5a5a5a5au) & 0x3f3f3f3f;
@@ -264,7 +279,8 @@ int main(int argc, char** argv) {
 
   // ---- the peak: int8 DPAS chains (gpu_bench's probe), best of ~1 s
   double peak = 0;
-  if (!emu) {
+  if (lanes == 16 && !emu) printf("16 lanes: the share of the peak is not shown here (bin/gpu_bench measures the peak)\n");
+  if (!emu && lanes == 8) {
     try {
       const int groups = std::max(256u, eus * 16), piters = 2048;
       cl_mem bo = cl.buffer(CL_MEM_READ_WRITE, (size_t)groups * 64 * 4);
@@ -306,12 +322,13 @@ int main(int argc, char** argv) {
     } catch (const std::exception& e) {
       printf("f16 DPAS precision: not measured (%s)\n", e.what());
     }
-  } else {
-    printf("DPAS emulated (%s): the results are checked, the times mean nothing\n", cl.xmx ? "--emu" : "no XMX here");
+  } else if (emu) {
+    printf("DPAS emulated (%s): the results are checked, the times mean nothing\n",
+           cl.xmx ? (lanes == 16 && cl.sg8 ? "8-lane DPAS only here" : "--emu") : "no XMX here");
   }
 
-  const std::string src = read_file(kdir + "/gemm_xw8.cl");
-  if (all_mode) return run_all(cl, src, emu, peak, shapes, Ms, iters, sel);
+  const std::string src = read_file(kdir + (lanes == 16 ? "/gemm_xw.cl" : "/gemm_xw8.cl"));
+  if (all_mode) return run_all(cl, src, emu, peak, shapes, Ms, iters, sel, lanes);
   if (probe) {
     // ---- where the loop's time goes: loads against DPAS, on cache-resident data (see kLdProbe)
     const int groups = (int)(eus * 16), nch = 64;

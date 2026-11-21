@@ -89,7 +89,7 @@ $TILES8 = @("32x16 (default)|", "32x32|ARC_GEMM_XW_NC=2", "16x32|ARC_GEMM_XW_TM=
 $TILES16 = @("32x64 (default)|", "32x32|ARC_GEMM_XW_NC=2", "32x96|ARC_GEMM_XW_NC=6", "32x128|ARC_GEMM_XW_NC=8",
   "16x128|ARC_GEMM_XW_TM=16 ARC_GEMM_XW_NC=8", "64x64|ARC_GEMM_XW_TM=64", "32x64 WGX 1|ARC_GEMM_XW_WGX=1", "32x64 WGX 2|ARC_GEMM_XW_WGX=2")
 $vars = @("ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_BENCH_RUNS", "ARC_GEMM_XW_BIG", "ARC_GEMM_XW_EPI2", "ARC_GEMM_XW_DB",
-  "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS", "ARC_GEMM_XW_PTR") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
+  "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS", "ARC_GEMM_XW_PTR", "ARC_GEMM_XW_WGX", "ARC_GEMM_XW_LOCK", "ARC_GEMM_XW_2D", "ARC_GEMM_XW_C_RND", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
 if ($Device) { $env:ZE_AFFINITY_MASK = $Device }
 function Vals([string]$item) { $p = $item -split '\|'; if ($Quick) { $p[2] -split ' ' } else { $p[1] -split ' ' } }
 if (-not $Contexts) { $Contexts = if ($Quick) { "512,4096" } else { "512,4096,32768,max" } }
@@ -276,7 +276,7 @@ function Check-And-Combine([string]$m, [string]$kind, $win) {
 
 # --- X: every gemm_xw8 form (bin\xw_peak --all), then its winners in the model at each context
 function Xw-All([string]$m) {
-  Write-Output ""; Write-Output "=== X. every form of the 8-lane XMX prompt GEMM (bin\xw_peak --all), then the best in the model at each context"
+  Write-Output ""; Write-Output "=== X. every form of the XMX prompt GEMM (gemm_xw8 on 8 lanes, gemm_xw on 16) (bin\xw_peak --all), then the best in the model at each context"
   $xp = Join-Path $root "bin\xw_peak.exe"
   if (-not (Test-Path $xp)) { Write-Output "skipped: bin\xw_peak.exe not found (.\build.ps1 bench\xw_peak.cpp)"; return }
   $cv = Ctx-Values $m; if ($script:maxNote) { Write-Output $script:maxNote; $script:maxNote = "" }
@@ -421,8 +421,8 @@ $genBest = ""; $ppBest = ""
 if (Has "G") { Sweep "G. generation" $Model "gen" $GEN; Check-And-Combine $Model "gen" $script:sweepWin; $genBest = $script:comboBest }
 if (Has "P") { Sweep "P. the prompt" $Model "pp" $PP; Check-And-Combine $Model "pp" $script:sweepWin; $ppBest = $script:comboBest }
 if (Has "X") {
-  if ($xmx -and $lanes8) { Xw-All $Model }
-  else { Write-Output ""; Write-Output "=== X. skipped: it sweeps the 8-lane XMX GEMM (A-series, the Arc 140T); this GPU's log shows $(if ($xmx) { '16-lane XMX' } else { 'no XMX prompt GEMMs' })" }
+  if ($xmx) { Xw-All $Model }  # (8 or 16 lanes: xw_peak takes the GPU's own, gemm_xw8 or gemm_xw)
+  else { Write-Output ""; Write-Output "=== X. skipped: this GPU's log shows no XMX prompt GEMMs" }
 }
 if (Has "D") { Drafting $Model }
 if (Has "T") { if ($xmx) { Tiles $Model $lanes8 } else { Write-Output ""; Write-Output "=== T. skipped: this GPU's log shows no XMX prompt GEMMs (no tiles to choose)" } }

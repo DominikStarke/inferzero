@@ -175,7 +175,8 @@ TILES16=("32x64 (default)|" "32x32|ARC_GEMM_XW_NC=2" "32x96|ARC_GEMM_XW_NC=6" "3
 UNSET=()
 for item in "${GEN[@]}" "${PP[@]}" "${MOE[@]}"; do n="${item%%|*}"; [[ "$n" == ARC_* ]] && UNSET+=(-u "$n"); done
 UNSET+=(-u ARC_GEMM_XW_TM -u ARC_GEMM_XW_NC -u ARC_BENCH_RUNS -u ARC_GEMM_XW_BIG -u ARC_GEMM_XW_EPI2 -u ARC_GEMM_XW_DB
-        -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS -u ARC_GEMM_XW_PTR)
+        -u ARC_GEMM_XW_SLM_TILE -u ARC_GEMM_XW_SLM_WG -u ARC_GEMM_XW_SLM_CPS -u ARC_GEMM_XW_PTR -u ARC_GEMM_XW_WGX -u ARC_GEMM_XW_LOCK -u ARC_GEMM_XW_2D -u ARC_GEMM_XW_C_RND
+        -u ARC_GEMM_XW_PF -u ARC_GEMM_XW_PFD)
 [ -n "$DEVICE" ] && export ZE_AFFINITY_MASK="$DEVICE"
 
 # progress on stderr (the results on stdout stay clean to paste): the phase, its step of the steps planned, the time so
@@ -368,7 +369,7 @@ check_and_combine() {  # model kind
 # --- X: every gemm_xw8 form (bin/xw_peak --all), then its winners in the model at each context
 xw_all() {  # model
   local model="$1" xp="$ROOT/bin/xw_peak" envf="$STATE/xw_env.txt" rep="$STATE/xw_report.txt" c s l i
-  echo; echo "=== X. every form of the 8-lane XMX prompt GEMM (bin/xw_peak --all), then the best in the model at each context"
+  echo; echo "=== X. every form of the XMX prompt GEMM (gemm_xw8 on 8 lanes, gemm_xw on 16) (bin/xw_peak --all), then the best in the model at each context"
   [ -x "$xp" ] || { echo "skipped: bin/xw_peak not found (./build.sh xw_peak)"; return; }
   ctx_values "$model"; [ -n "$MAX_NOTE" ] && { echo "$MAX_NOTE"; MAX_NOTE=""; }
   local ms; ms="$(for c in "${CV[@]}"; do [ "$c" -gt 4096 ] && echo 4096 || echo $((c / 32 * 32)); done | sort -n -u | paste -sd, -)"
@@ -538,8 +539,8 @@ GEN_BEST=""; PP_BEST=""
 if has G; then sweep "G. generation" "$MODEL" gen GEN; check_and_combine "$MODEL" gen; GEN_BEST="$BEST_SET"; fi
 if has P; then sweep "P. the prompt" "$MODEL" pp PP; check_and_combine "$MODEL" pp; PP_BEST="$BEST_SET"; fi
 if has X; then
-  if [ "$XMX" = 1 ] && [ "$LANES8" = 1 ]; then xw_all "$MODEL"
-  else echo; echo "=== X. skipped: it sweeps the 8-lane XMX GEMM (A-series, the Arc 140T); this GPU's log shows $([ "$XMX" = 1 ] && echo "16-lane XMX" || echo "no XMX prompt GEMMs")"; fi
+  if [ "$XMX" = 1 ]; then xw_all "$MODEL"  # (8 or 16 lanes: xw_peak takes the GPU's own, gemm_xw8 or gemm_xw)
+  else echo; echo "=== X. skipped: this GPU's log shows no XMX prompt GEMMs"; fi
 fi
 if has D; then drafting "$MODEL"; fi
 if has T; then

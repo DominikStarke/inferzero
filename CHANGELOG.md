@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-21: the full GEMM sweep for 16-lane GPUs (B-series, Lunar Lake, Panther Lake)
+
+- **`xw_peak --all` now sweeps the 16-lane prompt GEMM too** (`gemm_xw`, which B-series cards, the 140V, the B390 and
+  a Max run). It picks the GPU's own kernel, and `--lanes 16` asks for it.
+  - The forms: tiles of 16 / 32 / 64 tokens by 16-128 columns, 1 / 2 / 4 / 8 column sub-groups, with and without the
+    lock.
+  - Where the GPU has 2D block loads, each 2D form too: the loads only, the loads and C, and the loads and C rounded
+    apart.
+  - Every form is checked bit for bit against the plain kernel, in the same stages as the 8-lane sweep.
+- `bench/gpu_sweep` phase X runs it on 16-lane cards, where it was skipped; its winners go into the model as the
+  engine's own switches.
+- Checked on the laptop with the DPAS emulated: all 44 forms that build without a spill gave the plain kernel's
+  results bit for bit (gate, up + SwiGLU, a split-K down). The 8-lane sweep is unchanged. Speed needs a 16-lane card.
+
 ## 2026-11-21: the context a "does not fit" warning suggests now fits the first time
 
 - **Fix (issue #45):** following the warning's `--ctx N fits` on a 16 GB A770 took three steps with `--mtp` (92,752 ->

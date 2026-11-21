@@ -45,11 +45,22 @@ struct Cand {
   std::string name, defs;
   int tm = 32, nc = 1, wgx = 1, wgy = 0, cps = 1, db = 0, pf = -1, pfd = 1;
   bool slm = false, epi2 = false;
+  // (16 lanes, gemm_xw.cl: d2 the 2D block forms (0 none, 2 the loads, 1 the loads and C, 3 the loads and C with
+  //  XW_C_RND), lock XW_LOCK; pf0 the prefetch the engine builds a form with when none is asked: both parts 2 ahead
+  //  with the 2D loads, xw_pf_2d_def)
+  int lanes = 8, d2 = 0;
+  bool lock = false;
+  std::string pf0;
   cl_kernel k = nullptr;
   size_t spill = 0, bin = 0;
   std::vector<double> score;  // (per token count: the shapes' summed median ms; 0 = not run)
   std::vector<size_t> diff;
   std::string env() const {  // (the engine's switches for this form: zero/xe2/engine_xw.h)
+    if (lanes == 16)
+      return "ARC_GEMM_XW_TM=" + std::to_string(tm) + " ARC_GEMM_XW_NC=" + std::to_string(nc) + " ARC_GEMM_XW_WGX=" +
+             std::to_string(wgx) + " ARC_GEMM_XW_LOCK=" + std::to_string(lock ? 1 : 0) + " ARC_GEMM_XW_2D=" +
+             std::to_string(d2 == 3 ? 1 : d2) + (d2 == 3 ? " ARC_GEMM_XW_C_RND=1" : d2 == 1 ? " ARC_GEMM_XW_C_RND=0" : "") +
+             (pf >= 0 ? " ARC_GEMM_XW_PF=" + std::to_string(pf) + " ARC_GEMM_XW_PFD=" + std::to_string(pfd) : std::string());
     std::string e = "ARC_GEMM_XW_EPI2=" + std::to_string(epi2 ? 1 : 0);
     if (slm)
       e += " ARC_GEMM_XW_BIG=1 ARC_GEMM_XW_SLM_TILE=" + std::to_string(tm) + "x" + std::to_string(16 * nc) +
@@ -105,6 +116,35 @@ static std::vector<Cand> all_cands(const AllSel& s) {
   if (s.limit > 0 && (int)v.size() > s.limit) v.resize(s.limit);
   return v;
 }
+// 16 lanes (gemm_xw.cl: B-series, the B390 / 140V, a Max): every tile the engine takes (TM 16 / 32 / 64 x NC 1 / 2 /
+// 4 / 6 / 8), 1 / 2 / 4 / 8 column sub-groups a work-group, the lock, and where the GPU has 2D block loads (and the
+// DPAS is not emulated) each 2D form; the 32 x 96 tiles (NC 6) never in 2D, as the engine (it spills there). --nc and
+// --tm select as for 8 lanes; --family plain / 2d
+static std::vector<Cand> all_cands16(const AllSel& s, bool can2d) {
+  std::vector<Cand> v;
+  for (int tm : {16, 32, 64})
+    for (int nc : {1, 2, 4, 6, 8}) {
+      if (!AllSel::in(s.tm, tm) || !AllSel::in(s.nc, nc)) continue;
+      const std::string t = std::to_string(tm) + "x" + std::to_string(16 * nc);
+      for (int wgx : {1, 2, 4, 8})
+        for (int d2 : {0, 2, 1, 3}) {
+          if (d2 && (!can2d || nc == 6 || !AllSel::in(s.family, std::string("2d")))) continue;
+          if (!d2 && !AllSel::in(s.family, std::string("plain"))) continue;
+          for (int lock : {0, 1}) {
+            Cand c;
+            c.lanes = 16, c.tm = tm, c.nc = nc, c.wgx = wgx, c.d2 = d2, c.lock = lock;
+            static const char* dn[] = {"", " 2dc", " 2d", " 2dc rnd"};
+            c.name = t + " w" + std::to_string(wgx) + dn[d2] + (lock ? " L" : "");
+            c.defs = std::string(d2 ? " -DX2D -DXW_2D" : "") + (d2 == 1 || d2 == 3 ? " -DXW_2D_C" : "") +
+                     (d2 == 3 ? " -DXW_C_RND" : "") + (lock ? " -DXW_LOCK" : "");
+            c.pf0 = d2 ? " -DXW_PF=3 -DXW_PFD=2" : "";
+            v.push_back(c);
+          }
+        }
+    }
+  if (s.limit > 0 && (int)v.size() > s.limit) v.resize(s.limit);
+  return v;
+}
 
 // a progress bar on stderr, one line redrawn: [#####.....] 12 / 300 stage 1, 40 s, ~15 min left
 static void all_bar(const char* what, size_t i, size_t n, std::chrono::steady_clock::time_point t0) {
@@ -118,9 +158,12 @@ static void all_bar(const char* what, size_t i, size_t n, std::chrono::steady_cl
   fflush(stderr);
 }
 
+// (lanes 16: src is gemm_xw.cl and the forms all_cands16's, on the plain layouts; 8: gemm_xw8.cl, both packed)
 static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, const std::vector<Shape>& shapes,
-                   const std::vector<int>& Ms, int iters, const AllSel& sel) {
+                   const std::vector<int>& Ms, int iters, const AllSel& sel, int lanes = 8) {
   using clock = std::chrono::steady_clock;
+  const bool x16 = lanes == 16;
+  const char* kname = x16 ? "gemm_xw" : "gemm_xw8";
   const int Mmax = *std::max_element(Ms.begin(), Ms.end());
   // ---- the shapes' data at the largest token count; a smaller count uses its first rows (both packed layouts keep
   //      8 tokens together, so a prefix of rows is a prefix of the buffer)
@@ -177,11 +220,14 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
     while (wgy < 8 && (M / tm) % (wgy * 2) == 0) wgy *= 2;
     while (wgx * wgy > 32 && wgy > 1) wgy /= 2;
     if (c && c->slm) wgy = c->wgy;
-    size_t gws[2] = {(size_t)8 * (N / (16 * nc)) * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)8 * wgx, (size_t)wgy};
+    const size_t sg = x16 ? 16 : 8;  // (a sub-group's lanes)
+    size_t gws[2] = {sg * (N / (16 * nc)) * (M / tm / wgy), (size_t)wgy}, lws[2] = {sg * wgx, (size_t)wgy};
+    const bool packed = c && !x16;  // (16 lanes: the plain layouts, as the engine's gemm_xw reads them)
     for (int sp = 0; sp < d.splits; ++sp) {
       int s0 = nsb * sp / d.splits, s1 = nsb * (sp + 1) / d.splits, ac = sp == 0 ? d.sh.a : 1, MM = M, NN = N, KK = K,
-          ldc = N, coff = 0, r = rg;
-      set_args(k, 0, c ? d.bwp : d.bwq, d.bwh, c ? d.bap : d.baq, d.bas, d.bc, MM, NN, KK, ldc, coff, ac, r, s0, s1);
+          ldc = N, coff = 0, r = rg, g_base = 0;
+      set_args(k, 0, packed ? d.bwp : d.bwq, d.bwh, packed ? d.bap : d.baq, d.bas, d.bc, MM, NN, KK, ldc, coff, ac, r, s0, s1);
+      if (x16) set_args(k, 14, g_base);  // (gemm_xw's first 16-column group: 0, the whole N)
       CL_CHECK(clEnqueueNDRangeKernel(cl.queue, k, 2, nullptr, gws, lws, 0, nullptr, nullptr));
     }
   };
@@ -215,14 +261,15 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
     return diff;
   };
   // ---- the reference: the plain kernel (32 x 16, unpacked), the engine's results bit for bit (xw_check)
-  cl_kernel kref = cl.kernel(cl.build(src, base + " -DXW_TM=32 -DXW_NC=1" + (emu ? " -DXW_EMU" : "")), "gemm_xw8");
+  cl_kernel kref = cl.kernel(cl.build(src, base + " -DXW_TM=32 -DXW_NC=1" + (emu ? " -DXW_EMU" : "")), kname);
   for (SD& d : sd)
     for (int M : Ms) d.ref.push_back(result(kref, nullptr, d, M, 4));
   const double ops1 = [&] { double o = 0; for (const Shape& s : shapes) o += 2.0 * s.N * s.K; return o; }();
 
   // ---- stage 0: build every form
-  std::vector<Cand> cs = all_cands(sel);
-  printf("\n--all: %zu forms of gemm_xw8 (both operands packed); token counts", cs.size());
+  std::vector<Cand> cs = x16 ? all_cands16(sel, cl.block2d && !emu) : all_cands(sel);
+  printf("\n--all: %zu forms of %s%s; token counts", cs.size(), kname,
+         x16 ? (cl.block2d && !emu ? " (16 lanes, the 2D block forms too)" : " (16 lanes; no 2D block loads here)") : " (both operands packed)");
   for (int M : Ms) printf(" %d", M);
   printf("; %zu shapes; stages %s\n", shapes.size(), sel.stages.c_str());
   std::vector<Cand> ok;
@@ -232,10 +279,10 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
     Cand& c = cs[i];
     const std::string opts = base + " -DXW_TM=" + std::to_string(c.tm) + " -DXW_NC=" + std::to_string(c.nc) +
                              (c.wgx > 1 ? " -DXW_WGX=" + std::to_string(c.wgx) : std::string()) +
-                             (c.slm ? " -DXW_WGY=" + std::to_string(c.wgy) : std::string()) + c.defs + (emu ? " -DXW_EMU" : "");
+                             (c.slm ? " -DXW_WGY=" + std::to_string(c.wgy) : std::string()) + c.defs + c.pf0 + (emu ? " -DXW_EMU" : "");
     try {
       cl_program p = cl.build(src, opts);
-      c.k = cl.kernel(p, "gemm_xw8");
+      c.k = cl.kernel(p, kname);
       c.bin = p->bin_bytes;
       ze_kernel_properties_t kp{};
       kp.stype = (ze_structure_type_t)0x1e;
@@ -320,13 +367,14 @@ static int run_all(ClRt& cl, const std::string& src, bool emu, double peak, cons
           for (int pf : {0, 1, 2, 3})
             for (int pfd : {1, 2, 4}) {
               if (pf == 0 && pfd > 1) continue;
+              if (x16 && !c->d2 && pf > 1) continue;  // (16 lanes without the 2D loads: the weights' part only, as the engine)
               Cand v = *c;
               v.pf = pf, v.pfd = pfd;
               const std::string opts = base + " -DXW_TM=" + std::to_string(v.tm) + " -DXW_NC=" + std::to_string(v.nc) +
                                        (v.wgx > 1 ? " -DXW_WGX=" + std::to_string(v.wgx) : std::string()) + v.defs +
                                        " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(pfd) + (emu ? " -DXW_EMU" : "");
               try {
-                v.k = cl.kernel(cl.build(src, opts), "gemm_xw8");
+                v.k = cl.kernel(cl.build(src, opts), kname);
               } catch (const std::exception&) {
                 continue;
               }
