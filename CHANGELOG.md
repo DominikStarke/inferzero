@@ -8,7 +8,7 @@
 - **The logits are the same bit for bit.** Checked on the tiny DeepSeek model (1,500 tokens in 256-token chunks, at 1,
   2 and 3 chunks a segment), and under `ARC_TP_SIM=1 --gpus 2`. With its per-chunk buffers switched off, the logits
   change, so the path really runs.
-- **Why it is opt-in:** about 320 MB of VRAM on the real model, for the segment's residual streams. That memory is
+- **Why it is opt-in:** about 400 MB of VRAM on the real model, for the segment's residual streams (4 streams of 5,120 floats a row, 4,096 + 1,024 rows). That memory is
   taken from the expert cache. `--ctx auto` counts it.
 - **Not measured yet:** speed pairs are asked of the DeepSeek owners.
 

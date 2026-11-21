@@ -49,7 +49,7 @@
   // layer's attention input and the head read it), the indexer's selection (the layers that share an index source) and
   // the candidate map. Within a layer the chunks run in order, so the window rings, the compressor's pending rows and
   // the compressed caches see the same writes as chunk by chunk: the logits stay the same bit for bit.
-  // Its memory: the segment's residual streams (hc_n x n_embd floats a row, ~320 MB at 4,096 + one chunk on the real
+  // Its memory: the segment's residual streams (hc_n x n_embd floats a row, 4 x 5,120: ~400 MB at 4,096 + one chunk on the real
   // model) and the per-chunk copies, counted in ctx_buf_bytes.
   static int ds_lm_env() {
     static const int v = getenv("ARC_DS_LM") ? atoi(getenv("ARC_DS_LM")) : 0;
