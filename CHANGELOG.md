@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-21: the speed and accuracy options in Docker
+
+- **`OPTIONS` in `docker/compose.yaml` and `docker/kubernetes.yaml`** chooses the options of `docs/options.md` for the
+  container. It's a comma or space list: `copy_draft` turns one on, `xcpu=off` turns one off, `budget=12` gives one a
+  value. Exactly these apply at each start, starting from the defaults; nothing is kept in the data volume, so an
+  option removed from the list is off again at the next start.
+- The entrypoint passes them to the launcher's new `--no-saved-options` (only the options given, nothing saved), and
+  serverz's log names them.
+
 ## 2026-11-21: the server's log names the options in effect
 
 - At start, serverz writes one line naming the speed and accuracy options in effect, by their titles:

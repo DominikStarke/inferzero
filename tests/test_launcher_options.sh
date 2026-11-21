@@ -28,6 +28,13 @@ grep -q '"budget":  "12"' "$T/options.json"; ok $? "a refused change leaves the 
 $L --default-opt budget --options > /dev/null; ok $? "--default-opt"
 grep -q budget "$T/options.json"; [ $? -ne 0 ]; ok $? "budget gone after --default-opt"
 
+# --no-saved-options (Docker's OPTIONS): exactly the ones given, from the defaults, nothing written
+printf '{"xcpu":"off"}' > "$T/options.json"
+$L --no-saved-options --opt copy_draft --options > "$T/list3.txt"; ok $? "--no-saved-options runs"
+grep -A0 "copy_draft" "$T/list3.txt" | grep -q "now: on"; ok $? "the given option is on"
+grep "xcpu " "$T/list3.txt" | grep -q "now: default"; ok $? "the saved choice is not used"
+[ "$(cat "$T/options.json")" = '{"xcpu":"off"}' ]; ok $? "options.json left as it was"
+
 # a file in zero-server's single-line form (PowerShell 7's -Compress, or written by hand)
 printf '{"batch":"0","gemv_gu":"on"}' > "$T/options.json"
 # the effect: source the launcher's functions

@@ -44,6 +44,7 @@ spec:
             - {name: MODEL, value: "4b"}       # a catalog key (4b, 9b, 27b, 35b, flash, g12, g31, e4b) or a .gguf path
             - {name: GPUS, value: "1"}         # GPUs to split the model over: ask for as many below
             - {name: SERVER_ARGS, value: ""}   # more serverz options, e.g. "--ctx 32768"
+            - {name: OPTIONS, value: ""}       # speed and accuracy options (docs/options.md), e.g. "copy_draft,xcpu=off"
             - {name: HF_HOME, value: /cache/huggingface}
             - {name: ARC_DATA_DIR, value: /cache/inferzero}   # compiled kernels, expert files, settings
           ports:

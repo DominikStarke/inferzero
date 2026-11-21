@@ -12,7 +12,8 @@
 #   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
 # Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --no-browser, --yes (no
 # questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
-# (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows); anything after `--` goes to
+# (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
+# ones given, nothing saved); anything after `--` goes to
 # serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
 # The catalog below follows scripts/model-catalog.ps1 (tests/check_catalog_sync.sh checks that they agree). Flash
 # Next's AutoRound import and the speech models are setup.ps1's on Windows and not offered here.
@@ -512,19 +513,20 @@ menu() {
   start_key "${keys[$((s - 1))]}"
 }
 
-usage() { sed -n '2,16p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
   REPLACE_SERVICE=0; EXTRA=()
-  local opt_args=() a
+  local opt_args=() a no_saved=0
   opt_load
   while [ $# -gt 0 ]; do
     case "$1" in
       --options) mode=options;;
       --opt|--no-opt|--default-opt) [ $# -ge 2 ] || { err "zero-launcher: $1 needs an option id (--options lists them)"; return 2; }
         opt_args+=("$1" "$2"); shift;;
+      --no-saved-options) no_saved=1;;
       --check) mode=check;;
       --list) mode=list;;
       --download) arg_dl=${2:-}; shift; mode=download;;
@@ -552,7 +554,9 @@ main() {
   [[ "$GPUS" =~ ^[0-9]+$ ]] || { err "zero-launcher: --gpus: a number"; return 2; }
   [ "$REPLACE_SERVICE" = 1 ] && [ "$INSTALL_SERVICE" != 1 ] && { err "zero-launcher: --replace-service needs --install-service"; return 2; }
   # (--opt id[=value] / --no-opt id / --default-opt id, each a comma list too: kept in options.json for later starts,
-  #  as zero-server -Opt / -NoOpt / -DefaultOpt)
+  #  as zero-server -Opt / -NoOpt / -DefaultOpt; with --no-saved-options the choices are exactly these, from the
+  #  defaults, and nothing is saved: Docker's OPTIONS, docker/entrypoint.sh)
+  [ "$no_saved" = 1 ] && OPTC=()
   if [ ${#opt_args[@]} -gt 0 ]; then
     local i ids id val
     for ((i = 0; i < ${#opt_args[@]}; i += 2)); do
@@ -567,7 +571,7 @@ main() {
         esac
       done
     done
-    opt_save || { err "zero-launcher: cannot write $STATE_DIR/options.json"; return 1; }
+    [ "$no_saved" = 1 ] || opt_save || { err "zero-launcher: cannot write $STATE_DIR/options.json"; return 1; }
   fi
   case "$mode" in
     options) opt_list; return $?;;

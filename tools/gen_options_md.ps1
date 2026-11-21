@@ -23,7 +23,8 @@ $md.Add('On Windows: `zero-server start -Opt <id>` turns one on (kept for later 
   '`zero-server options` lists them with whether each is for your PC. On Linux: `./zero-launcher.sh --opt <id>` ' +
   '(`--opt <id>=<value>` for one that takes a value), `--no-opt <id>`, `--default-opt <id>`, `--options` to list them, ' +
   'or `o` in its menu; the same choices file as on Windows (`~/.inferzero/options.json`), also written into the ' +
-  'systemd unit with `--install-service`. By hand: set the environment variable before ' +
+  'systemd unit with `--install-service`. In Docker: `OPTIONS` in compose.yaml or kubernetes.yaml, e.g. ' +
+  '`"copy_draft,xcpu=off,budget=12"` (exactly these at each start). By hand: set the environment variable before ' +
   'starting the server (PowerShell: `$env:NAME = "value"`, bash: `export NAME=value`), or add the flag to serverz''s ' +
   'command line.')
 $md.Add("")

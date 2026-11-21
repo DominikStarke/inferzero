@@ -30,6 +30,7 @@ services:
       MODEL: 4b                     # a catalog key (4b, 9b, 27b, 35b, flash, g12, g31, e4b) or a .gguf path
       GPUS: "1"
       SERVER_ARGS: ""               # more serverz options, e.g. "--ctx 32768"
+      OPTIONS: ""                   # speed and accuracy options (docs/options.md), e.g. "copy_draft,xcpu=off,budget=12"
     volumes:   # (${HOME}: yours when you are in the docker group; under sudo it is root's, so the models go there)
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # the models (shared with a host install)
       - ${HOME}/.inferzero:/root/.inferzero                   # compiled kernels, expert files, settings

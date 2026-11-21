@@ -71,7 +71,7 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    docker compose logs -f
    ```
    The web UI is then at `http://127.0.0.1:8090/`. `compose.yaml` sets the model (`MODEL: 4b`, a catalog key or a
-   `.gguf` path), `GPUS`, and `SERVER_ARGS`. It passes `/dev/dri` through and mounts the Hugging Face cache and
+   `.gguf` path), `GPUS`, `SERVER_ARGS`, and `OPTIONS`, the speed and accuracy options of [options.md](options.md) (e.g. `OPTIONS: "copy_draft,xcpu=off,budget=12"`; exactly these at each start, none kept). It passes `/dev/dri` through and mounts the Hugging Face cache and
    `~/.inferzero` (compiled kernels, expert files) from the host, so models and kernels are not fetched or built
    again. The container runs as root, so the files it writes there belong to root on the host. On Kubernetes,
    `docker/kubernetes.yaml` sets up a Deployment, a Service and a volume for the cache. The GPU comes from Intel's
