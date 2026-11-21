@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-21: long MoE prompts decode each matrix once (Flash Next, the 35B)
+
+- A prompt longer than a chunk goes through the model layer by layer. Each matrix is decoded into a staging slot
+  once and used for every chunk.
+- But the shared expert's gate / up / down, the router, DeltaNet's a / b and Flash Next's indexer all used one slot
+  together. They took it from each other, so they were decoded again in every chunk: in Flash Next, ~242 decodes a
+  chunk.
+- Now each has a slot of its own. On the laptop, at 4 chunks of 512, the decodes fell from 1,124 to 692. On the
+  laptop the prompt speed stays within its noise (decoding is a few % of its time); on a B70, decoding was 8-13 % of
+  Flash Next's prompt time.
+- The same results bit for bit (Flash Next, the 27B, the 4B). About 9 MB more VRAM on Flash Next; none on dense
+  models.
+
 ## 2026-11-21: the whole sweep: every form of the 8-lane XMX GEMM, at every context, and it goes on after a stop
 
 - **`bin\xw_peak.exe --all`** builds every form of the A-series / 140T prompt GEMM (`gemm_xw8`) with both operands

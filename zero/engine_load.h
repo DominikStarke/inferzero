@@ -307,9 +307,15 @@
     }
     return w;
   }
+  // (11-16, 2026-11-21, QUEUE K1: the shared expert, the router, a / b and the indexer had the last slot together, so in a layer-major
+  //  prompt they took it from each other and were decoded again for every chunk: Flash Next, 4 chunks of 512, 1,124
+  //  decode_w8 launches for 398 in one chunk. Their own slots: once per segment. Not H8's roles, engine_h8.h)
   static int weight_role(const std::string& name) {
     static const char* roles[] = {"attn_qkv.", "attn_gate.", "ssm_out.", "attn_q.", "attn_k.", "attn_v.",
-                                  "attn_output.", "ffn_gate.", "ffn_up.", "ffn_down.", "nextn.eh_proj."};
+                                  "attn_output.", "ffn_gate.", "ffn_up.", "ffn_down.", "nextn.eh_proj.",
+                                  "ffn_gate_shexp.", "ffn_up_shexp.", "ffn_down_shexp.", "ffn_gate_inp.", "ssm_alpha.",
+                                  "indexer."};
+    static_assert(sizeof(roles) / sizeof(roles[0]) < kRoles, "the last role is the shared slot");
     for (int r = 0; r < (int)(sizeof(roles) / sizeof(roles[0])); ++r)
       if (name.find(roles[r]) != std::string::npos) return r;
     return kRoles - 1;
@@ -430,9 +436,9 @@
     L.qkv.iq3t = L.z.iq3t = L.qz.iq3t;  // (views of the stack: its layout; rows start at whole pairs)
     if (L.qz_ab) {
       const cl_mem va = view(C + Di, nab);
-      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, kRoles - 1, &va);  // (nab % 64 == 0: not padded)
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, weight_role(p + "ssm_alpha.weight"), &va);  // (nab % 64 == 0: not padded)
     } else {
-      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), tp_rows(nab), E);
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), tp_rows(nab), E, weight_role(p + "ssm_alpha.weight"));
     }
   }
   // Two matrices with the same K stacked by rows, requantized to Q8_0 (the tiny DeltaNet gate projections).
@@ -469,7 +475,7 @@
     dequant_row(ta.type, ta.data, Na * K, v.data());
     dequant_row(tb.type, tb.data, Nb * K, v.data() + (size_t)Na * K);
     auto q8 = quantize_rows_q8_0(v.data(), Np, K);
-    return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, K);
+    return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, K, weight_role(a));
   }
   // a weight matrix of the size the model's dimensions give (N rows, rows of K; -1: any): one wider than the buffer
   // its product writes, or longer rows than the activations hold, would go past them on the GPU (a broken or
