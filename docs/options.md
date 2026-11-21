@@ -139,3 +139,14 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Measured:** bit for bit against one GPU (ARC_TP_SIM, the 4B and 27B, 2 and 3 GPUs); an A770 pair not measured yet.
 - **Note:** needs --gpus 2 or more; Qwen dense only; no --mtp, images, saved prompts or sessions yet.
 - **More:** [docs/multi-gpu.md](multi-gpu.md), experimental.
+
+## Sparse attention for long prompts (`ARC_QSA=1`)
+
+- **What it does:** The QSA-trained Qwen3.8 27B file only: past 2,048 tokens of context, each token attends to the 2,048 keys its trained indexer picks (in blocks of 4) instead of all of them; shorter work is unchanged.
+- **Default:** off (full attention).
+- **Best for:** dense.
+- **Cost:** the logits move against full attention: KL 0.0184 with the selection cut to 64 keys (480 tokens; its own sparse reference 0.0014).
+- **Output:** slightly different, checked against f32 (KL).
+- **Measured:** KL against its own f32 reference 0.0014, the same top token at 475 of 480 positions (64 keys); the speed of long prompts not measured yet.
+- **Note:** the QSA 27B GGUF; not with --attn-f32 or --split layer.
+- **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.

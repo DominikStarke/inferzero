@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-21: the QSA 27B reads with full attention by default; sparse attention opt-in (`ARC_QSA=1`)
+
+- **The QSA-trained 27B now uses full attention unless asked** (the user: "Actually I like full attention"). The start
+  says `QSA indexer present, not used (full attention; ARC_QSA=1: sparse)`.
+- **`ARC_QSA=1`** turns its trained indexer on, as release .21.19 had it by default. It's the option "Sparse attention
+  for long prompts" in the launchers, `zero-server -Opt qsa` and Docker's `OPTIONS=qsa`.
+  - Its KL against full attention is 0.0184 (64 keys), above the 0.015 rule; against its own sparse reference it's
+    0.0014.
+- `ARC_QSA_DENSE=1` still means full attention, and wins over `ARC_QSA=1`.
+- The default's logits are byte for byte .21.19's `ARC_QSA_DENSE=1` run (F2763E4E..., 480 tokens + 8). Flash Next is
+  unchanged: QSA is its own trained form.
+
 ## 2026-11-21: a leaner prompt GEMM loop for 16-lane GPUs (opt-in `ARC_GEMM_XW_PFL=1`)
 
 - **`ARC_GEMM_XW_PFL=1`** issues the 16-lane prompt GEMM's prefetches without tests or address arithmetic inside the

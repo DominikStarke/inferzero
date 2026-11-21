@@ -111,15 +111,26 @@
     // with two differences, from that engine's graph: each raw key is RMS-normed with indexer.k_norm.pre_weight before
     // it is pooled, and a query always sees its own block (complete or not) besides its top blocks. The tail keys live
     // in the first DeltaNet layer's recurrent state (Flash Next's in its PLE layer's), so snapshots, slots and saved
-    // conversations carry them. ARC_QSA_DENSE=1: read the file as a dense model (its indexer ignored, as before
-    // 2026-11-21). Int8 attention only (--attn-f32: dense, said); not on a layer split
-    if (!hp.hc && !hp.moe && a == "qwen35" && !(getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0))
+    // conversations carry them. Opt-in since 2026-11-21 (the user: "Actually I like full attention"): the file is read
+    // with full attention, as a dense model, unless ARC_QSA=1 (ARC_QSA_DENSE=1, the switch of release .21.19, still
+    // means full attention and wins). Int8 attention only (--attn-f32: dense, said); not on a layer split
+    if (!hp.hc && !hp.moe && a == "qwen35")
       if (const auto* cr = f_.get_ints(a + ".attention.compress_ratios")) {
         const int nl = I("block_count");
         hp.qsa_ratio.assign(nl, 0);
         for (int il = 0; il < nl && il < (int)cr->size(); ++il)
           if (f_.find("blk." + std::to_string(il) + ".indexer.k_proj.weight")) hp.qsa_ratio[il] = (int)(*cr)[il];
         for (int r : hp.qsa_ratio) hp.n_qsa += r > 0;
+        const bool want = getenv("ARC_QSA") && atoi(getenv("ARC_QSA")) != 0 &&
+                          !(getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0);
+        if (hp.n_qsa && !want) {
+          static std::once_flag said;
+          std::call_once(said, [] {
+            zlog::eprintf("inferzero: QSA indexer present, not used (full attention; ARC_QSA=1: sparse)\n");
+          });
+          hp.qsa_ratio.assign(nl, 0);
+          hp.n_qsa = 0;
+        }
         const bool split = opt.pp_begin > 0 || (opt.pp_end >= 0 && opt.pp_end < nl);
         if (hp.n_qsa && (!opt.attn_int8 || split)) {
           zlog::eprintf("inferzero: QSA indexer not used %s: the model read as dense\n",
@@ -141,7 +152,7 @@
           if (hp.qsa_dim != 128 || hp.qsa_heads < 1 || hp.qsa_heads > 16)
             throw std::runtime_error("unsupported QSA indexer");
           hp.qsa_own = true;
-          zlog::eprintf("inferzero: QSA on %d full-attention layers (blocks of %d, top %d keys; ARC_QSA_DENSE=1: dense)\n",
+          zlog::eprintf("inferzero: QSA on %d full-attention layers (blocks of %d, top %d keys, ARC_QSA=1; unset: full attention)\n",
                         hp.n_qsa, hp.qsa_ratio[hp.full_attn_interval - 1], hp.qsa_topk);
         }
       }
