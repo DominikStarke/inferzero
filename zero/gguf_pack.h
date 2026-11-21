@@ -280,11 +280,27 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
       const int lim = getenv("ARC_XBUILD_STALL_S") ? atoi(getenv("ARC_XBUILD_STALL_S")) : 60;
       std::this_thread::sleep_for(std::chrono::seconds(lim + 2));
     }
-    for (const GgufTensor* t : keep) {
+    // S6 (2026-11-21): each piece copied out of the mapping into a buffer while the next one is prefetched in large
+    // requests (the pages read ahead, not faulted in one by one from fwrite), and the copy guarded (S4: a page that
+    // cannot be read is read again with read calls). The same bytes in the same order. ARC_XBUILD_PREFETCH=0: as before
+    static const bool s6 = !getenv("ARC_XBUILD_PREFETCH") || atoi(getenv("ARC_XBUILD_PREFETCH")) != 0;
+    const size_t piece = 64ull << 20;
+    struct Buf { uint8_t* p; size_t n; ~Buf() { if (p) plat::page_free(p, n); } } pbuf{s6 ? (uint8_t*)plat::page_alloc(piece) : nullptr, piece};
+    for (size_t ti = 0; ti < keep.size(); ++ti) {
+      const GgufTensor* t = keep[ti];
       XBuildStopGuard::check("the package " + tmp);
       // (in pieces of 64 MB, each a tick: a 2 GB tensor from a slow USB disk takes longer than the watch's limit)
-      for (uint64_t o = 0; o < t->nbytes; o += 64ull << 20) {
-        w.put(t->data + o, (size_t)std::min<uint64_t>(64ull << 20, t->nbytes - o));
+      for (uint64_t o = 0; o < t->nbytes; o += piece) {
+        const size_t n = (size_t)std::min<uint64_t>(piece, t->nbytes - o);
+        if (pbuf.p) {
+          // (the next piece: of this tensor, else the next tensor's first)
+          if (o + piece < t->nbytes) plat::prefetch_mapped(t->data + o + piece, (size_t)std::min<uint64_t>(piece, t->nbytes - o - piece));
+          else if (ti + 1 < keep.size()) plat::prefetch_mapped(keep[ti + 1]->data, (size_t)std::min<uint64_t>(piece, keep[ti + 1]->nbytes));
+          copy_mapped(src, pbuf.p, t->data + o, n, "the package", "");
+          w.put(pbuf.p, n);
+        } else {
+          w.put(t->data + o, n);
+        }
         watch.tick();
         XBuildStopGuard::check("the package " + tmp);  // (S1: a stall seen meanwhile stops here)
       }

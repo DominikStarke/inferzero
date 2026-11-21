@@ -179,6 +179,29 @@ struct XBuildStopGuard {
   }
 };
 
+// S4 (2026-11-21): bytes of a model out of its mapping, for the expert file's batches and the package's tensors; a
+// page that cannot be read (an in-page error, SIGBUS) ended the process before. Now the same bytes are read again with
+// read calls, up to 3 tries a second apart, each said in the log; then the build fails with the file and offset. Bit
+// for bit the same bytes (ARC_XBUILD_TEST_FAULT=N: the first N copies act as if they failed, for tests)
+inline void copy_mapped(const GgufFile& f, void* dst, const uint8_t* src, size_t n, const char* what, const char* kept) {
+  static std::atomic<int> test_fault{getenv("ARC_XBUILD_TEST_FAULT") ? atoi(getenv("ARC_XBUILD_TEST_FAULT")) : 0};
+  if (test_fault.load() <= 0 && plat::guarded_copy(dst, src, n)) return;
+  if (test_fault.load() > 0) test_fault.fetch_sub(1);
+  std::string file;
+  uint64_t off = 0;
+  if (!f.locate(src, n, file, off))
+    throw std::runtime_error(std::string("a page of the model could not be read while writing ") + what);
+  for (int t = 1; t <= 3; ++t) {
+    zlog::eprintf("inferzero: a page of %s at %.2f GB could not be read through the mapping: reading it again (try %d "
+                  "of 3)\n", file.c_str(), off / 1e9, t);
+    if (plat::read_file_at(file, off, dst, n)) return;
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+  throw std::runtime_error("cannot read " + file + " at byte " + std::to_string(off) + " (" + std::to_string(n) +
+                           " bytes) while writing " + what + ": the drive or the file is damaged; copy the model again, "
+                           "then start again" + kept);
+}
+
 struct ExpertStore {
   struct LayerInfo {
     uint32_t type[3] = {};  // gate, up, down GGUF types
@@ -673,27 +696,8 @@ struct ExpertStore {
     fclose(f);
     if (!ok || !plat::replace_file(t.c_str(), rs.c_str())) plat::remove_file(t.c_str());
   }
-  // S4 (2026-11-21): a batch's source rows out of the mapping; a page that cannot be read (an in-page error, SIGBUS)
-  // ended the process before. Now the same bytes are read again with read calls, up to 3 tries a second apart, each
-  // said in the log; then the build fails with the file and offset (its .tmp kept, S2). Bit for bit the same bytes
-  // (ARC_XBUILD_TEST_FAULT=1: the first copy acts as if it failed, for tests)
   static void copy_source(const GgufFile& f, void* dst, const uint8_t* src, size_t n) {
-    static std::atomic<int> test_fault{getenv("ARC_XBUILD_TEST_FAULT") ? atoi(getenv("ARC_XBUILD_TEST_FAULT")) : 0};
-    if (test_fault.load() <= 0 && plat::guarded_copy(dst, src, n)) return;
-    if (test_fault.load() > 0) test_fault.fetch_sub(1);
-    std::string file;
-    uint64_t off = 0;
-    if (!f.locate(src, n, file, off))
-      throw std::runtime_error("a page of the model could not be read while writing the expert file");
-    for (int t = 1; t <= 3; ++t) {
-      zlog::eprintf("inferzero: a page of %s at %.2f GB could not be read through the mapping: reading it again (try %d "
-                    "of 3)\n", file.c_str(), off / 1e9, t);
-      if (plat::read_file_at(file, off, dst, n)) return;
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    throw std::runtime_error("cannot read " + file + " at byte " + std::to_string(off) + " (" + std::to_string(n) +
-                             " bytes) while writing the expert file: the drive or the file is damaged; copy the model "
-                             "again, then start again (the finished layers are kept)");
+    copy_mapped(f, dst, src, n, "the expert file", " (the finished layers are kept)");
   }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
     XBuildStopGuard stop_guard;  // (before the .tmp's owner: it unwinds after the .tmp is removed; D1)

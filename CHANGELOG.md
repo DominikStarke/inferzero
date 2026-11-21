@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: a package's first part read in large pieces
+
+- Making a package (`serverz --pack`) first writes every tensor but the experts. Those were written straight out of
+  the mapped model file, so each page was read on its own as it was reached, which is slow on a USB disk and hung a
+  drive that struggles with that pattern.
+- Now each 64 MB piece is copied into a buffer while the next one is read ahead in large requests, and the copy has
+  S4's protection (a page that can't be read is read again).
+- The package is the same bit for bit: the test model's package and expert file byte-identical the old way, the new
+  way, and with read faults forced. `ARC_XBUILD_PREFETCH=0`: as before.
+
 ## 2026-11-21: less host work per generated token; an expert file's build survives a bad read
 
 - **Each one-token matrix-vector product keeps its kernel** after its first launch. Before, every launch put together
