@@ -14,6 +14,9 @@
 - **`bench/gpu_sweep` phase X named the wrong winner:** a form had to beat the best one so far by 2 %, so a later,
   faster form was not named (on skipzx-lab's B60 it named x1 while x4 was faster at all three contexts). Now the bar
   is 2 % over the defaults, and the fastest form past it wins.
+- **`--mtp` on a model file without the MTP block** now says so at load, instead of decoding plainly in silence.
+  Unsloth's Qwen3.6-35B-A3B-UD-Q4_K_M.gguf has none; a B390 owner saw `--mtp` run at plain speed with no MTP line
+  (#75).
 
 ## 2026-11-21: the layer split in the server (`serverz --gpus N --split layer`)
 
