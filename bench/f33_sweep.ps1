@@ -101,6 +101,10 @@ foreach ($m in $Models) {
   "=== " + (Split-Path $m -Leaf)
   $probe = Invoke-Bench $m @{} 512 -Prof  # (warm-up, and whether the model has DeltaNet layers)
   $hasGdn = $probe.gdn
+  # (one more untimed run, as the first timed one but without --prof: on securux's 275H iGPU the first timed config,
+  #  512 tokens default, read 60.4 tok/s against 296 for the same kernels later, after the --prof warm-up above;
+  #  issue #78, 2026-11-22)
+  $null = Invoke-Bench $m @{} $Sizes[0]
   $sets = [ordered]@{ "default" = @{} }
   if ($hasGdn) {
     $sets["gdn 1"] = @{ ARC_GDN_CHUNK = "1" }
