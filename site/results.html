@@ -44,7 +44,7 @@
   </dl>
   <p class="after">Models are Qwen3.8 27B GSQ-RCO IQ3_S unless named; the others are the files the launcher downloads. Numbers move with each release, so every row says which one. Setups we have not measured are the most useful thing you can add: <a href="https://github.com/rizagp/inferzero/blob/main/CONTRIBUTING.md">how to measure yours</a>.</p>
   <nav class="jump" aria-label="Setups">
-    <a href="#s-125h">Core Ultra 5 125H</a><a href="#s-140t">Arc 140T</a><a href="#s-b390">Arc B390</a><a href="#s-a770">Arc A770</a><a href="#s-b580">Arc B580</a><a href="#s-b60">Arc Pro B60</a><a href="#s-b65">Arc Pro B65</a><a href="#s-b70">Arc Pro B70</a><a href="#s-max1550">Data Center GPU Max</a><a href="#s-multi-b60">2-4 × Pro B60</a><a href="#s-multi-other">Other multi-GPU</a>
+    <a href="#s-125h">Core Ultra 5 125H</a><a href="#s-140t">Arc 140T</a><a href="#s-b390">Arc B390</a><a href="#s-a770">Arc A770</a><a href="#s-a750">Arc A750</a><a href="#s-b580">Arc B580</a><a href="#s-b60">Arc Pro B60</a><a href="#s-b65">Arc Pro B65</a><a href="#s-b70">Arc Pro B70</a><a href="#s-max1550">Data Center GPU Max</a><a href="#s-multi-b60">2-4 × Pro B60</a><a href="#s-multi-other">Other multi-GPU</a>
   </nav>
 </div>
 
@@ -119,7 +119,7 @@
       <tbody>
         <tr><td>Qwen3.5 4B</td><td class="n">4,821</td><td class="n">37.6-38.3</td><td class="n">63.9</td><td>2026.11.18.02 (generation .18.07)</td></tr>
         <tr><td>Qwen3.5 9B</td><td class="n">2,969-3,017</td><td class="n">29.7-30.4</td><td class="n">51.5</td><td>2026.11.17.08 (generation .18.07)</td></tr>
-        <tr><td>Qwen3.8 27B</td><td class="n">1,223</td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>2026.11.17.08 / .18.08</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="n">1,361-1,380 <small>(16K: 1,276-1,292)</small></td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>prompt 2026.11.21.02, its defaults (hansong80, a 225 W card); generation 2026.11.17.08 / .18.08</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">80.7-82.1</td><td class="n">105.7</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">51.2-51.6</td><td class="n">84.4</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.8 27B, Linux <small>(this card held to 150 W)</small></td><td class="n">1,491 <small>(16K: 1,369)</small></td><td class="n">22.4-22.9</td><td class="n">48.6</td><td>main d252b86, its defaults (prompt and drafting, 2026-11-21); generation 2026.11.18.08</td></tr>
@@ -130,6 +130,21 @@
     <p class="note">Linux: prompts of 2K / 8K tokens, no 4K run: 4B 4,518 / 5,000 tok/s, 9B 2,794 / 3,249, 27B 1,131 / 1,205, 35B-A3B 1,830 / 2,966 (131K: 1,133, generation 35.4; its whole 262K context: 709 tok/s, then 32.3). Generation at a 128-token depth and a 256-token coding answer.</p>
     <p class="note">The 27B's Linux prompt (skipzx-lab, #45, cool runs with a pause between them): 1,217 tok/s at 4K before 2026.11.20; a tile per GEMM shape and the 32 x 16 GEMMs' reads one step ahead took it to 1,282-1,289 (16K 1,190), against 1,242 with the read-ahead off; a 32 x 32 tile through local memory with the epilogue a row at a time to 1,488 (16K 1,358), its GEMMs at 50 % of the card's int8 peak; as the default, 1,491 (16K 1,369; with it off 1,326). Drafting on a real coding prompt (ChatML, 256 tokens): 22.4 tok/s plain, 48.6 with MTP, 72.8 % of drafts accepted; the B60 in the same box 23.3 and 54.3, 92.6 %.</p>
     <p class="note">The 27B's generation is with kernels sent in recorded lists (<code>ARC_BATCH=64</code>), the default on Alchemist under Windows since 2026.11.18.08; 12.6-12.8 tok/s before. With it, the 27B's drafting no longer adds speed (20.4 tok/s against 21.4 plain on a 512-token prompt).</p>
+    <p class="note">The whole sweep of the prompt GEMM's forms (<code>bench\gpu_sweep.ps1 -Phases X</code>, release 2026.11.21.02, hansong80, Windows): the best form alone 109.8 TOPS (48 % of the int8 peak) against the default's 107.9; in the model none more than 2 % faster than the defaults at both 512 and 4K tokens (the drift between two default runs 3.8 % / 0.5 %): the defaults stay.</p>
+  </div>
+</section>
+
+<section id="s-a750">
+  <div class="wrap">
+    <h2>Arc A750 8 GB</h2>
+    <p class="setup">Alchemist (Xe-HPG) · Linux (Omarchy, kernel 7.2, i915), Ryzen 5 5600X · hakangit, <a href="https://github.com/rizagp/inferzero/issues/72">issue #72</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">4,607-4,615</td><td class="n">44.6-45.8</td><td class="n">68.4 <small>(MTP, 75 % of drafts accepted)</small></td><td>2026.11.21.01, its defaults</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Generation at 128 tokens; drafting on a 26-token list prompt, the same 128 tokens as plain decoding. The card's own measured peaks (<code>gpu_bench</code>): 202 int8 XMX TOPS, 407 GB/s.</p>
   </div>
 </section>
 
