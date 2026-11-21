@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-22: `gpu_bench --gemv-layout`, the one-token GEMV's reads in two layouts
+
+- **Why:** on a B60 and a Pro B65, more reads in flight (`ARC_GEMV_DEEP`) did not speed up the GEMV. On the B65, the
+  GEMV's reads alone, with no math (`ARC_GV_PROBE=1`), stop at ~42 % of what gpu_bench reads densely.
+- **One idea:** each sub-group walks its own rows one window at a time, so at any moment the grid reads a small part
+  of every row. The memory may not like that pattern.
+- **The test:** `bin\gpu_bench.exe --gemv-layout` reads a 1 GiB buffer the way the GEMV does, without its math:
+  - its rows one after the other (today's layout);
+  - a sub-group's rows interleaved window by window, so each step reads one contiguous run;
+  - windows of 64-512 bytes, 1 to 8 rows a sub-group (`--row-bytes`, default 2048).
+- **What it decides:** if the interleaved layout reads much faster on discrete cards, the next step is to re-lay out
+  the weights at load for the one-token GEMV (bit for bit). If not, the idea is ruled out.
+- **On the laptop's iGPU:** all forms read ~75 GB/s, the memory's limit. Discrete cards are asked.
+- `ARC_GEMV_DEEP` on the B60 and B65, and `ARC_GEMM_XW_PFL=2` on the B60: rows in docs/before-after.md as measured.
+  No default changed.
+
 ## 2026-11-22: DeepSeek-V4.1's prompts layer by layer (`ARC_DS_LM`, opt-in)
 
 - **`ARC_DS_LM=1`:** a DeepSeek-V4.1 prompt longer than a chunk goes layer by layer, in segments of 4,096 tokens.

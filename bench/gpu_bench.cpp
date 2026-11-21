@@ -4,6 +4,7 @@
 // ~197; TechPowerUp's database counts the 140T at twice that) and to see how far the engine's kernels are from them.
 //   bin\gpu_bench.exe [--seconds 1.5] [--out DIR] [--no-html]
 //   bin\gpu_bench.exe --page [--out DIR]       only the page again, from the results in DIR
+//   bin\gpu_bench.exe --gemv-layout [--row-bytes 2048]   only the one-token GEMV's reads, in two layouts (K_GVL)
 // Writes DIR\<gpu>.json and DIR\gpu-benchmark.html (default DIR: %USERPROFILE%\.inferzero\bench\gpu): the page shows
 // every result in DIR side by side, so results from other machines (their .json) dropped there are compared too.
 //
@@ -188,6 +189,30 @@ __kernel void probe(__global const uint* x, int n, __global int* out) {
   a ^= b ^ c ^ d;
   if ((a.s0 ^ a.s1 ^ a.s2 ^ a.s3 ^ a.s4 ^ a.s5 ^ a.s6 ^ a.s7) == 0x9e3779b9u) out[0] = 1;
 }
+#elif defined(K_GVL)
+// --gemv-layout (2026-11-22): the one-token GEMV's reads without its math. Sub-group sg owns rows sg * GVL_G ..
+// + GVL_G - 1 of row_w uints each and walks them as the GEMV does: per step one window of GVL_B x 64 bytes of each of
+// its rows (GVL_B block reads of 16 lanes x 4 bytes). inter = 0: rows one after the other (today's layout: at any
+// moment the grid touches one window of every row); inter = 1: the sub-group's rows interleaved by window (window s
+// of its GVL_G rows side by side), so each step reads GVL_G x GVL_B x 64 contiguous bytes. Same bytes, same order
+// of use per row: what a load-time re-layout of the weights would change
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void probe(__global const uint* x, int nrows, int row_w, int inter, __global int* out) {
+  const int sg = get_global_id(0) / 16, r0 = sg * GVL_G;
+  if (r0 + GVL_G > nrows) return;  // (a whole sub-group returns together)
+  const int W = GVL_B * 16, steps = row_w / W;
+  __global const uint* base = x + (size_t)r0 * row_w;
+  uint acc = 0;
+  for (int s = 0; s < steps; ++s) {
+#pragma unroll
+    for (int g = 0; g < GVL_G; ++g) {
+      __global const uint* p = base + (inter ? ((size_t)s * GVL_G + g) * W : (size_t)g * row_w + (size_t)s * W);
+#pragma unroll
+      for (int b = 0; b < GVL_B; ++b) acc ^= intel_sub_group_block_read(p + b * 16);
+    }
+  }
+  if (acc == 0x9e3779b9u) out[0] = 1;
+}
 #endif
 )CLC";
 
@@ -363,7 +388,8 @@ document.getElementById('cards').innerHTML=c;
 int main(int argc, char** argv) {
   namespace fs = std::filesystem;
   double seconds = 1.5;
-  bool html = true, page_only = false;
+  bool html = true, page_only = false, gvl = false;
+  int gvl_row = 2048;  // (--gemv-layout: bytes a row; an IQ3_XXS row at K 5,120 is 1,960, padded ~2 KB)
   std::string out = (fs::path(app_dir()) / "bench" / "gpu").string();
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -371,6 +397,8 @@ int main(int argc, char** argv) {
     else if (a == "--out" && i + 1 < argc) out = argv[++i];
     else if (a == "--no-html") html = false;
     else if (a == "--page") page_only = true;
+    else if (a == "--gemv-layout") gvl = true;
+    else if (a == "--row-bytes" && i + 1 < argc) gvl_row = atoi(argv[++i]);
     else if (a == "--help" || a == "-h") {
       printf("usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"
              "Measures the GPU's matrix engines (XMX int8 / f16 / bf16), vector engines (FP32, FP16, DP4a) and memory\n"
@@ -379,7 +407,10 @@ int main(int argc, char** argv) {
              "  --seconds S   how long each test repeats, the best launch counts (default 1.5)\n"
              "  --out DIR     where <gpu>.json and gpu-benchmark.html go (default: %s)\n"
              "  --no-html     the .json only, no page\n"
-             "  --page        no test: only the page again, from the .json files in DIR (other machines' too)\n",
+             "  --page        no test: only the page again, from the .json files in DIR (other machines' too)\n"
+             "  --gemv-layout no other test: the one-token GEMV's reads without its math, its rows one after the\n"
+             "                other against rows interleaved by window, per window size and rows a sub-group (GB/s)\n"
+             "  --row-bytes N with --gemv-layout: bytes a row (default 2048)\n",
              out.c_str());
       return 0;
     } else { fprintf(stderr, "usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"); return 2; }
@@ -492,6 +523,62 @@ int main(int argc, char** argv) {
     run_held = held;
     return best;
   };
+  // (random words, written from the host: a buffer filled with one value read at 1,149 GB/s on a B580, whose memory
+  //  gives 456 on paper (Reddit, 2026-11-12): 1 GiB is far more than its 18 MB L2, so the constant fill itself made the
+  //  reads cheap, as the discrete cards' memory compression can. The engine's probe (read_gbs, an unwritten buffer)
+  //  gave a B60 428 GB/s)
+  auto fill_random = [&](cl_mem db, size_t bytes) {
+    const size_t step = (size_t)64 << 20;
+    std::vector<uint32_t> h(step / 4);
+    uint64_t s = 0x9e3779b97f4a7c15ull;
+    for (size_t off = 0; off < bytes; off += step) {
+      const size_t n = std::min(step, bytes - off);
+      for (size_t i = 0; i < n / 4; ++i) {
+        s ^= s << 13, s ^= s >> 7, s ^= s << 17;
+        h[i] = (uint32_t)(s >> 16);
+      }
+      CL_CHECK(clEnqueueWriteBuffer(cl.queue, db, CL_TRUE, off, n, h.data(), 0, nullptr, nullptr));
+    }
+    clFinish(cl.queue);
+  };
+  const size_t rd_bytes = (size_t)std::min<cl_ulong>(mem / 4, 1ull << 30) / 4096 * 4096;  // (larger than every cache)
+  if (gvl) {
+    // --gemv-layout: the GEMV's row walk in today's layout against rows interleaved by window (K_GVL)
+    const int wins[] = {1, 2, 4, 8}, grs[] = {1, 2, 4, 8};
+    if (gvl_row < 512 || gvl_row % 512) {
+      fprintf(stderr, "--row-bytes: a multiple of 512 (the largest window), at least 512\n");
+      return 2;
+    }
+    const int row_w = gvl_row / 4, nrows = (int)(rd_bytes / gvl_row) / 8 * 8;
+    cl_mem db = cl.buffer(CL_MEM_READ_WRITE, (size_t)nrows * gvl_row);
+    fill_random(db, (size_t)nrows * gvl_row);
+    printf("\nThe one-token GEMV's reads without its math: %d rows of %d bytes (%.0f MB), work-groups of 16 sub-groups\n",
+           nrows, gvl_row, (double)nrows * gvl_row / 1e6);
+    printf("(rows one after the other: today's layout; interleaved: a sub-group's rows side by side window by window)\n\n");
+    printf("%-26s %8s %8s %8s %8s\n", "window a row and step", "1 row", "2 rows", "4 rows", "8 rows");
+    for (int inter = 0; inter < 2; ++inter) {
+      printf("%s\n", inter ? "interleaved by window" : "rows one after the other");
+      for (int b : wins) {
+        printf("  %4d bytes              ", b * 64);
+        for (int g : grs) {
+          double v = 0;
+          try {
+            cl_program p = cl.build(kSrc, "-cl-std=CL3.0 -DK_GVL -DGVL_B=" + std::to_string(b) + " -DGVL_G=" + std::to_string(g));
+            cl_kernel k = cl.kernel(p, "probe");
+            int nr = nrows, rw = row_w, it = inter;
+            set_args(k, 0, db, nr, rw, it, bo);
+            ZE_CHECK(zeKernelSetGroupSize(k->k, 256, 1, 1));
+            const uint32_t wg = (uint32_t)((nrows / g + 15) / 16);
+            v = (double)nrows * gvl_row / timed(k, ze_group_count_t{wg, 1, 1}) / 1e9;
+          } catch (const std::exception&) {}
+          printf(" %8.1f", v);
+        }
+        printf("\n");
+      }
+    }
+    printf("\n(GB/s; 0.0: not built. Compare with gpu_bench's \"Memory read\" rows, the same buffer size read densely)\n");
+    return 0;
+  }
   printf("\n%-22s %14s %14s %8s\n", "", "measured", "on paper", "share");
   for (Test& t : tests) {
     t.paper = t.per_eu ? (double)t.per_eu * eus * mhz * 1e6 / 1e12 : 0;
@@ -527,29 +614,12 @@ int main(int argc, char** argv) {
   // memory read bandwidth: a buffer larger than every cache, read over and over
   double gbs = 0;
   {
-    const size_t bytes = (size_t)std::min<cl_ulong>(mem / 4, 1ull << 30) / 4096 * 4096;
+    const size_t bytes = rd_bytes;
     try {
       cl_program p = cl.build(kSrc, "-cl-std=CL3.0 -DK_READ");
       cl_kernel k = cl.kernel(p, "probe");
       cl_mem db = cl.buffer(CL_MEM_READ_WRITE, bytes);
-      // (random words, written from the host: a buffer filled with one value read at 1,149 GB/s on a B580, whose
-      //  memory gives 456 on paper (Reddit, 2026-11-12): 1 GiB is far more than its 18 MB L2, so the constant fill
-      //  itself made the reads cheap, as the discrete cards' memory compression can. The engine's probe (read_gbs,
-      //  an unwritten buffer) gave a B60 428 GB/s)
-      {
-        const size_t step = (size_t)64 << 20;
-        std::vector<uint32_t> h(step / 4);
-        uint64_t s = 0x9e3779b97f4a7c15ull;
-        for (size_t off = 0; off < bytes; off += step) {
-          const size_t n = std::min(step, bytes - off);
-          for (size_t i = 0; i < n / 4; ++i) {
-            s ^= s << 13, s ^= s >> 7, s ^= s << 17;
-            h[i] = (uint32_t)(s >> 16);
-          }
-          CL_CHECK(clEnqueueWriteBuffer(cl.queue, db, CL_TRUE, off, n, h.data(), 0, nullptr, nullptr));
-        }
-      }
-      clFinish(cl.queue);
+      fill_random(db, bytes);  // (random words: see fill_random)
       // (the best of three ways to read it, each named: one card's memory reaches its rate one way, another's another)
       int n4 = (int)(bytes / 16), n1 = (int)(bytes / 4);
       set_args(k, 0, db, n4, bo);
