@@ -122,7 +122,7 @@
         <tr><td>Qwen3.8 27B</td><td class="n">1,361-1,380 <small>(16K: 1,276-1,292)</small></td><td class="n">21.6-22.7</td><td class="n">30.1-31.3</td><td>prompt 2026.11.21.02, its defaults (hansong80, a 225 W card); generation 2026.11.17.08 / .18.08</td></tr>
         <tr><td>Qwen3.5 4B, Linux</td><td class="n">–</td><td class="n">80.7-82.1</td><td class="n">105.7</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.5 9B, Linux</td><td class="n">–</td><td class="n">51.2-51.6</td><td class="n">84.4</td><td>2026.11.18.08</td></tr>
-        <tr><td>Qwen3.8 27B, Linux <small>(this card held to 150 W)</small></td><td class="n">1,491 <small>(16K: 1,369)</small></td><td class="n">22.4-22.9</td><td class="n">48.6</td><td>main d252b86, its defaults (prompt and drafting, 2026-11-21); generation 2026.11.18.08</td></tr>
+        <tr><td>Qwen3.8 27B, Linux <small>(this card held to 150 W)</small></td><td class="n">1,528 <small>(before the leaner GEMM loop: 1,491; 16K 1,369)</small></td><td class="n">22.4-22.9</td><td class="n">48.6</td><td>prompt 2026.11.21.07 with <code>ARC_GEMM_XW_PTR=1</code>, the default since 2026.11.21.10 (skipzx-lab, #45); main d252b86 before (prompt and drafting, 2026-11-21); generation 2026.11.18.08</td></tr>
         <tr><td>Qwen3.8 Flash Next IQ3_S, Linux <small>(one card, 14-16 % of its experts cached, 150 W)</small></td><td class="n">428 <small>(16K: 535)</small></td><td class="n">13.3 <small>(15.1 with 2,048-token prompt chunks)</small></td><td class="n">–</td><td>main 566d84e (after a 16K prompt)</td></tr>
         <tr><td>Qwen3.6 35B-A3B, Linux <small>(73 % of its experts on the card)</small></td><td class="n">–</td><td class="n">52.4-70.0</td><td class="n">97.6</td><td>main at fd858b5 (the #56 fix)</td></tr>
       </tbody>
