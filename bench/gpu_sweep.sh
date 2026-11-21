@@ -103,6 +103,7 @@ GEN=(
   "ARC_GEMV_MT_GRF|128 256|128 256"        # the 2-8 token GEMV's (verification, batches)
   "ARC_GEMV_WAVE|0 1|0 1"
   "ARC_GEMV_DB|0 1|0 1"                    # the window read one ahead
+  "ARC_GEMV_DEEP|2 4 8|2 4"               # D windows in flight (bit-identical)
   "ARC_GEMV_PF|0 1|0 1"                    # all rows' reads issued first
   "ARC_GEMV_SMALL_WG|0 1|0 1"              # small matrices' work-groups
   "ARC_GEMV_GU|0 1|0 1"                    # gate + up in one launch

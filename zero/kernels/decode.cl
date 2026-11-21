@@ -938,6 +938,21 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
 #if defined(GEMV_DB) && (defined(GEMV_PF) || defined(GV_PROBE))
 #error "gemv: GEMV_DB with GEMV_PF or GV_PROBE"
 #endif
+// -DGEMV_DEEP=D (ARC_GEMV_DEEP=D, 2026-11-22, opt-in): GEMV_DB with D windows in flight instead of one. A ring of D
+// windows' words in registers: each window is copied from ring[0] into the local window, the ring moves down one, and
+// the window D ahead (the same order as GEMV_DB's: every row of a step, then the next step) is read into ring[D - 1].
+// A sub-group keeps ~D x 220 bytes in flight (IQ3_S) where the window loop kept one: a Pro B65's one-token GEMVs read
+// at 252.7 of its 598 GB/s with the decode skipped (GV_PROBE=1, issue #47), against gpu_bench's 2 KB in flight a
+// sub-group reaching all of it. The same bytes in the same local window and the same arithmetic in the same order:
+// bit-identical. D x WIN_CALLS registers. With GV_PROBE=1 (the reads' ceiling), not with GEMV_PF, GEMV_DB or GV_PROBE=2
+#ifdef GEMV_DEEP
+#if defined(GEMV_PF) || defined(GEMV_DB) || (defined(GV_PROBE) && GV_PROBE == 2)
+#error "gemv: GEMV_DEEP with GEMV_PF, GEMV_DB or GV_PROBE=2"
+#endif
+#if GEMV_DEEP < 2 || GEMV_DEEP > 16
+#error "gemv: GEMV_DEEP must be 2 to 16"
+#endif
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* aq,
                    __global const float* asc, __global const ushort* absum, int M, __global float* C, int c_off,
@@ -1057,6 +1072,20 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
     for (int c = 0; c < WIN_CALLS; ++c) nxt[c] = intel_sub_group_block_read(src + c * 16);
   }
 #endif
+#ifdef GEMV_DEEP
+  // (the ring: windows 0 .. D - 1 in the order they are used; dl_r / dl_sp: the next window to read, D ahead)
+  uint ring[GEMV_DEEP][WIN_CALLS];
+  int dl_r = 0, dl_sp = 0;
+#pragma unroll
+  for (int k = 0; k < GEMV_DEEP; ++k) {
+    if (dl_sp < nsb) {
+      __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + dl_r, N - 1) * nsb + dl_sp) * BBP);
+#pragma unroll
+      for (int c = 0; c < WIN_CALLS; ++c) ring[k][c] = intel_sub_group_block_read(src + c * 16);
+    }
+    if (++dl_r == GROWS) { dl_r = 0; dl_sp += 2; }
+  }
+#endif
   for (int sp = 0; sp < nsb; sp += 2) {
     const int b = sp * 8 + lane;  // this lane's 32-block within the row
     const bool has = sp + lane / 8 < nsb;
@@ -1093,6 +1122,19 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 #if defined(GEMV_PF)
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = pre[r][c];
+#elif defined(GEMV_DEEP)
+#pragma unroll
+      for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = ring[0][c];
+#pragma unroll
+      for (int k = 0; k + 1 < GEMV_DEEP; ++k)
+#pragma unroll
+        for (int c = 0; c < WIN_CALLS; ++c) ring[k][c] = ring[k + 1][c];
+      if (dl_sp < nsb) {
+        __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + dl_r, N - 1) * nsb + dl_sp) * BBP);
+#pragma unroll
+        for (int c = 0; c < WIN_CALLS; ++c) ring[GEMV_DEEP - 1][c] = intel_sub_group_block_read(src + c * 16);
+      }
+      if (++dl_r == GROWS) { dl_r = 0; dl_sp += 2; }
 #elif defined(GEMV_DB)
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = nxt[c];

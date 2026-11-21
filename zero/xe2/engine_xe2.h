@@ -190,9 +190,16 @@
   // median step 31.2 -> 30.8 ms), logits identical (joshdev-de, issue #27, 6466672). Dense models only: the MoE models' gains of the prefetch (the 35B +11 % on a B60) are not measured with it. ARC_GEMV_DB=0: the prefetch
   // (decided once per engine: it is on every GEMV's path, and its getenv calls take the C runtime's lock, which a
   //  split model's shard threads share; issue #4, 2026-11-21)
-  mutable int gemv_pf_kind_ = -1;  // 0 none, 1 -DGEMV_DB, 2 -DGEMV_PF
+  // ARC_GEMV_DEEP=D (2..16, 2026-11-22, opt-in): D windows in flight instead of GEMV_DB's one (decode.cl -DGEMV_DEEP),
+  // in place of DB and PF, on any GPU; bit-identical. With ARC_GV_PROBE=1 too (the reads' ceiling a D gives). The Pro
+  // B65's GEMVs read ~220 bytes a sub-group in flight, gpu_bench's read kernel 2 KB (issue #47)
+  mutable int gemv_pf_kind_ = -1;  // 0 none, 1 -DGEMV_DB, 2 -DGEMV_PF, 3 -DGEMV_DEEP=D
   const std::string& xe2_gemv_pf() const {
-    static const std::string defs[3] = {std::string(), std::string(" -DGEMV_DB"), std::string(" -DGEMV_PF")};
+    static const int deep = getenv("ARC_GEMV_DEEP") ? atoi(getenv("ARC_GEMV_DEEP")) : 0;
+    static const std::string defs[4] = {std::string(), std::string(" -DGEMV_DB"), std::string(" -DGEMV_PF"),
+                                        " -DGEMV_DEEP=" + std::to_string(std::clamp(deep, 2, 16))};
+    static const bool probe2 = getenv("ARC_GV_PROBE") && atoi(getenv("ARC_GV_PROBE")) == 2;
+    if (gemv_pf_kind_ < 0 && deep >= 2 && !probe2) gemv_pf_kind_ = 3;
     if (gemv_pf_kind_ < 0) {
       static const int dbe = getenv("ARC_GEMV_DB") ? (atoi(getenv("ARC_GEMV_DB")) != 0 ? 1 : 0) : -1;
       static const bool probe = getenv("ARC_GV_PROBE") != nullptr, pf_set = getenv("ARC_GEMV_PF") != nullptr;

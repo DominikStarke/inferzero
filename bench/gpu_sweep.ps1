@@ -68,7 +68,7 @@ function Has([string]$p) { $Phases.ToUpper().Contains($p) }
 # --- the settings: name|values|quick values, each list from the smallest value to the largest
 $GEN = @(
   "ARC_GVROWS|1 2 4|1 2 4", "ARC_GEMV_GRF|128 256|128 256", "ARC_GEMV_MT_GRF|128 256|128 256", "ARC_GEMV_WAVE|0 1|0 1",
-  "ARC_GEMV_DB|0 1|0 1", "ARC_GEMV_PF|0 1|0 1", "ARC_GEMV_SMALL_WG|0 1|0 1", "ARC_GEMV_GU|0 1|0 1", "ARC_GV_IQ3S|0 1|0 1",
+  "ARC_GEMV_DB|0 1|0 1", "ARC_GEMV_DEEP|2 4 8|2 4", "ARC_GEMV_PF|0 1|0 1", "ARC_GEMV_SMALL_WG|0 1|0 1", "ARC_GEMV_GU|0 1|0 1", "ARC_GV_IQ3S|0 1|0 1",
   "ARC_IQ3S_TILE|0 1|0 1", "ARC_WIDE_ROWS|0 1|0 1", "ARC_BATCH|0 8 16 32 64 128|0 32 128", "ARC_ATTN_DEC_GRF|128 256|128 256",
   "ARC_ATTN_DEC_SG|128 256 512 1024 2048|256 512 2048", "ARC_ATTN_DEC_SMAX|64 128 256 512 1024|128 256 1024")
 $PP = @(

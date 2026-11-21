@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-22: more weight reads in flight for generation (opt-in `ARC_GEMV_DEEP=D`)
+
+- **`ARC_GEMV_DEEP=D`** (2-16): the one-token GEMV keeps D windows of weights in flight instead of one. A Pro B65's
+  generation reads its weights at about 42 % of its bandwidth even with the decode skipped (#47). The likely limit is
+  how little each sub-group has in flight: about 220 bytes, against the 2 KB that reaches the card's full bandwidth in
+  `gpu_bench`. The same bytes and the same arithmetic in the same order, so bit-identical (the laptop's 4B and 27B
+  byte for byte at D = 2 / 4 / 8). `ARC_GV_PROBE=1` works with it, to measure the reads' ceiling per D.
+- **Registers** (Intel's offline compiler): no spills on B-series at D up to 8, with 1 or 4 rows a sub-group. The
+  A770 spills from D = 4 with 4 rows, so D = 2 there.
+- **Off everywhere until a card measures it.** On the laptop's iGPU, whose reads already sit near its bandwidth, it
+  is slower, as was the one-window read-ahead it extends. `bench/gpu_sweep` phase G tries D = 2 / 4 / 8.
+
 ## 2026-11-22: Panther Lake's 2D GEMM, the B65's lean loop, a second lean form, and KL checks for contributors
 
 - **Flash Next can read with full attention: `ARC_QSA=0`** (the user: "set QSA as the default for QFN, meanwhile add
