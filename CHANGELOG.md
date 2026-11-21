@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: the Pro B65's generation defaults (+4.8 % plain, +11 % with drafting)
+
+- **Cards with 1,280 GPU threads or fewer** (the B60's die and the Pro B65) now pick the one-token GEMVs' rows by
+  type, and draft 4 tokens a step instead of 3. A B65's 27B: generation 24.21 -> 25.36 tok/s, drafting on a code
+  question 41.6 -> 46.2 tok/s, with the same logits and the same text (teodortomas, #47, the full sweep).
+- These two follow the thread count, as both depend on how many threads fill the GPU. The B65 is the B70's die with
+  the B60's 160 EUs, and it measured them as the B60s did. The B60's prompt tile stays the B60's die only, by device
+  ID: nobody has measured it on a B65 yet.
+- The B70 (2,048 threads) keeps its defaults.
+
 ## 2026-11-21: model downloads resume correctly after a cut
 
 - **A cut download could grow past its size and start over from nothing** (`scripts\hf-get.ps1`, the Linux

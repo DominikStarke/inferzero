@@ -29,7 +29,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_ATTN_XMX` / `ARC_ATTN_FX` | on / on | on / on | off / off | off / off | off / off |
 | `ARC_MOE_GEMM_PAD` (Flash Next) | on | off | off | off | off |
 | `ARC_GEMV_DB` / `ARC_GEMV_PF` | DB for dense models, PF for MoE models | off / off | off / off | off / off | off / off |
-| `ARC_GEMV_WAVE` / `_MT` | on / on (the B60's die: off / on since 2026-11-21) | off | off | off | off |
+| `ARC_GEMV_WAVE` / `_MT` | on / on (1,280 GPU threads or fewer, the B60's die and the B65: off / on since 2026-11-21) | off | off | off | off |
 | `ARC_GDN_L1PF` | 2 | 0 | 0 | 2 | 0 |
 | `ARC_XALL` (MoE) | on | off | off | on | off |
 | `ARC_BATCH` | off | off | off | 64 on Windows | off |
@@ -37,7 +37,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_HOST_KEEP_GB` | automatic, at most 2.5 GiB | – (iGPUs: their own rule) | – | automatic | – |
 | `ARC_HOST_CPU` | on (since 2026-11-19) | – | – | on | – |
 | `ARC_GEMM_2D` / `_PF` | on where the driver offers them | the same | the same | the same | – |
-| MTP drafts a step (the 27B, not a switch) | 3 | 7 | 7 | 7 | 7 |
+| MTP drafts a step (the 27B, not a switch) | 3 (1,280 GPU threads or fewer: 4, since 2026-11-21) | 7 | 7 | 7 | 7 |
 
 ## Data Center GPU Max (Xe-HPC) defaults (2026-11-21)
 

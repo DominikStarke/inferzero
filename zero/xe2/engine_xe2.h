@@ -117,9 +117,8 @@
   //    (engine_xw.h xw_tm / xw_nc / xw_wgx / xw_pfd_v): skipzx-lab's phase X (issue #57, Linux, ec99a4a), the 27B
   //    512 / 4K / 32K prompt 1,109.9 / 1,872.5 / 1,619.3 -> 1,171.8 / 1,954.2 / 1,680.0 tok/s (+5.6 / +4.4 / +3.7 %),
   //    logits the same at each, 0.0 % drift; the start check proves the form bit for bit as any other;
-  //  - the one-token GEMVs' rows by type, not by the thread count (ARC_GEMV_WAVE's single-token part, xe2_gemv_rows):
-  //    the 27B's generation +3.5 % (skipzx-lab, Linux, 23.29 -> 24.10 tok/s) and +2.4 % (MaineTim, issue #19,
-  //    23.36 -> 23.91), logits the same. Its 2-8-token part (MTP verification) stays, not measured apart.
+  //  (the one-token GEMVs and the draft count go by the thread count instead, xe2_t1280: they depend on how many
+  //   threads the GPU has, and the B65, the B70's die with the B60's 160 EUs, measured them as the B60s did)
   // Each switch set by hand still wins.
   mutable int g21_ = -1;
   bool xe2_g21() const {
@@ -128,12 +127,28 @@
       if (g21_) {
         static std::once_flag said;
         std::call_once(said, [] {
-          zlog::eprintf("inferzero: the B60's die (BMG-G21, device 0x%04X): its own prompt tile and GEMV rows\n",
+          zlog::eprintf("inferzero: the B60's die (BMG-G21, device 0x%04X): its own prompt tile\n",
                         zrt::pci_device_id());
         });
       }
     }
     return g21_ == 1;
+  }
+  // A discrete 16-lane card with at most 1,280 GPU threads (the B60's die and the Pro B65, 2026-11-21): the switches
+  // that depend on how many threads fill the GPU, each measured there with the same logits or text:
+  //  - the one-token GEMVs' rows by type, not by the thread count (ARC_GEMV_WAVE's single-token part, xe2_gemv_rows):
+  //    the 27B's generation +3.5 % and +2.4 % on two B60s (skipzx-lab #57, 23.29 -> 24.10 tok/s; MaineTim #19,
+  //    23.36 -> 23.91) and +4.8 % on a B65 (teodortomas #47, release .21.02, 24.21 -> 25.36). Its 2-8-token part
+  //    (MTP verification) stays, not measured apart;
+  //  - 4 MTP drafts a step, not 3 (xe2_mtp_drafts): the D phase's coding question 41.63 -> 46.22 tok/s on the B65
+  //    (+11 %), 49.69 -> 50.88 and 48.98 -> 49.24 on the B60s, every text the plain one's.
+  // A Pro B70 (2,048 threads) keeps the thread-count rule (32.3 -> 35.2 tok/s there) and 3 drafts.
+  mutable int t1280_ = -1;
+  bool xe2_t1280() const {
+    if (t1280_ < 0)
+      t1280_ = !zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on() && zrt::hw_threads() > 0 && zrt::hw_threads() <= 1280
+                   ? 1 : 0;
+    return t1280_ == 1;
   }
   std::string xe2_moe_grf() const {
     static const char* e = getenv("ARC_MOE_GRF");  // (read once)
@@ -210,8 +225,8 @@
   int xe2_gemv_rows(const GpuWeight& w, int rows) const {
     static const bool fixed = getenv("ARC_GVROWS") != nullptr;
     static const bool wave_set = getenv("ARC_GEMV_WAVE") != nullptr;
-    // (a Max: one row, as ARC_GVROWS=1, see xehpc_on; the B60's die: by type, see xe2_g21)
-    const int t = fixed || xehpc_on() || (!wave_set && xe2_g21()) ? 0 : xe2_gemv_threads();
+    // (a Max: one row, as ARC_GVROWS=1, see xehpc_on; 1,280 threads or fewer: by type, see xe2_t1280)
+    const int t = fixed || xehpc_on() || (!wave_set && xe2_t1280()) ? 0 : xe2_gemv_threads();
     if (t <= 0 || w.N <= t || w.N > 65536) return rows;
     return w.N <= 4 * t ? 4 : 1;
   }
@@ -276,7 +291,7 @@
   // than a B-series card's (83.7 ms against a B60's 53.6), so its best count sits between theirs and the laptop's
   int xe2_mtp_drafts(int d) const {
     if (d != 7 || zrt::integrated() || !cl_.xmx) return d;
-    return cl_.sg8 ? 4 : 3;
+    return cl_.sg8 || xe2_t1280() ? 4 : 3;  // (1,280 threads or fewer: 4, see xe2_t1280)
   }
   int xe2_gdn_l1pf() const {
     static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
