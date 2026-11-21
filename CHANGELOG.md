@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-21: confirmed on cards: the A770's default, ARC_XCPU run to run, MTP's gain
+
+- **The A770's new default** (b443eff), skipzx-lab at 150 W with no switches: the 27B 4K prompt 1,490.5 tok/s, 16K
+  1,369.2; with `ARC_GEMM_XW_BIG=0` 1,326.0, so the big tile is +12.4 % on its own. The fallback tiles run at 128
+  tokens and the big one at 512, as the log says.
+- **ARC_XCPU** on a B60 (Flash Next, a ~4,200-token prompt then 128 tokens, each run from the same `.lru`): three
+  runs byte-identical, the same 5,691 experts on the CPU each time, 26.6-27.1 tok/s.
+- **MTP on a real prompt** (the 27B, a coding question in the chat template, 256 tokens): the A770 22.4 -> 48.6 tok/s
+  (+117 %), the B60 23.3 -> 54.3 (+133 %). On the site and in the README.
+
 ## 2026-11-21: Q4_1, Q5_0 and Q8_1 models load (decoded on the CPU, kept as Q8_0)
 
 - GGUFs whose weights are Q4_1, Q5_0 or Q8_1 now load. These types have no GPU kernel here yet, so their matrices are
