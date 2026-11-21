@@ -2,11 +2,14 @@
 
 ## 2026-11-22: `bench/stray_words.ps1` counts Simplified Chinese characters in Japanese answers
 
-- **A new count, `simp`:** Han characters that Japanese text can't hold, meaning they aren't in code page 932
-  (Shift-JIS). In practice these are Simplified Chinese forms. No hand-made list is needed, and the characters Japanese
-  shares with Chinese aren't counted. A hand-made list on #4 had two of those in it.
-- **Answer and thinking apart:** when a file has "=== thinking" and "=== answer" lines, `simp` counts the answer and
-  `simp_think` the thinking. Checked in Windows PowerShell 5.1 and PowerShell 7.
+- **A new count, `simp`:** Simplified Chinese characters that Japanese text can't hold. These are the characters not in
+  code page 932 (Shift-JIS) that are on `bench/simplified_han.txt`, the code points of manoreken2's list from #4.
+  Characters Japanese shares with Chinese are in CP932, so they never count.
+- **`rare`, apart:** other Han characters outside CP932. These are mostly rare characters Japanese and Chinese share,
+  such as the surname U+90A2, which Japanese fonts show (JIS X 0213). An earlier form of this count called them
+  Simplified.
+- **Answer and thinking apart:** when a file has "=== thinking" and "=== answer" lines, `simp` and `rare` count the
+  answer, and `simp_think` the thinking. Checked in Windows PowerShell 5.1 and PowerShell 7.
 - **From #4:** manoreken2's Flash Next answers had them mainly when sampling (min_p), and in the thinking part. So it's
   the model's habit at temperature, not the engine's precision. An opt-in ban for Japanese answers is a QUEUE idea for
   the user to decide.
