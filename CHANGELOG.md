@@ -11,6 +11,11 @@
 - **Batching on such a GPU:** off by default (`ARC_BATCH`) unless the Level Zero loader exports the list-append call.
   Otherwise its address would come from GPU 0's driver.
 - **The tensor split stays on GPU 0's driver:** its shards share one context's memory and events.
+- **The expert cache and its RAM tier** (streamed MoE models) keep the context of the GPU they were made for, and free
+  their memory there. MoE models don't run on a layer split yet, so this prepares for that.
+- **`gpu_bench --gemv-layout --rows N`:** one matrix of N rows per launch, the launches back to back over the buffer,
+  as a token's GEMVs run. On the B60 (#57) the layout made no difference over one big launch (448-453 GB/s either way,
+  452.8 dense), so no re-layout of the weights. `--rows` tests the next idea: short launches.
 - **Checked on the laptop (one driver):** one GPU, and the simulated layer split over 2 and 3 GPUs, are byte for byte
   as before. The simulated tensor split is byte for byte .22.03's. Two drivers can't be tested here: skipzx-lab asked.
 - Also: `f33_sweep.ps1` does an untimed run before its first timed one (#78). Flash Next's full attention measured on a

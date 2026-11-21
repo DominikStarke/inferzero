@@ -53,12 +53,12 @@
     ram = std::min(ram, xc_->st.file_bytes);
     if (ram >= (1ull << 30)) {
       // (pinned host memory of the context: every GPU of a split model copies from it)
-      xc_->st.ram_alloc = [](size_t n) -> char* {
+      xc_->st.ram_alloc = [zc = xc_->zc](size_t n) -> char* {
         ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
         void* p = nullptr;
-        return zeMemAllocHost(zrt::ctx, &hd, n, 4096, &p) == 0 ? (char*)p : nullptr;
+        return zeMemAllocHost(zc, &hd, n, 4096, &p) == 0 ? (char*)p : nullptr;
       };
-      xc_->st.ram_free = [](char* p) { zrt::mem_free(zrt::ctx, p); };
+      xc_->st.ram_free = [zc = xc_->zc](char* p) { zrt::mem_free(zc, p); };
       xc_->st.set_ram(ram);
       zlog::eprintf("inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
     }
@@ -399,7 +399,7 @@
     gpu_bytes += bytes;
     const int G = 32;  // (experts per batch, built in parallel into pinned host memory, then copied)
     char* host = (char*)zrt::host_alloc((size_t)G * li.rec);
-    struct Free { void* p; ~Free() { zrt::mem_free(zrt::ctx, p); } } free_host{host};
+    struct Free { void* p; ~Free() { zrt::mem_free(zrt::C(), p); } } free_host{host};
     for (int e0 = 0; e0 < NE; e0 += G) {
       const int ne = std::min(G, NE - e0);
       memset(host, 0, (size_t)ne * li.rec);

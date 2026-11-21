@@ -390,6 +390,7 @@ int main(int argc, char** argv) {
   double seconds = 1.5;
   bool html = true, page_only = false, gvl = false;
   int gvl_row = 2048;  // (--gemv-layout: bytes a row; an IQ3_XXS row at K 5,120 is 1,960, padded ~2 KB)
+  int gvl_rows = 0;    // (--rows: rows a launch, one matrix; 0: the whole buffer in one launch)
   std::string out = (fs::path(app_dir()) / "bench" / "gpu").string();
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -399,6 +400,7 @@ int main(int argc, char** argv) {
     else if (a == "--page") page_only = true;
     else if (a == "--gemv-layout") gvl = true;
     else if (a == "--row-bytes" && i + 1 < argc) gvl_row = atoi(argv[++i]);
+    else if (a == "--rows" && i + 1 < argc) gvl_rows = atoi(argv[++i]);
     else if (a == "--help" || a == "-h") {
       printf("usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"
              "Measures the GPU's matrix engines (XMX int8 / f16 / bf16), vector engines (FP32, FP16, DP4a) and memory\n"
@@ -410,7 +412,9 @@ int main(int argc, char** argv) {
              "  --page        no test: only the page again, from the .json files in DIR (other machines' too)\n"
              "  --gemv-layout no other test: the one-token GEMV's reads without its math, its rows one after the\n"
              "                other against rows interleaved by window, per window size and rows a sub-group (GB/s)\n"
-             "  --row-bytes N with --gemv-layout: bytes a row (default 2048)\n",
+             "  --row-bytes N with --gemv-layout: bytes a row (default 2048)\n"
+             "  --rows N      with --gemv-layout: one matrix of N rows a launch, the launches back to back over the\n"
+             "                buffer, as a token's GEMVs (e.g. 17408, 5120; default: the whole buffer in one launch)\n",
              out.c_str());
       return 0;
     } else { fprintf(stderr, "usage: gpu_bench [--seconds 1.5] [--out DIR] [--no-html] [--page]\n"); return 2; }
@@ -554,7 +558,40 @@ int main(int argc, char** argv) {
     fill_random(db, (size_t)nrows * gvl_row);
     printf("\nThe one-token GEMV's reads without its math: %d rows of %d bytes (%.0f MB), work-groups of 16 sub-groups\n",
            nrows, gvl_row, (double)nrows * gvl_row / 1e6);
-    printf("(rows one after the other: today's layout; interleaved: a sub-group's rows side by side window by window)\n\n");
+    printf("(rows one after the other: today's layout; interleaved: a sub-group's rows side by side window by window)\n");
+    // (--rows N: one launch reads one matrix of N rows, as one GEMV does, the launches back to back over the buffer's
+    //  slices with one wait at the end, as a token's GEMVs run: whether short launches, not the layout, cost the
+    //  bandwidth; the B60 read 448-453 GB/s either layout over the whole buffer in one launch, #57)
+    const int mrows = gvl_rows > 0 ? std::max(8, std::min(nrows, gvl_rows) / 8 * 8) : nrows;
+    std::vector<cl_mem> slices;
+    if (mrows < nrows) {
+      cl_int e2;
+      for (int r0 = 0; r0 + mrows <= nrows; r0 += mrows) {
+        cl_buffer_region reg{(size_t)r0 * gvl_row, (size_t)mrows * gvl_row};
+        slices.push_back(clCreateSubBuffer(db, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &reg, &e2));
+      }
+      printf("(one matrix of %d rows (%.1f MB) a launch, %zu launches back to back over the buffer, one wait)\n", mrows,
+             (double)mrows * gvl_row / 1e6, slices.size());
+    }
+    printf("\n");
+    // (the slices' pass: every launch appended, then one wait; the best pass within --seconds counts)
+    auto sliced = [&](cl_kernel k, int g, int inter) {
+      int nr = mrows, rw = row_w, it = inter;
+      const ze_group_count_t gc{(uint32_t)((mrows / g + 15) / 16), 1, 1};
+      auto pass = [&] {
+        const auto t0 = clk::now();
+        for (cl_mem s : slices) {
+          set_args(k, 0, s, nr, rw, it, bo);
+          ZE_CHECK(zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, nullptr, 0, nullptr));
+        }
+        zrt::sync();
+        return std::chrono::duration<double>(clk::now() - t0).count();
+      };
+      pass();
+      double best = 1e30, spent = 0;
+      while (spent < seconds) { const double t = pass(); best = std::min(best, t); spent += t; }
+      return (double)slices.size() * mrows * gvl_row / best / 1e9;
+    };
     printf("%-26s %8s %8s %8s %8s\n", "window a row and step", "1 row", "2 rows", "4 rows", "8 rows");
     for (int inter = 0; inter < 2; ++inter) {
       printf("%s\n", inter ? "interleaved by window" : "rows one after the other");
@@ -565,11 +602,15 @@ int main(int argc, char** argv) {
           try {
             cl_program p = cl.build(kSrc, "-cl-std=CL3.0 -DK_GVL -DGVL_B=" + std::to_string(b) + " -DGVL_G=" + std::to_string(g));
             cl_kernel k = cl.kernel(p, "probe");
-            int nr = nrows, rw = row_w, it = inter;
-            set_args(k, 0, db, nr, rw, it, bo);
             ZE_CHECK(zeKernelSetGroupSize(k->k, 256, 1, 1));
-            const uint32_t wg = (uint32_t)((nrows / g + 15) / 16);
-            v = (double)nrows * gvl_row / timed(k, ze_group_count_t{wg, 1, 1}) / 1e9;
+            if (!slices.empty()) {
+              v = sliced(k, g, inter);
+            } else {
+              int nr = nrows, rw = row_w, it = inter;
+              set_args(k, 0, db, nr, rw, it, bo);
+              const uint32_t wg = (uint32_t)((nrows / g + 15) / 16);
+              v = (double)nrows * gvl_row / timed(k, ze_group_count_t{wg, 1, 1}) / 1e9;
+            }
           } catch (const std::exception&) {}
           printf(" %8.1f", v);
         }

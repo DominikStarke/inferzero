@@ -151,6 +151,9 @@ inline Plan choose(const std::vector<uint64_t>& lrec, int NE, uint64_t bytes) {
 #include <thread>
 
 struct XCache {
+  // (the context of the GPU it was made for, the stage's own on a layer split over two drivers: Dev::zctx in
+  //  zero/clrt.h; what it allocates there, it frees there)
+  ze_context_handle_t zc = zrt::C();
   ExpertStore st;
   int NE = 0, NL = 0;
   // the experts this cache holds: [lo_, hi_) (multi-GPU MoE: a shard's own, zero/mgpu/engine_tp_shard.h; all
@@ -216,7 +219,7 @@ struct XCache {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / std::max<uint64_t>(1, P.rec));
       for (size_t c = 0; c < P.chunks.size(); ++c) {
         const int k = std::min(per, P.n - (int)c * per);
-        zrt::mem_free(zrt::ctx, P.chunks[c]);
+        zrt::mem_free(zc, P.chunks[c]);
         zrt::D().device_bytes -= (size_t)std::max(0, k) * P.rec + 65536;
       }
       P.chunks.clear();
@@ -224,10 +227,10 @@ struct XCache {
     for (cl_mem m : xtab) clReleaseMemObject(m);
     xtab.clear();
     for (char*& s : stage)
-      if (s) { zrt::mem_free(zrt::ctx, s); s = nullptr; }
+      if (s) { zrt::mem_free(zc, s); s = nullptr; }
     for (char*& s : verify_buf_)
-      if (s) { zrt::mem_free(zrt::ctx, s); s = nullptr; }
-    if (xaddr) { zrt::mem_free(zrt::ctx, xaddr); xaddr = nullptr; }
+      if (s) { zrt::mem_free(zc, s); s = nullptr; }
+    if (xaddr) { zrt::mem_free(zc, xaddr); xaddr = nullptr; }
   }
   static XCache*& active() { static XCache* a = nullptr; return a; }
   // A split model's caches, one per GPU (its shard's Dev): out of device memory on a GPU shrinks that GPU's cache,
@@ -360,7 +363,7 @@ struct XCache {
     P->prev.resize(s0);
     P->next.resize(s0);
     P->chunks.pop_back();
-    zrt::mem_free(zrt::ctx, base);
+    zrt::mem_free(zc, base);
     zrt::D().device_bytes -= bytes;
     cache_bytes -= bytes - 65536;
     shrunk_bytes += bytes;
@@ -623,7 +626,7 @@ struct XCache {
   ze_event_handle_t fill_event() {
     if (fill_ev_.empty()) {
       ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)kFillEvents};
-      ZE_CHECK(zeEventPoolCreate(zrt::ctx, &pd, 1, &zrt::D().dev, &fill_pool_));
+      ZE_CHECK(zeEventPoolCreate(zc, &pd, 1, &zrt::D().dev, &fill_pool_));
       fill_ev_.resize(kFillEvents);
       for (uint32_t k = 0; k < kFillEvents; ++k) {
         ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
