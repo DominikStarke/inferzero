@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-21: a context too big for the GPU is reported the same way with and without drafting, by runz and the server
+
+- **The server checked nothing when `--ctx` was given by hand** (issue #45): a context past the GPU's share paged
+  without a word. skipzx-lab's 16 GB A770 ran the 27B at 92K with `--mtp` at 11 tok/s. Now it warns, as runz does:
+  how much it needs, the share, and the largest `--ctx` that fits. The context stays the one asked for. `--ctx auto`
+  already counted drafting and is unchanged.
+- **Both programs name the context that fits, counted the same way for every mode:**
+  - everything the engine holds but the context, plus the context's own bytes at that length;
+  - with `--mtp`, the MTP block, its KV rows and the draft buffers are in that count, so drafting gets a smaller
+    context than plain, never a pass.
+  - On the laptop: the 27B at 230K, plain "--ctx 219136 fits" (19.89 GiB, no warning; 1,024 more warns), with
+    `--mtp` 182,272.
+  - On an A770's share (15.11 GiB, imitated with `ARC_DRIVER_RESERVE_GB`), `--chunk 1024`: plain fits to 78,848,
+    `--mtp` to 55,296, so `--mtp` at 64K pages as well.
+
 ## 2026-11-21: a leaner loop for the A770's prompt GEMM (opt-in)
 
 - `ARC_GEMM_XW_PTR=1` (Alchemist's big tile): the copy of each chunk into local memory has its addresses set once

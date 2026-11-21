@@ -190,6 +190,20 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           eng.hp.n_layer, eng.ctx, eng.slot_count() > 1 ? (" in each of " + std::to_string(eng.slot_count()) + " slots").c_str() : "",
           eng.max_chunk, eng.gpu_bytes / 1073741824.0, so.gpus > 1 ? (" on each of " + std::to_string(so.gpus) + " GPUs").c_str() : "",
           eng.w8_resident ? "W8 resident" : "W8 just-in-time");
+  // (a context given with --ctx, not auto: the same check as runz's, Engine::fits_share, which counts drafting's
+  //  memory as plain's. Before 2026-11-21 the server checked nothing here, and a --ctx past the card's share paged
+  //  without a word: a 16 GB A770's 27B at 92K with --mtp, 11 tok/s, issue #45. It warns; the context stays the one
+  //  asked for)
+  if (!so.ctx_auto && so.gpus <= 1 && !eng.fits_share()) {
+    const double GiB = 1073741824.0;
+    const int fit = eng.max_fitting_ctx();
+    LOG_WRN("does not fit: %.2f GiB of GPU memory for a context of %d%s, over the %.2f GiB share less %.1f for the "
+            "driver; expect paging and far lower speeds (%s)\n",
+            eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "", eng.device_mem() / GiB,
+            Engine::driver_slack() / GiB,
+            fit > 0 ? ("--ctx " + std::to_string(fit) + " or --ctx auto fits").c_str()
+                    : "no context fits: a smaller model, or --ctx auto");
+  }
   try {  // (the log's model and memory lines, docs/logging.md; /metrics' model_info: never a reason the load fails)
     const auto& h = eng.hp;
     // (general.file_type as llama.cpp names it: the main quant; a mixed file such as UD-Q4_K_XL says its base)

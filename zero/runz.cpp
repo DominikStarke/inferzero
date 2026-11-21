@@ -629,12 +629,14 @@ static int run_main(int argc, char** argv) {
   {  // (more GPU memory than the share less the driver's part: Windows pages GPU memory and everything slows down many
      //  times over, Qwen3.8 27B with a 131K context on the laptop's 16.5 GiB share: 16.5 GiB used, prompt 8.6 instead of
      //  ~120 tok/s. The server's --ctx auto stays inside; runz takes the context it is given)
-    const double GiB = 1073741824.0, share = (double)eng.device_mem(), lim = share - Engine::driver_slack();
+    const double GiB = 1073741824.0, share = (double)eng.device_mem();
     fflush(stdout);
-    if ((double)eng.gpu_bytes > lim) {
-      zlog::eprintf("inferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
-                      "less %.1f for the driver; expect paging and far lower speeds (a smaller --ctx fits)\n",
-              eng.gpu_bytes / GiB, eng.ctx, share / GiB, Engine::driver_slack() / GiB);
+    if (!eng.fits_share()) {
+      const int fit = eng.max_fitting_ctx();
+      zlog::eprintf("inferzero: does not fit: %.2f GiB of GPU memory for a context of %d%s, over the %.2f GiB share "
+                      "less %.1f for the driver; expect paging and far lower speeds (%s)\n",
+              eng.gpu_bytes / GiB, eng.ctx, eo.mtp ? " with drafting" : "", share / GiB, Engine::driver_slack() / GiB,
+              fit > 0 ? ("--ctx " + std::to_string(fit) + " fits").c_str() : "no context fits: a smaller model or fewer weights on the GPU");
       if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
     }
   }

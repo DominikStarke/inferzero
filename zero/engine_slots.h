@@ -79,6 +79,21 @@
     clGetDeviceInfo(cl_.device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(v), &v, nullptr);
     return v;
   }
+  // Whether this engine's GPU memory fits the GPU's share less the driver's part, and the largest context (a multiple
+  // of 1024, up to the one it has) that would: everything it holds but the context, plus the context's bytes (KV
+  // caches, QSA keys, each slot's), at that length. The same count for every mode: with --mtp the MTP block, its KV
+  // rows and the draft buffers are in gpu_bytes and in ctx_bytes / slot_bytes, so it is counted as plain is
+  // (2026-11-21, issue #45: one --ctx check for runz and the server; 0 when not even 1024 tokens fit)
+  bool fits_share() const { return (double)gpu_bytes <= (double)device_mem() - driver_slack(); }
+  int max_fitting_ctx() const {
+    const double lim = (double)device_mem() - driver_slack();
+    const int s = slot_count();
+    const double base = (double)gpu_bytes - (double)ctx_bytes(ctx) - (double)(s - 1) * (double)slot_bytes(ctx);
+    int best = 0;
+    for (int c = 1024; c <= ctx; c += 1024)
+      if (base + (double)ctx_bytes(c) + (double)(s - 1) * (double)slot_bytes(c) <= lim) best = c;
+    return best;
+  }
 
   // The first position rewind() accepts (swa_rings): the sliding-window rings must still hold the n_swa positions before it.
   int rewind_floor() const {
