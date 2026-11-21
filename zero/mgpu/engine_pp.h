@@ -36,9 +36,12 @@ class PpEngine {
     if (NL < n) throw std::runtime_error("--split layer: " + std::to_string(NL) + " layers for " + std::to_string(n) + " GPUs");
     // (the cut: by the shares, each stage at least one layer)
     std::vector<double> s = shares;
-    if ((int)s.size() != n) s.assign(n, 1.0);
+    if (s.empty()) s.assign(n, 1.0);
     double sum = 0;
     for (double x : s) sum += std::max(0.0, x);
+    if ((int)s.size() != n || !(sum > 0))  // (a typo is said, not quietly made equal shares; no share > 0: no cut)
+      throw std::runtime_error("--tensor-split: " + std::to_string(n) + " shares, one a GPU, at least one above 0 (got " +
+                               std::to_string(s.size()) + ")");
     std::vector<int> cut(n + 1, 0);
     double acc = 0;
     for (int r = 0; r < n; ++r) {
@@ -55,6 +58,9 @@ class PpEngine {
       so.pp_begin = cut[r];
       so.pp_end = cut[r + 1];
       if (r + 1 < n) so.mtp = false;  // (the MTP block is the last stage's)
+      // (the NPU's share of the FFN, zero/npu/engine_npu.h, keeps its layers by the global layer number in a table
+      //  sized by layers_: a stage not from layer 0 would read past it. Off on every stage)
+      so.npu = 0;
       stages_.push_back(std::make_unique<Engine>(path, so));
     }
     zrt::cur = saved;
@@ -68,13 +74,20 @@ class PpEngine {
     zrt::Dev* const saved = zrt::cur;
     struct Back { zrt::Dev* s; ~Back() { zrt::cur = s; } } back{saved};
     const int S = stages();
-    for (int r = 0; r < S; ++r) {
-      zrt::cur = zrt::devs[r];
-      Engine& e = *stages_[r];
-      e.pp_in_ = r ? rows_[r - 1].data() : nullptr;
-      e.pp_out_ = r + 1 < S ? &rows_[r] : nullptr;
-      const std::vector<float>& l = e.forward(tokens, n);
-      if (r + 1 == S) return l;
+    // (a stage that throws, a context overflow or a GPU fault, leaves the earlier stages a call ahead: all of them
+    //  are reset, so the next call does not mix positions)
+    try {
+      for (int r = 0; r < S; ++r) {
+        zrt::cur = zrt::devs[r];
+        Engine& e = *stages_[r];
+        e.pp_in_ = r ? rows_[r - 1].data() : nullptr;
+        e.pp_out_ = r + 1 < S ? &rows_[r] : nullptr;
+        const std::vector<float>& l = e.forward(tokens, n);
+        if (r + 1 == S) return l;
+      }
+    } catch (...) {
+      try { reset(); } catch (...) {}
+      throw;
     }
     static const std::vector<float> none;
     return none;
