@@ -115,7 +115,7 @@ struct Dev {
   //  shard on the GEMV path, and a split model's shard threads called them together: 4 B60s' 27B step 18.4 -> 48.8 ms,
   //  issue #4, 2026-11-21)
   int integ = -1, xehpc_dev = -1;
-  int64_t hw_thr = -1;
+  int64_t hw_thr = -1, pci_id = -1;
   ze_command_list_handle_t cl_tp = nullptr;  // (see tp_copy_list)
   ze_event_handle_t tp_ev[32] = {};          // (see tp_event)
   std::vector<ze_event_handle_t> ev_free;  // (see ev_get)
@@ -471,6 +471,23 @@ inline bool xehpc() {
                       ? 1 : 0;
   }
   return d.xehpc_dev == 1;
+}
+// this thread's GPU's PCI device ID (Level Zero's deviceId: a Pro B60 0xE211, a Pro B65 0xE222, a Pro B70 0xE223); 0 if
+// not known
+inline uint32_t pci_device_id() {
+  Dev& d = D();
+  if (d.pci_id < 0) {
+    ze_device_properties_t dp{};
+    dp.stype = ZE_STYPE_DEVICE_PROPERTIES;
+    d.pci_id = zeDeviceGetProperties(d.dev, &dp) != 0 ? 0 : (int64_t)dp.deviceId;
+  }
+  return (uint32_t)d.pci_id;
+}
+// this thread's GPU is Battlemage's BMG-G21 die (0xE200-0xE21F: the B580 0xE20B, B570 0xE20C, Pro B60 0xE211, Pro B50
+// 0xE212, ...), not BMG-G31 (0xE220-0xE22F: the Pro B65 0xE222, B70 0xE223), whatever its core count
+inline bool bmg_g21() {
+  const uint32_t id = pci_device_id();
+  return id >= 0xE200 && id <= 0xE21F;
 }
 // this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
 inline uint32_t hw_threads() {

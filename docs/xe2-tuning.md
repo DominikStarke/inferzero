@@ -1173,8 +1173,9 @@ kernel reading both planes against the same weights, waits on its speed on XMX c
 ## 18. The B60's die: its own prompt tile and GEMV rule (2026-11-21, skipzx-lab #57, MaineTim #19)
 
 Two Pro B60s ran the full sweep on the 27B IQ3_S. The B70's defaults were not the B60's best. The B60's die,
-BMG-G21, also makes the B580 and the B50; the engine tells it apart by its GPU threads, at most 1,280 against the
-B70's 2,048 (`xe2_g21`, `zero/xe2/engine_xe2.h`).
+BMG-G21, also makes the B580 and the B50; the engine tells it apart by its PCI device ID, 0xE200-0xE21F (`xe2_g21`,
+`zero/xe2/engine_xe2.h`; `zrt::bmg_g21`). Not by its core count: a Pro B65 has the B60's 160 EUs on the B70's die
+(BMG-G31, 0xE222), and keeps the B70's defaults until it is measured.
 
 - **The prompt GEMM, 64 x 32 tiles, 8 column sub-groups a work-group, the 2D prefetch 1 chunk ahead:** phase X
   (skipzx-lab, Linux, ec99a4a) timed 336 forms of `gemm_xw` alone, then the best six in the model. This one was

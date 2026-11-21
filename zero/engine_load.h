@@ -811,6 +811,15 @@
     // DFlash2 (with or without the MTP block: with both, mtp_draft picks one per step; Flash Next: the features are the
     // means of the residual streams, the PLE / QSA state rolled back in verify_done)
     if (!opt.dflash.empty()) load_dflash(opt.dflash);
+    // (--mtp on a file without the MTP block and no drafter: said, not plain decoding in silence. Unsloth's
+    //  Qwen3.6-35B-A3B-UD-Q4_K_M.gguf has none: a B390 owner saw --mtp run at plain speed with no MTP line, issue #75)
+    if (opt.mtp && opt.mtp_block && pp_last() && !has_mtp && !opt.dry && !opt.copy_draft) {
+      static std::once_flag said;
+      std::call_once(said, [] {
+        LOG_WRN("--mtp: this model file has no MTP block (no blk.N.nextn tensors) and no drafter: plain decoding. A "
+                "GGUF with the block drafts (for Qwen, an \"-MTP-GGUF\" repository's file), or --mtp-model a head\n");
+      });
+    }
   }
 
   // MoE FFN: the router and the shared-expert gate requantized together to Q8_0 (one GEMM gives both), the shared

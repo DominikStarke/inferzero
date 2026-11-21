@@ -109,8 +109,10 @@
     if (xehpc_ < 0) xehpc_ = !zrt::integrated() && !cl_.sg8 && zrt::xehpc() ? 1 : 0;
     return xehpc_ == 1;
   }
-  // A discrete Battlemage card of the B60's die (BMG-G21: the Pro B60, the B580, the B50; at most 1,280 GPU threads,
-  // against a Pro B70's 2,048), 2026-11-21: its own defaults where two B60s measured them, each bit-identical:
+  // A discrete Battlemage card of the B60's die (BMG-G21: the Pro B60, the B580, the B50), by its PCI device ID
+  // (zrt::bmg_g21), not its core count: a Pro B65 is the B70's die (BMG-G31, 0xE222) with the B60's 160 EUs, and keeps
+  // the B70's defaults until it is measured. 2026-11-21: its own defaults where two B60s measured them, each
+  // bit-identical:
   //  - the prompt GEMM's tile 64 x 32 with 8 column sub-groups a work-group, the 2D form's prefetch 1 chunk ahead
   //    (engine_xw.h xw_tm / xw_nc / xw_wgx / xw_pfd_v): skipzx-lab's phase X (issue #57, Linux, ec99a4a), the 27B
   //    512 / 4K / 32K prompt 1,109.9 / 1,872.5 / 1,619.3 -> 1,171.8 / 1,954.2 / 1,680.0 tok/s (+5.6 / +4.4 / +3.7 %),
@@ -121,7 +123,16 @@
   // Each switch set by hand still wins.
   mutable int g21_ = -1;
   bool xe2_g21() const {
-    if (g21_ < 0) g21_ = !zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on() && zrt::hw_threads() <= 1280 ? 1 : 0;
+    if (g21_ < 0) {
+      g21_ = !zrt::integrated() && cl_.xmx && !cl_.sg8 && !xehpc_on() && zrt::bmg_g21() ? 1 : 0;
+      if (g21_) {
+        static std::once_flag said;
+        std::call_once(said, [] {
+          zlog::eprintf("inferzero: the B60's die (BMG-G21, device 0x%04X): its own prompt tile and GEMV rows\n",
+                        zrt::pci_device_id());
+        });
+      }
+    }
     return g21_ == 1;
   }
   std::string xe2_moe_grf() const {

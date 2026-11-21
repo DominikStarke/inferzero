@@ -8,7 +8,9 @@
 - **Its generation** picks the one-token GEMVs' rows by type again, not by the GPU's thread count (the B70's rule):
   +3.5 % and +2.4 % on two B60s (23.29 -> 24.10, 23.36 -> 23.91 tok/s), the same logits (skipzx-lab #57, MaineTim
   #19).
-- The B70 and every other GPU keep their defaults: the engine tells the B60's die apart by its 1,280 GPU threads.
+- The B70, the B65 and every other GPU keep their defaults: the engine tells the B60's die apart by its PCI device
+  ID (BMG-G21, 0xE200-0xE21F). Release .21.17 went by the thread count, which also caught a Pro B65 (the B70's die
+  with 160 EUs); .21.18 corrects that.
 - **`bench/gpu_sweep` phase X named the wrong winner:** a form had to beat the best one so far by 2 %, so a later,
   faster form was not named (on skipzx-lab's B60 it named x1 while x4 was faster at all three contexts). Now the bar
   is 2 % over the defaults, and the fastest form past it wins.
