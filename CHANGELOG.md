@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-21: Alchemist: the 27B's prompt +15.7 % (a 32 x 32 tile through local memory by default)
+
+- **Measured** by skipzx-lab (an A770 held to 150 W, Linux, issue #45, main b9f011c, the 27B IQ3_S, a 45 s pause
+  before each run). Every prompt GEMM at 32 x 32 with 4 column sub-groups, its operands through local memory with 4
+  token sub-groups a work-group, and the epilogue a row at a time:
+  - the 4K prompt 1,286.0 -> 1,488.4 tok/s (+15.7 %), 16K 1,191.6 -> 1,358.1 (+14.0 %);
+  - the GEMMs 2,168 -> 1,690 ms, every one faster, the small ones too (ssm_out 164.2 -> 114.6, o 55.0 -> 38.3);
+  - xw_peak 116.7 TOPS, 50 % of this card's measured 232, against 40 % before.
+- **Now the default on Alchemist** (A770 / A750 / A580) wherever that tile fits: both operands packed, N a multiple
+  of 128, and the tokens a multiple of 128. Elsewhere, short prompts for example, a GEMM keeps the per-shape tiles of
+  before: 32 x 32 without local memory is far slower there (548.8 tok/s in the same round). It is decided per GEMM, so
+  a split model's GPU decides for its own slice. The row-at-a-time epilogue (`ARC_GEMM_XW_EPI2`) is on by default on
+  Alchemist for every tile (+2.8 % on its own). The same results bit for bit: the laptop's 27B with the A770 preset
+  emulated, logits byte-identical at 1,024 tokens (the big tile) and at 600 (the fallback), and checked at start.
+  `ARC_GEMM_XW_BIG=0` and `ARC_GEMM_XW_EPI2=0` turn them off. The Arc 140T keeps its preset until measured.
+
 ## 2026-11-21: expert-file and package builds stop when the source drive stops answering (S1); B3, B5
 
 - **A stall watchdog (S1):** writing an expert file or a package reads a whole GGUF, and some drives hang under it (a

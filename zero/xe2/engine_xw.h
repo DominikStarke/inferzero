@@ -246,9 +246,27 @@
   // time, a row's columns in one block message, SwiGLU's mode decided once. ocloc dg2-g10 at 256 registers, no spill:
   // 32 x 16 w4 with the read-ahead loop 239 -> 175 memory messages, 32 x 32 525 -> 269, 32 x 32 through local memory
   // 457 -> 201. The same operations per value: bit for bit, checked at start (and xw_peak --emu on the 125H)
-  static bool xw_epi2() {
-    static const bool on = getenv("ARC_GEMM_XW_EPI2") && atoi(getenv("ARC_GEMM_XW_EPI2")) != 0;
-    return on;
+  // (on by default on Alchemist since 2026-11-21: skipzx-lab's A770, #45, the 27B 4K 1,286 -> 1,322 tok/s on today's
+  //  tile, and with the big tile below 1,488; ARC_GEMM_XW_EPI2=0 off, =1 on any 8-lane GPU. The 140T: until measured)
+  bool xw_epi2() const {
+    static const int e = getenv("ARC_GEMM_XW_EPI2") ? (atoi(getenv("ARC_GEMM_XW_EPI2")) != 0 ? 1 : 0) : -1;
+    return e >= 0 ? e == 1 : xw_lanes() == 8 && cl_.sg8 && !zrt::integrated();
+  }
+  // The big tile on Alchemist, by default since 2026-11-21 (skipzx-lab's A770 at 150 W, #45, b9f011c, the 27B IQ3_S):
+  // every prompt GEMM at 32 x 32 (NC 2) with 4 column sub-groups, through local memory with 4 token sub-groups a
+  // work-group (gemm_xw8 -DXW_SLM) and the epilogue a row at a time (EPI2): 4K 1,286.0 -> 1,488.4 tok/s (+15.7 %), 16K
+  // 1,191.6 -> 1,358.1 (+14.0 %), the GEMMs 2,168 -> 1,690 ms, every GEMM faster, the 16 x 32 ones too (ssm_out
+  // 164.2 -> 114.6, o 55.0 -> 38.3); xw_peak 116.7 TOPS, 50 % of its 232. Only where it fits: both operands packed, N
+  // a multiple of 128 and the token tiles of 4: 32 x 32 without local memory spills (548.8 tok/s), so the others keep
+  // the per-shape tiles above (xw_tile_for). Decided per call, so a split model's GPU decides for its slice of N.
+  // The same sums in the same order: bit for bit, checked at start. ARC_GEMM_XW_BIG=0 off, =1 on any 8-lane GPU
+  // (tests); any of ARC_GEMM_XW_TM / _NC / _WGX / _SLM set: off, as asked
+  bool xw_big_on() const {
+    static const int env = getenv("ARC_GEMM_XW_BIG") ? atoi(getenv("ARC_GEMM_XW_BIG")) : -1;
+    static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX") ||
+                              getenv("ARC_GEMM_XW_SLM");
+    if (env == 0 || fixed || xw_nc_e() || xw_lanes() != 8 || xw_tm() != 32) return false;
+    return env == 1 || (cl_.sg8 && !zrt::integrated());
   }
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
@@ -286,15 +304,15 @@
   // (tm / wgx0: the tile's tokens and column sub-groups, 0 = xw_tm() / xw_wgx(): xw_tile_for's per shape)
   void xw_run(const char* name, int nc, int pack, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K,
               cl_mem C, int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy, int g_base, int tm0 = 0,
-              int wgx0 = 0) {
+              int wgx0 = 0, int slm0 = -1) {
     const int tm = tm0 ? tm0 : xw_tm(), nb = N / (16 * nc), ln = xw_lanes();
     int wgx = wgx0 ? wgx0 : xw_wgx();
     while (wgx > 1 && nb % wgx) wgx /= 2;
     const int cap = xw_grf256() ? 32 : 64;
     while (wgx * wgy > cap && wgy > 1) wgy /= 2;
-    // (ARC_GEMM_XW_SLM: its fixed token sub-groups where they divide the tokens and both operands are packed; else
-    //  the kernel as before)
-    const int sw = xw_slm_wgy();
+    // (ARC_GEMM_XW_SLM, or the big tile's 4 (slm0): its fixed token sub-groups where they divide the tokens and both
+    //  operands are packed; else the kernel as before)
+    const int sw = slm0 >= 0 ? slm0 : xw_slm_wgy();
     const bool slm = ln == 8 && (pack & 3) == 3 && sw > 0 && (M / tm) % sw == 0 && wgx * sw <= cap;
     if (slm) wgy = sw;
     cl_kernel k = xw_kernel(nc, pack, wgx, false, tm, slm ? sw : 0);
@@ -448,7 +466,7 @@
   // (an iGPU) keeps its preset's tile until measured. Not by default on a split model (self audit 2026-11-21): a
   // shard's N and K are sliced while n_embd is not, so with 3 or 4 A770s the 27B's gate / up / down would fall under
   // the 16 x 32 rule that was measured slower for them on one card (and lose ARC_GEMM_XW_DB, 32-token tiles only).
-  struct XwTile { int tm, nc, wgx; };
+  struct XwTile { int tm, nc, wgx, slm = -1; };  // (slm: token sub-groups through local memory, 0 none, -1 ARC_GEMM_XW_SLM's)
   // (ARC_GEMM_XW_SHAPE=1: on any GPU taking gemm_xw8, the 140T preset and the 125H's emulation included: tests)
   bool xw_shape_on() const {
     static const int env = getenv("ARC_GEMM_XW_SHAPE") ? atoi(getenv("ARC_GEMM_XW_SHAPE")) : -1;
@@ -456,21 +474,27 @@
     if (env == 0 || fixed || xw_nc_e() || xw_lanes() != 8) return false;
     return env == 1 || (cl_.sg8 && !zrt::integrated() && opt.tp_size <= 1);
   }
-  XwTile xw_tile_for(int N, int K) const {
+  XwTile xw_tile_for(int N, int K, int M = 0, int pack = 0) const {
+    // (the big tile where it fits, xw_big_on; elsewhere the rule below, never 32 x 32 without local memory)
+    if (M > 0 && xw_big_on() && (pack & 3) == 3 && N % 128 == 0 && M % 32 == 0 && (M / 32) % 4 == 0)
+      return {32, 2, 4, 4};
     XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};
-    if (!xw_shape_on() || xw_tm() != 32) return t;
-    if (N <= hp.n_embd && K <= 8192) t = {16, 2, xw_wgx()};
-    else t = {32, 1, 4};
-    while (t.nc > 1 && N % (16 * t.nc)) t.nc /= 2;
+    if (xw_shape_on() && xw_tm() == 32) {
+      if (N <= hp.n_embd && K <= 8192) t = {16, 2, xw_wgx()};
+      else t = {32, 1, 4};
+      while (t.nc > 1 && N % (16 * t.nc)) t.nc /= 2;
+    }
+    if (xw_big_on()) t.slm = 0;  // (where the big tile does not fit: the plain kernels, never local memory's)
     return t;
   }
   bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc_for(N)) == 0; }
   // one piece of K over all N columns: one launch, or with NC 6 the 96-wide part and the rest in 64-wide tiles
   void xw_piece(const char* name, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C, int ldc,
                 int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
-    const XwTile t = xw_tile_for(N, K);
+    const XwTile t = xw_tile_for(N, K, M, pack);
     const int nc = t.nc;
-    if (nc != 6) return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx);
+    if (nc != 6)
+      return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx, t.slm);
     if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
     const int n96 = xw_cols96(N);
     if (n96 > 0) xw_run(name, 6, 0, wq, wh, aq, asc, M, n96, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0);
@@ -507,7 +531,8 @@
                             (xw_lock() ? "|lock" : "") + (xw_2d() ? "|xw2d" : "") + (xw_2d_c() ? "c" : "") +
                             (xw_nc_e() ? "|nce" + std::to_string(xw_nc_e()) + "e" + std::to_string(hp.n_embd) : "") +
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
-                            (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "");
+                            (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
+                            (xw_big_on() ? "|big" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -567,6 +592,9 @@
         if (xw_slm_wgy() && xw_lanes() == 8)  // (skipzx-lab, #45: nothing said it was on)
           zlog::eprintf("inferzero: gemm_xw8: operands through local memory, %d token sub-groups a work-group where they "
                         "divide the tokens (ARC_GEMM_XW_SLM)\n", xw_slm_wgy());
+        if (xw_big_on())
+          zlog::eprintf("inferzero: gemm_xw8: 32 x 32 tiles through local memory where they fit (N a multiple of 128, "
+                        "128-token multiples), the tiles above elsewhere (ARC_GEMM_XW_BIG=0: off)\n");
         if (xw_epi2() && xw_lanes() == 8)
           zlog::eprintf("inferzero: gemm_xw8: the epilogue a row at a time (ARC_GEMM_XW_EPI2)\n");
       } else
@@ -605,6 +633,9 @@
       // (ARC_GEMM_XW_SLM: two work-groups of its token sub-groups over two of column sub-groups, so the local-memory
       //  kernel runs here: the shapes above have 2 or 3 token tiles, which it does not take)
       if (xw_slm_wgy()) shapes.push_back({2 * xw_slm_wgy() * tm, 2 * std::max(1, xw_wgx()) * cols, K0});
+      // (the big tile, xw_big_on: two of its work-groups each way, so it runs here; the other shapes take the
+      //  fallback tiles, as calls that it does not fit)
+      if (xw_big_on()) shapes.push_back({2 * 4 * 32, 2 * 4 * 32, K0});
       for (const auto& sh : shapes) {
         const int M = sh[0], N = sh[1], K = sh[2], nsb = K / 256;
         const int ng = N / 16, ldc = N + 32, coff = 16;

@@ -454,9 +454,12 @@ static int run_main(int argc, char** argv) {
             "  ARC_GEMM_XW_NC_E=2 turns it off),\n"
             "  ARC_GEMM_XW_DB=0 / 1 the 32-token tiles' reads one step ahead (default on Alchemist), the same results;\n"
             "                   =2 every tile, the next weights in place and the loop unrolled by 4 (opt-in)\n"
+            "  ARC_GEMM_XW_BIG=0 / 1 the 32 x 32 tile through local memory where it fits (default on Alchemist),\n"
+            "  ARC_GEMM_XW_EPI2=0 / 1 the epilogue a row at a time (default on Alchemist), ARC_GEMM_XW_SLM=1 / 2 / 8\n"
+            "  local memory with that many token sub-groups (=1: 4) on every tile it fits; all the same results\n"
             "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
             "  tier (KL-checked; on by default on discrete 16-lane cards: the B-series, a Data Center Max; off on Alchemist and\n"
-            "  iGPUs; results move run to run with it on: ARC_XCPU=0 for bit-for-bit checks); in Flash Next's precise\n"
+            "  iGPUs; the same results run to run from the same cache state, its .lru file); in Flash Next's precise\n"
             "  mode one int8 pass on the CPU by default (faster), ARC_XCPU_Q2=1 both passes as on the GPU (exact)\n"
             "  ARC_XRAM_GB=N the RAM tier' size per GPU (0: none), ARC_XRAM_FILL=1 / 0 the expert cache's fill at start\n"
             "  into the RAM tier too or not (default: not, where the tier and the cache cannot hold every expert)\n");

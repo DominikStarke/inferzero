@@ -42,9 +42,10 @@ int xcpu_prev_il_ = 1 << 30;      // (the last MoE layer of the step)
 // issue #57, a62be02). Off on Alchemist (an A770 on x16 measured 20.0 / 20.6 -> 18.9 / 20.1) and on iGPUs (they read
 // RAM directly: no gain). ARC_XCPU=0 / 1 decides everywhere. (The default per engine: each GPU decides for its own;
 // it is any discrete GPU without 8-lane sub-groups, so a Data Center GPU Max too. Kept once per engine: it was a
-// driver call on every MoE layer of every token, self audit 2026-11-21.) Results move run to run with it on (which
-// experts the CPU takes depends on the fills' timing): a bit-for-bit check of a streamed MoE model on such a card
-// needs ARC_XCPU=0 on both sides.
+// driver call on every MoE layer of every token, self audit 2026-11-21.) Before 2026-11-21 results moved run to run
+// with it on (which experts the CPU takes followed the fills' timing); since then the fills commit at fixed points and
+// the RAM tier fills in order (zero/xcache.h fill_commit_at, ExpertStore::reserve): runs from the same cache state
+// (the model's .lru file) match byte for byte.
 mutable int xcpu_def_ = -1;
 bool xcpu_on() const {
   static const int e = getenv("ARC_XCPU") ? (atoi(getenv("ARC_XCPU")) != 0 ? 1 : 0) : -1;
