@@ -273,13 +273,14 @@
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">Prompt 512</th><th class="n">Prompt 4K</th><th class="n">Generation</th><th>Release</th></tr></thead>
       <tbody>
-        <tr><td>Qwen3.8 27B, one stack</td><td class="n">1,939</td><td class="n">2,648</td><td class="n">27.8</td><td>main 03c310a, 2026-11-20</td></tr>
-        <tr><td>Qwen3.8 27B, both stacks of one card (<code>--gpus 2</code>)</td><td class="n">–</td><td class="n">3,380</td><td class="n">35.8</td><td>main, 2026-11-19 / 03c310a</td></tr>
-        <tr><td>Qwen3.8 27B, 4 stacks on 2 cards (<code>--gpus 4</code>, Xe Link)</td><td class="n">2,676-2,697</td><td class="n">~47</td><td>main at e2ae1d2 (2026.11.19.07's default)</td></tr>
-        <tr><td>Qwen3.6 35B-A3B, one stack</td><td class="n">3,636</td><td class="n">4,655</td><td class="n">82.5</td><td>main 03c310a, 2026-11-20</td></tr>
+        <tr><td>Qwen3.8 27B, one stack</td><td class="n">2,062</td><td class="n">2,854-2,856 <small>(16K: 2,285-2,291)</small></td><td class="n">29.1-29.6</td><td>main e905e4b, the Max's own defaults (2026-11-22; 03c310a before: 1,937 / 2,646 / 27.8)</td></tr>
+        <tr><td>Qwen3.8 27B, both stacks of one card (<code>--gpus 2</code>)</td><td class="n">2,088-2,093</td><td class="n">3,525-3,527 <small>(16K: 3,098-3,101)</small></td><td class="n">35.3-36.4</td><td>main e905e4b (sums GPU to GPU, 131.7-138.6 GB/s)</td></tr>
+        <tr><td>Qwen3.8 27B, 4 stacks on 2 cards (<code>--gpus 4</code>, Xe Link)</td><td class="n">2,825-2,844</td><td class="n">3,797-3,835 <small>(16K: 3,406-3,428)</small></td><td class="n">49.2-49.9</td><td>main e905e4b</td></tr>
+        <tr><td>Qwen3.6 35B-A3B, one stack</td><td class="n">3,631-3,640</td><td class="n">5,185-5,214 <small>(16K: 4,331-4,333)</small></td><td class="n">86.8-88.6</td><td>main e905e4b (03c310a before: 4,670 / 82.5)</td></tr>
+        <tr><td>Qwen3.6 35B-A3B, 2 / 4 stacks</td><td class="n">4,207-4,303 / 4,794-4,855</td><td class="n">5,803-5,813 / 6,317-6,346</td><td class="n">79.5-81.4 / 59.0-63.3</td><td>main e905e4b: generation best on one stack (the sums cost more than a ~2.4 GB token saves)</td></tr>
       </tbody>
     </table></div>
-    <p class="note">One stack measures ~1 TB/s of memory reads (991-997 GB/s), not its 1.6 TB/s on paper; the 27B's generation reads it at 32 %, its FFN GEMVs 56 % of a token. A sweep of the switches (hibagus, <code>bench/xehpc_sweep.sh</code>) found +7-10 % for each part, to be made this GPU's defaults once confirmed together.</p>
+    <p class="note">One stack measures ~1 TB/s of memory reads (991-997 GB/s), not its 1.6 TB/s on paper; the 27B's generation reads it at 32 %, its FFN GEMVs 56 % of a token. A sweep of the switches (hibagus, <code>bench/xehpc_sweep.sh</code>) found +7-10 % for each part; as this GPU's defaults since e905e4b they gave +6-12 % on the prompt and +5-7 % on generation (two passes each, <a href="https://github.com/rizagp/inferzero/pull/48">#48</a>). Long prompts fall behind the B70 (32K 0.75x, 262K 0.43x): its prompt attention takes 2.4x the B70's time at 4K.</p>
   </div>
 </section>
 
