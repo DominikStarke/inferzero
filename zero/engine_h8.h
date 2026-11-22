@@ -327,6 +327,34 @@
     run("rmsnorm_h8r", k, 2, gws, lws);
     h8_pre_live_ = true, h8_pre_M_ = Mp, h8_pre_K_ = K;
   }
+  // ---- ARC_H8_OUT=1 (2026-11-22, opt-in; the A770 plan's H8 passes): the inputs of the DeltaNet and attention output
+  // GEMMs (ssm_out, wo) rotated by the kernels that make them, as rmsnorm_h8 does for the norms: ops.cl gated_norm_h8r
+  // and ops_attn.cl attn_gate_h8r keep the row in local memory and rotate it there (h8n_rotate), so the f32 copy
+  // (H8F: K x 4 bytes a token, 100 MB a layer of the 27B at 4K) is neither written nor read back and h8_act's launch
+  // goes (the 27B: 64 of a prompt's 128 h8_act). The same floats, transform and scale: h8_aq_ / h8_asc_ bit for bit.
+  // Where it applies: H8R with the f32 copy, one GEMM taking it, a whole row in a work-group (the same limits as
+  // rmsnorm_h8); the caller holds an H8Share around the kernel and the GEMM
+  bool h8_out_env() const {
+    static const bool on = getenv("ARC_H8_OUT") && atoi(getenv("ARC_H8_OUT")) != 0;
+    return on;
+  }
+  bool h8_out_ok(const GpuWeight& next, int K, int Mp, int T) const {
+    const int hb = h8_block(K);
+    return h8_out_env() && !h8_q2() && h8_row() && !h8f_defs_.empty() && !wide_rows(T) && h8_takes(next, Mp) &&
+           next.K == K && K % 256 == 0 && K % hb == 0 && K / hb <= 16 && (size_t)K * 4 + 64 <= 60 * 1024;
+  }
+  // (name: gated_norm_h8r or attn_gate_h8r; args: the kernel's own up to act32, set by the caller after this builds it)
+  cl_kernel h8_out_kernel(const char* name, int K, int Mp) {
+    static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
+    return kernel("ops", h8_grf() + "-DH8NORM" + (d ? " -DH8_D" : "") + " -DHB=" + std::to_string(h8_block(K)) +
+                             " -DH8N_K=" + std::to_string(K) + (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") +
+                             xw_wgla_defs(Mp, K), name);
+  }
+  void h8_out_run(const char* name, cl_kernel k, int K, int Mp) {
+    size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+    run(name, k, 2, gws, lws);
+    h8_pre_live_ = true, h8_pre_M_ = Mp, h8_pre_K_ = K;
+  }
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
     if (h8_q2_pass_) return;  // (ARC_H8_Q2's second pass: both planes were made by the first)

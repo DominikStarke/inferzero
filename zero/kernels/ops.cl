@@ -156,44 +156,13 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
 #if H8N_K * 4 + 64 > 60 * 1024
 #error "rmsnorm_h8r: the row does not fit in local memory"
 #endif
-__attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const float* w, int K, int M, int M_valid,
-                          float eps, __global char* aq, __global float* asc, __global ushort* absum,
-                          __global float* hout, int write_h, int act32, __global uint* restrict aqh,
-                          __global float* restrict asch) {
-  __local float rowv[H8N_K];
-  __local float red[16];
-  const int m = get_group_id(1);
-  const bool valid = m < M_valid;
-  __global const float* xr = x + (size_t)(m + row_off) * K;
-  float ss = 0.0f;
-  if (valid)
-    for (int i = get_local_id(0); i < K; i += get_local_size(0)) ss += xr[i] * xr[i];
-  ss = work_group_reduce_add(ss);
-  const float r = rsqrt(ss / K + eps);
+// ---- h8r_act on a row in local memory (rowv: K = H8N_K values), into h8_aq_ / h8_asc_ as h8.cl h8r_act makes them
+// from the f32 copy: the same floats, the same transform and scale. The kernels below that make a GEMM input's row
+// call it after their own values (rmsnorm_h8r; gated_norm_h8r and ops_attn.cl attn_gate_h8r, ARC_H8_OUT). A
+// work-group of 256 (16 sub-groups), red[16]
+inline void h8n_rotate(__local const float* rowv, __local float* red, int K, int m, __global uint* restrict aqh,
+                       __global float* restrict asch) {
   const int lane = get_sub_group_local_id();
-  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
-       s += get_num_groups(0) * get_num_sub_groups()) {
-    const int base = s * 256 + 16 * lane;
-    float v[16];
-    if (valid) {
-      const float16 xa = vload16(0, xr + base), wa = vload16(0, w + base);
-      const float xv[16] = {xa.s0, xa.s1, xa.s2, xa.s3, xa.s4, xa.s5, xa.s6, xa.s7, xa.s8, xa.s9, xa.sa, xa.sb, xa.sc, xa.sd, xa.se, xa.sf};
-      const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
-#pragma unroll
-      for (int i = 0; i < 16; ++i) v[i] = xv[i] * r * wv[i];
-    } else {
-#pragma unroll
-      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
-    }
-    if (write_h)
-#pragma unroll
-      for (int i = 0; i < 16; ++i) hout[(size_t)m * K + base + i] = v[i];
-    quant_store16(v, s, m, M, K, aq, asc, absum, act32);
-#pragma unroll
-    for (int i = 0; i < 16; ++i) rowv[base + i] = v[i];
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
   // ---- h8r_act on the row in local memory: sub-group bk rotates block bk, lane l holds values 64 r + 4 l + b
   const int nblk = K / HB, bk = get_sub_group_id();
   const uint l = lane;
@@ -237,6 +206,46 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
     for (int rr = 0; rr < ROT_NV / 4; ++rr) intel_sub_group_block_write(ar + rr * SG, rot_pack(hv + 4 * rr, iv));
 #endif
   }
+}
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const float* w, int K, int M, int M_valid,
+                          float eps, __global char* aq, __global float* asc, __global ushort* absum,
+                          __global float* hout, int write_h, int act32, __global uint* restrict aqh,
+                          __global float* restrict asch) {
+  __local float rowv[H8N_K];
+  __local float red[16];
+  const int m = get_group_id(1);
+  const bool valid = m < M_valid;
+  __global const float* xr = x + (size_t)(m + row_off) * K;
+  float ss = 0.0f;
+  if (valid)
+    for (int i = get_local_id(0); i < K; i += get_local_size(0)) ss += xr[i] * xr[i];
+  ss = work_group_reduce_add(ss);
+  const float r = rsqrt(ss / K + eps);
+  const int lane = get_sub_group_local_id();
+  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
+       s += get_num_groups(0) * get_num_sub_groups()) {
+    const int base = s * 256 + 16 * lane;
+    float v[16];
+    if (valid) {
+      const float16 xa = vload16(0, xr + base), wa = vload16(0, w + base);
+      const float xv[16] = {xa.s0, xa.s1, xa.s2, xa.s3, xa.s4, xa.s5, xa.s6, xa.s7, xa.s8, xa.s9, xa.sa, xa.sb, xa.sc, xa.sd, xa.se, xa.sf};
+      const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = xv[i] * r * wv[i];
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    }
+    if (write_h)
+#pragma unroll
+      for (int i = 0; i < 16; ++i) hout[(size_t)m * K + base + i] = v[i];
+    quant_store16(v, s, m, M, K, aq, asc, absum, act32);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) rowv[base + i] = v[i];
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  h8n_rotate(rowv, red, K, m, aqh, asch);
 }
 #endif  // H8NORM
 
@@ -745,5 +754,52 @@ __kernel void gated_norm_quant(__global const float* o, __global const float* z,
     quant_store16(v, s, m, M, K, aq, asc, absum, act32);
   }
 }
+#ifdef H8NORM
+// ---- gated_norm_quant and h8.cl's h8r_act in one kernel (ARC_H8_OUT=1, zero/engine_h8.h h8_out_rows; the A770
+// plan's H8 passes): gated_norm_quant's values and int8 rows unchanged, the f32 values to local memory instead of the
+// H8F copy, then the row rotated there (h8n_rotate), as rmsnorm_h8r does for the norm: h8_aq_ / h8_asc_ bit for bit
+// h8r_act's from that copy, without the copy's write and read and h8_act's launch. grid (256, M), local (256, 1)
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void gated_norm_h8r(__global const float* o, __global const float* z, __global const float* w, int K,
+                             int M, int M_valid, float eps, __global char* aq, __global float* asc,
+                             __global ushort* absum, int act32, __global uint* restrict aqh, __global float* restrict asch) {
+  __local float rowv[H8N_K];
+  __local float red[16];
+  const int m = get_group_id(1);
+  const bool valid = m < M_valid;
+  const int lane = get_sub_group_local_id();
+  for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
+    const int base = s * 256 + 16 * lane, d0 = (16 * lane) & 127;
+    float v[16];
+    if (valid) {  // (gated_norm_quant's arithmetic, unchanged)
+      const float16 oa = vload16(0, o + (size_t)m * K + base);
+      const float ov[16] = {oa.s0, oa.s1, oa.s2, oa.s3, oa.s4, oa.s5, oa.s6, oa.s7, oa.s8, oa.s9, oa.sa, oa.sb, oa.sc, oa.sd, oa.se, oa.sf};
+      float ss = 0.0f;
+#pragma unroll
+      for (int i = 0; i < 16; ++i) {
+        v[i] = ov[i];
+        ss += v[i] * v[i];
+      }
+      ss += intel_sub_group_shuffle_xor(ss, 1);
+      ss += intel_sub_group_shuffle_xor(ss, 2);
+      ss += intel_sub_group_shuffle_xor(ss, 4);
+      const float r = rsqrt(ss / 128.0f + eps);
+      const float16 wa = vload16(0, w + d0), za = vload16(0, z + (size_t)m * K + base);
+      const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
+      const float zv[16] = {za.s0, za.s1, za.s2, za.s3, za.s4, za.s5, za.s6, za.s7, za.s8, za.s9, za.sa, za.sb, za.sc, za.sd, za.se, za.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = v[i] * r * wv[i] * GDN_GATE(zv[i]);
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    }
+    quant_store16(v, s, m, M, K, aq, asc, absum, act32);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) rowv[base + i] = v[i];
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  h8n_rotate(rowv, red, K, m, aqh, asch);
+}
+#endif  // H8NORM
 
 

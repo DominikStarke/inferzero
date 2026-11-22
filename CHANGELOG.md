@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-22: the attention and DeltaNet outputs rotated where they are made, opt-in (`ARC_H8_OUT=1`)
+
+- **What changes:** the inputs of the output GEMMs (`ssm_out` after the DeltaNet norm, `wo` after the attention
+  gate) are rotated for H8 by the kernels that make them (`gated_norm_h8r`, `attn_gate_h8r`). The fused norm
+  (`rmsnorm_h8r`) already does this for the layer norms. Each row stays in local memory.
+- **What it saves:** the f32 copy of the row is no longer written and read back (100 MB a layer of the 27B at a 4K
+  prompt), and the separate `h8_act` launch goes: 64 of a 27B prompt's 128 `h8_act` launches.
+- **Results:** bit for bit the same. On the laptop, the 4B's logits are byte for byte the same with it on and off,
+  with and without the A770's packed orders, `ARC_GEMM_XW_WGL` and `ARC_GEMM_XW_GU`. The 27B's logits are the same too, and its three passes take
+  98.4 ms instead of 132.5 on the laptop (-26 %).
+- **Where it applies:** where H8 rotates from the f32 copy, the same cases as the fused norm (`ARC_H8_NORM`: on by
+  default on discrete cards).
+- Opt-in until the A770s measure it.
+
 ## 2026-11-22: the A770's GEMM operands in its work-group order, opt-in (`ARC_GEMM_XW_WGL=1`)
 
 - **The engine writes the work-group order `xw_peak` measured** (+6.5 % on skipzx-lab's A770 there): with

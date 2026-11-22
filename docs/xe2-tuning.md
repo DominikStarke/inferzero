@@ -24,6 +24,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_XW_WGL` (the big tile's operands in its work-group order, 2026-11-22; written by h8r_act / rmsnorm_h8r / h8r_decode, checked bit for bit at start) | – | – | – (with `ARC_GEMM_XW_BIG=1` only) | 0 (opt-in until measured; xw_peak +6.5 %) | – |
 | `ARC_GEMM_XW_SHAPE` (a tile per GEMM shape, 2026-11-20; one GPU only, not on a split model) | – | – | 0 (until measured) | 1: 16 x 32 where N <= n_embd and K <= 8,192, else 32 x 16 WGX 4 | – |
 | `ARC_H8_NORM` | on | off | on | on | off |
+| `ARC_H8_OUT` (the DeltaNet / attention outputs rotated by the kernels that make them, 2026-11-22; bit for bit) | 0 (opt-in) | 0 | 0 (opt-in) | 0 (opt-in until measured) | – |
 | `ARC_H8_GRF` | 128 | 256 | 256 (128 ignored: spills) | 256 (128 ignored) | 256 |
 | `ARC_GEMM_SPLIT` (H8 GEMMs) | 34 | 17 | 17 | 17 (since 2026-11-18) | 17 |
 | `ARC_GEMM_GRF` / `ARC_GEMV_MT_GRF` | 128 / 128 | 128 / 128 | 256 / 256 | 256 / 256 | 256 / 256 |

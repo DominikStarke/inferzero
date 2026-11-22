@@ -11,7 +11,8 @@
 #   ./zero-launcher.sh --options          the speed and accuracy options (scripts/options.tsv) and what is chosen
 #   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
 # Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no
-# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's\n# best measured settings for this PC), --no-browser, --yes (no
+# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's
+# best measured settings for this PC), --no-browser, --yes (no
 # questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to

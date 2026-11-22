@@ -270,6 +270,39 @@ __kernel void attn_gate_quant(__global const float* att, __global const float* q
     quant_store16(v, s, m, M, K, aq, asc, absum, act32);
   }
 }
+#ifdef H8NORM
+// ---- attn_gate_quant and h8.cl's h8r_act in one kernel (ARC_H8_OUT=1), as ops.cl gated_norm_h8r: the values and
+// int8 rows unchanged, the row rotated in local memory (h8n_rotate). grid (256, M), local (256, 1)
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void attn_gate_h8r(__global const float* att, __global const float* qkv, int ldq, int K, int M, int M_valid,
+                            __global char* aq, __global float* asc, __global ushort* absum, int act32,
+                            __global uint* restrict aqh, __global float* restrict asch) {
+  __local float rowv[H8N_K];
+  __local float red[16];
+  const int m = get_group_id(1);
+  const bool valid = m < M_valid;
+  const int lane = get_sub_group_local_id();
+  for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
+    const int base = s * 256 + 16 * lane, h = base / 256, d = base % 256;
+    float v[16];
+    if (valid) {  // (attn_gate_quant's arithmetic, unchanged)
+      const float16 ga = vload16(0, qkv + (size_t)m * ldq + h * 512 + 256 + d), aa = vload16(0, att + (size_t)m * K + base);
+      const float gv[16] = {ga.s0, ga.s1, ga.s2, ga.s3, ga.s4, ga.s5, ga.s6, ga.s7, ga.s8, ga.s9, ga.sa, ga.sb, ga.sc, ga.sd, ga.se, ga.sf};
+      const float av[16] = {aa.s0, aa.s1, aa.s2, aa.s3, aa.s4, aa.s5, aa.s6, aa.s7, aa.s8, aa.s9, aa.sa, aa.sb, aa.sc, aa.sd, aa.se, aa.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = av[i] / (1.0f + exp(-gv[i]));
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    }
+    quant_store16(v, s, m, M, K, aq, asc, absum, act32);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) rowv[base + i] = v[i];
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  h8n_rotate(rowv, red, K, m, aqh, asch);
+}
+#endif  // H8NORM
 
 // Causal attention, int8 throughout. Scores S = (q8 . k8) * qscale * kscale via DP4a, f32 online softmax, and
 // P*V via DP4a as well: per 16-key tile, P * vscale (per key) is quantized to 8 bits with one scale per q row and
