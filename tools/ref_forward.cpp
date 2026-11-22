@@ -1065,6 +1065,14 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
       for (int i = 0; i < NE; ++i) id[i] = i;
       const float* l = &rl[(size_t)t * NE];
       std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return l[a] > l[b]; });
+      if (getenv("REF_ROUTES") && t == T - 1) {  // (debug: the last token's choice and the logit past the cut, as below)
+#pragma omp critical
+        {
+          zlog::eprintf("\nlayer %d experts", il);
+          for (int k = 0; k <= NU && k < NE; ++k) zlog::eprintf(" %d(%.5f)", id[k], l[id[k]]);
+          zlog::eprintf("\n");
+        }
+      }
       double z = 0;
       for (int k = 0; k < NU; ++k) z += std::exp((double)l[id[k]] - l[id[0]]);
       std::vector<float> ge(Fe), ue(Fe), de(E);

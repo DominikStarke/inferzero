@@ -286,7 +286,10 @@
     // (Flash Next's precise mode: the router and shared-expert gate rows as BF16, as the file has them (exact, half
     //  the bytes of f32), read with f32 inputs: near-tie expert choices stay as the f32 reference makes them)
     // (DeepSeek-V4.1 always: its router is BF16 in the file and computed in f32 by the reference)
-    if ((hp.hc && fn_precise()) || hp.ds41) {  // (BF16 as in the file: v holds exactly those values)
+    // (ARC_FN_RT32=1, a test of 2026-11-22: only this part of precise mode, the router and shared gate in f32 on BF16
+    //  rows, the default mode otherwise: whether the int8 router's near-tie choices carry Flash Next's KL on markdown)
+    static const bool rt32 = getenv("ARC_FN_RT32") && atoi(getenv("ARC_FN_RT32")) != 0;
+    if ((hp.hc && (fn_precise() || rt32)) || hp.ds41) {  // (BF16 as in the file: v holds exactly those values)
       std::vector<uint16_t> bf(v.size());
       for (size_t i = 0; i < v.size(); ++i) {
         uint32_t u;

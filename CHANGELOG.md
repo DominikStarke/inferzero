@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-22: Flash Next's KL on markdown, explained (no change to the defaults)
+
+- **The default mode is what one-pass int8 activations allow on such text.** The f32 reference with only its matmul
+  inputs rounded to int8 once is KL 0.0556 from pure f32 on 480 tokens of USAGE.md. The engine's default is 0.0415.
+  With every input on two passes the reference is 0.0073.
+- **Why markdown:** Flash Next's 10th and 11th experts are often nearly tied (0.002-0.05 apart in logit), so a small
+  error flips a choice. At the worst token 15-16 of the 48 layers pick a different expert, and each flip is a jump in
+  the error.
+- **No cheap fix:** two passes for the router alone, the experts alone, the rest alone, or any pair of them all stay
+  at 0.050-0.060. Only all of them together brings it down.
+- **Precise mode is 4x above its own floor** (0.0285 against 0.0073):
+  - a kernel used only for prompt chunks of more than 8 tokens adds error at layer 0;
+  - the per-layer embedding block adds error at layer 1.
+  
+  To fix next.
+- **For tests:**
+  - `ARC_FN_RT32=1`: Flash Next's router in f32 on BF16 rows, alone;
+  - `ref_forward` with `REF_ROUTES`: Flash Next's chosen experts too.
+
 ## 2026-11-22: MoE models on a layer split; the launchers' review fixes; Flash Next's KL on markdown
 
 - **Qwen's standard MoE models run on `--split layer`.** For example, the 35B-A3B over a B60 and an A770.
