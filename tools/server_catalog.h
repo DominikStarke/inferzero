@@ -906,6 +906,45 @@ static AutoCtx mtp_trade_chunk(EngineOptions& eo, AutoCtx a, Probe probe, bool s
                   from > 0 ? std::to_string(from).c_str() : "none");
   return a;
 }
+// ARC_MOE_BIG_CHUNK=1 (2026-11-22, opt-in; QUEUE "The B390's 35B prompt above OpenVINO's", O2): --ctx auto on a
+// standard MoE model (qwen35moe, its experts in GGUF types, not GSQ) takes prompt chunks of 16,384 or 8,192 tokens
+// instead of the default 4,096 where they fit, so its prompt decodes every expert to W8 a quarter or half as often
+// (decode + the XMX GEMM from 1,152 tokens a chunk: at 4,096 the decode was 36 % of a B390's 16K prompt). Fits: the
+// context stays what 4,096 gave, or at least kMtpCtxWant. A B390's 35B UD-Q4_K_M (cjm801, #75, Windows, .22.08), pp16384:
+// 1,166 tok/s at 4,096, 1,342 at 8,192, 1,714 at 16,384 (+47 %, against OpenVINO's ~1,453). Opt-in until the logits
+// are shown the same at each chunk on that model (the dense 27B's are, at 1,024 / 2,048 / 4,096)
+static bool moe_big_chunk_model(const std::string& model) {
+  static const bool on = getenv("ARC_MOE_BIG_CHUNK") && atoi(getenv("ARC_MOE_BIG_CHUNK")) != 0;
+  if (!on) return false;
+  try {
+    const GgufFile g(model);
+    return g.get_str("general.architecture", "") == "qwen35moe" && g.get_str("inferzero.expert_format", "") != "gsq2-v1";
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+template <class Probe>
+static AutoCtx moe_grow_chunk(const std::string& model, EngineOptions& eo, AutoCtx a, Probe probe, bool say) {
+  if (eo.chunk != 0 || a.ctx <= 0 || !moe_big_chunk_model(model)) return a;
+  const int want = std::min(a.ctx, kMtpCtxWant);
+  for (int ch : {16384, 8192}) {
+    EngineOptions e2 = eo;
+    e2.chunk = ch;
+    AutoCtx b;
+    try {
+      b = probe(e2);
+    } catch (const std::exception&) {
+      continue;
+    }
+    if (b.ctx < want) continue;
+    if (say)
+      zlog::eprintf("--ctx auto: a MoE model, prompt chunks of %d tokens instead of the default (ARC_MOE_BIG_CHUNK), "
+                    "%d tokens of context (%d at the default chunk)\n", ch, b.ctx, a.ctx);
+    eo.chunk = ch;
+    return b;
+  }
+  return a;
+}
 
 static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   EngineOptions eo;
@@ -914,7 +953,8 @@ static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   try {
     const size_t enc = vision ? encoder_reserve(model, "", 0) : 0;
     auto probe = [&](const EngineOptions& o) { return auto_ctx(model, o, false, enc); };
-    return mtp_trade_chunk(eo, probe(eo), probe, false).ctx;  // (as the server's load: mtp_trade_chunk)
+    const AutoCtx a = mtp_trade_chunk(eo, probe(eo), probe, false);  // (as the server's load: mtp_trade_chunk)
+    return moe_grow_chunk(model, eo, a, probe, false).ctx;
   } catch (const std::exception&) {
     return 0;
   }
@@ -937,7 +977,8 @@ static AutoCtx list_ctx(const std::string& path, const EngineOptions& eo, size_t
   }
   EngineOptions e1 = eo;
   auto probe = [&](const EngineOptions& o) { return auto_ctx(path, o, false, enc); };
-  return mtp_trade_chunk(e1, probe(e1), probe, false);  // (as the server's load: mtp_trade_chunk)
+  const AutoCtx a1 = mtp_trade_chunk(e1, probe(e1), probe, false);  // (as the server's load: mtp_trade_chunk)
+  return moe_grow_chunk(path, e1, a1, probe, false);
 }
 // --list-models: the catalog as JSON (scripts\zero-server.ps1 and zero-pi read it). ctx: the context --ctx auto chose
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: larger prompt chunks for MoE models (`ARC_MOE_BIG_CHUNK=1`, opt-in)
+
+- **`ARC_MOE_BIG_CHUNK=1`:** with `--ctx auto`, a standard MoE model (such as Qwen3.6-35B-A3B) takes prompt chunks of
+  16,384 or 8,192 tokens instead of 4,096, where the context stays what 4,096 gave or at least 32,768 tokens.
+- **Why:** each chunk converts every expert to int8 once, so larger chunks do that less often.
+- **Measured on a B390** (cjm801, #75, Windows, the 35B UD-Q4_K_M): the 16K prompt went from 1,166 to 1,714 tok/s
+  (+47 %), above OpenVINO's ~1,453 on the same machine.
+- **Opt-in for now:** it becomes the default once the logits are shown the same at both chunk sizes on that model.
+- **Fixed:** the experts line printed an absurd SSD rate ("19.59 GB in 0 ms (19587399680000.00 GB/s)") when the
+  bytes came from the cache's fill. The rate now shows only when reads were timed.
+- **Measured, no change:** a second Windows B390 is 15 % slower with the 2D GEMM form too, so it stays Linux-only.
+- **The option list:** an `h8` model word, so "More precise prompt reading" is offered only on dense Qwen models.
+
 ## 2026-11-22: the server loads a model's option variant by name (QUEUE row 15, step 2)
 
 - **A request can name a variant:** `"model": "qwen3.5-4b-mtp-fastdraft"` loads the 4B with MTP drafts from the common

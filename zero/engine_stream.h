@@ -196,12 +196,16 @@
     if (!xc_) return "";
     const XCache& x = *xc_;
     char b[512];
+    // (the rate only when reads were timed: the cache's fill at load counts its bytes but not into read_ms, and a
+    //  B390 printed "19.59 GB in 0 ms (19587399680000.00 GB/s)", issue #75)
+    char rate[48] = "";
+    if (x.read_ms >= 1.0) snprintf(rate, sizeof rate, " (%.2f GB/s)", x.st.bytes_read / 1e6 / x.read_ms);
     snprintf(b, sizeof b,
              "experts: generation %llu hits / %llu misses (%.1f %% hit) | prompt %llu cached, %llu read (%llu prefetched) | "
-             "SSD %.2f GB in %.0f ms (%.2f GB/s)",
+             "SSD %.2f GB in %.0f ms%s",
              (unsigned long long)x.hits, (unsigned long long)x.misses, 100.0 * x.hits / std::max<uint64_t>(1, x.hits + x.misses),
              (unsigned long long)x.p_hits, (unsigned long long)x.p_reads, (unsigned long long)x.pf_reads,
-             x.st.bytes_read / 1e9, x.read_ms, x.st.bytes_read / 1e6 / std::max(1e-9, x.read_ms));
+             x.st.bytes_read / 1e9, x.read_ms, rate);
     std::string r = b;
     if (x.st.ram_bytes()) {
       char m[128];
