@@ -308,6 +308,7 @@
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply
   void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
+    XwRole xr(this, next.role);  // (the input in the order of the GEMM that reads it)
     const int hb = h8_block(K);
     if (!h8_norm_env() || h8_q2() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
         next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024) {  // (the row in local memory)
@@ -480,6 +481,7 @@
     h8_matmul1(name, w, Mp, C, ldc, c_off, 1, act32);
   }
   void h8_matmul1(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
+    XwRole xr(this, w.role);  // (the big tile's work-groups and input order by role, ARC_GEMM_XW_SLM_WG_GU: engine_xw.h)
     // (H8R: a split's whole dot product is one int32 sum, |sum| <= 127 * 127 * K: past 133,000 values per split it
     //  could overflow. The models' K is 17-22K today and split-K cuts it further; a refusal, not a wrong answer)
     if (h8_row()) {

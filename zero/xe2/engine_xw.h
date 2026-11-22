@@ -327,8 +327,43 @@
   }
   std::string xw_big_key() const {
     const XwBig& b = xw_big_cfg();
-    return std::to_string(b.tm) + "x" + std::to_string(16 * b.nc) + "," + std::to_string(b.x) + "x" + std::to_string(b.y) + "c" + std::to_string(b.cps);
+    return std::to_string(b.tm) + "x" + std::to_string(16 * b.nc) + "," + std::to_string(b.x) + "x" + std::to_string(b.y) + "c" + std::to_string(b.cps) +
+           (xw_big_gu_cfg().x != b.x || xw_big_gu_cfg().y != b.y
+                ? "gu" + std::to_string(xw_big_gu_cfg().x) + "x" + std::to_string(xw_big_gu_cfg().y) : std::string());
   }
+  // ARC_GEMM_XW_SLM_WG_GU="X,Y" (8 lanes, 2026-11-22, opt-in; the A770's per-shape step): the big tile's column x token
+  // sub-groups for the FFN's gate and up (the fused launch, ARC_GEMM_XW_GU, and the two GEMMs where it does not run),
+  // every other GEMM keeping ARC_GEMM_XW_SLM_WG's. skipzx-lab's A770 (#45, 413151a, GU + WGL): gemm_gateup 667 ms at
+  // 4,8 against 700 at 4,4, gemm_down and gemm_qkv 394 / 145 at 4,4 against 418 / 151 at 4,8. The same tile and
+  // chunk order either way: bit for bit (checked at start with both). Unset: ARC_GEMM_XW_SLM_WG's for all.
+  // A GEMM's input is written in the order of the GEMM that reads it (xw_role_, the role in flight: h8_matmul1,
+  // xw_gu_matmul8, rmsnorm_h8 for its next GEMM), so the FFN's input and the attention's (both K = n_embd) can differ
+  static const XwBig& xw_big_gu_cfg() {
+    static const XwBig c = [] {
+      XwBig b = xw_big_cfg();
+      if (const char* w = getenv("ARC_GEMM_XW_SLM_WG_GU")) {
+        int x = 0, y = 0;
+        if (sscanf(w, "%d,%d", &x, &y) == 2 && (x == 2 || x == 4 || x == 8) && (y == 2 || y == 4 || y == 8) && x * y <= 32 &&
+            2L * b.cps * ((long)y * (b.tm / 8) * 512 + (long)x * b.nc * 1024) <= 65536)
+          b.x = x, b.y = y;
+        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG_GU=%s not X,Y with 2 / 4 / 8 each, X x Y <= 32, in 64 KB: as the other GEMMs\n", w);
+      }
+      return b;
+    }();
+    return c;
+  }
+  static bool xw_gu_role(int r) { return r == 7 || r == 8; }  // (engine_load.h weight_role: ffn_gate, ffn_up)
+  static const XwBig& xw_big_for(int role) { return xw_gu_role(role) ? xw_big_gu_cfg() : xw_big_cfg(); }
+  int xw_role_ = -1;  // (the role of the H8 GEMM in flight, -1 none)
+  const XwBig& xw_big() const { return xw_big_for(xw_role_); }
+  struct XwRole {  // (xw_role_ for a scope)
+    Engine* e;
+    int was;
+    XwRole(Engine* en, int r) : e(en), was(en->xw_role_) { e->xw_role_ = r; }
+    ~XwRole() { e->xw_role_ = was; }
+    XwRole(const XwRole&) = delete;
+    XwRole& operator=(const XwRole&) = delete;
+  };
   // ARC_GEMM_XW_PTR=1 (2026-11-21, opt-in; the kernel-loop audit, docs/xe2-tuning.md 16): the local-memory forms'
   // copy with its addresses set once before the loop (gemm_xw8.cl -DXW_PTR). ocloc dg2-g10, the big tile's K loop:
   // 410 -> 184 instructions for its 33 DPAS (12.4 -> 5.6 each), no spill: the loop was bound by issuing them. The
@@ -451,11 +486,11 @@
   }
   bool xw_wgl_on() const { return xw_ && xw_wgl_ok_ == 1 && xw_wgl_try(); }
   int xw_wgl_a(int Mp, int K) const {
-    const XwBig& b = xw_big_cfg();
+    const XwBig& b = xw_big();  // (the order of the GEMM in flight's tile)
     return xw_wgl_on() && xw_pack_a(Mp, K) && Mp % (b.tm * b.y) == 0 ? b.y * b.tm / 8 : 1;
   }
   int xw_wgl_b(const GpuWeight& w, int Mp) const {
-    const XwBig& b = xw_big_cfg();
+    const XwBig& b = xw_big_for(w.role);
     // (ARC_GEMM_XW_WGL=2, a test: the odd roles' weights as if the big tile did not take them, so their GEMMs read the
     //  input copied back, xw_unwgl, and the fused gate / up falls back to two launches)
     static const bool test = getenv("ARC_GEMM_XW_WGL") && atoi(getenv("ARC_GEMM_XW_WGL")) == 2;
@@ -508,13 +543,13 @@
   }
   int xw_gu8_ok_ = -1;
   bool xw_gu8_fits(int N, int Mp) const {
-    const XwBig& b = xw_big_cfg();
+    const XwBig& b = xw_big_gu_cfg();
     return xw_big_on() && xw_epi2() && xw_ptr() && b.tm == 32 && b.nc == 2 && b.cps == 1 && (xw_pack_cfg() & 3) == 3 &&
            N % (16 * b.x) == 0 && Mp % (b.tm * b.y) == 0;
   }
   void xw_gu_run8(const char* name, cl_mem wqg, cl_mem whg, cl_mem wqu, cl_mem whu, cl_mem aq, cl_mem asc, int M, int N,
                   int K, cl_mem C, int ldc, int c_off, int rgroup, int wgl = 0) {  // (wgl: pack bits 4 / 8, ARC_GEMM_XW_WGL)
-    const XwBig& b = xw_big_cfg();
+    const XwBig& b = xw_big_gu_cfg();
     const int nb = N / 16;  // (output column groups: one a sub-group)
     int wgx = b.x;
     while (wgx > 1 && nb % wgx) wgx /= 2;
@@ -530,6 +565,7 @@
     run(name, k, 2, gws, lws);
   }
   bool xw_gu_matmul8(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
+    XwRole role(this, gw.role);
     if (gw.N != uw.N || gw.K != uw.K || gw.K % 256 || !xw_gu8_fits(gw.N, Mp) || h8_splits(gw.K, 0) > 1) return false;
     if (!h8_takes(gw, Mp) || !h8_takes(uw, Mp)) return false;
     if (!xw_pack_w(gw, Mp) || !xw_pack_w(uw, Mp) || !xw_pack_a(Mp, gw.K)) return false;  // (the packed order only)
@@ -561,7 +597,8 @@
   // through xw_piece as the engine runs it), on random data in the packed order: two widths (two and three
   // work-groups of columns), two token tiles of the big tile's work-groups; bit for bit
   bool xw_gu_check8() {
-    const XwBig& b = xw_big_cfg();
+    const XwBig& b = xw_big_gu_cfg();
+    XwRole role(this, 7);  // (the two launches it is checked against run the gate's tile)
     const int K = 2048, nsb = K / 256, M = 2 * 32 * b.y;
     uint32_t seed = 4243;
     auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
@@ -773,7 +810,7 @@
   XwTile xw_tile_for(int N, int K, int M = 0, int pack = 0) const {
     // (the big tile where it fits, xw_big_on; elsewhere the rule below, never 32 x 32 without local memory)
     if (M > 0 && xw_big_on() && (pack & 3) == 3) {
-      const XwBig& b = xw_big_cfg();  // (32 x 32, 4 x 4 unless the sweep's switches say otherwise)
+      const XwBig& b = xw_big();  // (32 x 32, 4 x 4 unless the sweep's switches say otherwise)
       if (N % (16 * b.nc * b.x) == 0 && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
       // (48 columns: whatever N holds of 48 x X; xw_piece runs the rest with the default big tile)
       if (b.nc == 3 && N >= 48 * b.x && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
@@ -935,6 +972,9 @@
                         "where they fit (N a multiple of %d, %d-token multiples), the tiles above elsewhere "
                         "(ARC_GEMM_XW_BIG=0: off)\n", b.tm, 16 * b.nc, b.x, b.y, b.cps, b.cps > 1 ? "s" : "",
                         16 * b.nc * b.x, b.tm * b.y);
+          const XwBig& g = xw_big_gu_cfg();
+          if (g.x != b.x || g.y != b.y)
+            zlog::eprintf("inferzero: gemm_xw8: the FFN's gate and up with %d x %d sub-groups (ARC_GEMM_XW_SLM_WG_GU)\n", g.x, g.y);
         }
         if (xw_ptr() && xw_lanes() == 8)
           zlog::eprintf("inferzero: gemm_xw8: the local-memory copy's addresses set once before the loop "
@@ -964,7 +1004,8 @@
     bool built = true;
     try {
       const int tm = xw_tm(), cols = 16 * xw_nc();
-      std::vector<std::array<int, 3>> shapes = {{3 * tm, 2 * cols, K0}, {2 * tm, 3 * cols, K0}};
+      // (M, N, K and the role the shape runs as: 0 any but the gate / up, 7 the gate, xw_big_for)
+      std::vector<std::array<int, 4>> shapes = {{3 * tm, 2 * cols, K0}, {2 * tm, 3 * cols, K0}};
       // (NC 6: 96 + 64 parts, 96 + 128 (the 27B's widths have a 128-wide rest), 96 only, 64 only)
       if (xw_nc() == 6) shapes = {{3 * tm, 256, K0}, {2 * tm, 224, K0}, {2 * tm, 288, K0}, {2 * tm, 128, K0}};
       // (ARC_GEMM_XW_WGX: a shape of two whole work-groups of column blocks, so the column sub-groups are checked)
@@ -986,8 +1027,12 @@
         shapes.push_back({2 * b.y * b.tm, 2 * b.x * 16 * b.nc, K0});
         // (48 columns: a width with a rest, as the 27B's (two of its work-groups and 128 more), so the split runs too)
         if (b.nc == 3) shapes.push_back({2 * b.y * b.tm, 2 * b.x * 48 + 128, K0});
+        // (ARC_GEMM_XW_SLM_WG_GU: the gate / up GEMMs' work-groups too, as the gate)
+        const XwBig& g = xw_big_gu_cfg();
+        if (g.x != b.x || g.y != b.y) shapes.push_back({2 * g.y * g.tm, 2 * g.x * 16 * g.nc, K0, 7});
       }
       for (const auto& sh : shapes) {
+        XwRole role(this, sh[3]);
         const int M = sh[0], N = sh[1], K = sh[2], nsb = K / 256;
         const int ng = N / 16, ldc = N + 32, coff = 16;
         std::vector<uint32_t> wq((size_t)ng * nsb * 4 * 16 * 16), wh((size_t)ng * 16);
@@ -1009,7 +1054,7 @@
         const int pcfg = xw_pack_cfg(), nch = K / 64;
         cl_mem bqp = nullptr, bap = nullptr, bqw = nullptr, baw = nullptr;
         // (ARC_GEMM_XW_WGL: the shapes the big tile takes, in its block orders too, xw_wgl_w_host / xw_wgl_a_host)
-        const XwBig& wb = xw_big_cfg();
+        const XwBig& wb = xw_big();
         const bool wgl_here = xw_wgl_try() && (pcfg & 3) == 3 && N % (16 * wb.nc * wb.x) == 0 && M % (wb.tm * wb.y) == 0;
         if (pcfg & 2) {  // ([group][chunk][lo0, lo1, hi0, hi1][8 words][8 lanes] from [group][chunk][16 words][16 columns])
           std::vector<uint32_t> wp(wq.size());

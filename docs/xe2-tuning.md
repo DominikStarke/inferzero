@@ -21,6 +21,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_XW_NC_E` (the n_embd-wide H8 GEMMs at 32 x 32, 2026-11-20; `=2` turns the per-shape tiles off) | – | – | 0 (opt-in) | 0 (opt-in) | – |
 | `ARC_GEMM_XW_DB` (the 32-token tiles' reads one step ahead, 2026-11-21; `=2`: every tile, the next weights in place and the loop unrolled by 4, opt-in) | – | – | 0 (opt-in) | 1 (32 x 16 GEMMs: -4 to -10 % each) | – |
 | `ARC_GEMM_XW_BIG` / `_EPI2` (32 x 32 through local memory where it fits / the epilogue a row at a time, 2026-11-21) | – | – | 0 (until measured) | 1 / 1 (the 27B 4K +15.7 %) | – |
+| `ARC_GEMM_XW_SLM_WG_GU` (the gate / up GEMMs' big-tile sub-groups, "X,Y", the others keeping `ARC_GEMM_XW_SLM_WG`'s, 2026-11-22; bit for bit) | – | – | – | unset (opt-in; skipzx-lab's A770: GU fastest at 4,8, down / qkv at 4,4) | – |
 | `ARC_GEMM_XW_WGL` (the big tile's operands in its work-group order, 2026-11-22; written by h8r_act / rmsnorm_h8r / h8r_decode, checked bit for bit at start) | – | – | – (with `ARC_GEMM_XW_BIG=1` only) | 0 (opt-in until measured; xw_peak +6.5 %) | – |
 | `ARC_GEMM_XW_SHAPE` (a tile per GEMM shape, 2026-11-20; one GPU only, not on a split model) | – | – | 0 (until measured) | 1: 16 x 32 where N <= n_embd and K <= 8,192, else 32 x 16 WGX 4 | – |
 | `ARC_H8_NORM` | on | off | on | on | off |

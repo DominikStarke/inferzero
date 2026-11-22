@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-22: the A770's big tile shaped per GEMM, opt-in (`ARC_GEMM_XW_SLM_WG_GU`)
+
+- **`ARC_GEMM_XW_SLM_WG_GU="X,Y"`:** the FFN's gate and up GEMMs use their own work-group shape on the A770's big
+  tile, while every other GEMM keeps `ARC_GEMM_XW_SLM_WG`'s. skipzx-lab's A770 measured the fused gate / up fastest
+  at 4 x 8 sub-groups (667 against 700 ms at 4 x 4), but the down and qkv GEMMs fastest at 4 x 4 (394 / 145 against
+  418 / 151 ms). His best is therefore `ARC_GEMM_XW_SLM_WG_GU=4,8` with the default 4 x 4 for the rest.
+- Each GEMM's input is written in the order of the GEMM that reads it, so the FFN's and the attention's inputs can
+  differ, as `ARC_GEMM_XW_WGL` needs.
+- Bit for bit: the start checks run both shapes. On the laptop (XMX emulated), the 4B's logits are byte for byte the
+  same with GU 4 x 8, 8 x 4 and the reverse, with and without WGL and the fused launch.
+
 ## 2026-11-22: the A770's XMX prompt attention without its doubled softmax, opt-in (`ARC_ATTN_X8_PSH=1`)
 
 - **Why `attn_x8` lost to `attn_q8` on the A770:** the compiler's output for the A770 shows its span loop at 1,460
