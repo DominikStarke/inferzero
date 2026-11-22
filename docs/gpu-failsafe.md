@@ -28,7 +28,14 @@ Status (2026-11-23): steps 1-4 of the order below built, with two changes from t
   - a split model's shards ending through `gpu_fatal` after their own limit (they still throw `GpuWaitError` as before);
   - the server's `503` to open requests;
   - `--edge` in `attn_bench` / `xw_peak` (section 6).
-- **Not run:** the tests of section 7 wait for the user's go-ahead.
+- **The tests of section 7, run 2026-11-23 on the 125H with the user's go-ahead**, each through `gpu_guard`:
+  - `ARC_GPU_FAULT_TEST=hang` on the 4B: the message, the marker (`kind=hang`, `program=runz`, this boot) and exit
+    code 3. The next start was refused by `gpu_guard` and by `runz` itself (code 3, the restart message), and
+    `runz --clear-hang` deleted the marker.
+  - `ARC_GPU_FAULT_TEST=lost`: exit code 4, `kind=lost`.
+  - `gpu_guard -TimeoutS 5` with a 30 s sleep: killed at 5 s, code 124, no marker, the lock gone.
+  - The 4B's `--dump-logits` (a prompt and 32 generated tokens): runz at 0e9c42a, from before the failsafe, against
+    e9253d2 with the guard's limit on (170 s). The two files are the same bit for bit.
 
 Written after two forced restarts of the development laptop on 2026-11-23. A new attention kernel (X8_SLM R3) hung at a 20-token test. Windows did not reset the GPU, and more GPU work was then sent to it. The Core Ultra 5 125H's iGPU also drives the screen, so the screen froze. The second restart followed Modern Standby while the machine was busy.
 
