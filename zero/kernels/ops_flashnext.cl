@@ -215,18 +215,29 @@ inline float f32sb_dot(__global const float* p, __local const float* x, int nv) 
 #ifndef HCF_ROWS  // (rows a work-group: a host define, -DHCF_ROWS (engine_flashnext.h); each output summed by one
 #define HCF_ROWS HCF_TM  //  work-item in the same order at any value, so bit-identical)
 #endif
+// (HCF_NB, 2026-11-22: output columns a work-item, a host define. Each input value is read from local memory once into
+//  a register for all of them: with one column, every multiply-add waited on a local read, and the BF16 rows' f32
+//  GEMMs took 37 % of Flash Next's prompt on the laptop (5,974 ms against the int8 mixers' 953, 2K tokens; a B70 11 %
+//  slower with them, #73). Each output is still one work-item's sum over k in the same order: bit-identical at any
+//  HCF_NB. The work-group's size need not be 256: the fill loop strides by it)
+#ifndef HCF_NB
+#define HCF_NB 1
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, int LR, int HC,
                           __global const uchar* wq, int N, __global float* C, int ldc, int M) {
   __local float xs[HCF_ROWS * 256];
-  const int li = get_local_id(0), n = get_global_id(0), m0 = get_group_id(1) * HCF_ROWS, nsb = K / 256;
+  const int li = get_local_id(0), ls = get_local_size(0), n0 = get_global_id(0) * HCF_NB,
+            m0 = get_group_id(1) * HCF_ROWS, nsb = K / 256;
   const float inv_hc = 1.0f / (float)HC;
-  float acc[HCF_ROWS];
+  float acc[HCF_NB][HCF_ROWS];
 #pragma unroll
-  for (int t = 0; t < HCF_ROWS; ++t) acc[t] = 0.0f;
+  for (int c = 0; c < HCF_NB; ++c)
+#pragma unroll
+    for (int t = 0; t < HCF_ROWS; ++t) acc[c][t] = 0.0f;
   for (int sb = 0; sb < nsb; ++sb) {
     barrier(CLK_LOCAL_MEM_FENCE);
-    for (int i = li; i < HCF_ROWS * 256; i += 256) {
+    for (int i = li; i < HCF_ROWS * 256; i += ls) {
       const int t = i / 256, k = sb * 256 + i % 256, m = m0 + t;
       float v = 0.0f;
       if (m < M) {
@@ -236,48 +247,83 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
       xs[i] = v;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (n < N) {
+    if (n0 < N) {
+      // (a column past N reads row N - 1 again and is never stored)
 #if defined(HC_F32)
-      __global const float* p = (__global const float*)wq + ((size_t)n * nsb + sb) * 256;
+      __global const float* p[HCF_NB];
 #elif defined(HC_BF16)
-      __global const uint* p = (__global const uint*)((__global const ushort*)wq + ((size_t)n * nsb + sb) * 256);
+      __global const uint* p[HCF_NB];
 #else
-      __global const uchar* p = wq + ((size_t)n * nsb + sb) * 272;
+      __global const uchar* p[HCF_NB];
 #endif
+#pragma unroll
+      for (int c = 0; c < HCF_NB; ++c) {
+        const int n = min(n0 + c, N - 1);
+#if defined(HC_F32)
+        p[c] = (__global const float*)wq + ((size_t)n * nsb + sb) * 256;
+#elif defined(HC_BF16)
+        p[c] = (__global const uint*)((__global const ushort*)wq + ((size_t)n * nsb + sb) * 256);
+#else
+        p[c] = wq + ((size_t)n * nsb + sb) * 272;
+#endif
+      }
       for (int l = 0; l < 16; ++l) {
         if (lo_in && sb * 256 + 16 * l >= LR) break;  // (the up projection's zero padding past LR)
 #if defined(HC_F32)
-        const float16 q = vload16(l, p);
-        const float wf[16] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7,
-                              q.s8, q.s9, q.sa, q.sb, q.sc, q.sd, q.se, q.sf};
+        float wf[HCF_NB][16];
+#pragma unroll
+        for (int c = 0; c < HCF_NB; ++c) {
+          const float16 q = vload16(l, p[c]);
+          wf[c][0] = q.s0, wf[c][1] = q.s1, wf[c][2] = q.s2, wf[c][3] = q.s3, wf[c][4] = q.s4, wf[c][5] = q.s5;
+          wf[c][6] = q.s6, wf[c][7] = q.s7, wf[c][8] = q.s8, wf[c][9] = q.s9, wf[c][10] = q.sa, wf[c][11] = q.sb;
+          wf[c][12] = q.sc, wf[c][13] = q.sd, wf[c][14] = q.se, wf[c][15] = q.sf;
+        }
 #elif defined(HC_BF16)
-        const uint8 q = vload8(l, p);
-        const uint w8[8] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7};
+        uint w8[HCF_NB][8];
+#pragma unroll
+        for (int c = 0; c < HCF_NB; ++c) {
+          const uint8 q = vload8(l, p[c]);
+          w8[c][0] = q.s0, w8[c][1] = q.s1, w8[c][2] = q.s2, w8[c][3] = q.s3;
+          w8[c][4] = q.s4, w8[c][5] = q.s5, w8[c][6] = q.s6, w8[c][7] = q.s7;
+        }
 #else
-        const float d = vload_half(l / 2, (__global const half*)p);
-        const uint4 q = vload4(0, (__global const uint*)(p + 16 + 16 * l));
-        const uint w4[4] = {q.x, q.y, q.z, q.w};
+        float d[HCF_NB];
+        uint w4[HCF_NB][4];
+#pragma unroll
+        for (int c = 0; c < HCF_NB; ++c) {
+          d[c] = vload_half(l / 2, (__global const half*)p[c]);
+          const uint4 q = vload4(0, (__global const uint*)(p[c] + 16 + 16 * l));
+          w4[c][0] = q.x, w4[c][1] = q.y, w4[c][2] = q.z, w4[c][3] = q.w;
+        }
 #endif
 #pragma unroll
         for (int j = 0; j < 16; ++j) {
-#if defined(HC_F32)
-          const float w = wf[j];
-#elif defined(HC_BF16)
-          const float w = bf16_at(w8[j / 2], j % 2);
-#else
-          const float w = d * (float)(char)((w4[j / 4] >> (8 * (j % 4))) & 0xFF);
-#endif
           const int k = 16 * l + j;
+          float xv[HCF_ROWS];
 #pragma unroll
-          for (int t = 0; t < HCF_ROWS; ++t) acc[t] += w * xs[t * 256 + k];
+          for (int t = 0; t < HCF_ROWS; ++t) xv[t] = xs[t * 256 + k];
+#pragma unroll
+          for (int c = 0; c < HCF_NB; ++c) {
+#if defined(HC_F32)
+            const float w = wf[c][j];
+#elif defined(HC_BF16)
+            const float w = bf16_at(w8[c][j / 2], j % 2);
+#else
+            const float w = d[c] * (float)(char)((w4[c][j / 4] >> (8 * (j % 4))) & 0xFF);
+#endif
+#pragma unroll
+            for (int t = 0; t < HCF_ROWS; ++t) acc[c][t] += w * xv[t];
+          }
         }
       }
     }
   }
-  if (n < N)
 #pragma unroll
-    for (int t = 0; t < HCF_ROWS; ++t)
-      if (m0 + t < M) C[(size_t)(m0 + t) * ldc + n] = acc[t];
+  for (int c = 0; c < HCF_NB; ++c)
+    if (n0 + c < N)
+#pragma unroll
+      for (int t = 0; t < HCF_ROWS; ++t)
+        if (m0 + t < M) C[(size_t)(m0 + t) * ldc + n0 + c] = acc[c][t];
 }
 
 // res[m][c] += 2 sigmoid(inject[m][c] / HC) * out[m] for rows < M_valid (inject logits: column off of rows of stride

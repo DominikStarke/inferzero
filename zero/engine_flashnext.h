@@ -74,11 +74,25 @@
       const int v = getenv("ARC_HCF_ROWS") ? atoi(getenv("ARC_HCF_ROWS")) : 16;
       return v == 32 ? v : 16;
     }();
+    // (ARC_HCF_NB=n: output columns a work-item, 1 / 2 / 4, ops_flashnext.cl hc_gemm_f32: each input read once from
+    //  local memory for all n; the same sums in the same order, bit-identical at any n)
+    static const int hcf_nb = [] {
+      const int v = getenv("ARC_HCF_NB") ? atoi(getenv("ARC_HCF_NB")) : 1;
+      return v == 2 || v == 4 ? v : 1;
+    }();
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {
-      cl_kernel k = kernel("ops", hc_weight_defs(w) + " -DHCF_ROWS=" + std::to_string(hcf_rows), "hc_gemm_f32");
+      // (ocloc, BF16 rows, 16 rows a group: mtl spills at NB 2 (450 scratch messages) and 4 (1,515), at 256 registers
+      //  at NB 4 (411); bmg-g31 none at NB 2, none at NB 4 with 256 registers, the loop 1,102 / 1,772 / 3,030
+      //  instructions for 1 / 2 / 4 columns. So NB 4 is built with 256 registers; the laptop's iGPU is slower at 2 and
+      //  4 (spills): opt-in until a B-series card measures it)
+      cl_kernel k = kernel("ops", hc_weight_defs(w) + " -DHCF_ROWS=" + std::to_string(hcf_rows) +
+                                      (hcf_nb > 1 ? " -DHCF_NB=" + std::to_string(hcf_nb) : std::string()) +
+                                      (hcf_nb == 4 ? " -cl-intel-256-GRF-per-thread" : ""),
+                           "hc_gemm_f32");
       int ldi = ld_in, kk = K, li = lo_in, lr = LR, hc = HC, nn = N, lc = ldc, mm = Mp;
       set_args(k, 0, in, ldi, kk, li, lr, hc, w.raw, nn, C, lc, mm);
-      size_t gws[2] = {(size_t)256 * ((N + 255) / 256), (size_t)(Mp + hcf_rows - 1) / hcf_rows}, lws[2] = {256, 1};
+      const size_t nwi = (size_t)(N + hcf_nb - 1) / hcf_nb;  // (work-items: hcf_nb columns each)
+      size_t gws[2] = {(size_t)256 * ((nwi + 255) / 256), (size_t)(Mp + hcf_rows - 1) / hcf_rows}, lws[2] = {256, 1};
       run("hc_gemm_f32", k, 2, gws, lws);
     };
     if (f32_down)

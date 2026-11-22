@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-22: Flash Next's prompt mixers, where the BF16 rows cost, and `ARC_HCF_NB` (opt-in)
+
+- **Found:** with the BF16 mixer rows (the default since 11-19, for accuracy), Flash Next's prompt mixers run as f32
+  arithmetic (`hc_gemm_f32`), where the old Q8_0 rows ran as int8. On the laptop that's 37 % of a 2K prompt, about 6x
+  the int8 form. On a Pro B70 the prompt is 11 % slower than with the Q8_0 rows (#73).
+- **`ARC_HCF_NB=2` / `4`:** each work-item computes 2 or 4 output columns instead of 1, reading each input once for
+  all of them.
+  - The results are the same bit for bit.
+  - It's slower on the laptop's GPU, which runs out of registers, so it's opt-in until a B-series card measures it.
+    The compiler shows no spills for the B70's GPU.
+- **Next:** an XMX form of these mixers that keeps their accuracy (KL-checked).
+
 ## 2026-11-22: larger prompt chunks for MoE models (`ARC_MOE_BIG_CHUNK=1`, opt-in)
 
 - **`ARC_MOE_BIG_CHUNK=1`:** with `--ctx auto`, a standard MoE model (such as Qwen3.6-35B-A3B) takes prompt chunks of
