@@ -691,11 +691,12 @@
     // The output head first: the GPU reads a large buffer allocated late in the load (after gigabytes of other
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
     // (a layer split's stage, opt.pp_begin / pp_end: its layers only, in layers_ from 0 with each layer's own il; the
-    //  head and the MTP block on the last stage only; Qwen's dense and MoE models, not Gemma or DeepSeek)
+    //  head and the MTP block on the last stage only; Qwen's dense and standard MoE models (2026-11-22: each stage its
+    //  own expert cache for its layers, open_experts), not Gemma, DeepSeek or Flash Next yet)
     const int lb = std::max(0, opt.pp_begin), le = opt.pp_end < 0 ? hp.n_layer : std::min(opt.pp_end, hp.n_layer);
-    if ((lb > 0 || le < hp.n_layer) && (hp.gemma || hp.ds41 || hp.hc || hp.moe || hp.ple_layer >= 0 || lb >= le))
-      throw std::runtime_error("--split layer: Qwen's dense models only for now (not MoE, Gemma, DeepSeek or Flash Next) and a "
-                               "non-empty range of layers");
+    if ((lb > 0 || le < hp.n_layer) && (hp.gemma || hp.ds41 || hp.hc || (hp.moe && !hp.moe_std) || hp.ple_layer >= 0 || lb >= le))
+      throw std::runtime_error("--split layer: Qwen's dense and standard MoE models only for now (not Gemma, DeepSeek or "
+                               "Flash Next) and a non-empty range of layers");
     if (pp_last()) load_head();
     if (hp.gemma) return load_weights_gemma4();
     if (hp.ds41) return load_weights_ds41();

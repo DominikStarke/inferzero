@@ -338,6 +338,9 @@ opt_effect() {  # the choices as OPT_ENV (NAME=value), OPT_FLAGS (serverz argume
   local id c kind name on off title v
   for id in $(printf '%s\n' "${!OPTC[@]}" | sort); do
     opt_known "$id" || continue  # (a choice for an option no longer in the catalog: left out)
+    # (a catalog model's start: an option that does not apply to it is left out, as the menu greys it; the
+    #  Researcher's review of df7379c)
+    if [ "${SW_SKIP:-0}" = 1 ] && [ -n "${CT_title[$id]+x}" ] && [ -n "$(sw_reason "$id")" ]; then continue; fi
     c=${OPTC[$id]}; kind=$(opt_col "$id" kind); name=$(opt_col "$id" name)
     on=$(opt_col "$id" on); off=$(opt_col "$id" off); title=$(opt_col "$id" title)
     if [ "$c" = off ]; then
@@ -604,8 +607,19 @@ tui_draw() {
   [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
   lines+=(" inferzero  $(tui_cut "$(m_field "$k" 1 | sed 's/ (.*//')" 40)  ~$(m_field "$k" 3) GB")
   lines+=(" $(printf '%.0s-' {1..78})")
-  lines+=("   Models                         Options for the selected model")
-  rows=${#TUI_KEYS[@]}; [ ${#TUI_ITEMS[@]} -gt "$rows" ] && rows=${#TUI_ITEMS[@]}
+  # (at most the terminal's height, TUI_H: the 10 lines around the lists and as many list rows as fit; a longer
+  #  options list scrolls, its window following the focus. A 24-row terminal scrolled with every option shown, and
+  #  the redraw from the top then wrote over the wrong lines; the Researcher's review)
+  local avail=$(( ${TUI_H:-24} - 10 )) off=${TUI_OFF:-0} ni=${#TUI_ITEMS[@]}
+  [ $avail -lt ${#TUI_KEYS[@]} ] && avail=${#TUI_KEYS[@]}
+  [ "$TUI_FOC" -lt "$off" ] && off=$TUI_FOC
+  [ "$TUI_FOC" -ge $((off + avail)) ] && off=$((TUI_FOC - avail + 1))
+  [ $((off + avail)) -gt "$ni" ] && off=$((ni - avail))
+  [ "$off" -lt 0 ] && off=0
+  TUI_OFF=$off
+  rows=${#TUI_KEYS[@]}; [ "$ni" -gt "$rows" ] && rows=$ni; [ "$rows" -gt "$avail" ] && rows=$avail
+  local more=""; [ "$ni" -gt "$rows" ] && more="  ($((off + 1))-$((off + rows)) of $ni)"
+  lines+=("   Models                         Options for the selected model$more")
   for ((i = 0; i < rows; i++)); do
     left=""; right=""
     if [ $i -lt ${#TUI_KEYS[@]} ]; then
@@ -614,9 +628,10 @@ tui_draw() {
       [ $i -eq "$TUI_SEL" ] && cur=">"
       left="$cur$((i + 1)) $mark $(tui_cut "$(m_field "$mk" 1 | sed 's/ (.*//')" 26)"
     fi
-    if [ $i -lt ${#TUI_ITEMS[@]} ]; then
-      local f=" "; [ "$TUI_PANE" = opts ] && [ $i -eq "$TUI_FOC" ] && f=">"
-      right="$f$(tui_cut "$(tui_item_line "$k" "${TUI_ITEMS[$i]}")" 44)"
+    local j=$((i + off))
+    if [ $j -lt "$ni" ]; then
+      local f=" "; [ "$TUI_PANE" = opts ] && [ $j -eq "$TUI_FOC" ] && f=">"
+      right="$f$(tui_cut "$(tui_item_line "$k" "${TUI_ITEMS[$j]}")" 44)"
     fi
     lines+=(" $(tui_cut "$left" 32) $right")
   done
@@ -698,12 +713,16 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
   [ -n "$TUI_START" ] || return 0
   mkdir -p "$STATE_DIR" 2>/dev/null && printf '%s' "$TUI_START" > "$STATE_DIR/launcher-last"
   SEL_DRAFT=${TUI_DRAFT[$TUI_START]:-$(tui_draft_default "$TUI_START")}; SEL_IMG=${TUI_IMG[$TUI_START]:-1}
+  # (MTP where the cache showed no DFlash2 drafter: plain --mtp, not --draft mtp, so a drafter the server finds itself
+  #  is still used; the Researcher's review)
+  case " $(tui_draft_choices "$TUI_START") " in *" both "*) ;; *) [ "$SEL_DRAFT" = mtp ] && SEL_DRAFT=both;; esac
   start_key "$TUI_START"
 }
 tui_ok() {  # a terminal the full-screen menu can draw in: input and output a terminal, not dumb, 80 x 20 or more
   [ -t 0 ] && [ -t 1 ] || return 1
   case "${TERM:-dumb}" in dumb|unknown|'') return 1;; esac
   local c r; c=$(tput cols 2>/dev/null || echo 80); r=$(tput lines 2>/dev/null || echo 24)
+  TUI_H=${r:-24}  # (tui_draw keeps to it)
   [ "${c:-0}" -ge 80 ] && [ "${r:-0}" -ge 20 ]
 }
 # --opt ID with --model KEY: an option that cannot apply to that model is refused with the menu's reason line (the
@@ -850,7 +869,12 @@ start_key() {  # KEY: download if needed, then the server or the unit
     service_unit >/dev/null || return 1
   fi
   path=$(model_path "$key") || { download "$key" "$YES" || return 1; path=$(model_path "$key") || return 1; }
+  # (the switches' state for this model: options that do not apply to it are not passed, opt_effect)
+  SW_WORDS=$(m_words "$key"); SW_GPUS=${GPUS:-1}; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
+  case "${SEL_DRAFT:-}" in off) SW_DRAFTING=0;; '') SW_DRAFTING=$(m_field "$key" 6);; *) SW_DRAFTING=1;; esac
+  SW_SKIP=1
   server_cmd "$path" "$(m_field "$key" 6)"
+  SW_SKIP=0
   if [ "$INSTALL_SERVICE" = 1 ]; then install_service; else run_server; fi
 }
 

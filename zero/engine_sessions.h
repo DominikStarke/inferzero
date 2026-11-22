@@ -752,6 +752,7 @@
   // one token, streamed experts: the tiles of its cached and of its missing experts (layer_moe, ARC_XSPLIT)
   cl_mem xt_hit_ = nullptr, xt_miss_ = nullptr;
   uint8_t* xt_lists_h_ = nullptr;  // (the two lists' host memory, copied into xt_hit_ / xt_miss_ without a wait; layer_moe)
+  int xt_lists_half_ = 0;          // (which half of it the last write used)
   cl_mem xt_tab_ = nullptr;  // (a split token's expert-table row on the GPU, ARC_XSPLIT_TAB; layer_moe)
   std::vector<int> xt_hit_h_, xt_miss_h_;
   int moe_group_ = 0;

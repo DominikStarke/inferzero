@@ -114,7 +114,10 @@ void xcpu_read_tiles(int Mp, std::vector<int>& tl, bool q2) {
   const size_t nt = (tl.size() * 4 + 63) / 64 * 64, na = (size_t)(E + 63) / 64 * 64, ns = (size_t)NB * Mp * 4, nw = (size_t)NU * 4;
   const size_t nw64 = (nw + 63) / 64 * 64, ns64 = (ns + 63) / 64 * 64, o2 = nt + na + ns64 + nw64;  // (the residual's)
   // (room for the residual's copies always: the size is fixed at the first allocation)
-  if (!xcpu_in_) xcpu_in_ = (uint8_t*)zrt::host_alloc(o2 + na + ns);
+  if (!xcpu_in_) {  // (freed with the engine's host memory, host_ptrs_)
+    xcpu_in_ = (uint8_t*)zrt::host_alloc(o2 + na + ns);
+    host_ptrs_.push_back(xcpu_in_);
+  }
   ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xcpu_in_, mtiles_->ptr, tl.size() * 4, nullptr, 0, nullptr));
   ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xcpu_in_ + nt, aq_->ptr, E, nullptr, 0, nullptr));
   ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xcpu_in_ + nt + na, asc_->ptr, ns, nullptr, 0, nullptr));
@@ -177,7 +180,10 @@ void xcpu_run(const Layer& L, const std::vector<std::pair<int, int>>& miss, int 
     xcpu_hq2_.resize((size_t)NM * Fp);
     xcpu_hs2_.resize((size_t)NM * Fp / 32);
   }
-  if (!xcpu_y_) xcpu_y_ = (float*)zrt::host_alloc((size_t)hp.n_expert_used * E * 4);
+  if (!xcpu_y_) {
+    xcpu_y_ = (float*)zrt::host_alloc((size_t)hp.n_expert_used * E * 4);
+    host_ptrs_.push_back(xcpu_y_);
+  }
   const int8_t* xq = xcpu_aq_.data();
   const float L_clamp = hp.ds41 ? ds_.clamp : 0.0f;  // (DeepSeek-V4.1's SwiGLU clamp, ds_swi_defs; 0: none)
   const float* xs = xcpu_as_.data();

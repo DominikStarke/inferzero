@@ -72,9 +72,25 @@ between two GPUs per chunk or token.
   Checked under `ARC_TP_SIM=1` (every stage on GPU 0) against one GPU, byte for byte over the prompt and every
   generated token: the 4B and the 27B, 2 and 3 stages, prompts of 40 and 2,290 tokens, chunk by chunk and layer-major
   (512-token chunks).
+- **MoE models (2026-11-22):** Qwen's standard MoE models, such as Qwen3.6 35B-A3B, run on a layer split.
+  - **Expert cache:** each stage keeps one for its own layers' experts; the last stage also keeps the MTP block's.
+    The expert file on disk is the whole model's, one for all the stages. Each stage keeps its own list of cached
+    experts for the next start (`.layers<a>-<b>.lru`).
+  - **RAM tier:** one budget shared by the stages, measured before any of them pins memory. It is half the free RAM
+    beyond 16 GiB, at most 32 GiB a stage and 128 GiB in all, divided by each stage's share of the layers.
+    `ARC_XRAM_GB` still sets each stage's.
+  - **`--ctx auto`:** keeps only the cache's floor (one layer's experts) when sizing the context, so it gives the
+    largest context with everything on the GPUs. The load's cache then takes what is left, and the rest of the
+    experts come from the RAM tier and the SSD.
+  - **At load:** each stage says what its GPU holds: weights and buffers, the context, the expert cache and its share
+    of the stage's experts, the RAM tier, any weights in host memory.
+  - **Checked:** the 35B over 2 simulated stages, byte for byte one GPU's logits, with every expert cached and with
+    2 GiB caches (26-28 % of each stage's experts).
 - **Not yet:**
   - saved prompts and sessions in the server (as with the tensor split), images;
-  - MoE models, MTP drafting, Gemma, Flash Next and DeepSeek;
+  - MTP drafting, Gemma, Flash Next and DeepSeek;
+  - a `--ctx` above the largest that fits, with host RAM as the second tier (the experts first, then dense weights);
+    CPU experts per stage by its cache share or link (QUEUE, the layer split's memory plan);
   - the hand-off GPU to GPU (it goes through host memory now, ~20 KB a token for the 27B);
   - prompts pipelined over the GPUs, and two requests in flight (QUEUE, L2-L5).
 

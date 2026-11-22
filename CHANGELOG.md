@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-11-22: MoE models on a layer split; the launchers' review fixes; Flash Next's KL on markdown
+
+- **Qwen's standard MoE models run on `--split layer`.** For example, the 35B-A3B over a B60 and an A770.
+  - Each stage has an expert cache for its own layers' experts, and its own list of cached experts for the next start.
+  - The stages share one RAM-tier budget (half the free RAM beyond 16 GiB, at most 32 GiB a stage, 128 GiB in all).
+    Before, each stage took all the free RAM less 16 GiB, so the first could pin nearly all of it.
+  - `--ctx auto` on a split gives the largest context with everything on the GPUs; the experts that don't fit then
+    come from RAM.
+  - Each stage says at load what its GPU holds.
+  - On the laptop, the 35B over 2 simulated stages gives logits byte for byte the same as one GPU, with full and
+    with small caches. Flash Next, Gemma and DeepSeek are not yet supported on a split.
+- **Launchers** (the Researcher's review):
+  - Images is greyed where the drafting mode chosen has no row with images;
+  - a greyed switch is no longer passed at Start;
+  - the Linux menu keeps within the terminal's height (the options list scrolls);
+  - MTP with no DFlash2 drafter found starts with plain `--mtp`.
+- **Expert lists:** their host memory has two halves used in turn and is freed with the engine. The CPU experts' two
+  host buffers, never freed before, are now freed with it too.
+- **Flash Next's KL on 480 tokens of USAGE.md** (markdown and commands, from position 0) is over the limit on every
+  GPU, not only on a B70:
+  - default: 0.0497 on the laptop, 0.0570 on the B70;
+  - precise mode: 0.0356 on the laptop, 0.0338 on the B70.
+  
+  The earlier ~0.009 was measured on prose at positions 3,328-3,583. Under study; no change yet.
+
 ## 2026-11-22: a layer split keeps its weights on the cards; faster CPU experts; KL script folders
 
 - **Fixed: `--split layer` put weights in host memory for no reason** (MaineTim, two B60s, #44). Each stage counted

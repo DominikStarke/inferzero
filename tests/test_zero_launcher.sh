@@ -101,15 +101,25 @@ OPTC=(); GPUS=1; SW_PC="igpu-xe-lpg"; bad=0
 TUI_KEYS=(); for e in "${CATALOG[@]}"; do TUI_KEYS+=("${e%%|*}"); done
 for ((s = 0; s < ${#TUI_KEYS[@]}; s++)); do
   for na in 0 1; do
-    TUI_SEL=$s TUI_FOC=3 TUI_PANE=opts TUI_SHOWNA=$na
-    while IFS= read -r l; do
-      l=${l//$'\033[K'/}; l=${l//$'\033[H'/}; l=${l//$'\033[J'/}
-      [ ${#l} -le 80 ] || { bad=1; echo "  ${TUI_KEYS[$s]}: a line of ${#l} columns: $l"; }
-    done < <(tui_draw)
+    for h in 20 24; do  # (and within the terminal's height, the focus on the last option: the list scrolls)
+      TUI_SEL=$s TUI_FOC=99 TUI_PANE=opts TUI_SHOWNA=$na TUI_H=$h TUI_OFF=0; n=0
+      while IFS= read -r l; do
+        l=${l//$'\033[K'/}; l=${l//$'\033[H'/}; l=${l//$'\033[J'/}
+        n=$((n + 1))
+        [ ${#l} -le 80 ] || { bad=1; echo "  ${TUI_KEYS[$s]}: a line of ${#l} columns: $l"; }
+      done < <(tui_draw)
+      [ $n -le $h ] || { bad=1; echo "  ${TUI_KEYS[$s]}: $n lines for a $h-row terminal (all shown: $na)"; }
+    done
   done
 done
 unset -f model_path; source "$root/zero-launcher.sh"
-[ $bad = 0 ]; ok $? "menu within 80 columns"
+[ $bad = 0 ]; ok $? "menu within 80 columns and the terminal's height"
+# 16b. a greyed option is not passed: Copy drafting chosen, the 27B started with Drafting off; on with Drafting on
+cat_load; OPTC=(); OPTC[copy_draft]=on; GPUS=1; SW_PC=""; PORT=8090; HOST=""; EXTRA=()
+SW_WORDS=$(m_words 27b); SW_DRAFTING=0; SW_SKIP=1; SEL_DRAFT=off; server_cmd /m.gguf 1; a="${CMD[*]}"
+SW_DRAFTING=1; SEL_DRAFT=both; server_cmd /m.gguf 1; b="${CMD[*]}"; SW_SKIP=0; SEL_DRAFT=""; OPTC=()
+[[ "$a" != *--copy-draft* ]] && [[ "$a" != *--mtp* ]] && [[ "$b" == *--copy-draft* ]] && [[ "$b" == *--mtp* ]]
+ok $? "greyed option left out ($a | $b)"
 # 17. --opt with --model: an option the model cannot take is refused with the reason, before options.json is written
 T=$(mktemp -d); OUT=$(ARC_DATA_DIR="$T" bash "$root/zero-launcher.sh" --opt copy_draft --model flash 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$OUT" == *"--opt copy_draft: for models with MTP only"* ]] && [ ! -f "$T/options.json" ]; ok $? "--opt refused for the model"

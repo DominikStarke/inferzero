@@ -379,7 +379,10 @@ struct XCache {
   }
 
   // The tables and the staging area; the cache itself comes with set_cache once the rest of the model is loaded.
-  void init(int n_layers, int n_expert, int stage_records) {
+  // (keep: a layer split's stage, the layers whose experts it runs; the others get no record, so the pools, the warm
+  //  fill, min_bytes and all_bytes count only its own. The expert file stays the whole model's, one file for all the
+  //  stages)
+  void init(int n_layers, int n_expert, int stage_records, const std::vector<char>* keep = nullptr) {
     NL = n_layers;
     NE = n_expert;
     lo_ = 0, hi_ = n_expert;
@@ -394,7 +397,7 @@ struct XCache {
     for (int l = 0; l < NL; ++l) xtab.push_back(zrt::wrap(xaddr + (size_t)l * NE, (size_t)NE * 8));
     lrec.assign(NL, 0);
     for (int l = 0; l < NL; ++l) {
-      lrec[l] = l < (int)st.layers.size() ? st.layers[l].rec : 0;
+      lrec[l] = l < (int)st.layers.size() && (!keep || (l < (int)keep->size() && (*keep)[l])) ? st.layers[l].rec : 0;
       stage_rec = std::max(stage_rec, lrec[l]);
     }
     // The pools until set_cache picks the grouping for the cache size (xpools::choose): one per record size with one

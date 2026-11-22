@@ -25,7 +25,15 @@
       }
     xc_->st.open_or_build(f_, path_, pre, hp.n_expert);
     // (staging records per half: ARC_XSTAGE, default 64 = 8 verification tokens x 8 experts)
-    xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64);
+    // (a layer split's stage: the cache for its own layers' experts, and the MTP block's on the last stage)
+    std::vector<char> keep;
+    if (opt.pp_size > 1) {
+      const int lb = std::max(0, opt.pp_begin), le = opt.pp_end < 0 ? hp.n_layer : std::min(opt.pp_end, hp.n_layer);
+      keep.assign(hp.n_layer + 1, 0);
+      for (int il = lb; il < le; ++il) keep[il] = 1;
+      keep[hp.n_layer] = pp_last();
+    }
+    xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64, keep.empty() ? nullptr : &keep);
     if (tp_moe()) xc_->set_range((int)tpe_.first, (int)tpe_.second);  // (multi-GPU: this GPU's experts only)
     if (xc_->st.built)
       zlog::eprintf("inferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
@@ -92,7 +100,7 @@
       zlog::eprintf("inferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
               limit / GiB, share / GiB, driver_slack() / GiB, used / GiB);
     }
-    want = std::min(want, all);
+    want = std::min(want, all);  // (a layer split's stage: all_bytes() counts its own layers' experts, open_experts)
     // at least one layer's worth of slots per pool (the experts of a few verification tokens must fit)
     want = std::max<uint64_t>(want, xc_->min_bytes());
     xc_->set_cache(want);
@@ -107,7 +115,9 @@
     // fill the cache before the first request: the experts the last run had cached (or the first of every layer)
     // (multi-GPU: one state per GPU of the split, for its experts)
     xc_->state_path = xc_->st.path.substr(0, xc_->st.path.size() - 8) +
-                      (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) + ".lru";
+                      (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) +
+                      (opt.pp_size > 1 ? ".layers" + std::to_string(std::max(0, opt.pp_begin)) + "-" + std::to_string(opt.pp_end) : std::string()) +
+                      ".lru";
     if (!getenv("ARC_XWARM") || atoi(getenv("ARC_XWARM")) != 0) {
       xc_->warm();
       zlog::eprintf("inferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);

@@ -753,6 +753,13 @@ function Update-Choices($panel, $items, [string]$sel, $enabledOf, [string]$tip) 
 function Refresh-Model {
   $g = Sel-Group
   if (-not $g) { $modelHead.Text = "Select a model"; Update-Switches; return }
+  # (Images with this Drafting: a file whose list has no row with both, such as the 35B with MTP and images, gets
+  #  Images off, greyed with the reason below; Start would have loaded none while the box said on. The Researcher's
+  #  review of df7379c)
+  $hasImg = @($g.entries | Where-Object { $_.vision }).Count -gt 0
+  $imgHere = @($g.entries | Where-Object { $_.vision -and (Get-DraftMode $_) -eq $g.draft }).Count -gt 0
+  if ($null -eq $g.imgWant) { $g.imgWant = $g.img }  # (what was asked; g.img: what this Drafting allows)
+  $g.img = [bool]$g.imgWant -and $imgHere
   $grid.SelectedRows[0].Tag = Resolve-Entry $g
   Fit-Rows
   $e0 = $g.entries[0]
@@ -762,17 +769,16 @@ function Refresh-Model {
   $many = $modes.Count -gt 1
   Update-Choices $draftPanel $items $g.draft { param($v) $many } $draftTip
   $draftWhy.Text = $(if ($many) { "" } else { "this model has no MTP block or drafter" })
-  $hasImg = @($g.entries | Where-Object { $_.vision }).Count -gt 0
   $script:swFilling = $true
-  try { $imgChk.Checked = $hasImg -and $g.img; $imgChk.Enabled = $hasImg } finally { $script:swFilling = $false }
-  $imgChk.AccessibleName = "Images, " + $(if ($imgChk.Checked) { "on" } else { "off" })
-  $imgWhy.Text = $(if ($hasImg) { "" } else { "this model reads no images" })
+  try { $imgChk.Checked = $imgHere -and $g.img; $imgChk.Enabled = $imgHere } finally { $script:swFilling = $false }
+  $imgWhy.Text = $(if (-not $hasImg) { "this model reads no images" } elseif (-not $imgHere) { "not with " + (Get-DraftLabel $g.draft $e0) + " drafting for this model" } else { "" })
+  $imgChk.AccessibleName = "Images, " + $(if ($imgChk.Checked) { "on" } else { "off" }) + $(if ($imgWhy.Text) { ", " + $imgWhy.Text } else { "" })
   Update-Switches
 }
 $imgChk.Add_CheckedChanged({
     if ($script:swFilling) { return }
     $g = Sel-Group
-    if ($g) { $g.img = $imgChk.Checked; Refresh-Model; Show-Detail; Fill-Defaults }
+    if ($g) { $g.img = $imgChk.Checked; $g.imgWant = $g.img; Refresh-Model; Show-Detail; Fill-Defaults }
   })
 function Update-Switches {
   $st = Get-SwState; $m = Sel-Entry; $na = 0
@@ -864,7 +870,7 @@ function Reset-Switches {
   foreach ($o in $script:catalog) { if (-not (Test-SwValue $o)) { $script:optChoice.Remove($o.id) } }
   $script:over["precise"] = $false; $script:over["gpus"] = [double]1  # (off and one GPU: also for a running server)
   $g = Sel-Group
-  if ($g) { $g.draft = $g.draft0; $g.img = $g.img0 }
+  if ($g) { $g.draft = $g.draft0; $g.img = $g.img0; $g.imgWant = $g.img0 }
   Refresh-Model; Show-Detail; Fill-Defaults
 }
 $resetBtn.Add_Click({ Reset-Switches; $msg.Text = "The switches are back to the defaults (Start keeps it that way)." })
@@ -1289,8 +1295,8 @@ function Show-List {
       $g.title = $e0.name; $g.draft0 = Get-DraftMode $e0; $g.img0 = [bool]$e0.vision
       # (the choices made for the file stay over a refresh of the list; the running row's choices otherwise)
       $hit = @($g.entries | Where-Object { $sel -and $_.alias -eq $sel })[0]
-      if ($old.Contains($k)) { $g.draft = $old[$k].draft; $g.img = $old[$k].img }
-      elseif ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision }
+      if ($old.Contains($k)) { $g.draft = $old[$k].draft; $g.img = $old[$k].img; $g.imgWant = $old[$k].imgWant }
+      elseif ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision; $g.imgWant = $g.img }
       else { $g.draft = $g.draft0; $g.img = $g.img0 }
       $i = $grid.Rows.Add($e0.name + "  -  " + $e0.file, ("{0:N1} GB" -f ($e0.bytes / 1e9)), (Get-FitWord $e0),
         $(if ($e0.supported -and $e0.ctx) { "{0:N0}" -f $e0.ctx } else { "-" }),
@@ -1425,7 +1431,7 @@ function Find-Row([string]$v) {
     $g = $r.Cells["model"].Tag
     if (-not $g) { continue }
     $hit = @($g.entries | Where-Object { $_.supported -and ($_.alias -eq $v -or ($_.short -and $_.short -eq $v)) })[0]
-    if ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision; $r.Tag = Resolve-Entry $g; return $r }
+    if ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision; $g.imgWant = $g.img; $r.Tag = Resolve-Entry $g; return $r }
   }
   foreach ($r in $grid.Rows) {
     $m = $r.Tag
@@ -1477,7 +1483,7 @@ function Get-StartArgs([switch]$Speech) {
       "slots" { $a += @("-Slots", [int]$v) }
       "gpus" { $a += @("-Gpus", [int]$v) }  # (1 too: a running split server goes back to one GPU)
       "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
-      "precise" { if ($v) { $a += "-Precise" } else { $a += "-NoPrecise" } }  # (off too, as -Npu)
+      "precise" { if ($v -and ($m.opts.flashnext -or $m.precise_only)) { $a += "-Precise" } else { $a += "-NoPrecise" } }  # (off too, as -Npu; on only where it applies)
       "no_stream" { if ($v -and $m.moe) { $a += "-NoStream" } }
       "preserve_think" { if ($v) { $a += "-PreserveThinking" } }
       "whisper" { if ($v) { $a += @("-Whisper", $(if ($v -in "auto", "off") { $v } else { "`"$v`"" })) } }
@@ -1494,9 +1500,13 @@ function Get-StartArgs([switch]$Speech) {
   #  default; Precise mode goes as -Precise above, a value option has its own field)
   $saved = Read-OptChoice
   $on = @(); $off = @(); $def = @()
+  # (a greyed switch is left as options.json has it: Copy drafting on, then Drafting off, sent -Opt copy_draft while
+  #  the box said "turn Drafting on first"; the Researcher's review of df7379c)
+  $st = $(if ($Speech) { $null } else { Get-SwState })
   foreach ($o in $script:catalog) {
     $id = $o.id
     if ($id -eq "fn_precise" -or (Test-SwValue $o)) { continue }
+    if ($st -and (Get-SwReason $script:catalog $o $st)) { continue }
     $want = $(if ($script:optChoice.ContainsKey($id)) { "$($script:optChoice[$id])" } else { "default" })
     $have = $(if ($saved.ContainsKey($id)) { "$($saved[$id])" } else { "default" })
     if ($want -eq $have) { continue }
@@ -1581,7 +1591,7 @@ function Apply-Preset([string]$name) {
   # (a preset's Vision, NoMtp and Drafter: the file's Images and Drafting switches)
   $g = Sel-Group
   if ($g) {
-    if ($script:over.ContainsKey("vision")) { $g.img = "$($script:over['vision'])" -ne "off" }
+    if ($script:over.ContainsKey("vision")) { $g.img = "$($script:over['vision'])" -ne "off"; $g.imgWant = $g.img }
     if ($script:over["no_mtp"]) { $g.draft = "off" }
     $dp = "$($script:extraArgs['Drafter'])".ToLower()
     if ($dp -in "auto", "mtp", "dflash", "off") {

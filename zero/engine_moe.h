@@ -345,13 +345,20 @@
                                         nullptr, nullptr));
           return;
         }
-        if (!xt_lists_h_) xt_lists_h_ = (uint8_t*)zrt::host_alloc(2 * nb);
-        memcpy(xt_lists_h_, xt_hit_h_.data(), xt_hit_h_.size() * 4);
-        memcpy(xt_lists_h_ + nb, xt_miss_h_.data(), xt_miss_h_.size() * 4);
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_hit_->ptr, xt_lists_h_, xt_hit_h_.size() * 4, nullptr, 0,
+        // (host memory the copies read from after this returns: two halves used in turn, so a second write before the
+        //  queue has drained (no caller does one today: each comes after the routing read's wait) still leaves the
+        //  first copy's bytes alone. zrt::imm() flushes a recorded batch first (ARC_BATCH), so the copies stay in order
+        //  with the kernels that read xt_hit_ / xt_miss_. Freed with the engine's host memory, host_ptrs_)
+        if (!xt_lists_h_) {
+          xt_lists_h_ = (uint8_t*)zrt::host_alloc(4 * nb);
+          host_ptrs_.push_back(xt_lists_h_);
+        }
+        uint8_t* const h = xt_lists_h_ + (xt_lists_half_ ^= 1) * 2 * nb;
+        memcpy(h, xt_hit_h_.data(), xt_hit_h_.size() * 4);
+        memcpy(h + nb, xt_miss_h_.data(), xt_miss_h_.size() * 4);
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_hit_->ptr, h, xt_hit_h_.size() * 4, nullptr, 0, nullptr));
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_miss_->ptr, h + nb, xt_miss_h_.size() * 4, nullptr, 0,
                                                nullptr));
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_miss_->ptr, xt_lists_h_ + nb, xt_miss_h_.size() * 4,
-                                               nullptr, 0, nullptr));
       };
       if (nh > 0 && ng > 0) {
         write_lists();

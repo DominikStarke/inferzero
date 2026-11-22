@@ -322,8 +322,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
-    for (void* p : host_ptrs_) zrt::mem_free(zrt::C(), p);  // (weights in host memory: plan_tight; in this GPU's context)
+    // (weights in host memory, plan_tight; the expert lists' and the CPU experts' host buffers: in this GPU's context)
+    for (void* p : host_ptrs_) zrt::mem_free(zrt::C(), p);
     host_ptrs_.clear();
+    xt_lists_h_ = nullptr;
+    xcpu_in_ = nullptr;
+    xcpu_y_ = nullptr;
     if (mtp_xbuf_) {  // (the MTP head's pinned experts; the expert cache's table row went with xc_ or goes after)
       zrt::mem_free(zrt::C(), mtp_xbuf_);
       zrt::D().device_bytes -= mtp_xbytes_;
@@ -564,12 +568,36 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       // (a shard of a split MoE caches its own experts only, tpe_: stream_bytes_ counts every expert)
       const double mine = tp_on() && hp.n_expert > 0 && tpe_.second > tpe_.first
                               ? (double)(tpe_.second - tpe_.first) / hp.n_expert : 1.0;
-      gpu_bytes += (size_t)std::max(0.0, std::min(0.9 * mine * (double)stream_bytes_, room));
+      // (a layer split's stage, 2026-11-22, the user: "auto ctx should calculate largest ctx that can fit, user can
+      //  override, there is where host ram as second tier acts": only the cache's floor, one layer's experts, so
+      //  --ctx auto gives the largest context with everything on the GPUs; the load's cache then takes what is left,
+      //  and the rest of the experts stream from the RAM tier. One GPU keeps the rule above)
+      if (opt.pp_size > 1)
+        gpu_bytes += (size_t)((double)stream_bytes_ / std::max<size_t>(1, layers_.size()));
+      else
+        gpu_bytes += (size_t)std::max(0.0, std::min(0.9 * mine * (double)stream_bytes_, room));
     }
     // (a dry shard: the split's sum buffers that the first pass allocates, tp_part_ f32, the f16 rows and the add
     //  buffer, about max_chunk x n_embd x 10 bytes; counted so --ctx auto leaves them room, review 2026-11-12)
     if (opt.dry && tp_on()) gpu_bytes += (size_t)max_chunk * (size_t)hp.n_embd * 10;
     mem_load_ = gpu_bytes;
+    // (a layer split's stage: what its GPU holds, one line, so the trade a large context made is seen: the context,
+    //  the expert cache's share of this stage's experts, the RAM tier and the weights kept in host memory)
+    if (opt.pp_size > 1 && !opt.dry) {
+      const double GiB = 1073741824.0;
+      std::string x;
+      if (xc_) {
+        const double mine = (double)xc_->all_bytes();  // (this stage's experts, open_experts)
+        char b[200];
+        snprintf(b, sizeof b, ", expert cache %.2f GiB (%.0f %% of its experts), RAM tier %.1f GiB", xc_->cache_bytes / GiB,
+                 mine > 0 ? 100.0 * std::min(1.0, xc_->cache_bytes / mine) : 0.0, xc_->st.ram_capacity() / GiB);
+        x = b;
+      }
+      zlog::eprintf("inferzero: stage of layers %d-%d: %.2f GiB on its GPU, context %d tokens (%.2f GiB)%s%s\n",
+                    std::max(0, opt.pp_begin), (opt.pp_end < 0 ? hp.n_layer : opt.pp_end) - 1, gpu_bytes / GiB, ctx,
+                    ctx_bytes(ctx) / GiB, x.c_str(),
+                    host_weight_bytes() ? (", " + std::to_string(host_weight_bytes() >> 20) + " MiB of weights in host memory").c_str() : "");
+    }
     // the GGUF pages read while loading leave the working set (standby: Windows reuses them when it needs RAM)
     plat::trim_working_set();
     clFinish(cl_.queue);

@@ -82,10 +82,24 @@ class PpEngine {
     zlog::eprintf("\n");
     zrt::Dev* const saved = zrt::cur;
     struct Back { zrt::Dev* s; ~Back() { zrt::cur = s; } } back{saved};
+    // (a MoE model's RAM tier, one budget for all the stages, measured once before any of them pins memory: the free
+    //  RAM beyond 16 GiB halved, as a tensor split's, at most 32 GiB a stage and 128 GiB in all, shared by each stage's
+    //  share of the layers. Each stage took the one-GPU rule before, the free RAM less 16 GiB, and the stages are
+    //  built one after another, so the first could pin nearly all of it (QUEUE row: a layer split's memory plan, B.2).
+    //  ARC_XRAM_GB or --expert-ram still give each stage that much; a dense model has no tier)
+    std::vector<double> ram_gb(n, -1.0);
+    if (o.expert_ram_gb < 0 && !getenv("ARC_XRAM_GB") && !zrt::integrated()) {
+      const double GiB = 1073741824.0, keep = 16 * GiB, avail = (double)plat::ram_available();
+      const double total = avail > keep ? std::min((avail - keep) / 2, 128 * GiB) : 0.0;
+      const int nl = std::max(1, c[n] - c[0]);
+      for (int r = 0; r < n; ++r)
+        ram_gb[r] = std::min(32 * GiB, total * (double)(c[r + 1] - c[r]) / nl) / GiB;
+    }
     for (int r = 0; r < n; ++r) {
       zrt::cur = zrt::devs[gpu_of(r, n)];
       EngineOptions so = stage_options(o, c, r);
       if (r < (int)host_gb.size() && host_gb[r] >= 0 && so.host_weights_gb < 0) so.host_weights_gb = host_gb[r];
+      if (ram_gb[r] >= 0) so.expert_ram_gb = ram_gb[r];  // (0: no tier, as the option means)
       stages_.push_back(std::make_unique<Engine>(path, so));
     }
     rows_.resize(n);
