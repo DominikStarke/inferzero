@@ -52,7 +52,7 @@ server_cmd /m.gguf 0
 c="${CMD[*]}"
 case "$c" in *"--copy-draft"*) r=0;; *) r=1;; esac; ok $r "copy_draft flag on the command line"
 case "$c" in *"--budget 12"*) r=0;; *) r=1;; esac; ok $r "budget 12 on the command line"
-case "$c" in *"--precise"*) r=1;; *) r=0;; esac; ok $r "a flag chosen off is left out"
+printf '%s\n' "${OPT_ENV[@]}" | grep -qx "ARC_FN_PRECISE=0"; ok $? "precise mode off -> ARC_FN_PRECISE=0 (Flash Next's fast mode)"
 OPTC=([split_layer]=on)
 server_cmd /m.gguf 0
 case "${CMD[*]}" in *"--split layer"*) r=0;; *) r=1;; esac; ok $r "split_layer on -> --split layer (a word in on: its value, not a placeholder)"

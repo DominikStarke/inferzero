@@ -94,8 +94,9 @@ USAGE.md:
 | Gemma 4 E4B | 707 (12 s) | 494 (66 s) | 222 (9.8 min) | 19.1 | 41.8 (drafter) | 0.0027 |
 | Qwen3.5 4B | 896 (9.2 s) | 705 (47 s) | 366 (6.0 min) | 21.0 | 35.8 (MTP) | 0.0010 |
 
-Flash Next's precise mode (`-Precise`) lowers its KL on prose to 0.0060 (3,584 tokens, 0.0105 by default) at about
-half the prompt speed. The discrete cards' numbers: [Discrete GPUs](#discrete-arc-gpus-experimental).
+Flash Next runs in its precise mode by default since 2026-11-22: KL 0.0033 on 480 tokens of markdown and 0.0073 on
+3,584 of prose. Its fast mode (`-Fast`) reads prompts about 1.7 times as fast but is less exact on code and tables
+(0.0415 on the markdown, 0.0109 on the prose). The discrete cards' numbers: [Discrete GPUs](#discrete-arc-gpus-experimental).
 
 Against llama.cpp on the same files and laptop (2026-10-25):
 

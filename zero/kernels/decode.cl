@@ -598,7 +598,9 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
   const uchar* p = (const uchar*)sbu;
 #endif
   __global uint* hd = wh + ((size_t)g * nsb + s) * HSTR * GL;
-#if QT == Q2_K || QT == Q4_K || QT == Q5_K
+#if (QT == Q2_K || QT == Q4_K || QT == Q5_K) && !defined(W8_MINS)
+  // (-DW8_MINS, Flash Next's precise mode: these types too as their values, scales and mins below, for gemm.cl's
+  //  variants 102 / 103 with the activations' per-16 sums)
   // Types with per-block mins (w = d*sc*q - dmin*m, q unsigned) are requantized to signed int8 so they can use
   // the min-free GEMM: one float D per superblock, an int8 scale per 16 (equal halves for Q4_K/Q5_K) chosen from
   // the analytic block range, q' = round(w / (D*sc')). The added error is ~1/16 of the original quantization step.

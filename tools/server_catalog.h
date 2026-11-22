@@ -607,18 +607,20 @@ static uint64_t device_global_mem() {
 static std::string ctx_cache_file() {
   return app_dir() + ARC_DATA "ctx-auto.txt";
 }
-// (Flash Next's precise mode, whose f16 K/V rows take about twice the bytes of int8 ones: ARC_FN_PRECISE=1, or an
-//  AutoRound package, which runs only in it; in the context key, so a size worked out in one mode is not reused in the
-//  other. Audit 2026-11-14)
+// (Flash Next's precise mode, whose f16 K/V rows take about twice the bytes of int8 ones: its default since 2026-11-22
+//  (ARC_FN_PRECISE=0 / --fast: the fast mode), and always for an AutoRound package; in the context key, so a size
+//  worked out in one mode is not reused in the other. Audit 2026-11-14. Only Flash Next files: the mode is theirs, and
+//  the other models' keys stay as they were now that it is on by default)
 static bool precise_model(const std::string& model, int opt_precise = -1) {  // (opt_precise: EngineOptions::fn_precise)
-  static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
-  if (opt_precise >= 0 ? opt_precise != 0 : env) return true;
+  static const bool env = !getenv("ARC_FN_PRECISE") || atoi(getenv("ARC_FN_PRECISE")) != 0;
   try {
     const GgufFile g(model);
-    return !g.get_str("inferzero.autoround.model", "").empty();
+    if (!g.get_str("inferzero.autoround.model", "").empty()) return true;
+    if (g.get_str("general.architecture", "") != "qwen4exp") return false;
   } catch (const std::exception&) {
     return false;
   }
+  return opt_precise >= 0 ? opt_precise != 0 : env;
 }
 // (Flash Next's HC mixer rows, BF16 by default since 2026-11-19 (0.73 GiB more than the Q8_0 rows of before): in its
 //  context key, so a size worked out with the smaller rows is not reused; the other models' keys are unchanged)
@@ -1047,7 +1049,7 @@ static bool apply_variant(EngineOptions& eo, const std::string& option, const st
   if (option == "qsa") eo.qsa = v != 0 ? 1 : 0;
   else if (option == "mtp_vocab") eo.mtp_vocab = std::max(0, v);
   else if (option == "h8_q2") eo.h8_q2 = v != 0 ? 1 : 0;
-  else if (option == "fn_precise") eo.fn_precise = 1;
+  else if (option == "fn_precise") eo.fn_precise = value == "0" || value == "off" ? 0 : 1;  // (-fast:0, the fast mode)
   else return false;
   return true;
 }

@@ -144,8 +144,9 @@ LAUNCHER OPTIONS
   --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %; other models stay off). Kept when you switch
                                  models (/model, zero-pi on another model) and on a restart; off after zero-server stop
-  --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0105 -> 0.0060 at 3.5K tokens (under the
-                                 0.015 limit), prompts about half as fast; kept like --npu (--no-precise: off)
+  --fast, -Fast                  Qwen3.8 Flash Next's fast mode: prompts about 1.7x as fast, less exact (KL on
+                                 markdown 0.0033 -> 0.0415); its default is the precise mode. Kept like --npu
+                                 (--precise: back to precise; --no-precise: --fast)
   --gpus <N>, -Gpus              one model split over N GPUs (1-64; Qwen3.5 / 3.6 / 3.8, Flash Next,
                                  DeepSeek-V4.1; docs/multi-gpu.md). Not given: a running split server keeps its GPUs
   --whisper auto|on|off|<folder>, --asr auto|off|<file>, --whisper-device gpu|npu, --whisper-max-minutes <N>
@@ -195,7 +196,7 @@ SERVER COMMANDS (zero-server)
   zero-server start ... -DryRun   check the options, print the serverz.exe command and a GPU memory estimate
   zero-server help [options|writing|errors|all]   its own help; its options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
-    -Slots <N>  -Npu on|off  -Precise / -NoPrecise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
+    -Slots <N>  -Npu on|off  -Fast / -Precise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
     -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
     UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
     -Port <N> (default 8090)  -MtpDrafts <2..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
@@ -340,8 +341,8 @@ shortens a long conversation (the details it drops are gone for the model).
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
   elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
   elseif ($a -in "--gpus", "-Gpus") { $gpus = [int](Need-Number $a (Need-Value $args $i $a "1..64") "1..64"); $i++ }  # (one model over N GPUs)
-  elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode; kept by zero-server)
-  elseif ($a -in "--no-precise", "-NoPrecise") { $precise = "off" }
+  elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode, its default; kept by zero-server)
+  elseif ($a -in "--fast", "-Fast", "--no-precise", "-NoPrecise") { $precise = "off" }  # (its fast mode)
   elseif ($a -in "--npu", "-Npu") { $npu = Need-Value $args $i $a "on or off"; $i++ }  # (the NPU next to the GPU; zero-server checks it)
   # speech to text, passed to zero-server (which checks the values and paths): before, these went to Pi
   elseif ($a -in "--whisper", "-Whisper") { $whisper = Need-Value $args $i $a "auto, on, off, or the folder that holds model.bin"; $i++ }
@@ -376,7 +377,7 @@ if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plai
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
 if ($gpus -gt 0) { $sessArg.Gpus = $gpus }  # (only when given: a running split server keeps its GPUs)
 if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
-if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.NoPrecise = $true }
+if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.Fast = $true }
 if ($whisper) { $sessArg.Whisper = $whisper }  # (not given: a running server keeps its speech setting)
 if ($asr) { $sessArg.Asr = $asr }
 if ($whDev) { $sessArg.WhisperDevice = $whDev }

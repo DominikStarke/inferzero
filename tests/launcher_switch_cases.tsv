@@ -20,9 +20,10 @@ dense;mtp;h8	b-series;multi-gpu	2	1	tp_p2p=on	split_layer	not with Multi-GPU sum
 dense;mtp;h8;qsa	b-series;multi-gpu	2	1	qsa=on	split_layer	not with Attention: sparse (on) or full (off)
 dense;mtp;h8;qsa	b-series;multi-gpu	2	1	qsa=off	split_layer	-
 moe;mtp	b-series;multi-gpu	2	1	-	split_layer	for dense models only
-moe;qsa;flashnext	b-series	1	0	-	xcpu_q2	turn Precise mode on first
+moe;qsa;flashnext	b-series	1	0	-	xcpu_q2	-
 moe;qsa;flashnext	b-series	1	0	fn_precise=on	xcpu_q2	-
 moe;qsa;flashnext	b-series	1	0	fn_precise=on,xcpu=off	xcpu_q2	turn CPU experts on first
+moe;qsa;flashnext	b-series	1	0	fn_precise=off	xcpu_q2	turn Precise mode on first
 dense;mtp;h8	b-series	1	1	-	xcpu	for MoE models only
 moe;mtp	b-series	1	1	-	xcpu	-
 dense;mtp;h8	b-series	1	1	-	fn_precise	for Flash Next only

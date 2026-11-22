@@ -355,7 +355,7 @@ $slotsBox = New-Num 1 8 1 0 60
 $gpusBox = New-Num 1 8 1 0 60
 $npuBox = New-Combo @("off", "on") 60
 $noStreamChk = New-Check "every expert on the GPU (no SSD reads, smaller context)"
-$preciseChk = New-Check "precise mode (Flash Next: closest to the full-precision model, prompts about half as fast; AutoRound: always)"
+$preciseChk = New-Check "precise mode (Flash Next, on by default; off: the fast mode, prompts ~1.7x as fast, less exact; AutoRound: always)"
 $keepThinkChk = New-Check "earlier turns keep their reasoning"
 $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
@@ -711,14 +711,20 @@ function Resolve-Entry($g) {
 }
 function Sel-Group { if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Cells["model"].Tag } else { $null } }
 function Sel-Entry { if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag } else { $null } }
+# Flash Next's precise mode: on unless switched off (the fast mode; its default since 2026-11-22)
+function Test-Precise { return (-not $script:over.ContainsKey("precise")) -or [bool]$script:over["precise"] }
 # the auto context of the row, or of its variant when a switch with one is on (serverz --list-models "variants")
 function Get-AutoCtx($m) {
   if (-not $m) { return 0 }
   foreach ($v in @($m.variants)) {
     if (-not $v) { continue }
+    if ($v.option -eq "fn_precise") {  # (its variant -fast: the fast mode, when precise mode is switched off)
+      if (-not (Test-Precise) -and "$($v.value)" -eq "0" -and $v.ctx) { return [int]$v.ctx }
+      continue
+    }
     $o = Get-SwRow $script:catalog $v.option
     if (-not $o) { continue }
-    $c = $(if ($v.option -eq "fn_precise") { $(if ($script:over.ContainsKey("precise") -and $script:over["precise"]) { "on" } else { "" }) } else { "$($script:optChoice[$v.option])" })
+    $c = "$($script:optChoice[$v.option])"
     $val = $(if ($c -eq "on") { $(if ($o.on) { $o.on } else { "on" }) } elseif ($c -eq "off") { $o.off } else { $c })
     if ($c -and "$val" -eq "$($v.value)" -and $v.ctx) { return [int]$v.ctx }
   }
@@ -730,7 +736,7 @@ function Get-SwState {
   $words = @()
   if ($g) { foreach ($e in $g.entries) { if ($e.opts) { $words += @($e.opts.PSObject.Properties | Where-Object { $_.Value -eq $true } | ForEach-Object { $_.Name }) } } }
   $ch = @{}; foreach ($k in $script:optChoice.Keys) { if ($k -ne "fn_precise") { $ch[$k] = $script:optChoice[$k] } }
-  if (($m -and $m.precise_only) -or ($script:over.ContainsKey("precise") -and $script:over["precise"])) { $ch["fn_precise"] = "on" }
+  $ch["fn_precise"] = $(if (($m -and $m.precise_only) -or (Test-Precise)) { "on" } else { "off" })
   $gp = $(if ($script:over.ContainsKey("gpus")) { [int]$script:over["gpus"] } else { 1 })
   return @{ words = @($words | Select-Object -Unique); pc = $script:pcKinds; gpus = $gp; drafting = [bool]($g -and $g.draft -ne "off"); choice = $ch }
 }
@@ -788,7 +794,7 @@ function Update-Switches {
       $r = $script:swRows[$id]; $o = $r.row; $cb = $r.box
       $why = Get-SwReason $script:catalog $o $st
       if ($id -eq "fn_precise" -and $m -and $m.precise_only) { $why = "always on for this model" }
-      if ($id -eq "fn_precise") { $cb.CheckState = $(if ($st.choice.ContainsKey("fn_precise")) { "Checked" } else { "Unchecked" }) }
+      if ($id -eq "fn_precise") { $cb.CheckState = $(if ($st.choice["fn_precise"] -eq "on") { "Checked" } else { "Unchecked" }) }
       elseif ($script:optChoice.ContainsKey($id)) { $cb.CheckState = $(if ($script:optChoice[$id] -eq "off") { "Unchecked" } else { "Checked" }) }
       elseif ($r.auto) { $cb.CheckState = "Indeterminate" }
       else { $cb.CheckState = $(if ((Get-OptDefault $o) -eq "on") { "Checked" } else { "Unchecked" }) }
@@ -798,7 +804,7 @@ function Update-Switches {
       $r.why.Text = $(if ($why) { $why } elseif ($cb.CheckState -eq "Indeterminate") { "automatic" } else { "" })
       $state = switch ("$($cb.CheckState)") { "Checked" { "on" } "Unchecked" { "off" } default { "automatic" } }
       $cb.AccessibleName = "$($o.title), $state" + $(if ($why) { ", $why" } else { "" })
-      $changed = $(if ($id -eq "fn_precise") { [bool]$script:over["precise"] } else { $script:optChoice.ContainsKey($id) })
+      $changed = $(if ($id -eq "fn_precise") { -not (Test-Precise) } else { $script:optChoice.ContainsKey($id) })
       $cb.ForeColor = $(if ($changed -and -not $why) { $Pal.warn } else { $Pal.text })
     }
     $naChk.Text = $(if ($naChk.Checked) { "Hide the $na that don't apply to this model or PC" } else { "Show the $na that don't apply to this model or PC" })
@@ -827,7 +833,7 @@ function Update-Switches {
 # the engine's own choice)
 function Set-Switch([string]$id, $state) {
   if ($id -eq "fn_precise") {
-    $script:over["precise"] = ("$state" -eq "Checked")  # (off too: -NoPrecise, else a running server keeps it)
+    $script:over["precise"] = ("$state" -eq "Checked")  # (on too: -Precise, else a running server keeps its -Fast)
   } else {
     $r = $script:swRows[$id]
     $v = switch ("$state") { "Checked" { "on" } "Unchecked" { "off" } default { "" } }
@@ -858,7 +864,7 @@ function Update-Changed {
     if ($g.draft -ne $g.draft0) { $x += "Drafting: " + (Get-DraftLabel $g.draft $g.entries[0]) }
     if ($g.img -ne $g.img0) { $x += "Images: " + $(if ($g.img) { "on" } else { "off" }) }
   }
-  if ($script:over["precise"]) { $x += "Precise mode" }
+  if (-not (Test-Precise)) { $x += "Fast mode" }
   if ($script:over.ContainsKey("gpus") -and [int]$script:over["gpus"] -gt 1) { $x += "$([int]$script:over['gpus']) GPUs" }
   $x += @(Get-SwChanged @($script:catalog | Where-Object { $_.id -ne "fn_precise" -and -not (Test-SwValue $_) }) $script:optChoice)
   $chgLbl.Text = $(if ($x.Count) { $x -join "; " } else { "nothing" })
@@ -868,7 +874,7 @@ function Update-Changed {
 # -DefaultOpt for the switches options.json had). Value options (a budget) stay: they have fields of their own
 function Reset-Switches {
   foreach ($o in $script:catalog) { if (-not (Test-SwValue $o)) { $script:optChoice.Remove($o.id) } }
-  $script:over["precise"] = $false; $script:over["gpus"] = [double]1  # (off and one GPU: also for a running server)
+  $script:over["precise"] = $true; $script:over["gpus"] = [double]1  # (precise and one GPU: also for a running server)
   $g = Sel-Group
   if ($g) { $g.draft = $g.draft0; $g.img = $g.img0; $g.imgWant = $g.img0 }
   Refresh-Model; Show-Detail; Fill-Defaults
@@ -886,7 +892,7 @@ function Fill-Defaults {
     chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
-    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $false
+    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $true
     preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
   }
   foreach ($k in $fields.Keys) {
@@ -1483,7 +1489,7 @@ function Get-StartArgs([switch]$Speech) {
       "slots" { $a += @("-Slots", [int]$v) }
       "gpus" { $a += @("-Gpus", [int]$v) }  # (1 too: a running split server goes back to one GPU)
       "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
-      "precise" { if ($v -and ($m.opts.flashnext -or $m.precise_only)) { $a += "-Precise" } else { $a += "-NoPrecise" } }  # (off too, as -Npu; on only where it applies)
+      "precise" { if ($m.opts.flashnext -and -not $m.precise_only) { $a += $(if ($v) { "-Precise" } else { "-Fast" }) } }  # (on too, as -Npu: a running server keeps -Fast otherwise; Flash Next only)
       "no_stream" { if ($v -and $m.moe) { $a += "-NoStream" } }
       "preserve_think" { if ($v) { $a += "-PreserveThinking" } }
       "whisper" { if ($v) { $a += @("-Whisper", $(if ($v -in "auto", "off") { $v } else { "`"$v`"" })) } }
@@ -1574,7 +1580,7 @@ function Apply-Preset([string]$name) {
     if ($k -eq "Model") { $model = "$v"; continue }
     if ($k -eq "ListenHost") { if ("$v" -eq "0.0.0.0") { $script:over["network"] = $true } else { $script:extraArgs["ListenHost"] = "$v" }; continue }
     if ($k -eq "Precise") { $script:over["precise"] = [bool]$v; continue }
-    if ($k -eq "NoPrecise") { if ($v) { $script:over["precise"] = $false }; continue }
+    if ($k -in "NoPrecise", "Fast") { if ($v) { $script:over["precise"] = $false }; continue }
     $fk = $null; foreach ($pk in $paramToField.Keys) { if ($pk -eq $k) { $fk = $paramToField[$pk] } }
     if ($fk) {
       $c = $fields[$fk]

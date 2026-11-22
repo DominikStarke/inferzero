@@ -292,6 +292,10 @@
     // per-32-scale types (Q4_0, IQ4_NL, Q2_0) decode into the native Q8_0 GEMM form (per-32 f32 scales; there is no
     // such W8 variant)
     w.gemm_qtype = w8_variant(type) == 4 ? (int)GGML_Q8_0 : 100 + w8_variant(type);
+    if (w8_requant(type) && w8_mins_on()) {  // (the values, scales and mins as the file has them: variant 102 / 103)
+      w.w8_mins = true;
+      w.gemm_qtype = 100 + w8_variant_mins(type);
+    }
     const size_t qb = w8_bytes_q(N, K), hb = w8_bytes_h(N, K);
     if (w8_resident || w8_part_take(role, qb + hb)) {
       w.wq = buf(qb);
@@ -552,10 +556,12 @@
   // at 139 tok/s (the int8 inputs dominate). What is left is mostly the int8 attention (q / K / V per row: simulated
   // in the f32 reference, +0.11 % at layer 3 as in the engine; per-32 scales +0.06 %): float attention with the QSA
   // masks is the next step.
-  // (ARC_FN_PRECISE=1 / serverz --precise for every Flash Next; a model with AR4_128 experts turns it on for its own
-  //  engine, fn_precise_hold_)
+  // (Flash Next's default since 2026-11-22, the user's choice once its PLE block and Q4_K prompt rows were made exact:
+  //  KL on 480 tokens of markdown 0.0415 (the fast mode) -> 0.0033, prose 0.0109 -> 0.0073, at about 60 % of the fast
+  //  mode's prompt speed. ARC_FN_PRECISE=0 / serverz --fast: the fast mode; a model with AR4_128 experts keeps it on
+  //  for its own engine, fn_precise_hold_)
   bool fn_precise() const {
-    static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
+    static const bool env = !getenv("ARC_FN_PRECISE") || atoi(getenv("ARC_FN_PRECISE")) != 0;
     return (opt.fn_precise >= 0 ? opt.fn_precise != 0 : env) || fn_precise_hold_.on;  // (EngineOptions::fn_precise: a variant's)
   }
   // (each of precise mode's parts alone, for measuring which one carries the default mode's error (the plan's F1,
@@ -564,6 +570,13 @@
   //  token by token, 3,584 of prose), at -16 % prompt and -6 % generation on the laptop (0.73 GiB more read a token,
   //  out of the expert cache). ARC_FN_HCBF16=0: the Q8_0 rows of before. ARC_FN_AB32=1 DeltaNet's alpha / beta in f32)
   bool hc_bf16() const { return fn_precise() || hc_bf16_env(); }
+  // (precise mode, 2026-11-22: prompt chunks' Q2_K / Q4_K / Q5_K matrices decoded with their mins (gemm.cl 102 / 103),
+  //  not requantized to signed int8 (~1/16 of a quantization step off): the values the token-by-token GEMVs use, so a
+  //  prompt row is computed as a generated one. ARC_W8_MINS=0: requantized, as before)
+  bool w8_mins_on() const {
+    static const bool off = getenv("ARC_W8_MINS") && atoi(getenv("ARC_W8_MINS")) == 0;
+    return hp.hc && fn_precise() && !off;
+  }
   // ARC_FN_KV16=1 (a test, 2026-11-21, the user for manoreken2's stray words, #4): only precise mode's attention part,
   // the K / V cache in f16 and the scores in f32, the default mode otherwise (one pass, the default experts and H8):
   // whether the int8 keys carry the cross-language words
@@ -613,6 +626,16 @@
     w.raw = buf(bf.size() * 2 + kRawSlack, nullptr);
     if (w.raw) CL_CHECK(clEnqueueWriteBuffer(cl_.queue, w.raw, CL_TRUE, 0, bf.size() * 2, bf.data(), 0, nullptr, nullptr));
     return w;
+  }
+  // a matrix [N][K] as the file's values, exact (BF16 rows as BF16, else f32), for hc_gemm_f32: Flash Next's PLE key
+  // and value in precise mode (2026-11-22: as Q8_0 rows the value was 0.45 % off the reference, the key 0.15 %)
+  GpuWeight load_exact(const std::string& name) {
+    const GgufTensor& t = f_.get(name);
+    const int K = (int)t.dims[0], N = (int)t.dims[1];
+    if (K % 256) throw std::runtime_error("exact rows need K a multiple of 256: " + name);
+    std::vector<float> v((size_t)N * K);
+    dequant_row(t.type, t.data, (int64_t)N * K, v.data());
+    return hc_exact_weight(v, N, K);
   }
   int hc_lr_pad() const { return padded_k(hp.hc_lr); }
   // Flash Next mixer up projection [HCE][hc_lr], its K padded with zeros to a multiple of 256
@@ -713,8 +736,9 @@
           L.hc_up[b] = load_hc_up(hp_ + "_up.weight");
         }
         if (il == hp.ple_layer) {
-          L.ple_key = load_w(p + "ple_key.weight");
-          L.ple_value = load_w(p + "ple_value.weight");
+          // (precise mode: the file's BF16 rows, exact, for hc_gemm_f32 on f32 inputs; else Q8_0 for the int8 GEMMs)
+          L.ple_key = fn_precise() ? load_exact(p + "ple_key.weight") : load_w(p + "ple_key.weight");
+          L.ple_value = fn_precise() ? load_exact(p + "ple_value.weight") : load_w(p + "ple_value.weight");
           L.ple_nk = load_f32(p + "ple_norm_key.weight");
           L.ple_nq = load_f32(p + "ple_norm_query.weight");
           L.ple_nc = load_f32(p + "ple_norm_conv.weight");

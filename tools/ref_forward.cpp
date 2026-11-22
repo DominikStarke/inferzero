@@ -833,6 +833,14 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
       matmul(p + "ple_key.weight", ple_emb, T, key);
       matmul(p + "ple_value.weight", ple_emb, T, value);
       std::vector<float> query = res;
+      // (debug, REF_DBG_PLE=file: the last row's key, value, streams, gated values and their norms, then the streams
+      //  after the block, as the engine's ARC_DBG_PLE)
+      FILE* fdbg = getenv("REF_DBG_PLE") ? fopen(getenv("REF_DBG_PLE"), "wb") : nullptr;
+      if (fdbg) {
+        fwrite(&key[(size_t)(T - 1) * HD], 4, HD, fdbg);
+        fwrite(&value[(size_t)(T - 1) * E], 4, E, fdbg);
+        fwrite(&res[(size_t)(T - 1) * HD], 4, HD, fdbg);
+      }
       stream_norm(key, vecf(p + "ple_norm_key.weight"));
       stream_norm(query, vecf(p + "ple_norm_query.weight"));
       std::vector<float> gated((size_t)T * HD);
@@ -846,6 +854,10 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
         }
       std::vector<float> nrm = gated;
       stream_norm(nrm, vecf(p + "ple_norm_conv.weight"));
+      if (fdbg) {
+        fwrite(&gated[(size_t)(T - 1) * HD], 4, HD, fdbg);
+        fwrite(&nrm[(size_t)(T - 1) * HD], 4, HD, fdbg);
+      }
       const auto cw = vecf(p + "ple_conv1d.weight");  // [HD][kern]
       const int kern = hp("ple.conv_kernel"), dil = hp("ple.ngram_size");
       for (int t = 0; t < T; ++t)
@@ -857,6 +869,10 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
           }
           res[(size_t)t * HD + ch] += gated[(size_t)t * HD + ch] + silu((float)acc);
         }
+      if (fdbg) {
+        fwrite(&res[(size_t)(T - 1) * HD], 4, HD, fdbg);
+        fclose(fdbg);
+      }
     }
     hc_mix(p + "hc_attn", mixed, &inject);
     const std::vector<float>& h = mixed;

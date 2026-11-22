@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-22: Flash Next runs in its precise mode by default, now exact where it was not
+
+- **Precise mode is the default for Qwen3.8 Flash Next** (the user's choice). On 480 tokens of markdown its KL
+  against the f32 reference is 0.0033, against 0.0415 in the fast mode; on 3,584 tokens of prose 0.0073, against
+  0.0109.
+  - The cost on the laptop: prompts at 59 % of the fast mode's speed (3,584 tokens: 74.8 against 127.7 tok/s),
+    generation a little slower, and the automatic context 106,496 instead of 131,072 (f16 keys and values).
+  - In precise mode the system-prompt cache and saved conversations are off, as before.
+- **The fast mode stays, bit-identical to the default before:**
+  - `zero-server -Fast` (`-NoPrecise` too), `zero-pi --fast`;
+  - the model `flash-fast`;
+  - the launchers' "Precise mode" switch off;
+  - `serverz --fast`, or `ARC_FN_PRECISE=0`.
+
+  It is kept on a restart and a model switch, like `-Npu`; `-Precise` goes back.
+- **Two fixes made precise mode 8x more exact on markdown** (0.0285 -> 0.0033; token by token 0.0274 -> 0.0021):
+  - **The per-layer embedding block:** its key and value matrices are BF16 in the file and were turned into Q8_0 at
+    load, 0.45 % off. They are now computed from the file's values on f32 inputs.
+  - **Q4_K, Q5_K and Q2_K matrices in prompts:** they were requantized to plain int8 for the prompt GEMM, which a
+    generated token never sees. They now keep their own values, scales and minimums (the GEMM's layouts 102 / 103).
+    `ARC_W8_MINS=0` turns this off.
+- **For tests:** `ARC_DBG_PLE=file` (runz) and `REF_DBG_PLE=file` (`ref_forward`) write the per-layer embedding
+  block's values at the last row.
+
 ## 2026-11-22: Flash Next's KL on markdown, explained (no change to the defaults)
 
 - **The default mode is what one-pass int8 activations allow on such text.** The f32 reference with only its matmul

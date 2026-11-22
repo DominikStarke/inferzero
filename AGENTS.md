@@ -21,8 +21,8 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 - **Accuracy:** every model's next-token KL against an f32 reference stays at or below **0.015**, with two
   exceptions:
   - speech models stay below 0.01;
-  - Flash Next's default (fast) mode may reach ~0.02 for text work such as summaries, while its precise mode
-    (`--precise`) stays under 0.015 for work that needs exactness. A speed change that moves the logits needs a KL check. A change meant to be bit-identical must be
+  - Flash Next's fast mode (`--fast`, opt-in since 2026-11-22) may reach ~0.05 on markdown and code, while its
+    default, the precise mode, stays under 0.015. A speed change that moves the logits needs a KL check. A change meant to be bit-identical must be
   checked bit for bit (`runz --dump-logits` before and after).
 - **Every speed or accuracy change** gets a row in `docs/before-after.md`, measured the same way before and after,
   and a CHANGELOG entry.

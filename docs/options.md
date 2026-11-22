@@ -59,16 +59,16 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **In the model list:** as a variant of the models it fits, `-precise-prompt`.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
 
-## Precise mode (`--precise`)
+## Precise mode (`ARC_FN_PRECISE=1`)
 
-- **What it does:** Flash Next's more exact mode: two int8 passes, f16 keys and values and the routers in BF16, which roughly doubles its exactness (KL against full precision under 0.015, against about 0.02 by default). About half the prompt speed and a little generation speed. It combines with either attention mode.
-- **Default:** off.
+- **What it does:** Flash Next's exact mode, its default since 2026-11-22: two int8 passes, f16 keys and values, the routers, hyper-connection and PLE rows in BF16 and the Q4_K / Q5_K prompt rows with their mins. Off (--fast, the variant -fast) is the fast mode: prompts about 1.7x as fast and a little faster generation, less exact on markdown and code. It combines with either attention mode.
+- **Default:** on (Flash Next; serverz --fast: off).
 - **Best for:** moe.
-- **Cost:** slower but more exact.
+- **Cost:** off: prompts ~1.7x as fast, less exact.
 - **Output:** slightly different, checked against f32 (KL).
-- **Measured:** KL against f32 under 0.015 (the default mode up to ~0.02 on text work).
+- **Measured:** KL against f32 on the laptop (2026-11-22): 480 tokens of markdown 0.0033 (fast mode 0.0415), 3,584 of prose 0.0073 (0.0109); 3,584-token prompt 74.8 tok/s (fast 127.7).
 - **Works with:** goes with CPU experts exact in precise mode.
-- **In the model list:** as a variant of the models it fits, `-precise`.
+- **In the model list:** as a variant of the models it fits, `-fast`.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
 
 ## Resident weights (`--budget <GiB>`)

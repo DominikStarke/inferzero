@@ -740,6 +740,8 @@ inline int w8_variant(uint32_t t) {
   const bool mins = !w8_requant(t) && (t == GGML_Q2_K || t == GGML_Q4_K || t == GGML_Q5_K);
   return (sc32 ? 1 : 0) + (mins ? 2 : 0);
 }
+// the variant of a requantized type (w8_requant) decoded with its mins instead (decode.cl -DW8_MINS): 2 or 3
+inline int w8_variant_mins(uint32_t t) { return w8_variant(t) + 2; }
 // Bytes of the decoded W8x8 form of an N x K matrix (q + header).
 inline size_t w8_bytes_q(int N, int K) { return (size_t)N * K; }
 inline size_t w8_bytes_h(int N, int K) { return (size_t)N / 8 * (K / 256) * 10 * 8 * 4; }

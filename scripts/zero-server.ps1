@@ -48,6 +48,7 @@ param(
   [string]$Npu = "",
   [switch]$Precise,
   [switch]$NoPrecise,
+  [switch]$Fast,
   [string]$Whisper = "",
   [string]$WhisperDevice = "",
   [string]$Asr = "",
@@ -205,7 +206,7 @@ function PC-Kinds { Get-PcKinds }
 # an option given on the command line wins over the preset's.
 $presetDir = Join-Path $stateDir "presets"
 $presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
-  "NoPrecise", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "NoPrecise", "Fast", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
   "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
 function Preset-Path([string]$n) {
@@ -512,9 +513,10 @@ Options for start / restart:
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (zero-pi, Pi's /model) and on a restart; off again after stop
-  -Precise / -NoPrecise          Qwen3.8 Flash Next's precise mode (BF16 hyper-connection rows and router, two int8
-                                 passes everywhere): KL 0.0105 -> 0.0060 at 3.5K tokens (under the 0.015 limit),
-                                 prompts about half as fast; other models are unchanged. Kept like -Npu
+  -Fast / -Precise               Qwen3.8 Flash Next's fast mode: about 1.7x the prompt speed, less exact (KL on
+                                 markdown 0.0033 -> 0.0415, prose 0.0073 -> 0.0109). The default is its precise
+                                 mode (BF16 hyper-connection, router and PLE rows, two int8 passes everywhere);
+                                 other models are unchanged. Kept like -Npu; -Precise goes back (-NoPrecise: -Fast)
   -Whisper auto|on|off|<folder>  speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
                                  Qwen3-ASR (default), Gemma 4 E4B or Whisper large-v3 (turbo when large-v3 is not
                                  in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
@@ -1053,8 +1055,8 @@ switch ($Action) {
       if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
         Say "  NPU: on (-Npu on; kept when the model changes and on a restart, off after stop)"
       }
-      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--precise") {
-        Say "  precise mode: on (-Precise; Flash Next; kept like -Npu, -NoPrecise turns it off)"
+      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--fast") {
+        Say "  fast mode: on (-Fast; Flash Next; kept like -Npu, -Precise turns it off)"
       }
       if ((Test-Path $stateFile) -and ($c = (Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
     } else { Say "inferzero server is not running." }
@@ -1171,9 +1173,11 @@ if ($Gpus -lt 0 -or $Gpus -gt 64) { throw "-Gpus: expected 1 to 64 (got $Gpus)" 
 # inside the server) and a restart keep a running server's setting (-Npu off turns it off); a start after stop is off
 # unless -Npu on is given (a restart dropped it: the 27B lost the NPU when -Whisper was added)
 if (-not $Npu -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
-# -Precise: Flash Next's precise mode (serverz --precise), kept the same way (-NoPrecise turns it off)
-if (-not $Precise -and -not $NoPrecise -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--precise") { $Precise = [switch]$true }
-if ($NoPrecise) { $Precise = [switch]$false }
+# -Fast: Flash Next's fast mode (serverz --fast; its precise mode is the default since 2026-11-22), kept the same way
+# (-Precise turns it off; -NoPrecise, the switch of before, is -Fast)
+if ($NoPrecise) { $Fast = [switch]$true }
+if (-not $Fast -and -not $Precise -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--fast") { $Fast = [switch]$true }
+if ($Precise) { $Fast = [switch]$false }
 # -Whisper: kept the same way (with its device; -Whisper off turns it off)
 if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|[^\s|]+)') {
   $Whisper = $Matches[1].Trim('"')
@@ -1209,7 +1213,7 @@ if ($DriverReserveGb -ge 0) {
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
 if ($Gpus -gt 1) { $extra += @("--gpus", $Gpus) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
-if ($Precise) { $extra += "--precise" }
+if ($Fast) { $extra += "--fast" }
 if ($Whisper -and $Whisper -ne "off") {
   $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
   if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
@@ -1237,7 +1241,7 @@ $extra += $optFx.flags
 $extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

@@ -36,6 +36,7 @@ struct GpuWeight {
   int N = 0, K = 0;
   cl_mem raw = nullptr;               // raw GGUF rows
   bool iq3t = false;                  // (IQ3_S rows in pairs of planes, ARC_IQ3S_TILE: its kernels built -DIQ3T)
+  bool w8_mins = false;               // (Q2_K / Q4_K / Q5_K decoded with their mins, not requantized: Flash Next's precise mode)
   cl_mem wq = nullptr, wh = nullptr;  // resident GEMM form (W8, or repacked Q8_0); null = decode just in time
   int gemm_qtype = 0;                 // zero/kernels/gemm.cl QTYPE
   int role = 0;                       // just-in-time W8 staging slot (one per matrix role within a layer)
@@ -94,7 +95,7 @@ struct EngineOptions {
   int qsa = -2;        // ARC_QSA: -1 the model's own attention, 0 full, 1 sparse; -2: ARC_QSA / ARC_QSA_DENSE
   int mtp_vocab = -1;  // ARC_MTP_VOCAB: the drafts' head rows (0: the full head); -1: ARC_MTP_VOCAB
   int h8_q2 = -1;      // ARC_H8_Q2: 0 / 1; -1: ARC_H8_Q2
-  int fn_precise = -1;  // Flash Next's precise mode: 0 / 1; -1: ARC_FN_PRECISE (--precise sets it for the process)
+  int fn_precise = -1;  // Flash Next's precise mode: 0 (the fast mode) / 1; -1: ARC_FN_PRECISE, unset: on (--fast: 0)
   int ctx = 8192;
   int chunk = 0;              // prompt tokens per forward step; 0 = auto
   int min_chunk = 0;          // at least this many (Gemma 4 images: one non-causal block of up to the image limit)
@@ -152,7 +153,7 @@ class TpEngine;
 
 // Flash Next's precise mode for the models that need it: one with AR4_128 experts (AutoRound INT4, pull request #22)
 // runs only in precise mode, so its engine turns the mode on for itself (an FnPreciseHold, an Engine member, read by
-// Engine::fn_precise) without --precise / ARC_FN_PRECISE=1. Per engine since the audit of 2026-11-14: a process-wide
+// Engine::fn_precise) even with --fast / ARC_FN_PRECISE=0. Per engine since the audit of 2026-11-14: a process-wide
 // count made every other Flash Next engine precise while an AR4 model was loaded, the server's dry sizing runs too.
 struct FnPreciseHold {
   bool on = false;
@@ -1176,9 +1177,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     events_.clear();
   }
 
-  void decode_w8(const GpuWeight& w, cl_mem dq, cl_mem dh) { decode_w8(w.raw, w.type, w.N, w.K, dq, dh, w.iq3t); }
+  void decode_w8(const GpuWeight& w, cl_mem dq, cl_mem dh) { decode_w8(w.raw, w.type, w.N, w.K, dq, dh, w.iq3t, w.w8_mins); }
   // (iq3t: the rows tiled, ARC_IQ3S_TILE; the experts (engine_moe.h) never are)
-  void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh, bool iq3t = false) {
+  // (mins: a Q2_K / Q4_K / Q5_K matrix as its own values, scales and mins, gemm.cl's variants 102 / 103, kernels/decode.cl
+  //  -DW8_MINS)
+  void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh, bool iq3t = false, bool mins = false) {
     // (the W8 layout is in groups of 16 rows: a partial last group would write past w8_bytes_q / w8_bytes_h)
     if (N % 16) throw std::runtime_error("decode_w8: N = " + std::to_string(N) + " is not a multiple of 16");
     // big-codebook types decode faster per superblock with the codebook in local memory; the rest per 32-block
@@ -1203,7 +1206,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       run(nm.c_str(), k, 1, &g1, &l1);
       return;
     }
-    cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type) + (iq3t ? " -DIQ3T" : ""), vb ? "decode_w8_vb" : "decode_w8_sb");
+    cl_kernel k = kernel("decode", "-DQT=" + std::to_string(type) + (iq3t ? " -DIQ3T" : "") + (mins ? " -DW8_MINS" : ""),
+                         vb ? "decode_w8_vb" : "decode_w8_sb");
     set_args(k, 0, raw, N, K, tabs_, dq, dh);
     size_t gws[2] = {(size_t)N, (size_t)K / 256}, lws[2] = {lx, 1};
     run(nm.c_str(), k, 2, gws, lws);

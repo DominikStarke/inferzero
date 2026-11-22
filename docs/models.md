@@ -78,7 +78,8 @@ for a 1,064-token image (12.7 s before 2026-10-24), E4B 3.1 s, Qwen3.5 9B / Qwen
 the Qwen encoders of the dense models run their matrix products on two int8 passes, 22-30 % faster (a 768-token
 image 27B 1.26-1.35 s, 9B 1.28-1.30, 4B 0.96-0.97; the 35B and Flash Next keep the f16 encoder).
 KL is the divergence of the next-token distributions from the f32 reference (0 = identical); run-to-run int8
-rounding noise is ~0.0003. The limit kept for every model and change is KL < 0.015. Flash Next's default meets it on short prompts and
-is just above it at 3.5K; its precise mode (`zero-server -Precise`, `--precise`; BF16 hyper-connection rows and router, two int8 passes everywhere)
-stays under it at about half the prompt speed, opt-in (QUEUE.md item "Flash Next KL"). How each number was measured, every change with its before and after, and the
+rounding noise is ~0.0003. The limit kept for every model and change is KL < 0.015. Flash Next's default since 2026-11-22 is its precise mode (BF16
+hyper-connection, router and PLE rows, two int8 passes everywhere, Q4_K prompt rows with their mins), under it: 0.0033
+on 480 tokens of markdown, 0.0073 on 3,584 of prose. Its fast mode (`zero-server -Fast`, `--fast`, the model
+`flash-fast`) reads prompts about 1.7x as fast and reaches 0.0415 on the markdown (0.0109 on the prose). How each number was measured, every change with its before and after, and the
 consistency checks (56 of 56 regression runs bit-identical): **[docs/before-after.md](before-after.md)**.

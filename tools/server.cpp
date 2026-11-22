@@ -987,7 +987,7 @@ int main(int argc, char** argv) {
   std::string model, host = "127.0.0.1", alias;
   int port = 8090;  // (the port zero-server, both launchers and Docker use; 8080 before 2026-11-19, launcher review)
   bool help_all = false;  // (--help all: every option; --help alone: the short page)
-  bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
+  bool swap = true, help = false, web_tools = true, terminal = true, precise = false, fast = false;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   bool whisper_given = false;  // (--whisper on the command line; without it the cache's model is offered, not loaded)
   double whisper_max_min = 180;
@@ -1016,7 +1016,7 @@ int main(int argc, char** argv) {
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"}, {"--driver-reserve-gb", "GiB, 0 to 8, e.g. 0.5"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
-      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
+      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--fast", ""}, {"--npu", "on, off or force"},
       {"--mtp", ""}, {"--mtp-model", "an MTP head .gguf"}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
@@ -1111,6 +1111,7 @@ int main(int argc, char** argv) {
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
     else if (a == "--act256") so.eo.act32_all = false;
     else if (a == "--precise") precise = true;
+    else if (a == "--fast") fast = true;  // (Flash Next's fast mode, ARC_FN_PRECISE=0)
     else if (a == "--npu") {  // (kept by every model switch: so.eo)
       std::string v = next();
       for (char& c : v) c = (char)tolower((unsigned char)c);
@@ -1206,11 +1207,15 @@ int main(int argc, char** argv) {
     }
   }
   if (!help) {
-    // (--precise: Flash Next's precise mode, as ARC_FN_PRECISE=1, read by the engine when it first loads such a model;
-    //  for the whole process, so a model switch keeps it)
+    // (--fast: Flash Next's fast mode, as ARC_FN_PRECISE=0, read by the engine when it first loads such a model; for
+    //  the whole process, so a model switch keeps it. Precise mode is the default since 2026-11-22: --precise, as
+    //  ARC_FN_PRECISE=1, asks for it by name and wins over --fast)
     if (precise) {
       plat::set_env("ARC_FN_PRECISE", "1");
-      zlog::eprintf("precise mode: on (Qwen3.8 Flash Next: BF16 hyper-connection rows and router, two int8 passes)\n");
+    } else if (fast) {
+      plat::set_env("ARC_FN_PRECISE", "0");
+      zlog::eprintf("fast mode: on (Qwen3.8 Flash Next: one int8 pass, about 1.7x the prompt speed, KL up to ~0.05 on "
+                    "markdown and code)\n");
     }
     if (port < 1 || port > 65535) throw std::runtime_error("--port: expected 1..65535 (got " + std::to_string(port) + ")");
     if (host.empty()) throw std::runtime_error("--host: an address or name is required");
@@ -1273,7 +1278,7 @@ int main(int argc, char** argv) {
             "  --mtp                 faster answers with the model's own drafts, the same text\n"
             "  --gpus N              one model over N GPUs (--split layer: by layers; docs/multi-gpu.md)\n"
             "  --slots N             N conversations at once (1..8)\n"
-            "  --precise             Qwen3.8 Flash Next's most accurate mode (prompts about half as fast)\n"
+            "  --fast                Qwen3.8 Flash Next's fast mode (prompts ~1.7x as fast, less exact on code)\n"
             "  --think-budget N      at most N reasoning tokens a reply\n"
             "  --alias NAME          the model's id in the API (default: the file name)\n"
             "  --list-models         the models it can load, as JSON, each with its automatic context\n"
@@ -1378,9 +1383,11 @@ int main(int argc, char** argv) {
             "  --attn-f32            f32 attention (tests)\n"
             "  --act256              one activation scale per 256 values in the prompt GEMMs (not 32; faster on XMX\n"
             "                        GPUs perhaps, less accurate: check the KL first)\n"
-            "  --precise             Qwen3.8 Flash Next's precise mode (as ARC_FN_PRECISE=1): BF16 hyper-connection rows and\n"
-            "                        router, two int8 passes everywhere: KL 0.0105 -> 0.0060 at 3.5K tokens, prompts about\n"
-            "                        half as fast; other models are unchanged. With ARC_XCPU (the CPU computing missed\n"
+            "  --fast                Qwen3.8 Flash Next's fast mode (as ARC_FN_PRECISE=0): one int8 pass, Q8_0 rows for the\n"
+            "                        PLE block, requantized Q4_K prompt rows: about 1.7x the prompt speed, KL on markdown\n"
+            "                        0.0033 -> 0.0415, prose 0.0073 -> 0.0109; other models are unchanged. The default is\n"
+            "                        the precise mode (--precise: BF16 hyper-connection, router and PLE rows, two int8 passes\n"
+            "                        everywhere, f16 keys and values). With ARC_XCPU (the CPU computing missed\n"
             "                        experts: the default on discrete 16-lane cards) the CPU's experts run one pass by default;\n"
             "                        ARC_XCPU_Q2=1: both (exact)\n"
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"

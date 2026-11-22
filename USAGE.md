@@ -294,12 +294,15 @@ engine's logits bit-identical alone, interleaved or batched). `ARC_NO_BATCH=1` t
 same folder (or use `zero-pi flash` / `zero-server start -Model flash`). The first start writes a 56 GB expert file
 to `%USERPROFILE%\.inferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
-9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
-reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. That is accepted for text work such as
-summaries, where it does not change what is said. For work that needs exactness (code, numbers, quotes), its precise
-mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `zero-server start -Model flash -Precise`
-(`zero-pi flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
-`-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). The model file has no MTP
+9-32K, ~123 at 125K, in its fast mode (below). The automatic context is 131,072 in the fast mode and 106,496 in the
+precise one; up to 262,144 with `--ctx`. Since 2026-11-22 it runs in its precise mode by default: KL against the CPU
+reference 0.0033 on 480 tokens of markdown and 0.0073 on 3,584 of prose, under the 0.015 limit, with prompts at about
+60 % of the fast mode's speed (the laptop, 3,584 tokens: 74.8 against 127.7 tokens/s). In precise mode the
+system-prompt cache and saved conversations are off. Its fast mode is for text work such as summaries, where it does
+not change what is said (0.0109 on the prose), but it is less exact on code and tables (0.0415 on the markdown):
+`zero-server start -Model flash -Fast` (`zero-pi flash --fast`, the model `flash-fast`, the launcher's "Precise mode"
+switch off; kept on a restart and a model switch like `-Npu`, `-Precise` goes back; the server's own option
+`--fast`, or `ARC_FN_PRECISE=0`). The model file has no MTP
 block, but its MTP head as a file of its own works: put `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (2.2 GB, from
 [SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF](https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF),
 the base model's head made for llama.cpp; the launcher's Get models takes the link; its Q8_0 head
