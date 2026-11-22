@@ -47,6 +47,71 @@ inline bool integer_only(const Json& sc) {
   for (const Json& x : ty.items()) { num = num || x.str() == "number"; in = in || x.str() == "integer"; }
   return in && !num;
 }
+// code point cp as UTF-8 onto o
+inline void put_utf8(std::string& o, uint32_t cp) {
+  if (cp < 0x80) {
+    o += (char)cp;
+  } else if (cp < 0x800) {
+    o += (char)(0xC0 | (cp >> 6));
+    o += (char)(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    o += (char)(0xE0 | (cp >> 12));
+    o += (char)(0x80 | ((cp >> 6) & 0x3F));
+    o += (char)(0x80 | (cp & 0x3F));
+  } else {
+    o += (char)(0xF0 | (cp >> 18));
+    o += (char)(0x80 | ((cp >> 12) & 0x3F));
+    o += (char)(0x80 | ((cp >> 6) & 0x3F));
+    o += (char)(0x80 | (cp & 0x3F));
+  }
+}
+// the code point at byte p of UTF-8 text t (a broken sequence: its first byte as it is)
+inline uint32_t utf8_at(const std::string& t, size_t p) {
+  const unsigned char c = (unsigned char)t[p];
+  const int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+  if (n == 0 || p + n >= t.size()) return c;
+  uint32_t cp = c & (0x3F >> n);
+  for (int k = 1; k <= n; ++k) {
+    const unsigned char d = (unsigned char)t[p + k];
+    if ((d & 0xC0) != 0x80) return c;
+    cp = (cp << 6) | (d & 0x3F);
+  }
+  return cp;
+}
+// whether `pend`, an escape not finished yet (from its backslash: "\", "\u00", "\ud83d\ud"), can still become the
+// character at byte p of `name`: one of the ways JSON writes it (\uXXXX in either case, a surrogate pair above
+// U+FFFF, or its short form such as \n)
+// (a printable ASCII character other than " and \: a \u escape of it is refused, see Checker::string)
+inline bool plain_ascii(uint32_t cp) { return cp >= 0x20 && cp < 0x7F && cp != '"' && cp != '\\'; }
+inline bool escape_can_be(const std::string& pend, const std::string& name, size_t p) {
+  if (p >= name.size()) return false;
+  const uint32_t cp = utf8_at(name, p);
+  std::vector<std::string> forms;
+  char b[16];
+  if (cp >= 0x10000) {
+    const uint32_t v = cp - 0x10000;
+    snprintf(b, sizeof b, "\\u%04x\\u%04x", (unsigned)(0xD800 + (v >> 10)), (unsigned)(0xDC00 + (v & 0x3FF)));
+  } else {
+    snprintf(b, sizeof b, "\\u%04x", (unsigned)cp);
+  }
+  if (!plain_ascii(cp)) forms.push_back(b);
+  const char* sh = cp == '"' ? "\\\"" : cp == '\\' ? "\\\\" : cp == '/' ? "\\/" : cp == '\b' ? "\\b" : cp == '\f' ? "\\f"
+                 : cp == '\n' ? "\\n" : cp == '\r' ? "\\r" : cp == '\t' ? "\\t" : nullptr;
+  if (sh) forms.push_back(sh);
+  for (const std::string& fm : forms) {
+    if (pend.size() > fm.size()) continue;
+    bool ok = true;
+    for (size_t k = 0; k < pend.size() && ok; ++k) ok = tolower((unsigned char)pend[k]) == tolower((unsigned char)fm[k]);
+    if (ok) return true;
+  }
+  return false;
+}
+// whether a string being written (its decoded text so far `got`, and `pend`, an unfinished escape or "") can still
+// become `name`
+inline bool can_become(const std::string& got, const std::string& pend, const std::string& name) {
+  if (name.compare(0, got.size(), got) != 0) return false;
+  return pend.empty() || escape_can_be(pend, name, got.size());
+}
 // the literal t from i: DONE when all of it is there, PARTIAL when s ends inside it
 inline Res literal(const std::string& s, size_t& i, const char* t) {
   for (const char* p = t; *p; ++p, ++i) {
@@ -119,9 +184,27 @@ class Checker {
     const char c = s[i];
     // enum / const: the value's text must be (a prefix of) one of the allowed values' JSON text
     if (sc["enum"].is_array() || sc.has("const")) {
-      std::vector<std::string> opts;
-      if (sc.has("const")) opts.push_back(sc["const"].dump());
-      for (const Json& e : sc["enum"].items()) opts.push_back(e.dump());
+      std::vector<std::string> opts, strs;  // (strs: the string options' own text, compared decoded, #80)
+      auto add = [&](const Json& e) {
+        if (e.is_string()) strs.push_back(e.str());
+        else opts.push_back(e.dump());
+      };
+      if (sc.has("const")) add(sc["const"]);
+      for (const Json& e : sc["enum"].items()) add(e);
+      if (c == '"' && !strs.empty()) {
+        size_t j = i;
+        std::string got, pend;
+        const Res r = string(s, j, &got, &pend);
+        if (r == FAIL) return FAIL;
+        if (r == DONE) {
+          if (std::find(strs.begin(), strs.end(), got) == strs.end()) return FAIL;
+          i = j;
+          return DONE;
+        }
+        for (const std::string& o : strs)
+          if (can_become(got, pend, o)) { i = s.size(); return PARTIAL; }
+        return FAIL;
+      }
       const std::string rest = s.substr(i);
       bool partial = false;
       for (const std::string& o : opts) {
@@ -167,28 +250,74 @@ class Checker {
     }
     return DONE;
   }
-  // a string; its decoded text goes to `out` when given
-  static Res string(const std::string& s, size_t& i, std::string* out) {
+  // the 4 hex digits of a \u escape at s[p..]: their value, -1 when s ends first, -2 when one is not a hex digit
+  static long hex4(const std::string& s, size_t p) {
+    long v = 0;
+    for (size_t k = 0; k < 4; ++k) {
+      if (p + k >= s.size()) return -1;
+      const int c = tolower((unsigned char)s[p + k]);
+      if (!isxdigit(c)) return -2;
+      v = v * 16 + (c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+    return v;
+  }
+  // a string; its decoded text (UTF-8, \u escapes and surrogate pairs decoded: #80, 2026-11-22) goes to `out` when
+  // given, and on PARTIAL inside an escape, the escape's text so far to `pend` (else it is left empty)
+  static Res string(const std::string& s, size_t& i, std::string* out, std::string* pend = nullptr) {
+    if (pend) pend->clear();
     if (s[i] != '"') return FAIL;
     ++i;
+    auto partial = [&](size_t from) {
+      if (pend) *pend = s.substr(from);
+      i = s.size();
+      return PARTIAL;
+    };
     while (i < s.size()) {
       const unsigned char c = (unsigned char)s[i];
       if (c == '"') { ++i; return DONE; }
       if (c < 0x20) return FAIL;
       if (c == '\\') {
-        if (i + 1 >= s.size()) { i = s.size(); return PARTIAL; }
+        if (i + 1 >= s.size()) return partial(i);
         const char e = s[i + 1];
         if (e == 'u') {
-          for (size_t k = 2; k < 6; ++k) {
-            if (i + k >= s.size()) { i = s.size(); return PARTIAL; }
-            if (!isxdigit((unsigned char)s[i + k])) return FAIL;
+          const long v = hex4(s, i + 2);
+          if (v == -2) return FAIL;
+          if (v == -1) return partial(i);
+          uint32_t cp = (uint32_t)v;
+          size_t len = 6;
+          if (cp >= 0xD800 && cp <= 0xDBFF) {  // (a high surrogate: its low one follows as \uDC00..\uDFFF)
+            if (i + 6 >= s.size()) return partial(i);
+            if (s[i + 6] == '\\') {
+              if (i + 7 >= s.size()) return partial(i);
+              if (s[i + 7] == 'u') {
+                const long lo = hex4(s, i + 8);
+                if (lo == -2) return FAIL;
+                if (lo == -1) return partial(i);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                  cp = 0x10000 + ((cp - 0xD800) << 10) + ((uint32_t)lo - 0xDC00);
+                  len = 12;
+                } else {
+                  cp = 0xFFFD;
+                }
+              } else {
+                cp = 0xFFFD;
+              }
+            } else {
+              cp = 0xFFFD;  // (a lone surrogate: the replacement character, as a decoder gives)
+            }
+          } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+          } else if (plain_ascii(cp)) {
+            // (a printable ASCII character needs no escape: refused, so that a model whose next word does not fit
+            //  writes the letter itself, not t after t (the 4B on #80's schema did))
+            return FAIL;
           }
-          if (out) *out += '?';
-          i += 6;
+          if (out) put_utf8(*out, cp);
+          i += len;
           continue;
         }
         if (!strchr("\"\\/bfnrt", e)) return FAIL;
-        if (out) *out += e == 'n' ? '\n' : e == 't' ? '\t' : e;
+        if (out) *out += e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e == 'b' ? '\b' : e == 'f' ? '\f' : e;
         i += 2;
         continue;
       }
@@ -223,23 +352,22 @@ class Checker {
       }
       first = false;
       if (s[i] != '"') return FAIL;
-      std::string key;
-      size_t k0 = i;
-      const Res kr = string(s, i, &key);
+      std::string key, pend;
+      const Res kr = string(s, i, &key, &pend);
       if (kr == FAIL) return FAIL;
-      // the key: one of the listed properties not used yet (a prefix of one while it is still being written)
+      // the key: one of the listed properties not used yet (one it can still become while it is being written, an
+      // unfinished escape included: "message_\u00" is not on its way to "message_kind", #80)
       auto allowed = [&](const std::string& k, bool prefix) {
         if (std::find(seen.begin(), seen.end(), k) != seen.end() && !prefix) return false;
         if (any_key) return true;
         for (const auto& [name, v] : props.entries()) {
           (void)v;
           if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
-          if (prefix ? name.compare(0, k.size(), k) == 0 : name == k) return true;
+          if (prefix ? can_become(k, pend, name) : name == k) return true;
         }
         return false;
       };
       if (kr == PARTIAL) return allowed(key, true) ? PARTIAL : FAIL;
-      (void)k0;
       if (!allowed(key, false)) return FAIL;
       seen.push_back(key);
       if (!ws(s, i)) return FAIL;

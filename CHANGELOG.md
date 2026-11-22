@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-22: structured output no longer stops on an escape (#80)
+
+- **A JSON schema answer could stop mid-key with invalid JSON** (StealthDrifter, #80: `{"message_\u000` for the
+  key `message_kind`). The constraint let an unfinished `\u` escape through as if it could still become the key, and
+  a finished one always read as `?`, so nothing could follow.
+  - `\uXXXX` escapes, surrogate pairs included, are now decoded to UTF-8.
+  - In keys and in enum / const strings, an unfinished escape is allowed only when it can still become the next
+    character of a name that fits. Enum and const strings are compared by their decoded text, so `café`
+    matches "café".
+  - A `\u` escape of a plain printable ASCII character (`t` for `t`) is refused: JSON allows it, but a model
+    whose next word did not fit fell back to them letter by letter. It now writes the letter.
+- **Checked:**
+  - the checker's tests (`tests/test_api_compat.cpp`), including his schema and the same object inside anyOf;
+  - the 4B at temperature 0 with seed 181: 8 of 8 answers valid, plain keys and `"story_turn"`.
+- **For tests:** `ARC_DEBUG_JSON=1` (with `ARC_LOG_LEVEL=debug`) logs each token the constraint refused, with the
+  token taken instead.
+
 ## 2026-11-22: Flash Next runs in its precise mode by default, now exact where it was not
 
 - **Precise mode is the default for Qwen3.8 Flash Next** (the user's choice). On 480 tokens of markdown its KL

@@ -731,11 +731,21 @@
           if (jc->check(ans) == jcon::DONE) {
             t = stop_ids_.empty() ? tok_.eos : stop_ids_.front();  // the value is complete: end the answer
           } else {
+            // (ARC_DEBUG_JSON=1: each refused first choice in the log, with the answer's last characters and the token
+            //  taken instead)
+            static const bool dbg_json = getenv("ARC_DEBUG_JSON") != nullptr;
+            int first = -1;
+            bool first_ok = true;
             t = sampler.sample_allowed(logits, gen, [&](int tok) {
               if (tok_.is_special(tok)) return false;  // (control tokens are never part of the JSON text)
               const std::string pc = tok_.piece(tok);
-              return !pc.empty() && jc->check(ans + pc) != jcon::FAIL;
+              const bool ok = !pc.empty() && jc->check(ans + pc) != jcon::FAIL;
+              if (first < 0) { first = tok; first_ok = ok; }
+              return ok;
             });
+            if (dbg_json && first >= 0 && !first_ok)
+              LOG_DBG("json: ...%s | [%s] refused, [%s] taken\n", ans.substr(ans.size() > 40 ? ans.size() - 40 : 0).c_str(),
+                      tok_.piece(first).c_str(), t >= 0 ? tok_.piece(t).c_str() : "-");
             if (t < 0) t = stop_ids_.empty() ? tok_.eos : stop_ids_.front();
           }
         } else {

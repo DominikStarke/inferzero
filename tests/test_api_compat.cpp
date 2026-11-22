@@ -53,6 +53,36 @@ int main() {
     Checker r(ref, false);
     expect(r.check("[{\"x\": -1.5e3}, {\"x\": 2}]") == jcon::DONE, "schema: $ref items");
     expect(r.check("[{\"y\": 1}]") == jcon::FAIL, "schema: $ref unknown key");
+    // escapes in keys and enums (#80, StealthDrifter: "message_\u000" passed as a prefix of message_kind, and a
+    // finished \u escape read as '?', so the answer stopped with no token allowed)
+    Json mk = Json::parse(R"({"type":"object","properties":{"message_kind":{"type":"string","enum":["story_turn"]},
+      "content":{"type":"string"}},"required":["message_kind","content"],"additionalProperties":false})");
+    Checker m(mk, false);
+    expect(m.check("{\"message_\\u000") == jcon::FAIL, "escape: a key's \\u escape that cannot become the next character");
+    expect(m.check("{\"message_\\") == jcon::FAIL && m.check("{\"message_\\u006b") == jcon::FAIL,
+           "escape: a printable ASCII letter escaped is refused (the model writes the letter)");
+    expect(m.check("{\"message_kind\": \"story_turn\", \"content\": \"\\u00e9\\ud83d\\ude00 \\u0027\"}") == jcon::FAIL,
+           "escape: \\u0027 refused in a value too");
+    expect(m.check("{\"message_kind\": \"story_turn\", \"content\": \"\\u00e9\\ud83d\\ude00\\n\\\"\"}") == jcon::DONE,
+           "escape: a string with \\u00e9, a surrogate pair and short escapes");
+    Json cafe = Json::parse(R"({"type":"object","properties":{"k":{"enum":["caf\u00e9","x\"y"]}},"required":["k"]})");
+    Checker cf(cafe, false);
+    expect(cf.check("{\"k\": \"caf\\u00e9\"}") == jcon::DONE && cf.check("{\"k\": \"caf\xC3\xA9\"}") == jcon::DONE,
+           "escape: an enum value with \\u00e9 or the raw UTF-8");
+    expect(cf.check("{\"k\": \"caf\\u00") == jcon::PARTIAL && cf.check("{\"k\": \"caf\\u00e") == jcon::PARTIAL &&
+           cf.check("{\"k\": \"caf\\u00f") == jcon::FAIL, "escape: an enum prefix inside an escape, and one that cannot match");
+    expect(cf.check("{\"k\": \"x\\\"y\"}") == jcon::DONE && cf.check("{\"k\": \"x\\") == jcon::PARTIAL, "escape: a quote in an enum value");
+    expect(m.check("{\"message_kind\": \"story_turn\", \"content\": \"x\", \"extra\": 1}") == jcon::FAIL,
+           "additionalProperties false: another key refused");
+    // the same object inside anyOf under "reply" (#80 also saw extra keys there)
+    Json an = Json::parse(R"({"type":"object","properties":{"reply":{"anyOf":[{"type":"object","properties":{
+      "message_kind":{"type":"string","enum":["story_turn"]},"content":{"type":"string"}},"required":["message_kind","content"],
+      "additionalProperties":false},{"type":"null"}]}},"required":["reply"],"additionalProperties":false})");
+    Checker a(an, false);
+    expect(a.check("{\"reply\": {\"message_kind\": \"story_turn\", \"content\": \"x\", \"ex") == jcon::FAIL,
+           "anyOf: an extra key under additionalProperties false refused");
+    expect(a.check("{\"reply\": {\"message_kind\": \"story_turn\", \"content\": \"x\"}}") == jcon::DONE, "anyOf: the object done");
+    expect(a.check("{\"reply\": null}") == jcon::DONE, "anyOf: the null branch");
   }
   // ---- request translation
   {
