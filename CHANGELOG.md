@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-23: self-audit fixes: the long-context room, the big tile per GPU kind, the free's wait
+
+- **The long-context room** (cards that cannot hold the model):
+  - The MTP part is counted only when the block really loads. It was counted for a file without the block, or for
+    a layer split's earlier stage: at 262K on the 27B that sent ~0.6 GiB of weights to RAM for nothing.
+  - Every slot past the first counts its own recurrent states, two copies with MTP. With `--slots 4 --mtp` at 92K
+    on a 27B, ~0.85 GiB was missing, enough to page.
+  - The driver's credit ends once the slots' KV together passes one 32K context, as the old rule counts it. Before,
+    2 slots of 32K kept the whole credit.
+  - One slot is as before.
+- **The A770's big-tile defaults per GPU kind.** In a process with an iGPU and a discrete 8-lane card (a layer
+  split, with `ARC_GEMM_XW_BIG=1` on the iGPU), the big tile's shape and the fused gate / up default were decided
+  once, for whichever GPU came first. Each kind now gets its own. One GPU is as before.
+- **The failsafe:** with `ARC_GPU_WAIT_S` set, a buffer's free that waits past the limit is a hang too.
+- Not measured: there is no GPU run on the laptop for these. A single GPU and a single slot take the same paths as
+  before.
+
 ## 2026-11-23: a GPU failsafe: a hang named and ended, and one hang stays one
 
 - **New: exit codes for GPU faults.** A GPU fault now ends the process with a code of its own:

@@ -631,8 +631,11 @@
       double rec = 0;
       for (int il = 0; il < hp.n_layer; ++il)
         if (hp.recurrent(il)) rec += (double)(state_bytes() + conv_bytes());
+      // (and since the audit of 2026-11-23: every slot past the first its own live states, add_slots' copies of S and
+      //  conv_state, with MTP S_next and conv_pre too; one slot as before)
       const double snaps = (double)std::max(opt.state_snaps, 0) * (rec + (opt.mtp ? (double)hp.n_embd * 4 : 0.0)) *
-                               std::max(opt.slots, 1) + (opt.mtp ? rec : 0.0);
+                               std::max(opt.slots, 1) + (opt.mtp ? rec : 0.0) +
+                           (double)(std::max(opt.slots, 1) - 1) * rec * (opt.mtp ? 2.0 : 1.0);
       // (the kernels, the driver's part beyond driver_slack and the small buffers: 0.25 GiB since 2026-11-23, 0.4
       //  before. d-dorok's B580, the 27B at 4K, ARC_HOST_KEEP_GB (the room) 1.0 / 0.75 / 0.6 / 0.5: generation 12.87 /
       //  13.22 / 15.18 / 9.94 tok/s, 0.5 paging; the automatic room was ~1.28 (9.69 tok/s). With the exact activations
@@ -650,11 +653,14 @@
       //  3.47 GiB against 4.45 used (buffers 1.02 + context 3.43), 0.32 GiB of the weights in RAM, 15.59 GiB on a
       //  15.11 GiB share: paging, the prompt 645 tok/s. With these the room is ~4.3 there; at 4K (d-dorok's B580, #37)
       //  it is as before but for the MTP parts and apart_ (+0.05-0.17))
-      // (only when the MTP block loads (mtp_on: --mtp and a model with the block); its KV per slot, as kv_est's)
+      // (only when the MTP block loads: load_mtp's own test, --mtp, the block in the file, the last stage of a layer
+      //  split (mtp_on alone counted it for a file without the block, audit 2026-11-23); its KV per slot, as kv_est's)
+      const bool mtp_loads = mtp_on && pp_last() && f_.find("blk." + std::to_string(hp.n_layer) + ".nextn.eh_proj.weight");
       const double mtp_part =
-          mtp_on ? (double)ctx * hp.n_head_kv * (double)kv_pos_bytes() * std::max(opt.slots, 1) + 0.12 * GiB : 0.0;
+          mtp_loads ? (double)ctx * hp.n_head_kv * (double)kv_pos_bytes() * std::max(opt.slots, 1) + 0.12 * GiB : 0.0;
       const double apart = 4.0 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4.0;
-      const double kv_long = std::max(0.0, kv_est(ctx, true) - kv_est(32768, true)) * std::max(opt.slots, 1);
+      // (the slots' KV together past one 32K context, as keep_extra counts it: 2 slots of 32K used the credit up too)
+      const double kv_long = std::max(0.0, kv_est(ctx, true) * std::max(opt.slots, 1) - kv_est(32768, true));
       const double credit = std::max(0.0, driver_slack() - kv_long);
       const double room = std::min(keep_def, std::max(0.0, need + mtp_part + apart - credit));
       if (getenv("ARC_FIT_PARTS") && !opt.dry)  // (diagnostics: the tight plan's room by part, with runz's memory line)

@@ -292,8 +292,18 @@
   //  and 64 x 16 4x4 / 8x4 / 8x2 at CPS 1, 32 x 16 8x4 at CPS 1 or 2; CPS 2 spills at 32 x 32 (3.1-3.6 KB) and 64 x 16
   //  8x2 (0.6 KB). Unset: 32 x 32, 4 x 4, CPS 1, the default)
   struct XwBig { int tm = 32, nc = 2, x = 4, y = 4, cps = 1; };
+  // (one per GPU kind: a process with an iGPU and a discrete card (a layer split) evaluated it once, for whichever ran
+  //  first; audit 2026-11-23. Each kind's from its own thread's GPU, zrt::cur)
   static const XwBig& xw_big_cfg() {
-    static const XwBig c = [] {
+    if (zrt::integrated()) {
+      static const XwBig ci = xw_big_make();
+      return ci;
+    }
+    static const XwBig cd = xw_big_make();
+    return cd;
+  }
+  static XwBig xw_big_make() {
+    {
       XwBig b;
       if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {  // (TMxCOLS, each 16 / 32 / 64: xw_peak --all's forms)
         int tm = 0, cols = 0;
@@ -330,8 +340,7 @@
         b = XwBig();
       }
       return b;
-    }();
-    return c;
+    }
   }
   std::string xw_big_key() const {
     const XwBig& b = xw_big_cfg();
@@ -347,8 +356,16 @@
   // chunk order either way: bit for bit (checked at start with both). Unset: ARC_GEMM_XW_SLM_WG's for all.
   // A GEMM's input is written in the order of the GEMM that reads it (xw_role_, the role in flight: h8_matmul1,
   // xw_gu_matmul8, rmsnorm_h8 for its next GEMM), so the FFN's input and the attention's (both K = n_embd) can differ
-  static const XwBig& xw_big_gu_cfg() {
-    static const XwBig c = [] {
+  static const XwBig& xw_big_gu_cfg() {  // (one per GPU kind, as xw_big_cfg)
+    if (zrt::integrated()) {
+      static const XwBig ci = xw_big_gu_make();
+      return ci;
+    }
+    static const XwBig cd = xw_big_gu_make();
+    return cd;
+  }
+  static XwBig xw_big_gu_make() {
+    {
       XwBig b = xw_big_cfg();
       if (const char* w = getenv("ARC_GEMM_XW_SLM_WG_GU")) {
         int x = 0, y = 0;
@@ -363,8 +380,7 @@
         b.y = 8;
       }
       return b;
-    }();
-    return c;
+    }
   }
   static bool xw_gu_role(int r) { return r == 7 || r == 8; }  // (engine_load.h weight_role: ffn_gate, ffn_up)
   // ARC_GEMM_XW_SLM_WG_ROLES="group=X,Y;..." (8 lanes, 2026-11-23, opt-in, a test of the A770's per-GEMM shapes):
@@ -762,7 +778,7 @@
     // (8 lanes: on by default on discrete cards, Alchemist, since 2026-11-23: skipzx-lab's A770 (Linux, #45); Windows to
     //  confirm (hansong80); =0 off; the 140T: =1)
     static const int gu8_e = getenv("ARC_GEMM_XW_GU") ? atoi(getenv("ARC_GEMM_XW_GU")) : -1;
-    static const bool gu8_asked = gu8_e > 0 || (gu8_e < 0 && !zrt::integrated());
+    const bool gu8_asked = gu8_e > 0 || (gu8_e < 0 && !zrt::integrated());  // (per call: this GPU's kind, audit 2026-11-23)
     if (xw_lanes() == 8) return gu8_asked && xw_ && h8_row() && xw_gu_matmul8(gw, uw, Mp, C, ldc, act32);
     if (!xw_gu_env() || !xw_ || xw_lanes() != 16 || !xw_gu_shape(xw_nc()) || !h8_row()) return false;
     if (gw.N != uw.N || gw.K != uw.K || Mp % xw_tm() || gw.K % 256 || gw.N % (16 * (xw_nc() / 2))) return false;

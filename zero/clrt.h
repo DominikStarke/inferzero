@@ -977,7 +977,16 @@ inline cl_mem clCreateSubBuffer(cl_mem parent, cl_mem_flags, cl_buffer_create_ty
 inline cl_int clReleaseMemObject(cl_mem m) {
   if (!m) return CL_SUCCESS;
   zrt::Dev& d = m->d ? *m->d : zrt::D();
-  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zrt::mem_free(zrt::ctx_of(d), m->ptr); d.device_bytes -= m->size; }
+  if (m->owner) {
+    // (its result ignored as before: a split model frees its shards after a fault, engine_tp.h. With ARC_GPU_WAIT_S
+    //  set, a free that waits past it is a hang too: audit 2026-11-23)
+    const uint64_t lim = zrt::wait_limit_ns();
+    if (zeCommandListHostSynchronize(zrt::imm(d), lim) == ZE_RESULT_NOT_READY && lim != UINT64_MAX)
+      gpufail::gpu_fatal(gpufail::Hang, "GPU " + std::to_string(d.index) + ": the work before a buffer's free did not finish within " +
+                                            std::to_string(lim / 1000000000ull) + " s (ARC_GPU_WAIT_S)");
+    zrt::mem_free(zrt::ctx_of(d), m->ptr);
+    d.device_bytes -= m->size;
+  }
   d.mems.erase(m);
   delete m;
   return CL_SUCCESS;
