@@ -449,13 +449,21 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
       // or integrated; a GPU without it, as the 125H, never comes here)
       xe2_ = true;
-      // (once per process: a split model's GPUs are all the same device (ClRt::open_devices), the check's settings
-      //  come from the environment; 4 B60s loaded in 8.7-14.9 s, each shard checking again)
+      // (once per kind of GPU (cl_.device_id: its name and driver) in a process: a tensor split's GPUs are all one
+      //  device (ClRt::open_devices), and 4 B60s loaded in 8.7-14.9 s with each shard checking again. Once per
+      //  process before the audit of 2026-11-23 (the Researcher): a layer split of unlike cards (a B60 + an A770, #57)
+      //  gave the second card the first one's results, the A770 the B60's 2D block loads, its own XMX kernels unchecked)
+      struct XmxKnown { int xmx = -1, x2d = 0, slow = 0; };
       static std::mutex xmx_mu;
-      static int xmx_known = -1, x2d_known = 0, slow_known = 0;
+      static std::map<std::string, XmxKnown> xmx_by_dev;
+      XmxKnown got;
       {
         std::lock_guard<std::mutex> g(xmx_mu);
-        if (xmx_known < 0) {
+        XmxKnown& kn = xmx_by_dev[cl_.device_id];
+        if (kn.xmx < 0) {
+          int& xmx_known = kn.xmx;
+          int& x2d_known = kn.x2d;
+          int& slow_known = kn.slow;
           // (zero/xe2/engine_xe2.h: the check with the 2D block loads first, where they are wanted; a build that fails
           //  or differs leaves them out and checks again, so XMX itself is not lost to them)
           x2d_ = x2d_wanted();
@@ -470,11 +478,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
           if (xmx_known) zlog::eprintf("inferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
                                  x2d_known ? ", with 2D block loads" : "");
         }
+        got = kn;
       }
-      xmx_ = xmx_known == 1;
-      x2d_ = x2d_known == 1;
+      xmx_ = got.xmx == 1;
+      x2d_ = got.x2d == 1;
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
-      if (slow_known) xe2_ = false;
+      if (got.slow) xe2_ = false;
     }
     // (the H8 kernels this engine runs, checked against DP4a apart from the rest of XMX and kept per kind of check, not
     //  once per process: a server that loads the 35B (no H8) and then the 27B (H8 + 4 column groups) checks those then;
@@ -482,7 +491,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (!opt.dry && xmx_ && h8_) {
       static std::mutex h8_mu;
       static std::map<std::string, bool> h8_known;
-      const std::string key = std::to_string(h8_qtype()) + "|cg" + std::to_string(h8_cg_for(64)) + (p140_ ? "|140t" : "") +
+      // (with the GPU's kind: a 140T and an A770, or a B70 and a B60, in one process share no check; audit 2026-11-23)
+      const std::string key = cl_.device_id + "|" + std::to_string(h8_qtype()) + "|cg" + std::to_string(h8_cg_for(64)) + (p140_ ? "|140t" : "") +
                               (h8_env() ? "|env" : "") + (x2d_ ? "|2d" : "");
       std::lock_guard<std::mutex> g(h8_mu);
       auto it = h8_known.find(key);

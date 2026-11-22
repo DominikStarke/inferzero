@@ -13,6 +13,11 @@
 - **The A770's big-tile defaults per GPU kind.** In a process with an iGPU and a discrete 8-lane card (a layer
   split, with `ARC_GEMM_XW_BIG=1` on the iGPU), the big tile's shape and the fused gate / up default were decided
   once, for whichever GPU came first. Each kind now gets its own. One GPU is as before.
+- **The XMX start check runs once per kind of GPU, not once per process** (the Researcher's part of the audit). In a
+  layer split of unlike cards, the second card took the first one's results:
+  - a B60 first gave the A770 2D block loads, which Alchemist has not, and its own XMX kernels went unchecked;
+  - an A770 first took the B60's 2D loads away, or all of its XMX if its own check failed.
+  The H8 kernels' check is kept per GPU kind too. A tensor split of one kind still checks once.
 - **The failsafe:** with `ARC_GPU_WAIT_S` set, a buffer's free that waits past the limit is a hang too.
 - Not measured: there is no GPU run on the laptop for these. A single GPU and a single slot take the same paths as
   before.
