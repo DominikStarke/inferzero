@@ -953,11 +953,14 @@ struct ModelVariant {
   std::string suffix, option, value;
 };
 static std::map<std::string, bool> model_words(const ModelInfo& m) {
-  return {{"dense", !m.moe}, {"moe", m.moe}, {"qsa", m.qsa}, {"flashnext", m.flashnext}, {"mtp", m.mtp}};
+  // (h8: the prompt GEMMs can run H8 on this model, as Engine::h8_auto_wanted's model half: a dense Qwen3.5 / 3.8,
+  //  not MoE, Gemma, Flash Next or Qwen3; whether the GPU takes H8 is the launchers' PC words)
+  return {{"dense", !m.moe}, {"moe", m.moe}, {"qsa", m.qsa}, {"flashnext", m.flashnext}, {"mtp", m.mtp},
+          {"h8", !m.moe && m.arch == "qwen35"}};
 }
 static std::vector<ModelVariant> variants_of(const ModelInfo& m, const srvstart::OptionCatalog& cat) {
   std::vector<ModelVariant> out;
-  if (!m.supported || !m.vopt.empty() || !cat.has("applies") || !cat.has("variant")) return out;
+  if (!m.supported || !m.vopt.empty() || !cat.has("id") || !cat.has("applies") || !cat.has("variant")) return out;
   const std::map<std::string, bool> words = model_words(m);
   auto list = [](const std::string& s) {
     std::vector<std::string> v;
