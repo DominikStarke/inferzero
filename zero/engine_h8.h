@@ -335,9 +335,11 @@
   // goes (the 27B: 64 of a prompt's 128 h8_act). The same floats, transform and scale: h8_aq_ / h8_asc_ bit for bit.
   // Where it applies: H8R with the f32 copy, one GEMM taking it, a whole row in a work-group (the same limits as
   // rmsnorm_h8); the caller holds an H8Share around the kernel and the GEMM
+  // (on by default on discrete 8-lane cards, Alchemist, since 2026-11-23: skipzx-lab's A770, #45, h8_act 101 -> 75 ms, the 27B
+  //  4K +0.7 %; =0 off, =1 on elsewhere)
   bool h8_out_env() const {
-    static const bool on = getenv("ARC_H8_OUT") && atoi(getenv("ARC_H8_OUT")) != 0;
-    return on;
+    static const int e = getenv("ARC_H8_OUT") ? atoi(getenv("ARC_H8_OUT")) : -1;
+    return e > 0 || (e < 0 && cl_.sg8 && !zrt::integrated());
   }
   bool h8_out_ok(const GpuWeight& next, int K, int Mp, int T) const {
     const int hb = h8_block(K);

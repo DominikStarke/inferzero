@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-23: the A770's prompt defaults: its GEMMs in the work-group order, the fused gate / up at 4 x 8
+
+- **New defaults on discrete Alchemist cards (A770 / A750 / A580):**
+  - the big tile's operands in its work-group order (`ARC_GEMM_XW_WGL`);
+  - the fused gate / up launch (`ARC_GEMM_XW_GU`), at 4 x 8 sub-groups while every other GEMM keeps 4 x 4
+    (`ARC_GEMM_XW_SLM_WG_GU`);
+  - the DeltaNet and attention outputs rotated where they are made (`ARC_H8_OUT`).
+- **Measured:** skipzx-lab's A770 (Linux), the 27B at a 4K prompt, A B B A: 1,585 tok/s with the best settings of
+  before -> **1,604.5 / 1,609.0** with these, about +5 % over the previous default. The Windows pair (hansong80) is
+  still to confirm.
+- Bit for bit the same results (each checked at start). `=0` turns each one off. The Arc 140T and other iGPUs are
+  unchanged.
+- **`ARC_GDN_FUSE2=1` measured slower on the A770** (gdn_recur 338 -> 392 ms, -1.9 %): it stays off.
+
 ## 2026-11-22: the A770's big tile with B from global memory, opt-in (`ARC_GEMM_XW_BG=1`)
 
 - **`ARC_GEMM_XW_BG=1`** (with `ARC_GEMM_XW_WGL=1`): the big tile keeps only A in local memory, and each sub-group
