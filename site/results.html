@@ -168,7 +168,7 @@
         <tr><td>Qwen3.8 27B <small>default room: 0.85-1.02 GiB of it in RAM, computed by the CPU (3.5-4.5 tok/s read over PCIe before)</small></td><td class="n">1,783</td><td class="n">10.3-11.9</td><td>commit 992ea08</td></tr>
       </tbody>
     </table></div>
-    <p class="note">The 27B is a little larger than this card can hold beside its buffers, so part of it is read from RAM over PCIe for every token.</p>
+    <p class="note">The 27B is a little larger than this card can hold beside its buffers, so part of it is read from RAM over PCIe for every token. A second B580 (tenken, Unraid, in Docker, release 2026.11.21.02, <a href="https://github.com/rizagp/inferzero/issues/53">#53</a>): the 27B 4K prompt 2,056 tok/s, generation 14.8 (MTP with 5 drafts +9 %), the full quick sweep with no setting 2 % faster than the defaults.</p>
     <h3 class="sub">The same files with llama.cpp on this card</h3>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">inferzero</th><th class="n">llama.cpp SYCL</th><th class="n">llama.cpp Vulkan</th></tr></thead>
