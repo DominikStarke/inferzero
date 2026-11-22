@@ -88,7 +88,14 @@
   // caches, QSA keys, each slot's), at that length. The same count for every mode: with --mtp the MTP block, its KV
   // rows and the draft buffers are in gpu_bytes and in ctx_bytes / slot_bytes, so it is counted as plain is
   // (2026-11-21, issue #45: one --ctx check for runz and the server; 0 when not even 1024 tokens fit)
-  bool fits_share() const { return (double)gpu_bytes <= (double)device_mem() - driver_slack(); }
+  // (a discrete card with weights in host memory: plan_tight fills the card's whole reported memory, its room
+  //  counting the driver's part (engine_sessions.h), so the check is against that. Against the share less the
+  //  driver's part every such run was "does not fit ... expect paging", the fastest included: d-dorok's B580, the
+  //  27B at ARC_HOST_KEEP_GB 0.6 (15.18 tok/s), where only 0.5 paged; issue #37, 2026-11-23)
+  bool fits_share() const {
+    const bool planned = !zrt::integrated() && host_weight_bytes() > 0;
+    return (double)gpu_bytes <= (double)device_mem() - (planned ? 0.0 : driver_slack());
+  }
   // (the weights plan_tight put in host memory count as the GPU's here: at a smaller context it keeps fewer of them
   //  there, so the GPU's total falls by less than the context's bytes. Without them the first suggestion was not a
   //  fit: skipzx-lab's A770, the 27B --mtp --chunk 1024, 92,752 -> "73,728 fits" -> 15.17 GiB, three steps to 53,248;

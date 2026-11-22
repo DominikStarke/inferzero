@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-23: fewer weights in RAM on 12 GB cards that cannot hold the whole model; no false "does not fit"
+
+- **The automatic room on a discrete card that cannot hold the whole model is smaller,** so fewer of the weights go
+  to host memory. d-dorok's B580 (12 GB) with the 27B at 4K: the automatic room kept 1.02 GiB of weights in RAM
+  (generation 9.69 tok/s), where `ARC_HOST_KEEP_GB=0.6` kept 0.34 (15.18 tok/s) and 0.5 started paging.
+  - A dense model's activations are now counted from the buffers the engine makes (0.37 GiB for the 27B's
+    1,024-token chunks, counted as 0.63 before).
+  - The fixed part is 0.25 GiB instead of 0.4.
+  - The room comes out at ~0.9 GiB there: below the 1.0 that measured 12.87 tok/s, and well above the 0.5 that paged.
+  - To be measured on his card. `ARC_HOST_KEEP_GB` still sets it by hand.
+- **Fixed: "does not fit ... expect paging"** was printed on every run with weights in host memory, the fastest
+  included. The check now uses the limit the planner fills: the card's whole memory.
+
 ## 2026-11-23: the A770's big-tile barrier split, opt-in in the engine (`ARC_GEMM_XW_SPLIT=1`)
 
 - **`ARC_GEMM_XW_SPLIT=1`:** the big tile's barrier between local-memory stages is split into an arrive and a wait,

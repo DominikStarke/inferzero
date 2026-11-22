@@ -606,7 +606,20 @@
         }
       double stage = 0;
       for (const auto& [r, v] : role_max) stage += v * 1.03;
-      const double act = ch * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
+      double act = ch * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
+      if (!hp.moe && !hp.hc && !hp.ds41) {
+        // (a dense model: the buffers alloc_buffers makes a row, with the H8 copies (the f32 one and the rotated
+        //  int8 one) counted whether H8 runs or not, and 10 % more. The rule above counted 0.63 GiB for the 27B's
+        //  1,024-token chunk against 0.37 allocated, and its automatic room kept 1.02 GiB of weights in RAM on
+        //  d-dorok's B580 where 0.34 ran fastest: generation 9.69 -> 15.18 tok/s, issue #37, 2026-11-23)
+        const double mk = (double)aq_max_k(), nhd = (double)hp.n_head * hp.head_dim;
+        const double ldq = nhd * 2 + 2.0 * hp.n_head_kv * hp.head_dim;
+        const double big_w = std::max({(double)hp.conv_dim(), 2.0 * hp.n_ff, ldq});
+        const double row = hp.hce() * 4.0 + mk * (q2mm_ ? 2 : 1) + mk * 4 + mk + mk / 32 * 4 + mk / 16 * 2 + big_w * 4 +
+                           hp.ssm_d_inner * 4.0 + hp.conv_dim() * 4.0 + std::max((double)hp.ssm_d_inner, nhd) * 4 + nhd * 4 +
+                           nhd + hp.n_head * (hp.head_dim / 64) * 4.0 + 2.0 * hp.ssm_nv * 4;
+        act = std::min(act, ch * row * 1.1);
+      }
       // (the layer-major residual: a segment of up to 16K tokens (8K with hc) and a chunk, engine_alloc.h)
       const double seg = std::max(ch, std::floor(std::min((double)ctx, hp.hc ? 8192.0 : 16384.0) / ch) * ch);
       const double resid = (seg + ch) * hp.hce() * 4.0;
@@ -617,7 +630,11 @@
         if (hp.recurrent(il)) rec += (double)(state_bytes() + conv_bytes());
       const double snaps = (double)std::max(opt.state_snaps, 0) * (rec + (opt.mtp ? (double)hp.n_embd * 4 : 0.0)) *
                                std::max(opt.slots, 1) + (opt.mtp ? rec : 0.0);
-      const double need = 0.4 * GiB + act + stage + resid + snaps + kv_est(ctx, true) * std::max(opt.slots, 1) +
+      // (the kernels, the driver's part beyond driver_slack and the small buffers: 0.25 GiB since 2026-11-23, 0.4
+      //  before. d-dorok's B580, the 27B at 4K, ARC_HOST_KEEP_GB (the room) 1.0 / 0.75 / 0.6 / 0.5: generation 12.87 /
+      //  13.22 / 15.18 / 9.94 tok/s, 0.5 paging; the automatic room was ~1.28 (9.69 tok/s). With the exact activations
+      //  above it is ~0.9: below 1.0, a step above the 0.6 that ran fastest and 0.4 above the 0.5 that paged, issue #37)
+      const double need = 0.25 * GiB + act + stage + resid + snaps + kv_est(ctx, true) * std::max(opt.slots, 1) +
                           (double)opt.stream_reserve;
       // (less the driver's reserve, which budget already left out: d-dorok's B580 ran the 27B at 4K with 0.3 GiB
       //  more in use than the card reports (room 0.75 GiB: 7.08 tok/s, 11.64 GiB in use of 11.33) and only fell over
