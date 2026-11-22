@@ -309,6 +309,12 @@
         if (sscanf(w, "%d,%d", &x, &y) == 2 && (x == 2 || x == 4 || x == 8) && (y == 2 || y == 4 || y == 8) && x * y <= 32)
           b.x = x, b.y = y;
         else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG=%s not X,Y with 2 / 4 / 8 each and X x Y <= 32: 4,4\n", w);
+      } else if (!zrt::integrated() && xw_split_env()) {
+        // (4 x 8 on discrete 8-lane cards, Alchemist, with the split barrier since 2026-11-23: skipzx-lab's A770, the
+        //  27B 4K 1,594 -> 1,701 with the split on the per-GEMM shapes, 1,710 with every GEMM at 4 x 8 (gdn_recur and
+        //  attention back to 343 / 133.5 ms); Windows to confirm (hansong80). ARC_GEMM_XW_SLM_WG=4,4 and
+        //  ARC_GEMM_XW_SLM_WG_GU=4,8 give the shapes of before; ARC_GEMM_XW_SPLIT=0 gives them too)
+        b.y = 8;
       }
       if (const char* c2 = getenv("ARC_GEMM_XW_SLM_CPS")) {
         const int v = atoi(c2);
@@ -429,9 +435,12 @@
   // 4 x 8 the barrier a chunk cost 37 %. The same stages in the same order: bit for bit, the start check run with it;
   // where that fails or does not build (no cl_intel_split_work_group_barrier), checked again without it
   bool xw_split_ = false;  // (set by xw_init: the env, then the check)
+  // (on by default on discrete 8-lane cards, Alchemist, since 2026-11-23: skipzx-lab's A770 (Linux, #45), xw_peak +11.9 %
+  //  / +13.8 % at 4x4 / 4x8, the 27B 4K 1,594 -> 1,710 tok/s with the big tile 4x8; Windows to confirm (hansong80);
+  //  =0 off. Where the start check fails: the plain barrier, as before)
   static bool xw_split_env() {
-    static const bool on = getenv("ARC_GEMM_XW_SPLIT") && atoi(getenv("ARC_GEMM_XW_SPLIT")) != 0;
-    return on;
+    static const int e = getenv("ARC_GEMM_XW_SPLIT") ? atoi(getenv("ARC_GEMM_XW_SPLIT")) : -1;
+    return e > 0 || (e < 0 && !zrt::integrated());
   }
   bool xw_ptr() const {
     static const int e = getenv("ARC_GEMM_XW_PTR") ? (atoi(getenv("ARC_GEMM_XW_PTR")) != 0 ? 1 : 0) : -1;

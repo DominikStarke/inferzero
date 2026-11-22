@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-23: the A770 at 1,710 tok/s: its GEMM barrier split, every GEMM at 4 x 8
+
+- **New defaults on discrete Alchemist cards (A770 / A750 / A580):** the big tile's barrier between local-memory
+  stages is split into an arrive and a wait (`ARC_GEMM_XW_SPLIT`), and every GEMM's big tile runs 4 x 8 sub-groups
+  (`ARC_GEMM_XW_SLM_WG`). The work-group order, the fused gate / up and `ARC_H8_OUT` stay on as before.
+- **Measured:** skipzx-lab's A770 (Linux), the 27B at a 4K prompt, A B B A: 1,594.3 / 1,593.1 tok/s with the
+  defaults of before -> **1,710.3 / 1,710.0** (+7.3 %). That is the 1,700 goal. The Windows pair (hansong80) is still
+  to confirm.
+- Bit for bit the same results. If the start check finds the split barrier differing or missing in the driver, the
+  plain barrier is kept. `ARC_GEMM_XW_SPLIT=0` gives the shapes and the barrier of before. The Arc 140T and other
+  iGPUs are unchanged.
+
 ## 2026-11-23: fewer weights in RAM on 12 GB cards that cannot hold the whole model; no false "does not fit"
 
 - **The automatic room on a discrete card that cannot hold the whole model is smaller,** so fewer of the weights go
