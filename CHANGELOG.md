@@ -12,7 +12,7 @@
   - a 42,855-character schema with a 600-value enum: 15.0 / 22.2 s -> 13.3 / 13.2 s for two ~250-token answers;
   - 20 anyOf branches, each starting with a 60-item array, a 1,363-token answer: 18.3 -> 19.1 tok/s.
 
-  StealthDrifter's own 32K schema on the 9B (13x slower before) is still to be measured.
+  Without a schema the same prompts run at 18.6 / 19.7 tok/s, against 19.3 with it: on the laptop the 4B is held by its generation. StealthDrifter's own 32K schema on the 9B (13x slower before) is still to be measured.
 - `ARC_JSON_PREFIX=0` turns the memo and the first-bytes verdicts off; the enum cache stays.
 
 ## 2026-11-22: faster structured output with large schemas (#80)

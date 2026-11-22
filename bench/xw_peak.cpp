@@ -458,7 +458,7 @@ int main(int argc, char** argv) {
   for (const std::string& o : onlys)
     if (std::none_of(cand.begin(), cand.end(), [&](const Variant& v) { return v.name == o; })) printf("--only %s: no such variant\n", o.c_str());
 
-  struct Row { double ms = 0, best = 0; bool ok = true, ran = false; size_t diff = 0; size_t spill = 0; };
+  struct Row { double ms = 0, best = 0; bool ok = true, ran = false; size_t diff = 0; size_t spill = 0; std::string why; };
   std::vector<std::vector<Row>> res(vs.size(), std::vector<Row>(shapes.size()));
   std::vector<cl_kernel> ks(vs.size(), nullptr);
   for (size_t v = 0; v < vs.size(); ++v) {
@@ -475,6 +475,7 @@ int main(int argc, char** argv) {
         for (Row& r : res[v]) r.spill = kp.spillMemSize;
     } catch (const std::exception& e) {
       printf("%s: does not build (%s)\n", vs[v].name.c_str(), e.what());
+      for (Row& r : res[v]) r.why = std::string("does not build: ") + e.what();
     }
   }
 
@@ -512,7 +513,12 @@ int main(int argc, char** argv) {
     const int splits = sh.a != 2 && K > 8192 ? (nsb + 16) / 17 : 1;  // (h8_splits: pieces of 17 superblocks)
     for (size_t v = 0; v < vs.size(); ++v) {
       // (a shape the tile, or the work-group's column sub-groups, do not divide: skipped)
-      if (!ks[v] || M % vs[v].tm || N % (16 * vs[v].nc * vs[v].wgx)) continue;
+      // (each skip says why, under the table: a row of dashes with no reason left skipzx-lab guessing, #45)
+      if (!ks[v]) continue;  // (why: its build, above)
+      if (M % vs[v].tm || N % (16 * vs[v].nc * vs[v].wgx)) {
+        res[v][si].why = "the tile / work-group does not divide " + std::to_string(M) + " x " + std::to_string(N);
+        continue;
+      }
       const Variant& va = vs[v];
       Row& row = res[v][si];
       // (the engine's grid, engine_xw.h xw_run: N / (16 * nc) column blocks, wgx of them a work-group; at most 32
@@ -522,7 +528,10 @@ int main(int argc, char** argv) {
       while (wgy < 8 && (M / tm) % (wgy * 2) == 0) wgy *= 2;
       while (va.wgx * wgy > 32 && wgy > 1) wgy /= 2;
       if (va.wgy) {
-        if ((M / tm) % va.wgy) continue;  // (the fixed work-group does not divide these tokens)
+        if ((M / tm) % va.wgy) {  // (the fixed work-group does not divide these tokens)
+          row.why = std::to_string(va.wgy) + " token sub-groups do not divide " + std::to_string(M / tm) + " token tiles";
+          continue;
+        }
         wgy = va.wgy;
       }
       size_t gws[2] = {(size_t)8 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)8 * va.wgx, (size_t)wgy};
@@ -578,6 +587,7 @@ int main(int argc, char** argv) {
         row.ms = ms[ms.size() / 2], row.best = ms[0], row.ran = true;
       } catch (const std::exception& e) {
         printf("%s on %s: failed (%s)\n", va.name.c_str(), sh.name, e.what());
+        row.why = std::string("failed: ") + e.what();
       }
     }
     for (cl_mem m : {bwq, bwp, bwh, baq, bap, bas, bc}) clReleaseMemObject(m);
@@ -609,5 +619,14 @@ int main(int argc, char** argv) {
     } else printf(" | %-16s", "-");
     printf(" | %s\n", v == 0 ? "(reference)" : !all_ran ? "-" : diff ? (std::to_string(diff) + " values differ").c_str() : "identical");
   }
+  // (why a cell has dashes)
+  bool said = false;
+  for (size_t v = 0; v < vs.size(); ++v)
+    for (size_t si = 0; si < shapes.size(); ++si) {
+      const Row& r = res[v][si];
+      if (r.ran) continue;
+      if (!said) printf("\nnot run:\n"), said = true;
+      printf("  %s on %s: %s\n", vs[v].name.c_str(), shapes[si].name, r.why.empty() ? "no reason recorded (please report)" : r.why.c_str());
+    }
   return 0;
 }
