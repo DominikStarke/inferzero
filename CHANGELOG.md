@@ -48,7 +48,7 @@
 - **A new count, `simp`:** Simplified Chinese characters that Japanese text can't hold. These are the characters not in
   code page 932 (Shift-JIS) that are on `bench/simplified_han.txt`, the code points of manoreken2's list from #4.
   Characters Japanese shares with Chinese are in CP932, so they never count.
-- **`rare`, apart:** other Han characters outside CP932. These are mostly rare characters Japanese and Chinese share,
+- **`outside CP932`, apart:** other Han characters outside CP932. These are mostly rare characters Japanese and Chinese share,
   such as the surname U+90A2, which Japanese fonts show (JIS X 0213). An earlier form of this count called them
   Simplified.
 - **Answer and thinking apart:** when a file has "=== thinking" and "=== answer" lines, `simp` and `rare` count the
