@@ -350,7 +350,7 @@
       } else if (!getenv("ARC_GEMM_XW_SLM_WG") && !zrt::integrated() && b.x == 4 && b.y == 4 && b.cps == 1 && b.tm == 32 &&
                  b.nc == 2) {
         // (the default on discrete 8-lane cards, Alchemist, since 2026-11-23: the gate / up at 4 x 8, the rest at 4 x 4;
-        //  skipzx-lab's and hansong80's A770s, #45, docs/before-after.md)
+        //  skipzx-lab's A770 (Linux, #45); Windows to confirm (hansong80); docs/before-after.md)
         b.y = 8;
       }
       return b;
@@ -481,7 +481,8 @@
   // from M and K alone, so a GEMM of that input the big tile does not take reads a copy in the packed order
   // (xw_unwgl). Not with the 32 x 48 tile, ARC_H8_Q2 or the 140T's resident form. The same words reach the same
   // places: bit for bit, checked at start (xw_check's WGL forms, xw_gu_check8 with ARC_GEMM_XW_GU)
-  // (on by default on discrete 8-lane cards, Alchemist, since 2026-11-23: the A770s of #45, docs/before-after.md; =0 off.
+  // (on by default on discrete 8-lane cards, Alchemist, since 2026-11-23: skipzx-lab's A770 (Linux, #45); Windows
+  //  to confirm (hansong80); =0 off.
   //  Where it applies at all: the big tile's 8 lanes, xw_wgl_try)
   static bool xw_wgl_env() {
     static const int e = getenv("ARC_GEMM_XW_WGL") ? atoi(getenv("ARC_GEMM_XW_WGL")) : -1;
@@ -691,7 +692,8 @@
   }
   bool xw_gu_matmul(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
     // (8 lanes: opt-in, ARC_GEMM_XW_GU=1, until the A770s measure it; 16 lanes: on by default on discrete cards)
-    // (8 lanes: on by default on discrete cards, Alchemist, since 2026-11-23, the A770s of #45; =0 off; the 140T: =1)
+    // (8 lanes: on by default on discrete cards, Alchemist, since 2026-11-23: skipzx-lab's A770 (Linux, #45); Windows to
+    //  confirm (hansong80); =0 off; the 140T: =1)
     static const int gu8_e = getenv("ARC_GEMM_XW_GU") ? atoi(getenv("ARC_GEMM_XW_GU")) : -1;
     static const bool gu8_asked = gu8_e > 0 || (gu8_e < 0 && !zrt::integrated());
     if (xw_lanes() == 8) return gu8_asked && xw_ && h8_row() && xw_gu_matmul8(gw, uw, Mp, C, ldc, act32);
