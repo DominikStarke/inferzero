@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-22: work-group-ordered operands for the A770's GEMM, in xw_peak
+
+- **`xw_peak`'s " wgl" forms** ("slm 32x32 4x4 / 8x4 / 4x8 e2 p wgl"): the A770's big tile reading A and B in its
+  work-group's order (`gemm_xw8.cl -DXS_WGL`), so a work-group's 64-value chunk is one contiguous run of each,
+  after oneDNN's blocked layouts. Our packed order already gives each DPAS operand in one block read; this adds the
+  locality.
+- Bit for bit the reference (emulated on the laptop). ocloc for the A770: no spill, the loops as the plain forms'.
+- In `xw_peak` only: the engine would need `h8r_act` / `h8r_decode` to write that order, worth doing if an A770
+  shows a gain.
+
 ## 2026-11-22: the FFN's gate and up in one launch on the A770, opt-in
 
 - **`ARC_GEMM_XW_GU=1` on Alchemist:** the FFN's gate and up GEMMs in one launch of the A770's big tile, whose

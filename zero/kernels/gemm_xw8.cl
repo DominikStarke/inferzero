@@ -198,8 +198,24 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int nch = K / 64, lane = (int)get_sub_group_local_id();
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
+#ifdef XS_WGL
+  // -DXS_WGL (2026-11-22, the A770 plan's step 4, after oneDNN's blocked layouts; bench\xw_peak only so far): A and B
+  // in the work-group's order, [work-group row][chunk][its XS_UA units of 64 words] and [work-group column][chunk][its
+  // XS_BW / 64 units], so a work-group's chunk is one contiguous run of each (4 KB of A and 8 KB of B at 32 x 32 4 x 4)
+  // instead of 16 / 32 pieces of 256 bytes spread over the matrix. The same words reach the same places: bit for bit
+#if !defined(XW_PTR) || defined(XW_GU)
+#error "XS_WGL: with XW_PTR, not XW_GU"
+#endif
+  __global const uint* apw = (__global const uint*)aq + (size_t)row * nch * XS_AW;
+  __global const uint* wpw = wq + (size_t)cb * nch * XS_BW;
+#define XS_ASTEP ((uint)XS_AW)
+#define XS_BSTEP ((uint)XS_BW)
+#else
   __global const uint* apw = (__global const uint*)aq + (size_t)(row * XW_WGY * XW_TG) * nch * 128;
   __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;
+#define XS_ASTEP 128u
+#define XS_BSTEP 256u
+#endif
 #ifdef XW_GU
   __global const uint* wpu = wqu + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;  // (the up's rows, as wpw the gate's)
 #endif
@@ -271,6 +287,8 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     const int og = cs * XW_NCO + (cc >= XW_NCO ? cc - XW_NCO : cc);
     xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
                         : (uint)((og * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+#elif defined(XS_WGL)
+    xs_off[i] = xs_a[i] ? (uint)(c * XS_AW + u * 64) : (uint)(c * XS_BW + (u - XS_UA) * 64);
 #else
     xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
                         : (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
@@ -283,7 +301,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
     if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS)                                            \
       st[i] = as_int8(intel_sub_group_block_read8((XS_IS_A(i) ? apw : XS_BBASE(i)) + xs_off[i])); \
-    xs_off[i] += (XS_IS_A(i) ? 128u : 256u) * XS_CPS;                                         \
+    xs_off[i] += (XS_IS_A(i) ? XS_ASTEP : XS_BSTEP) * XS_CPS;                                 \
   }
 #define XS_STORE(b)                                                                          \
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \

@@ -146,7 +146,7 @@ using clk = std::chrono::steady_clock;
 
 struct Shape { int N, K, a; const char* name; };
 // (wgy: token sub-groups a work-group, fixed; 0 = the engine's choice. The XW_SLM variants need it fixed: -DXW_WGY)
-struct Variant { std::string name; const char* defs; int tm, nc; bool pa, pw; int wgx = 1; bool lock = false; int wgy = 0; };
+struct Variant { std::string name; const char* defs; int tm, nc; bool pa, pw; int wgx = 1; bool lock = false; int wgy = 0; bool wgl = false; };
 
 static uint32_t g_seed = 12345;
 static uint32_t rnd() { g_seed = g_seed * 1664525u + 1013904223u; return g_seed; }
@@ -423,6 +423,11 @@ int main(int argc, char** argv) {
       {"slm 32x16 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 1, true, true, 4, false, 4},
       {"slm 32x48 8x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 3, true, true, 8, false, 4},
       {"slm 32x32 4x4 c2 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
+      // (2026-11-22, the A770 plan's step 4) " wgl": A and B in the work-group's order (gemm_xw8.cl -DXS_WGL), a
+      // work-group's chunk one contiguous run of each; the data rearranged here from the packed copies, per variant
+      {"slm 32x32 4x4 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 4, false, 4, true},
+      {"slm 32x32 8x4 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 8, false, 4, true},
+      {"slm 32x32 4x8 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 4, false, 8, true},
   };
   // (2026-11-22) "slm 32x48 8x4 e2 p": the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), 8 column x 4 token
   // sub-groups, a work-group 128 tokens x 384 columns (oneDNN's 256 x 192, 4 x 8 here, spills in the K loop at 256
@@ -522,11 +527,30 @@ int main(int argc, char** argv) {
       }
       size_t gws[2] = {(size_t)8 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)8 * va.wgx, (size_t)wgy};
       cl_kernel k = ks[v];
+      // (" wgl": the packed copies in this variant's work-group order, as gemm_xw8.cl -DXS_WGL reads them: A
+      //  [M / (TM x WGY)][chunk][WGY x TM / 8 token groups x 2 halves][64 words], B [N / (16 NC WGX)][chunk][WGX x NC
+      //  column groups x 4 parts][64 words], each 64 words the packed copy's)
+      cl_mem gwa = nullptr, gwb = nullptr;
+      if (va.wgl) {
+        const int tg = tm / 8, ua = wgy * tg * 2, ub = va.wgx * va.nc * 4;
+        std::vector<uint32_t> ga(ap.size()), gb(wp.size());
+        for (int r = 0; r < M / (tm * wgy); ++r)
+          for (int c = 0; c < nch; ++c)
+            for (int u = 0; u < ua; ++u)
+              memcpy(&ga[(((size_t)r * nch + c) * ua + u) * 64], &ap[(((size_t)r * wgy * tg + u / 2) * nch + c) * 128 + (u & 1) * 64], 256);
+        for (int cbk = 0; cbk < N / (16 * va.nc * va.wgx); ++cbk)
+          for (int c = 0; c < nch; ++c)
+            for (int u = 0; u < ub; ++u)
+              memcpy(&gb[(((size_t)cbk * nch + c) * ub + u) * 64], &wp[(((size_t)cbk * va.wgx * va.nc + u / 4) * nch + c) * 256 + (u & 3) * 64], 256);
+        gwa = cl.buffer(CL_MEM_READ_ONLY, ga.size() * 4, ga.data());
+        gwb = cl.buffer(CL_MEM_READ_ONLY, gb.size() * 4, gb.data());
+      }
+      struct FreeW { cl_mem a, b; ~FreeW() { if (a) clReleaseMemObject(a); if (b) clReleaseMemObject(b); } } free_w{gwa, gwb};
       auto launch = [&] {
         for (int sp = 0; sp < splits; ++sp) {
           int s0 = nsb * sp / splits, s1 = nsb * (sp + 1) / splits, ac = sp == 0 ? sh.a : 1, MM = M, NN = N, KK = K,
               ldc = N, coff = 0, rg = 4;
-          set_args(k, 0, va.pw ? bwp : bwq, bwh, va.pa ? bap : baq, bas, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
+          set_args(k, 0, va.wgl ? gwb : va.pw ? bwp : bwq, bwh, va.wgl ? gwa : va.pa ? bap : baq, bas, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
           CL_CHECK(clEnqueueNDRangeKernel(cl.queue, k, 2, nullptr, gws, lws, 0, nullptr, nullptr));
         }
       };
