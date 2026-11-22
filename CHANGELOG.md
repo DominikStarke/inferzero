@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: the A770's XMX prompt attention without its doubled softmax, opt-in (`ARC_ATTN_X8_PSH=1`)
+
+- **Why `attn_x8` lost to `attn_q8` on the A770:** the compiler's output for the A770 shows its span loop at 1,460
+  instructions for 36 XMX operations. They are nearly all float work, not memory or integer math. The 27B's heads
+  of 256 dims are split over two sub-groups, and both computed the whole softmax of the same tokens.
+- **`ARC_ATTN_X8_PSH=1`:** one sub-group of each pair computes the scores over all 256 dims and the softmax once,
+  and hands P to the other through local memory. It needs one barrier a span instead of two. The span's cache
+  blocks are also counted without a division. Bit for bit the same as `attn_x8`: on the laptop (XMX emulated), the
+  4B's logits match byte for byte at three work-group shapes, and the 27B's at the A770's default one.
+- **Fixed:** `ARC_ATTN_FX_DEFS` (extra build options for the attention kernels, for tests) never reached the build.
+  Its value was cached as empty. Runs that used it measured the default kernel.
+- Opt-in, with `ARC_ATTN_X8=1`, until the A770s measure it.
+
 ## 2026-11-22: the fused norm's kernel source back as it was
 
 - **`rmsnorm_h8r` (the fused norm, on by default on discrete cards) has its source as before 2026.11.22.20.** That

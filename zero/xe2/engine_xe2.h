@@ -524,12 +524,26 @@
     if (cl_.sg8) return e != 0 && attnfx8_on() && model;
     return on && cl_.xmx && model;
   }
+  // ARC_ATTN_X8_PSH=1 (2026-11-22, opt-in; the A770 plan's attention step): attn_x8.cl -DX8_PSH -DX8_LEAN. ocloc
+  // dg2-g10 put the span loop at 1,460 instructions for 36 DPAS, nearly all of them float work: the 27B's heads of
+  // 256 dims run on two sub-groups, and each made the whole softmax of the same 8 tokens. With PSH the pair's first
+  // sub-group sums the scores over all 256 dims and makes the softmax once; P and the per-token factors go to the
+  // second through local memory (one barrier a span instead of two). LEAN keeps the span's block indices as ring
+  // counters (no division a span). The same sums and the same P: bit for bit attn_x8 (laptop, DPAS emulated)
+  static bool x8_psh_env() {
+    static const bool on = getenv("ARC_ATTN_X8_PSH") && atoi(getenv("ARC_ATTN_X8_PSH")) != 0;
+    return on;
+  }
   std::string attnfx_defs() const {
     const int hd = hp.qwen3 ? hp.head_dim : 256, hpg = hp.n_head / hp.n_head_kv;
     static const bool pf = !getenv("ARC_ATTN_FX_PF") || atoi(getenv("ARC_ATTN_FX_PF")) != 0;
-    // (ARC_ATTN_FX_DEFS: further -D options for the kernel's variants, tests)
-    static const std::string extra = getenv("ARC_ATTN_FX_DEFS") ? std::string(" ") + getenv("ARC_ATTN_FX_DEFS") : "";
-    const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "")
+    // (ARC_ATTN_FX_DEFS: further -D options for the kernel's variants, tests. Read each call: as a function-local
+    //  static it came out empty, so the options never reached the build, ablations on the A770s included; found
+    //  2026-11-22)
+    const char* xd = getenv("ARC_ATTN_FX_DEFS");
+    const std::string extra = xd ? std::string(" ") + xd : std::string();
+    const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "") +
+                                         (x8_psh_env() ? " -DX8_LEAN -DX8_PSH" : "")
                                    : (pf ? " -DFX_PF" : "");
     return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
            " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;

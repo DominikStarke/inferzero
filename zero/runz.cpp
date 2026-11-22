@@ -524,6 +524,7 @@ static int run_main(int argc, char** argv) {
             "  padded experts' gate / up per tile (Flash Next), ARC_140T=0 the Alchemist cards' Arc 140T preset\n"
             "  Opt-in on 8-lane XMX (A770, A750, Arc 140T): ARC_ATTN_X8=1 the prompt attention as flash attention on XMX\n"
             "  (attn_x8; =2 its DPAS emulated on any GPU with 8-lane sub-groups, tests), ARC_ATTN_X8_WG=NT,NH\n"
+            "  ARC_ATTN_X8_PSH=1 (with ARC_ATTN_X8=1) its softmax made once for heads of 256 dims (opt-in, the same results)\n"
             "  ARC_GEMM_XW_GU=0 / 1: the FFN's gate and up GEMMs in one launch, the same results (on by default on discrete\n"
             "  cards with 16-lane XMX, opt-in on the 140V / B390)\n"
             "  8-lane XMX: ARC_GEMM_XW_SHAPE=0 one tile for every prompt GEMM (default on Alchemist, one GPU: a tile per shape;\n"

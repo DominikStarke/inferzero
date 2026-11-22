@@ -27,6 +27,11 @@
 // -D: HD (head dims, multiple of 32, <= 256), HPG (q heads per KV head), NT (token groups of 8 per work-group), NH (q
 // heads per work-group, divides HPG), X8_PF (the L1 prefetch of the next span), X8_EMU (the DPAS as DP4a dot products,
 // for GPUs without XMX: tests). grid (ceil(M / (8 NT)) * 8 NT NH DS, nkv * HPG / NH), local (8 NT NH DS, 1).
+// Opt-in forms (2026-11-22, engine_xe2.h ARC_ATTN_X8_PSH=1 sets PSH and LEAN), all bit for bit the default: X8_PSH (DS 2:
+// the pair's first sub-group sums the scores over all HD dims and makes the softmax once, P and the per-token factors
+// to the second through local memory, one barrier a span; ocloc dg2-g10 had each of the two make the same softmax),
+// X8_LEAN (the span's blocks as ring counters, 32-bit offsets), X8_FULL (each sub-group sums all dims itself, no
+// exchange; spills on dg2 unrolled), X8_SUNROLL (the score loop's unroll, 1 with PSH: 8 spilled).
 // Plain causal prompts only: no window, no non-causal span, no sparse mask (attn_q8 keeps those).
 
 #define X8_RT 8          // query tokens per sub-group (DPAS columns of the scores, rows of P . V)
@@ -40,6 +45,9 @@
 #define DGH (DH / 8)     // 8-dim groups of the output per sub-group
 #define X8_BU (4 * HD)   // uints in one 16-key block of K (and of V)
 #define NSG (NT * NH * DS)
+#if DS == 1
+#undef X8_PSH  // (one sub-group a head: nothing to share)
+#endif
 #if HD % 32 || HD > 256 || DH % 32 || HPG % NH
 #error "attn_x8: HD a multiple of 32 up to 256, NH dividing HPG"
 #endif
@@ -121,7 +129,7 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
   if (mw >= M_valid) return;       // (the whole work-group)
   const int m0 = mw + tg * X8_RT;
   const int nrow = clamp(M_valid - m0, 0, X8_RT);
-#if DS > 1
+#if DS > 1 && !defined(X8_FULL)
   // (in step: every sub-group runs the spans of the work-group's last token, a token group past M_valid included)
   const int plw = pos0 + min(M_valid, mw + NT * X8_RT) - 1;
 #else
@@ -138,6 +146,18 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
   const bool act = lane < nrow;
   const int tok = min(m0 + lane, M_valid - 1);
   __global const uint* qp = (__global const uint*)(qi + ((size_t)tok * nh + h) * HD + dh * DH);
+#if defined(X8_FULL) || defined(X8_PSH)
+  // (-DX8_FULL: every sub-group sums the scores over all HD dims itself, so the two halves need no exchange through
+  //  local memory and no barriers; the integer sums are exact, so the same scores bit for bit)
+  // (-DX8_PSH: the pair's first sub-group alone sums them over all HD dims, makes the softmax and P, and hands P and
+  //  the per-token factors to the second through local memory, below)
+  __global const uint* qpf = (__global const uint*)(qi + ((size_t)tok * nh + h) * HD);
+#define X8_KBS (HD / 32)
+#define X8_KOFF 0
+#else
+#define X8_KBS KBH
+#define X8_KOFF (dh * DH * 4)
+#endif
 #ifdef X8_QH
   // (q held in registers, 32 of them: dg2 spills with it; ARC_ATTN_FX_DEFS=-DX8_QH)
   uint8 qb[KBH];
@@ -155,19 +175,52 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
   const int bl = plw / 16;    // the last block any row of the work-group sees
   const int nsp = plw / 32 + 1;
   const int8 kr = (int8)(0, 1, 2, 3, 4, 5, 6, 7);
-#if DS > 1
+#if defined(X8_PSH)
+  // (a pair's P: 8 words a lane, then its tokens' rescale and P scale; two slots, a span's and the next one's, so one
+  //  barrier a span: the second has read slot s % 2 before it reaches the barrier after which the first writes it
+  //  again, at span s + 2)
+  __local uint psh[NSG / 2][2][80];
+  __local float plp[NSG / 2][8];
+  const bool prod = dh == 0;
+#elif DS > 1 && !defined(X8_FULL)
   __local int xs[NSG * 4 * 64];  // the integer partial scores, a sub-group's 4 x 8 words a lane
   __local int* xmine = xs + sg * 256;
   __local const int* xpart = xs + (sg ^ 1) * 256;
 #endif
 
+#ifdef X8_LEAN
+  // (-DX8_LEAN: the span's blocks kept as ring indices stepped by 2 instead of b % nbc each span, and 32-bit offsets
+  //  from the KV head's first block: ocloc dg2-g10 counted most of the span loop's integer work in those divisions
+  //  and 64-bit products. The same blocks, the same addresses: bit for bit)
+  __global const uint* kh = kq + blk0 * X8_BU;
+  __global const uint4* vh = vq + blk0 * (X8_BU / 4);
+  __global const float* ksh = ksc + blk0 * 16;
+  __global const float* vsh = vsc + blk0 * 16;
+  int r0 = 0;  // (2 s % nbc)
+#endif
   for (int s = 0; s < nsp; ++s) {
     const int k0 = 32 * s, b0 = 2 * s, b1 = min(2 * s + 1, bl);  // (b1 past the last block: its keys are all masked)
     const bool b1ok = b1 == 2 * s + 1;
+#ifdef X8_LEAN
+    (void)b0;
+    const int r1 = b1ok ? (r0 + 1 == nbc ? 0 : r0 + 1) : r0;  // (b1 % nbc: b1 is 2 s + 1 or, past the last block, 2 s)
+    const uint q0 = (uint)r0, q1 = (uint)r1;
+#define X8_KP(q) (kh + (q) * (uint)X8_BU + X8_KOFF)
+#define X8_VP(q) (vh + (q) * (uint)(X8_BU / 4) + dh * DH)
+#define X8_KS(q, i) ksh[(q) * 16u + (i)]
+#define X8_VS(q, i) vsh[(q) * 16u + (i)]
+#else
     const size_t o0 = blk0 + (size_t)(b0 % nbc), o1 = blk0 + (size_t)(b1 % nbc);
-    // (this half's words: word w of a key at w * 16 + key, the half's first word DH / 4 x half)
-    __global const uint* kp0 = kq + o0 * X8_BU + dh * DH * 4;
-    __global const uint* kp1 = kq + o1 * X8_BU + dh * DH * 4;
+#define q0 o0
+#define q1 o1
+#define X8_KP(q) (kq + (q) * X8_BU + X8_KOFF)
+#define X8_VP(q) (vq + (q) * (X8_BU / 4) + dh * DH)
+#define X8_KS(q, i) ksc[(q) * 16 + (i)]
+#define X8_VS(q, i) vsc[(q) * 16 + (i)]
+#endif
+    // (this half's words: word w of a key at w * 16 + key, the half's first word DH / 4 x half; X8_FULL: all words)
+    __global const uint* kp0 = X8_KP(q0);
+    __global const uint* kp1 = X8_KP(q1);
 #if defined(X8_PF) && defined(cl_intel_subgroup_buffer_prefetch)
     // the next span's K and V blocks (this half's: 4 x DH / 16 pieces of 256 B) into L1, shared by the half's sub-groups
     if (s + 1 < nsp) {
@@ -180,11 +233,25 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
       }
     }
 #endif
+#ifdef X8_PSH
+    uint8 pa;
+    float corr, ps;
+    if (prod) {
+#endif
     // scores: int8 DPAS sums, DPAS t = keys 8t .. 8t + 7 of the span (t 0, 1 block b0; 2, 3 block b1)
     int8 a0 = (int8)0, a1 = (int8)0, a2 = (int8)0, a3 = (int8)0;
-#pragma unroll
-    for (int kb = 0; kb < KBH; ++kb) {
-#ifdef X8_QH
+#ifndef X8_SUNROLL
+#ifdef X8_PSH
+#define X8_SUNROLL 1  // (all HD dims: unrolled, dg2-g10 spills)
+#else
+#define X8_SUNROLL 8
+#endif
+#endif
+    __attribute__((opencl_unroll_hint(X8_SUNROLL)))
+    for (int kb = 0; kb < X8_KBS; ++kb) {
+#if defined(X8_FULL) || defined(X8_PSH)
+      const int8 qv = as_int8(vload8(kb, qpf));
+#elif defined(X8_QH)
       const int8 qv = as_int8(qb[kb]);
 #else
       const int8 qv = as_int8(vload8(kb, qp));  // (read again every span, from L1)
@@ -195,7 +262,7 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
       a2 = x8_ss(as_int8(kv1.lo), qv, a2);
       a3 = x8_ss(as_int8(kv1.hi), qv, a3);
     }
-#if DS > 1
+#if DS > 1 && !defined(X8_FULL) && !defined(X8_PSH)
     // the two halves' sums added (exact; the same sums in both, so the same softmax and P)
     if (s) barrier(CLK_LOCAL_MEM_FENCE);  // (the partner has read the last span's)
     vstore8(a0, lane, xmine);
@@ -209,8 +276,7 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
     a3 += vload8(lane + 24, xpart);
 #endif
     // q scale x k scale (log2 domain); component r of DPAS t = key k0 + 8t + r, the same for every lane
-    const float ksl0 = ksc[o0 * 16 + lane], ksl1 = ksc[o0 * 16 + 8 + lane], ksl2 = ksc[o1 * 16 + lane],
-                ksl3 = ksc[o1 * 16 + 8 + lane];
+    const float ksl0 = X8_KS(q0, lane), ksl1 = X8_KS(q0, 8 + lane), ksl2 = X8_KS(q1, lane), ksl3 = X8_KS(q1, 8 + lane);
     float8 s0 = convert_float8(a0) * qs * x8_rows(ksl0), s1 = convert_float8(a1) * qs * x8_rows(ksl1),
            s2 = convert_float8(a2) * qs * x8_rows(ksl2), s3 = convert_float8(a3) * qs * x8_rows(ksl3);
     if (k0 + 31 > pfirst || !b1ok) {  // (the causal edge, or a missing second block: mask per token)
@@ -225,7 +291,10 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
     const float8 m8 = fmax(fmax(s0, s1), fmax(s2, s3));
     const float tm = fmax(fmax(fmax(m8.s0, m8.s1), fmax(m8.s2, m8.s3)), fmax(fmax(m8.s4, m8.s5), fmax(m8.s6, m8.s7)));
     const float mn = fmax(mx, tm);
-    const float corr = isgreater(tm, mx) ? native_exp2(mx - mn) : 1.0f;  // (mx = -inf: 0)
+#ifndef X8_PSH
+    const float
+#endif
+    corr = isgreater(tm, mx) ? native_exp2(mx - mn) : 1.0f;  // (mx = -inf: 0)
     lp *= corr;
     mx = mn;
     const float ms = isinf(mx) ? 0.0f : mx;  // (a token that saw no key yet: its scores are -inf too)
@@ -233,10 +302,10 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
     // largest V scale of the keys up to the sub-group's last token); the bound known first, so each score vector
     // turns into its bytes at once (scores and P never in registers together: dg2 spilled)
     const float pb = native_exp2(tm - ms);
-    const float vsl0 = k0 + lane <= plast ? vsc[o0 * 16 + lane] : 0.0f;
-    const float vsl1 = k0 + 8 + lane <= plast ? vsc[o0 * 16 + 8 + lane] : 0.0f;
-    const float vsl2 = b1ok && k0 + 16 + lane <= plast ? vsc[o1 * 16 + lane] : 0.0f;
-    const float vsl3 = b1ok && k0 + 24 + lane <= plast ? vsc[o1 * 16 + 8 + lane] : 0.0f;
+    const float vsl0 = k0 + lane <= plast ? X8_VS(q0, lane) : 0.0f;
+    const float vsl1 = k0 + 8 + lane <= plast ? X8_VS(q0, 8 + lane) : 0.0f;
+    const float vsl2 = b1ok && k0 + 16 + lane <= plast ? X8_VS(q1, lane) : 0.0f;
+    const float vsl3 = b1ok && k0 + 24 + lane <= plast ? X8_VS(q1, 8 + lane) : 0.0f;
     const float vmt = sub_group_reduce_max(fmax(fmax(vsl0, vsl1), fmax(vsl2, vsl3)));
     const float pmv = pb * vmt;
     const float inv = isgreater(pmv, 0.0f) ? 255.0f * native_recip(pmv) : 0.0f;
@@ -247,13 +316,33 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
   const uchar8 u##t = convert_uchar8_sat_rte(p##t * x8_rows(vsl##t) * inv);
     X8_P(0) X8_P(1) X8_P(2) X8_P(3)
 #undef X8_P
-    const float ps = pmv * (1.0f / 255.0f);
+#ifndef X8_PSH
+    const float
+#endif
+    ps = pmv * (1.0f / 255.0f);
     // P^T (lane = token, word j = keys 4j .. 4j + 3) -> P as the A operand (component = token, lane l = word l)
-    const uint8 pa = x8_tr((uint8)(as_uint(u0.lo), as_uint(u0.hi), as_uint(u1.lo), as_uint(u1.hi), as_uint(u2.lo),
+#ifndef X8_PSH
+    const uint8
+#endif
+    pa = x8_tr((uint8)(as_uint(u0.lo), as_uint(u0.hi), as_uint(u1.lo), as_uint(u1.hi), as_uint(u2.lo),
                                    as_uint(u2.hi), as_uint(u3.lo), as_uint(u3.hi)));
+#ifdef X8_PSH
+      __local uint* sl = psh[sg / 2][s & 1];
+      vstore8(pa, lane, sl);
+      sl[64 + lane] = as_uint(corr);
+      sl[72 + lane] = as_uint(ps);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (!prod) {
+      __local const uint* sl = psh[sg / 2][s & 1];
+      pa = vload8(lane, sl);
+      corr = as_float(sl[64 + lane]);
+      ps = as_float(sl[72 + lane]);
+    }
+#endif
     // P . V: lane = dim 8 i + lane of this half, the 32 keys' bytes of that dim from the two blocks
-    __global const uint4* vp0 = vq + o0 * (X8_BU / 4) + dh * DH;
-    __global const uint4* vp1 = vq + o1 * (X8_BU / 4) + dh * DH;
+    __global const uint4* vp0 = X8_VP(q0);
+    __global const uint4* vp1 = X8_VP(q1);
     const float8 cr = x8_rows(corr), pr = x8_rows(ps);
 #pragma unroll
     for (int i = 0; i < DGH; ++i) {
@@ -261,8 +350,25 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
       const int8 acc = x8_us(pa, as_int8((uint8)(v0, v1)), (int8)0);
       o[i] = fma(o[i], cr, convert_float8(acc) * pr);
     }
+#ifdef X8_LEAN
+    r0 += 2;
+    while (r0 >= nbc) r0 -= nbc;
+#else
+#undef q0
+#undef q1
+#endif
+#undef X8_KP
+#undef X8_VP
+#undef X8_KS
+#undef X8_VS
   }
 
+#ifdef X8_PSH
+  // (the softmax's sum is the first sub-group's)
+  if (prod) plp[sg / 2][lane] = lp;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (!prod) lp = plp[sg / 2][lane];
+#endif
   const float8 ir = x8_rows(1.0f / lp);
 #define X8_WR(r, c)                                                                         \
   if (r < nrow) {                                                                           \
