@@ -348,10 +348,29 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS) XS_WR(&xs[b][0][0] + xs_dst[i], st[i]);   \
   }
 #endif
+// -DXS_SPLIT (2026-11-23, xw_peak only so far; skipzx-lab's local-memory probe, #45: at 4 x 8 the reads and the DPAS
+// overlap, 84 % of peak, but a barrier a chunk cost 37 %): the stage's barrier split, arrive after the stores and
+// wait before the next stage's reads, so a sub-group's next global loads issue while the others finish. The same
+// order of the same stages (two buffers: the wait at a stage's start covers both the stores of its buffer and the
+// reads of the other one, as the barrier did): bit for bit
+#ifdef XS_SPLIT
+#pragma OPENCL EXTENSION cl_intel_split_work_group_barrier : enable
+#ifdef XW_EMU
+#define XS_ARRIVE()
+#define XS_WAITB() barrier(CLK_LOCAL_MEM_FENCE)
+#else
+#define XS_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
+#define XS_WAITB() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
+#endif
+#define XS_STAGE_END() XS_ARRIVE()
+#else
+#define XS_WAITB()
+#define XS_STAGE_END() barrier(CLK_LOCAL_MEM_FENCE)
+#endif
   if (ch0 < ch1) {  // (s_begin / s_end are the same for the whole work-group: its barriers stay uniform)
     XS_LOAD(ch0)
     XS_STORE(0)
-    barrier(CLK_LOCAL_MEM_FENCE);
+    XS_STAGE_END();
   }
   for (int ch = ch0; ch < ch1; ch += XS_CPS) {  // (a stage of XS_CPS chunks)
     const int cur = ((ch - ch0) / XS_CPS) & 1;
@@ -359,6 +378,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #ifndef XS_LATE
     if (more) { XS_LOAD(ch + XS_CPS) }
 #endif
+    XS_WAITB();  // (XS_SPLIT: this stage's stores, and the other buffer's reads, done)
 #pragma unroll
     for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
       __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
@@ -433,8 +453,11 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     if (more) { XS_LOAD(ch + XS_CPS) }
 #endif
     if (more) { XS_STORE(cur ^ 1) }
-    barrier(CLK_LOCAL_MEM_FENCE);
+    XS_STAGE_END();
   }
+#ifdef XS_SPLIT
+  if (ch0 < ch1) XS_WAITB();  // (the last arrive's wait: arrives and waits in pairs)
+#endif
 #elif defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
   // ---- -DXW_DB (ARC_GEMM_XW_DB, 2026-11-20, the A770 row's G3; the Alchemist default for 32-token tiles since 2026-11-21): the packed loop with its loads one step ahead. The
   //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B

@@ -329,7 +329,8 @@
     const XwBig& b = xw_big_cfg();
     return std::to_string(b.tm) + "x" + std::to_string(16 * b.nc) + "," + std::to_string(b.x) + "x" + std::to_string(b.y) + "c" + std::to_string(b.cps) +
            (xw_big_gu_cfg().x != b.x || xw_big_gu_cfg().y != b.y
-                ? "gu" + std::to_string(xw_big_gu_cfg().x) + "x" + std::to_string(xw_big_gu_cfg().y) : std::string());
+                ? "gu" + std::to_string(xw_big_gu_cfg().x) + "x" + std::to_string(xw_big_gu_cfg().y) : std::string()) +
+           (xw_role_cfg().key.empty() ? std::string() : "|roles" + xw_role_cfg().key);
   }
   // ARC_GEMM_XW_SLM_WG_GU="X,Y" (8 lanes, 2026-11-22, opt-in; the A770's per-shape step): the big tile's column x token
   // sub-groups for the FFN's gate and up (the fused launch, ARC_GEMM_XW_GU, and the two GEMMs where it does not run),
@@ -358,7 +359,53 @@
     return c;
   }
   static bool xw_gu_role(int r) { return r == 7 || r == 8; }  // (engine_load.h weight_role: ffn_gate, ffn_up)
-  static const XwBig& xw_big_for(int role) { return xw_gu_role(role) ? xw_big_gu_cfg() : xw_big_cfg(); }
+  // ARC_GEMM_XW_SLM_WG_ROLES="group=X,Y;..." (8 lanes, 2026-11-23, opt-in, a test of the A770's per-GEMM shapes):
+  // the big tile's sub-groups per input group, the GEMMs that read one input sharing it (its order follows them):
+  // dn (the DeltaNet's qkv and z), attn (q, k, v), ffn (gate and up: as ARC_GEMM_XW_SLM_WG_GU, which it overrides),
+  // down, out (ssm_out and o). Unlisted groups as before. Bit for bit either way, checked at start with each shape
+  static int xw_role_group(int r) {
+    return r == 0 || r == 1 ? 0 : r >= 3 && r <= 5 ? 1 : r == 7 || r == 8 ? 2 : r == 9 ? 3 : r == 2 || r == 6 ? 4 : -1;
+  }
+  struct XwRoleCfg { bool set[5] = {}; XwBig b[5]; std::string key; };
+  static const XwRoleCfg& xw_role_cfg() {
+    static const XwRoleCfg c = [] {
+      XwRoleCfg r;
+      const char* e = getenv("ARC_GEMM_XW_SLM_WG_ROLES");
+      if (!e) return r;
+      static const char* names[5] = {"dn", "attn", "ffn", "down", "out"};
+      std::string s = e;
+      size_t p = 0;
+      while (p < s.size()) {
+        size_t q = s.find(';', p);
+        if (q == std::string::npos) q = s.size();
+        const std::string item = s.substr(p, q - p);
+        p = q + 1;
+        const size_t eq = item.find('=');
+        int x = 0, y = 0, g = -1;
+        if (eq != std::string::npos)
+          for (int i = 0; i < 5; ++i)
+            if (item.compare(0, eq, names[i]) == 0) g = i;
+        XwBig b = xw_big_cfg();
+        if (g < 0 || sscanf(item.c_str() + eq + 1, "%d,%d", &x, &y) != 2 || !(x == 2 || x == 4 || x == 8) ||
+            !(y == 2 || y == 4 || y == 8) || x * y > 32 ||
+            2L * b.cps * ((long)y * (b.tm / 8) * 512 + (long)x * b.nc * 1024) > 65536) {
+          zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG_ROLES: '%s' not group=X,Y (dn, attn, ffn, down, out; 2 / 4 / 8, X x Y <= 32)\n",
+                        item.c_str());
+          continue;
+        }
+        b.x = x, b.y = y;
+        r.set[g] = true, r.b[g] = b;
+        r.key += std::string(names[g]) + std::to_string(x) + "x" + std::to_string(y);
+      }
+      return r;
+    }();
+    return c;
+  }
+  static const XwBig& xw_big_for(int role) {
+    const int g = xw_role_group(role);
+    if (g >= 0 && xw_role_cfg().set[g]) return xw_role_cfg().b[g];
+    return xw_gu_role(role) ? xw_big_gu_cfg() : xw_big_cfg();
+  }
   int xw_role_ = -1;  // (the role of the H8 GEMM in flight, -1 none)
   const XwBig& xw_big() const { return xw_big_for(xw_role_); }
   struct XwRole {  // (xw_role_ for a scope)
@@ -565,13 +612,13 @@
   }
   int xw_gu8_ok_ = -1;
   bool xw_gu8_fits(int N, int Mp) const {
-    const XwBig& b = xw_big_gu_cfg();
+    const XwBig& b = xw_big_for(7);  // (the gate's: ARC_GEMM_XW_SLM_WG_GU or the ROLES list's ffn)
     return xw_big_on() && xw_epi2() && xw_ptr() && b.tm == 32 && b.nc == 2 && b.cps == 1 && (xw_pack_cfg() & 3) == 3 &&
            N % (16 * b.x) == 0 && Mp % (b.tm * b.y) == 0;
   }
   void xw_gu_run8(const char* name, cl_mem wqg, cl_mem whg, cl_mem wqu, cl_mem whu, cl_mem aq, cl_mem asc, int M, int N,
                   int K, cl_mem C, int ldc, int c_off, int rgroup, int wgl = 0) {  // (wgl: pack bits 4 / 8, ARC_GEMM_XW_WGL)
-    const XwBig& b = xw_big_gu_cfg();
+    const XwBig& b = xw_big_for(7);  // (the gate's: ARC_GEMM_XW_SLM_WG_GU or the ROLES list's ffn)
     const int nb = N / 16;  // (output column groups: one a sub-group)
     int wgx = b.x;
     while (wgx > 1 && nb % wgx) wgx /= 2;
@@ -619,7 +666,7 @@
   // through xw_piece as the engine runs it), on random data in the packed order: two widths (two and three
   // work-groups of columns), two token tiles of the big tile's work-groups; bit for bit
   bool xw_gu_check8() {
-    const XwBig& b = xw_big_gu_cfg();
+    const XwBig& b = xw_big_for(7);  // (the gate's: ARC_GEMM_XW_SLM_WG_GU or the ROLES list's ffn)
     XwRole role(this, 7);  // (the two launches it is checked against run the gate's tile)
     const int K = 2048, nsb = K / 256, M = 2 * 32 * b.y;
     uint32_t seed = 4243;
@@ -1065,6 +1112,13 @@
         // (ARC_GEMM_XW_SLM_WG_GU: the gate / up GEMMs' work-groups too, as the gate)
         const XwBig& g = xw_big_gu_cfg();
         if (g.x != b.x || g.y != b.y) shapes.push_back({2 * g.y * g.tm, 2 * g.x * 16 * g.nc, K0, 7});
+        // (ARC_GEMM_XW_SLM_WG_ROLES: a shape as each listed group'"'"'s first role)
+        static const int first_role[5] = {0, 3, 7, 9, 2};
+        for (int gi = 0; gi < 5; ++gi)
+          if (xw_role_cfg().set[gi]) {
+            const XwBig& rb = xw_role_cfg().b[gi];
+            shapes.push_back({2 * rb.y * rb.tm, 2 * rb.x * 16 * rb.nc, K0, first_role[gi]});
+          }
       }
       for (const auto& sh : shapes) {
         XwRole role(this, sh[3]);

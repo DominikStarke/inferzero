@@ -347,7 +347,8 @@
            next.K == K && K % 256 == 0 && K % hb == 0 && K / hb <= 16 && (size_t)K * 4 + 64 <= 60 * 1024;
   }
   // (name: gated_norm_h8r or attn_gate_h8r; args: the kernel's own up to act32, set by the caller after this builds it)
-  cl_kernel h8_out_kernel(const char* name, int K, int Mp) {
+  cl_kernel h8_out_kernel(const char* name, int K, int Mp, int role) {
+    XwRole xr(this, role);  // (the input in the order of the GEMM that reads it, as rmsnorm_h8)
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
     return kernel("ops", h8_grf() + "-DH8NORM" + (d ? " -DH8_D" : "") + " -DHB=" + std::to_string(h8_block(K)) +
                              " -DH8N_K=" + std::to_string(K) + (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") +

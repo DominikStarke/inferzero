@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-23: the A770's big tile shaped per input, and its barrier split (both opt-in, tests)
+
+- **`ARC_GEMM_XW_SLM_WG_ROLES="group=X,Y;..."`:** the big tile's sub-group shape per group of GEMMs that read the
+  same input: `dn` (the DeltaNet's qkv and z), `attn` (q, k, v), `ffn` (gate and up), `down`, `out` (ssm_out and o).
+  For example `dn=4,8` to see whether the DeltaNet's input GEMMs prefer 4 x 8 as the gate / up do. Bit for bit,
+  checked at start for each listed shape.
+- **`xw_peak`'s "split" forms** ("slm 32x32 4x4 / 4x8 e2 p wgl split", gemm_xw8.cl `-DXS_SPLIT`): the big tile's
+  barrier a chunk split into arrive and wait. skipzx-lab's local-memory probe put that barrier at 37 % of the 4 x 8
+  loop's time. Bit for bit; in xw_peak only so far.
+- **Fixed** before it could matter: with `ARC_H8_OUT`, the ssm_out / o inputs were written in the default shape's
+  order whatever their GEMMs' shape. That is the same under today's defaults; only a role list with `out` differed.
+- `xw_peak`'s "bg" forms measured slower on the A770 (98 / 83 T against 127): `ARC_GEMM_XW_BG` stays off.
+
 ## 2026-11-23: no more out-of-memory at the first prompt on Windows machines with a lot of RAM (#82)
 
 - **Fixed:** on Windows, a discrete card with a lot of RAM (a B70 with 96 GB, Flash Next) ran out of memory at its

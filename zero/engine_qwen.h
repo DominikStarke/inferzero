@@ -99,7 +99,7 @@
     const int a_out = act32_for(true);
     if (!hp.hc && h8_out_ok(L.ssm_out, Di, Mp, T)) {  // (ARC_H8_OUT: the norm rotates its rows for ssm_out, engine_h8.h)
       H8Share sh(this);
-      cl_kernel k = h8_out_kernel("gated_norm_h8r", Di, Mp);
+      cl_kernel k = h8_out_kernel("gated_norm_h8r", Di, Mp, L.ssm_out.role);
       set_args(k, 0, o_, zc, L.ssm_norm, Di, Mp, T, eps, aq_, asc_, absum_, a_out, h8_aq_, h8_asc_);
       h8_out_run("gated_norm_h8r", k, Di, Mp);
       tp_out("gemm_ssm_out", L.ssm_out, Mp, a_out);
@@ -464,7 +464,7 @@
     if (!hp.hc && h8_out_ok(L.wo, nh * hd, Mp, T)) {  // (ARC_H8_OUT: the gate rotates its rows for wo, engine_h8.h)
       H8Share sh(this);
       int K = nh * hd;
-      cl_kernel k = h8_out_kernel("attn_gate_h8r", K, Mp);
+      cl_kernel k = h8_out_kernel("attn_gate_h8r", K, Mp, L.wo.role);
       set_args(k, 0, o_, big_, ldq, K, Mp, T, aq_, asc_, absum_, a_out, h8_aq_, h8_asc_);
       h8_out_run("attn_gate_h8r", k, K, Mp);
       tp_out("gemm_o", L.wo, Mp, a_out);
