@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-22: the fused norm's kernel source back as it was
+
+- **`rmsnorm_h8r` (the fused norm, on by default on discrete cards) has its source as before 2026.11.22.20.** That
+  release had moved its rotation into a function shared with the new `ARC_H8_OUT` kernels. The math was the same,
+  but a compiler can round code differently once it is moved, so the default kernel is back to its old text. The new
+  kernels use a copy of the function.
+- The 4B's logits are byte for byte the same at 8 and 16 lanes, with and without `ARC_H8_OUT`.
+
 ## 2026-11-22: the attention and DeltaNet outputs rotated where they are made, opt-in (`ARC_H8_OUT=1`)
 
 - **What changes:** the inputs of the output GEMMs (`ssm_out` after the DeltaNet norm, `wo` after the attention

@@ -245,7 +245,49 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
     for (int i = 0; i < 16; ++i) rowv[base + i] = v[i];
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  h8n_rotate(rowv, red, K, m, aqh, asch);
+  // ---- h8r_act on the row in local memory: sub-group bk rotates block bk, lane l holds values 64 r + 4 l + b
+  const int nblk = K / HB, bk = get_sub_group_id();
+  const uint l = lane;
+  // (the sub-groups past the row's blocks rotate its last block too and write nothing: no branch around the rotation,
+  //  which with one spilled 1-2 KB on Xe-LPG, ocloc mtl 2026-11-17)
+  const bool mine = bk < nblk;
+  float hv[ROT_NV];
+  {
+    const int b0 = min(bk, nblk - 1) * HB;
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr)
+#pragma unroll
+      for (int b = 0; b < 4; ++b) hv[4 * rr + b] = rot_sign(rowv[b0 + 64 * rr + 4 * l + b], 64 * rr + 4 * l + b);
+  }
+  rot_block(hv);
+  float amax = sub_group_reduce_max(rot_amax(hv));
+  if (mine && l == 0) red[bk] = amax;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (mine) {
+    amax = 0.0f;
+    for (int i = 0; i < nblk; ++i) amax = fmax(amax, red[i]);
+    if (bk == 0 && l == 0) asch[m] = rot_scale(amax);
+    const float iv = amax > 0.0f ? 127.0f / amax : 0.0f;
+#ifdef XW_PACKA_OUT
+    // (gemm_xw8 -DXW_PACKA's order, as h8.cl h8r_act writes it: [M / 8][K / 64][2 halves][8 rows][8 words], 128 uints
+    //  a 64-value chunk; lane l's word of chunk bk * HB / 64 + rr is word l % 8 of half l / 8)
+#ifdef XW_WGLA
+    // (-DXW_WGLA=U, ARC_GEMM_XW_WGL: the token groups in blocks of U, as h8.cl h8r_act writes them)
+    __global uint* ar = aqh + ((size_t)(m / 8 / XW_WGLA) * (K / 64) + bk * (HB / 64)) * (128 * XW_WGLA) +
+                        (size_t)(m / 8 % XW_WGLA) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) ar[128 * XW_WGLA * rr] = rot_pack(hv + 4 * rr, iv);
+#else
+    __global uint* ar = aqh + ((size_t)(m / 8) * (K / 64) + bk * (HB / 64)) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) ar[128 * rr] = rot_pack(hv + 4 * rr, iv);
+#endif
+#else
+    __global uint* ar = aqh + (size_t)m * (K / 4) + bk * (HB / 4);
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) intel_sub_group_block_write(ar + rr * SG, rot_pack(hv + 4 * rr, iv));
+#endif
+  }
 }
 #endif  // H8NORM
 
