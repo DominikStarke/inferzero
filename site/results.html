@@ -285,16 +285,23 @@
   <div class="wrap">
     <h2>2, 3 and 4 × Arc Pro B60: one model split</h2>
     <p class="setup">How to set several GPUs up, and when it helps: <a href="multi-gpu.html">Several GPUs</a>.</p>
-    <p class="setup">One model's layers divided over the cards (<code>--gpus N</code>) · Windows (no direct GPU-to-GPU copies there: the sums go through host memory) · manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a></p>
+    <p class="setup">One model split over the cards by tensor parallel (<code>--gpus N</code>) · Windows (no direct GPU-to-GPU copies there: the sums go through host memory) · manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a></p>
+    <h3 class="sub">Release 2026.11.22.12, every model over 1-4 cards (prompt 4K / generation, tok/s)</h3>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>
       <tbody>
-        <tr><td>Qwen3.8 27B, prompt 4K</td><td class="n">1,726</td><td class="n">1,597</td><td class="n">1,724</td><td class="n">1,888</td></tr>
-        <tr><td>Qwen3.8 27B, generation</td><td class="n">22.7</td><td class="n">35.7</td><td class="n">43</td><td class="n">53</td></tr>
-        <tr><td>DeepSeek-V4.1-Flash IQ2_XS, generation</td><td class="n">10.3</td><td class="n">18.0</td><td class="n">16.6</td><td class="n">17.6</td></tr>
+        <tr><td>Qwen3.5 4B UD-Q4_K_XL</td><td class="n">8,198 / 90.2</td><td class="n">8,359 / 125.4</td><td class="n">8,058 / 145.1</td><td class="n">8,231 / 171.8</td></tr>
+        <tr><td>Qwen3.5 9B UD-Q4_K_XL</td><td class="n">5,616 / 52.6</td><td class="n">5,593 / 81.9</td><td class="n">5,503 / 101.4</td><td class="n">5,619 / 120.2</td></tr>
+        <tr><td>Qwen3.8 27B IQ3_S</td><td class="n">1,843 / 24.1</td><td class="n">1,936 / 37.7</td><td class="n">2,038 / 43.5</td><td class="n">2,253 / 54.1</td></tr>
+        <tr><td>Qwen3.6 35B-A3B UD-IQ4_XS</td><td class="n">3,631 / 88.3</td><td class="n">4,168 / 100.2</td><td class="n">4,533 / 105.7</td><td class="n">4,865 / 112.2</td></tr>
+        <tr><td>Qwen3.8 Flash Next IQ3_S</td><td class="n">807 / 19.3</td><td class="n">993 / 38.2</td><td class="n">1,066 / 43.4</td><td class="n">1,122 / 41.8</td></tr>
+        <tr><td>Qwen3.8 Flash Next Q8_0</td><td class="n">414 / 13.6</td><td class="n">417 / 13.4</td><td class="n">493 / 35.3</td><td class="n">919 / 37.7</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash IQ2_XS</td><td class="n">89 / 18.5</td><td class="n">106 / 11.2</td><td class="n">195 / 18.1</td><td class="n">173 / 23.6</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash UD-Q8_K_XL</td><td class="n">61 / 10.8</td><td class="n">47 / 12.4</td><td class="n">55 / 15.6</td><td class="n">66 / 9.8</td></tr>
       </tbody>
     </table></div>
-    <h3 class="sub">Release 2026.11.21.01, every model over 1-4 cards (prompt 4K / generation, tok/s)</h3>
+    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4#issuecomment-7077057933">#4</a>, <code>--bench-pp 4096 --n 128 --gpus N</code>, Windows (the sums through host memory). The slowdown of the releases after 2026.11.14.05 is fixed: the 27B over 4 cards takes 17.4 ms a token again (48.8 ms in the slow releases, 18.4 on 2026-11-07). Generation gains 1.9-2.3x on 4 cards for the dense models; the prompt barely gains, since the sums after each layer take nearly all of its time (being worked on). DeepSeek on several cards is slower than on one in places, probably one card's experts missing its cache more than the others' (being looked into). Gemma does not split yet.</p>
+    <h3 class="sub">Release 2026.11.21.01 (one of the slow releases), every model over 1-4 cards (prompt 4K / generation, tok/s)</h3>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>
       <tbody>
@@ -306,8 +313,8 @@
         <tr><td>DeepSeek-V4.1-Flash UD-Q8_K_XL</td><td class="n">59 / 3.9</td><td class="n">46 / 3.5</td><td class="n">54 / 4.2</td><td class="n">64 / 4.3</td></tr>
       </tbody>
     </table></div>
-    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">#4</a>, <code>--bench-pp 4096 --n 16 --gpus N</code>, Windows. The split's generation is slower here than in the older runs above (the 27B over 4 cards: a median step of 48.8 ms, against 18.4 ms on 2026-11-07, of which 7 ms waiting for the sums): a regression after release 2026.11.14.05, being looked into on #4.</p>
-    <p class="note">Releases: the 27B's split prompts 2026.11.13.05 / .11 and its split generation a run of 2026-10-31, both older than the one-card figures; DeepSeek 2026.11.14.09 (machine with 1 TB of RAM). Long prompts over 4 cards (2026.11.14.05): 64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s for the 35B-A3B, 1,258 / 970 / 640 for the 27B and 948 / 778 / 526 for Flash Next; the 35B-A3B's 4K prompt 4,264 tok/s.</p>
+    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4">#4</a>, <code>--bench-pp 4096 --n 16 --gpus N</code>, Windows. Generation on several cards was slower than on one in this release (the 27B over 4 cards: a median step of 48.8 ms): a regression after 2026.11.14.05, fixed in 2026.11.22.12 above.</p>
+    <p class="note">The machine has 1 TB of RAM. Long prompts over 4 cards (2026.11.14.05): 64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s for the 35B-A3B, 1,258 / 970 / 640 for the 27B and 948 / 778 / 526 for Flash Next; the 35B-A3B's 4K prompt 4,264 tok/s.</p>
   </div>
 </section>
 

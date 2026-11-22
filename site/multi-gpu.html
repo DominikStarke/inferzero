@@ -49,6 +49,7 @@
       <thead><tr><th>Setup</th><th class="n">1 card</th><th class="n">2 cards</th><th>What decides it</th></tr></thead>
       <tbody>
         <tr><td>2 × Arc Pro B60, Linux <small>Qwen3.8 27B, generation (tg)</small></td><td class="n">23.7</td><td class="n">37.5</td><td>Linux: the cards can copy to each other directly</td></tr>
+        <tr><td>2 × Arc Pro B60, Windows <small>Qwen3.8 27B, tg</small></td><td class="n">24.1</td><td class="n">37.7</td><td>Windows, the sums through host memory: still faster on B60s (54.1 on four)</td></tr>
         <tr><td>2 × Arc A770, Windows <small>Qwen3.8 27B, tg</small></td><td class="n">21.2</td><td class="n">16.2</td><td>Windows: every sum goes through host memory</td></tr>
         <tr><td>2 × Arc A770, Windows <small>Qwen3.6 35B-A3B, tg</small></td><td class="n">20.4</td><td class="n">28.3</td><td>the model does not fit one 16 GB card; on two, all of it does</td></tr>
         <tr><td>2 × Arc Pro B50, Linux <small>Qwen3.6 35B-A3B, tg</small></td><td class="n">46.8</td><td class="n">63-67</td><td>the same: the model fits only when split</td></tr>
@@ -57,8 +58,8 @@
     <p class="note">Tokens per second. tg = generation, how fast the answer is written; pp = prompt processing, how fast the prompt is read. Every number, with its release and who measured it: <a href="results.html">results</a>.</p>
     <div class="grid" style="margin-top:16px">
       <div class="card"><h3>Worth splitting</h3><p>A model that does not fit on one card. And on Linux with direct copies (below), a model that does fit, for faster answers.</p></div>
-      <div class="card"><h3>Usually not</h3><p>On Windows, a model that fits one card: the drivers allow no direct copies between Arc cards, so the sums wait on host memory and two cards can be slower than one.</p></div>
-      <div class="card"><h3>A slow slot</h3><p>A card in a PCIe x4 slot (often a chipset slot) holds the pair back: one such setup read prompts at half of one card's speed. A split by layers, which needs far less traffic, is planned.</p></div>
+      <div class="card"><h3>Usually not</h3><p>On Windows with A-series cards, a model that fits one card: the drivers allow no direct copies between Arc cards, so the sums wait on host memory and two A770s can be slower than one (B60s still gain). And the prompt: it gains little from a second card yet.</p></div>
+      <div class="card"><h3>A slow slot</h3><p>A card in a PCIe x4 slot (often a chipset slot) holds the pair back: one such setup read prompts at half of one card's speed. The split by layers (<code>--split layer</code>) needs far less traffic and does better there (2,075 against 1,149 tok/s on that pair).</p></div>
     </div>
   </div>
 </section>
