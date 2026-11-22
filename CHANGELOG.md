@@ -14,7 +14,12 @@
   - the launchers' "Precise mode" switch off;
   - `serverz --fast`, or `ARC_FN_PRECISE=0`.
 
-  It is kept on a restart and a model switch, like `-Npu`; `-Precise` goes back.
+  It is kept on a restart and a model switch, like `-Npu`; `-Precise` goes back (and passes `--precise`, which wins
+  over an `ARC_FN_PRECISE=0` in options.json). A faster-whisper folder in `-Whisper` no longer reads as `--fast` on
+  the next start: the state file keeps the Whisper and ASR folders in fields of their own.
+- **With sparse attention** at 3,584 tokens of prose, precise mode is 0.0030 against the sparse reference (fast
+  0.0091). Under the 64-key test cut on the markdown it is 0.0209 (fast 0.0497), still over the limit there: the
+  block selection's near ties are left to look at.
 - **Two fixes made precise mode 8x more exact on markdown** (0.0285 -> 0.0033; token by token 0.0274 -> 0.0021):
   - **The per-layer embedding block:** its key and value matrices are BF16 in the file and were turned into Q8_0 at
     load, 0.45 % off. They are now computed from the file's values on f32 inputs.
