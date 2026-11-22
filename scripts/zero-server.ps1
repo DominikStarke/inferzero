@@ -1503,6 +1503,15 @@ while ($true) {
     Write-Host "The server stopped while loading. Last log lines:" -ForegroundColor Red
     Get-Content -Encoding UTF8 $log -Tail 60 | Where-Object { $_ -notmatch '^progress: ' } | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+    # (the GPU failsafe, docs/gpu-failsafe.md: serverz exit 3 a GPU hang, 4 a lost GPU; its marker refuses GPU work
+    #  until the computer restarts)
+    $sc = $null
+    try { $sc = $p.ExitCode } catch {}
+    $mk = Join-Path (Get-AppDir) "gpu_hang.txt"
+    if (($sc -eq 3 -or $sc -eq 4) -and (Test-Path -LiteralPath $mk)) {
+      Write-Host "The GPU hung or was lost (serverz exit $sc): restart the computer before using the GPU again. The marker ($mk):" -ForegroundColor Red
+      Get-Content -Encoding UTF8 -LiteralPath $mk | ForEach-Object { Write-Host "  $_" }
+    }
     exit 2
   }
   try { if ((Invoke-RestMethod "$base/health" -TimeoutSec 2).status -eq "ok") { break } } catch {}

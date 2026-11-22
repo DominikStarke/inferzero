@@ -455,3 +455,17 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
   garbage in three processes in a row, and a buffered SHA-256 of the file gave a wrong hash twice, while an unbuffered
   read matched the original. Reconnecting the drive cleared it. When a model on removable storage misbehaves, check
   the disk events and hash with an unbuffered read before suspecting the kernels.
+
+## 12. A hung kernel on the iGPU that drives the screen (23 November 2026)
+
+- **A test kernel whose barriers sat in role branches hung the laptop's GPU, and the screen went black.** The X8_SLM
+  R3 attention form ran its producer and its consumers in loops of their own, each with its barriers. OpenCL leaves
+  that undefined, and at a one-span prompt (20 tokens) the counts differed, so one sub-group waited at a barrier the
+  others never reached. Windows did not reset the GPU. More GPU runs went onto the hung GPU, and the 125H's iGPU
+  also drives the display: the user had to force a shutdown, twice that day.
+- **What to do instead:** every barrier in the same control flow for all work-items (one loop, the role work inside
+  it, the barriers outside the branches); the smallest cases (N < 32, 32, 33) first, one process at a time, under a
+  watchdog; and after one hang, no GPU work at all until a restart.
+- **The failsafe that came of it** ([gpu-failsafe.md](gpu-failsafe.md)): `ARC_GPU_WAIT_S`, a wait limit that names
+  the last kernel and ends the process (code 3); a hang marker that refuses GPU work until the computer restarts;
+  `bench/gpu_guard.ps1` / `.sh`, which every GPU test on the laptop runs through.

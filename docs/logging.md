@@ -74,6 +74,19 @@ GPU was reset: a driver timeout or a fault; the process must restart), out of me
 failed device allocation names its size, the GPU and what the engine had allocated, then the GPU budget and use and
 the free RAM. A kernel that fails names itself, its launch size and, while it waited, the last 64 launches.
 
+**The GPU failsafe** ([gpu-failsafe.md](gpu-failsafe.md)), `E` lines:
+- `inferzero: GPU hang: GPU 0: the work it was given did not finish within 60 s (ARC_GPU_WAIT_S) (the last kernel
+  launched: attn_x8, in attn_bench)`, and then `no GPU work starts again until the computer restarts (marker …)`.
+  Exit code 3. The limit is on only when `ARC_GPU_WAIT_S` is set (`bench/gpu_guard.ps1` sets it for test runs).
+- `inferzero: GPU lost: Level Zero error 0x70000001 (device lost: …) at …`: the driver reset the GPU. Exit code 4,
+  the marker written.
+- Any other Level Zero failure mid-work: the error line as before, exit code 5.
+- At start, while the marker is from this start of the computer: `inferzero: a GPU hang at 03:51 UTC in attn_x8
+  (attn_bench): restart the computer before using the GPU again (or delete …, run runz --clear-hang, or set
+  ARC_IGNORE_HANG=1)`, exit code 3. A marker from an earlier start is deleted with an `I` line; one that cannot be
+  read is a `W` line and ignored.
+- `ARC_WAIT_STATS=1`: `inferzero: the longest single GPU wait: … s` at the end of the run.
+
 ## Copying the log for an issue
 
 The launcher's Log tab has **Copy for an issue**: the log since the start as a GitHub code block, the user folder as

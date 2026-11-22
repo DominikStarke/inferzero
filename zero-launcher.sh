@@ -800,6 +800,13 @@ run_server() {
   done
   wait "$pid"; rc=$?
   trap - INT TERM
+  # (the GPU failsafe, docs/gpu-failsafe.md: 3 a GPU hang, 4 a lost GPU; the marker refuses GPU work until a restart)
+  if [ "$rc" = 3 ] || [ "$rc" = 4 ]; then
+    if [ -f "$STATE_DIR/gpu_hang.txt" ]; then
+      say "the GPU hung or was lost (serverz exit $rc): restart the computer before using the GPU again. The marker ($STATE_DIR/gpu_hang.txt):"
+      sed 's/^/  /' "$STATE_DIR/gpu_hang.txt" >&2
+    fi
+  fi
   return $rc
 }
 
@@ -850,7 +857,7 @@ install_service() {
   tmp=$(mktemp "$d/.inferzero-XXXXXX") || return 1
   # (KillMode=control-group, the default: the server's children (terminal tool, MCP servers) end with it;
   #  WorkingDirectory: the package, where the server finds its kernels and web UI)
-  printf '[Unit]\nDescription=inferzero server\nAfter=network.target\n\n[Service]\nWorkingDirectory=%s\n%sExecStart=%s\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n' \
+  printf '[Unit]\nDescription=inferzero server\nAfter=network.target\n\n[Service]\nWorkingDirectory=%s\n%sExecStart=%s\nRestart=on-failure\nRestartSec=5\nRestartPreventExitStatus=3 4\n\n[Install]\nWantedBy=default.target\n' \
     "$(sq "$ROOT")" "$env_lines" "${exec_line% }" > "$tmp"
   if [ "$REPLACE_SERVICE" = 1 ]; then
     mv -fT "$tmp" "$unit" || { rm -f "$tmp"; return 1; }  # (replaces a symlink itself, never writes through it)

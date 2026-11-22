@@ -438,11 +438,19 @@ int main(int argc, char** argv) {
 }
 
 static int run_main(int argc, char** argv) {
+  if (argc >= 2 && std::string(argv[1]) == "--clear-hang") {  // (the failsafe's marker, src/gpu_fail.h; no GPU)
+    const std::string p = gpufail::marker_path();
+    if (gpufail::clear_marker()) printf("deleted the GPU hang marker %s\n", p.c_str());
+    else printf("no GPU hang marker (%s)\n", p.c_str());
+    return 0;
+  }
   const bool help = argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h");
   if (argc < 2 || help) {
     fprintf(stderr,
             "usage: runz model.gguf PROMPT [options]  feeds a prompt, prints the top next tokens and a greedy continuation\n"
             "       runz model.gguf --bench-pp N [--n N] prompt processing of N tokens, then generation speed\n"
+            "       runz --clear-hang     delete the GPU hang marker (after a GPU hang, GPU programs refuse to start until the\n"
+            "                             computer restarts; docs/gpu-failsafe.md)\n"
             "prompt:\n"
             "  --tokens 1,2,3        token ids               --tokens-file F   token ids from a file (comma separated)\n"
             "  --text-file F         text, tokenized with the model's vocabulary (special tokens such as <|im_start|> parsed)\n"

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "../src/platform.h"  // (windows.h on Windows; the libraries' loading, plat::dl_*)
+#include "../src/gpu_fail.h"  // (gpu_fatal, the hang marker: docs/gpu-failsafe.md)
 
 typedef uint32_t ze_result_t;
 #define ZE_RESULT_SUCCESS 0u
@@ -193,13 +194,20 @@ inline const char* ze_result_text(uint32_t r) {
     default: return "";
   }
 }
-#define ZE_CHECK(x)                                                                                 \
-  do {                                                                                              \
-    const ze_result_t r_ = (x);                                                                     \
-    if (r_ != ZE_RESULT_SUCCESS) {                                                                  \
-      LOG_ERR("Level Zero error 0x%x%s at %s:%d: %s\n", r_, ze_result_text(r_), __FILE__, __LINE__, #x); \
-      if (ze_fail_hook) ze_fail_hook();                                                             \
-      fflush(stderr);                                                                               \
-      _Exit(1); /* (not exit(): after a lost device the driver's cleanup can hang the process) */   \
-    }                                                                                               \
+// A Level Zero call that failed mid-work ends the process (src/gpu_fail.h): a lost device with code 4 and the hang
+// marker, without the diagnostics that would ask the GPU again; any other failure with code 5 after them.
+// (not exit(): after a lost device the driver's cleanup can hang the process)
+[[noreturn]] inline void ze_fail(uint32_t r, const char* file, int line, const char* expr) {
+  char d[512];
+  snprintf(d, sizeof d, "Level Zero error 0x%x%s at %s:%d: %s", r, ze_result_text(r), file, line, expr);
+  if (r == 0x70000001u) gpufail::gpu_fatal(gpufail::Lost, d);
+  LOG_ERR("%s\n", d);
+  if (ze_fail_hook) ze_fail_hook();
+  fflush(stderr);
+  _Exit(gpufail::Other);
+}
+#define ZE_CHECK(x)                                                  \
+  do {                                                               \
+    const ze_result_t r_ = (x);                                      \
+    if (r_ != ZE_RESULT_SUCCESS) ze_fail(r_, __FILE__, __LINE__, #x); \
   } while (0)

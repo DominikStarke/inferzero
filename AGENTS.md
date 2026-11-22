@@ -37,7 +37,9 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 - **Build:** `.\build.ps1 zero\runz.cpp zero\serverz.cpp` (and the other `.cpp` you touched). After any change to
   the engine or kernels, rebuild **both** runz and serverz before testing: a stale serverz looks like a crash.
 - **Before any GPU test:** list running `serverz` / `runz` processes (`Get-Process serverz,runz`); a user's server
-  running at the same time caused device-lost errors.
+  running at the same time caused device-lost errors. On the laptop every GPU test runs through
+  `bench\gpu_guard.ps1 -TimeoutS N -- program args` (a hung kernel froze its screen, 2026-11-23); after one hang, no
+  GPU work until a restart ([docs/gpu-failsafe.md](docs/gpu-failsafe.md)).
 - **Multi-GPU without several GPUs:** `ARC_TP_SIM=1` runs a split model's shards on one GPU (correctness only, not
   speed).
 - **Messages on stderr** go through the log (`src/log.h`, [docs/logging.md](docs/logging.md)): `LOG_ERR / LOG_WRN /

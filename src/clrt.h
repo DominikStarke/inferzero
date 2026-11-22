@@ -3,6 +3,7 @@
 #include "app_dir.h"
 #include "kcache.h"
 #include "cl_min.h"
+#include "gpu_fail.h"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -22,6 +23,9 @@ struct ClRt {
   cl_command_queue queue = nullptr;
 
   bool init(bool profiling = true) {
+    // (a GPU hang since this computer started: no GPU work, code 3. This OpenCL path's waits have no limit: its
+    //  programs, attn_bench among them, run under bench/gpu_guard.ps1 on the laptop; docs/gpu-failsafe.md)
+    gpufail::check_marker();
     if (!cl_load()) { zlog::eprintf("cannot load OpenCL.dll\n"); return false; }
     cl_uint np = 0;
     CL_CHECK(clGetPlatformIDs(0, nullptr, &np));

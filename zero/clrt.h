@@ -280,6 +280,8 @@ inline ze_command_list_handle_t imm() { return imm(D()); }
 // the list to record d's next kernel into: a free one of the pool (64 lists; one whose earlier recording has not run
 // yet is waited for, which only happens when the GPU is 64 lists behind)
 inline void sync();
+template <class W>
+inline void wait_plain(const Dev& d, W w, const char* what);
 inline ze_command_list_handle_t rec_list(Dev& d) {
   if (d.rec) return d.rec;
   const int kPool = 64;
@@ -309,7 +311,7 @@ inline ze_command_list_handle_t rec_list(Dev& d) {
     // (a split model's shard: through sync(), whose wait has the time limit and the abort of the other GPUs; it waits
     //  for the whole list, which holds this one's earlier recording. d is D() here: the only caller passes it)
     if (tp_guarded) sync();
-    else ZE_CHECK(zeEventHostSynchronize(r.done, UINT64_MAX));
+    else wait_plain(d, [&r](uint64_t t) { return zeEventHostSynchronize(r.done, t); }, "a recorded list");
     ZE_CHECK(zeEventHostReset(r.done));
     ZE_CHECK(batch_fns().reset(r.l));
     r.used = false;
@@ -323,6 +325,53 @@ inline ze_command_list_handle_t rec_list(Dev& d) {
 //  instead gained nothing)
 inline std::atomic<uint64_t> sync_n{0};  // (host waits, counted with ARC_LAUNCH_STATS)
 inline bool launch_stats_on();
+// The failsafe's wait limit (docs/gpu-failsafe.md 2): ARC_GPU_WAIT_S seconds for one wait of a GPU's work, past which
+// the process ends with the hang marker and code 3 (src/gpu_fail.h). Unset or 0: no limit, one wait as before. Off by
+// default until the longest real waits are measured on the iGPU (ARC_WAIT_STATS=1 prints them); bench/gpu_guard.ps1
+// sets it for test runs. (A split model's shards keep TpEngine's own limit, below.)
+inline uint64_t wait_limit_ns() {
+  static const uint64_t v = [] {
+    const char* e = getenv("ARC_GPU_WAIT_S");
+    const double s = e ? atof(e) : 0.0;
+    return s > 0 ? (uint64_t)(s * 1e9) : UINT64_MAX;
+  }();
+  return v;
+}
+// ARC_WAIT_STATS=1: the longest single wait of the run, printed at the end (to choose the limit's default)
+inline std::atomic<uint64_t> wait_max_ns{0};
+inline bool wait_stats_on() {
+  static const bool on = [] {
+    const char* e = getenv("ARC_WAIT_STATS");
+    if (!e || atoi(e) == 0) return false;
+    std::atexit([] { zlog::eprintf("inferzero: the longest single GPU wait: %.3f s\n", wait_max_ns.load() / 1e9); });
+    return true;
+  }();
+  return on;
+}
+// One wait of a GPU's work (w(timeout) is the Level Zero wait), with the limit above; what: for the hang message
+template <class W>
+inline void wait_plain(const Dev& d, W w, const char* what) {
+  if (const int t = gpufail::fault_test()) {  // (ARC_GPU_FAULT_TEST: the first wait as if it had failed)
+    static std::atomic<bool> done{false};
+    if (!done.exchange(true)) {
+      (void)w(UINT64_MAX);
+      gpufail::gpu_fatal((gpufail::Kind)t, std::string("a test (ARC_GPU_FAULT_TEST) at GPU ") + std::to_string(d.index) + "'s first wait");
+    }
+  }
+  const uint64_t lim = wait_limit_ns();
+  const bool st = wait_stats_on();
+  const auto t0 = st ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const ze_result_t r = w(lim);
+  if (r == ZE_RESULT_NOT_READY && lim != UINT64_MAX)
+    gpufail::gpu_fatal(gpufail::Hang, "GPU " + std::to_string(d.index) + ": " + what + " did not finish within " +
+                                          std::to_string(lim / 1000000000ull) + " s (ARC_GPU_WAIT_S)");
+  if (r != ZE_RESULT_SUCCESS) ze_fail(r, __FILE__, __LINE__, what);
+  if (st) {
+    const uint64_t ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    uint64_t m = wait_max_ns.load();
+    while (ns > m && !wait_max_ns.compare_exchange_weak(m, ns)) {}
+  }
+}
 inline void sync() {
   Dev& d = D();
   if (launch_stats_on()) ++sync_n;
@@ -332,7 +381,7 @@ inline void sync() {
   }
   Dev& gd = d.g();
   if (!tp_guarded || (gd.sync_timeout_ns.load() == UINT64_MAX && !gd.abort.load())) {
-    ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
+    wait_plain(d, [&d](uint64_t t) { return zeCommandListHostSynchronize(d.cl, t); }, "the work it was given");
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();  // (in pieces of 100 ms: see Dev::sync_timeout_ns)
@@ -358,7 +407,7 @@ inline void wait_guarded(W w) {
   Dev& d = D();
   Dev& gd = d.g();
   if (!tp_guarded || (gd.sync_timeout_ns.load() == UINT64_MAX && !gd.abort.load())) {
-    ZE_CHECK(w(UINT64_MAX));
+    wait_plain(d, w, "a list or event it was given");
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();
@@ -1018,9 +1067,14 @@ inline void watch_wait(ZKernel* k, ze_event_handle_t ev, bool keep, const uint32
               ze_result_text(r), (unsigned long long)e.seq, k->name.c_str(), ms);
       std::lock_guard<std::mutex> g(watch_mu);
       for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch", zlog::ERR);
-      if (ze_fail_hook) ze_fail_hook();
-      fflush(stderr);
-      _Exit(1);
+      if (r != 0x70000001u && ze_fail_hook) ze_fail_hook();  // (a lost device: nothing more asked of the GPU)
+      gpufail::ze_exit(r, "waiting for kernel " + k->name);
+    }
+    if (ms * 1e6 > (double)wait_limit_ns()) {  // (ARC_GPU_WAIT_S: a hang)
+      std::lock_guard<std::mutex> g(watch_mu);
+      for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch", zlog::ERR);
+      gpufail::gpu_fatal(gpufail::Hang, "kernel " + k->name + " did not finish within " +
+                                            std::to_string(wait_limit_ns() / 1000000000ull) + " s (ARC_GPU_WAIT_S)");
     }
     if (!warned && ms > 1500) {
       warned = true;
@@ -1132,6 +1186,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     return -54;  // (CL_INVALID_WORK_GROUP_SIZE)
   }
   zrt::last_k = k;
+  gpufail::last_kernel.store(k->name.c_str(), std::memory_order_relaxed);  // (the failsafe's messages)
   for (int d = 0; d < 3; ++d) zrt::last_gs[d] = gs[d], zrt::last_ls[d] = ls[d];
   ze_event_handle_t sig = ev || zrt::watch_ms > 0 ? zrt::ev_get() : nullptr;
   if (ev) *ev = (cl_event)sig;
@@ -1160,9 +1215,8 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   if (r != ZE_RESULT_SUCCESS) {
     LOG_ERR("Level Zero error 0x%x%s launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, ze_result_text(r), k->name.c_str(),
             gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
-    if (ze_fail_hook) ze_fail_hook();
-    fflush(stderr);
-    _Exit(1);
+    if (r != 0x70000001u && ze_fail_hook) ze_fail_hook();
+    gpufail::ze_exit(r, "launching " + k->name);
   }
   if (zrt::watch_ms > 0) {  // (ARC_ZE_WATCH: this launch waited for alone, timed, kept in the ring; see zrt::watch_wait)
     zrt::watch_wait(k, sig, ev != nullptr, gs, ls);
@@ -1170,13 +1224,16 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   }
   static const bool sync_each = (getenv("ARC_ZE_SYNC_EACH") && atoi(getenv("ARC_ZE_SYNC_EACH")) != 0);  // (debug: which kernel loses the device)
   if (sync_each) {
-    const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, UINT64_MAX);
+    const uint64_t lim = zrt::wait_limit_ns();
+    const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, lim);
+    if (s == ZE_RESULT_NOT_READY && lim != UINT64_MAX)
+      gpufail::gpu_fatal(gpufail::Hang, "kernel " + k->name + " did not finish within " + std::to_string(lim / 1000000000ull) +
+                                            " s (ARC_GPU_WAIT_S)");
     if (s != ZE_RESULT_SUCCESS) {
       LOG_ERR("Level Zero error 0x%x%s running %s (global %u x %u x %u, local %u x %u x %u)\n", s, ze_result_text(s), k->name.c_str(),
               gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
-      if (ze_fail_hook) ze_fail_hook();
-      fflush(stderr);
-      _Exit(1);
+      if (s != 0x70000001u && ze_fail_hook) ze_fail_hook();
+      gpufail::ze_exit(s, "running " + k->name);
     }
   }
   return CL_SUCCESS;
@@ -1197,6 +1254,10 @@ inline cl_int clReleaseEvent(cl_event e) {  // (only kernel events are real: bac
 inline cl_int clReleaseKernel(cl_kernel k) {
   if (!k) return CL_SUCCESS;
   if (zrt::last_k == k) zrt::last_k = nullptr;  // (the crash log must not read a kernel that is gone)
+  {
+    const char* nm = k->name.c_str();
+    gpufail::last_kernel.compare_exchange_strong(nm, nullptr);  // (nor the failsafe's message)
+  }
   zeKernelDestroy(k->k);
   delete k;
   return CL_SUCCESS;
@@ -1324,6 +1385,7 @@ struct ClRt {
   // events, the staging buffer (all of zrt:: belongs to that context)
   static bool ze_start() {
     if (zrt::ctx) return true;
+    gpufail::check_marker();  // (a GPU hang since this computer started: no GPU work, code 3; src/gpu_fail.h)
     if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero)\n"); return false; }
     ZE_CHECK(zeInit(1));
     // the first driver whose device is a GPU (zeInit(1) lists GPU drivers only; after a zeInit(0) of the NPU
@@ -1339,7 +1401,12 @@ struct ClRt {
       if (zeDeviceGet(d, &n, &x) != 0 || !n) continue;
       ze_device_properties_t p{};
       p.stype = ZE_STYPE_DEVICE_PROPERTIES;
-      if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) { drvh = d; zrt::dev0.dev = x; break; }
+      if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) {
+        drvh = d;
+        zrt::dev0.dev = x;
+        snprintf(gpufail::gpu_name, sizeof gpufail::gpu_name, "%s", p.name);  // (for the hang marker)
+        break;
+      }
     }
     if (!drvh) { LOG_ERR("no Level Zero GPU driver: is the Intel graphics driver installed (Arc or Core Ultra graphics)?\n"); return false; }
     uint32_t nm = 1;

@@ -22,6 +22,20 @@ for o in ${OPTIONS//,/ }; do
 done
 # (--host 0.0.0.0: reachable through the published port; compose.yaml publishes it on 127.0.0.1 only, since the
 #  server has no password of its own. --yes: the download without a question.)
+# (not exec: after a GPU hang or a lost GPU (exit 3 or 4, docs/gpu-failsafe.md) the container stays up, idle, instead
+#  of being restarted onto the hung GPU by compose's restart policy; the signals are passed on to the launcher)
 # shellcheck disable=SC2086
-exec ./zero-launcher.sh --model "${MODEL:-4b}" --host 0.0.0.0 --port "${PORT:-8090}" --gpus "${GPUS:-1}" \
-  --no-browser --yes --no-saved-options ${opts[@]+"${opts[@]}"} -- ${SERVER_ARGS:-}
+./zero-launcher.sh --model "${MODEL:-4b}" --host 0.0.0.0 --port "${PORT:-8090}" --gpus "${GPUS:-1}" \
+  --no-browser --yes --no-saved-options ${opts[@]+"${opts[@]}"} -- ${SERVER_ARGS:-} &
+pid=$!
+trap 'kill -TERM $pid 2>/dev/null' INT TERM
+rc=0
+wait "$pid" || rc=$?
+if kill -0 "$pid" 2>/dev/null; then rc=0; wait "$pid" || rc=$?; fi  # (a signal ended the first wait)
+trap - INT TERM
+if [ "$rc" = 3 ] || [ "$rc" = 4 ]; then
+  echo "inferzero: the GPU hung or was lost (exit $rc): restart the host before using the GPU again; the container waits" >&2
+  trap 'exit 0' INT TERM
+  while :; do sleep 3600 & wait $! || true; done
+fi
+exit "$rc"
