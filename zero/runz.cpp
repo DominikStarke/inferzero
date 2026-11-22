@@ -1378,6 +1378,9 @@ static int run_main(int argc, char** argv) {
       printf("weights read: %.0f MB per token, %.1f GB/s%s\n", gb * 1000 / n_gen, gb / ms * 1000,
              peak_note(eng, gb / ms * 1000).c_str());
     }
+    // (the experts line and its host times after --bench-pp too, as after a text prompt: a MoE model's cache hits,
+    //  reads and ARC_XCPU's times; the Researcher, #57, 2026-11-22)
+    if (!eng.expert_stats().empty()) printf("%s\n", eng.expert_stats().c_str());
   } else {
     if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
     if (kl_decode) {

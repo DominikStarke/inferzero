@@ -532,9 +532,20 @@
     // (the MTP block's layer only when it is loaded, engine_load.h: opt.mtp && opt.mtp_block; audit 2026-11-16)
     const std::string mtp_pre = "blk." + std::to_string(hp.n_layer) + ".";
     const bool mtp_on = opt.mtp && opt.mtp_block;
+    // (a layer split's stage, --split layer: only the tensors it loads, its layers [pp_begin, pp_end) and, on the last
+    //  stage, the head and the MTP block, as engine_load.h does. Each stage counted the whole model's weights before:
+    //  two B60s' 27B put 4.64 / 6.15 GiB of each stage's weights in host memory where none were needed, 0.91 tok/s
+    //  against 23.2 with them on the cards (MaineTim, issue #44). One GPU: the range is every layer, as before)
+    const int lb = std::max(0, opt.pp_begin), le = opt.pp_end < 0 ? hp.n_layer : std::min(opt.pp_end, hp.n_layer);
+    auto in_stage = [&](const std::string& n) {
+      if (n.compare(0, 4, "blk.") != 0) return pp_last();  // (the head, its norm, a tied embedding)
+      const int il = atoi(n.c_str() + 4);
+      if (il >= hp.n_layer) return pp_last();  // (the MTP block's layer)
+      return il >= lb && il < le;
+    };
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight" &&
-          (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0))
+          (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0) && in_stage(t.name))
         total += (double)t.nbytes;
     const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
     // (a discrete card, 2026-11-16, an Arc B580 (12 GB) for Qwen3.8 27B: the weights that leave less than keep_gb of
@@ -740,6 +751,7 @@
   cl_mem moe_wq_ = nullptr, moe_wh_ = nullptr;
   // one token, streamed experts: the tiles of its cached and of its missing experts (layer_moe, ARC_XSPLIT)
   cl_mem xt_hit_ = nullptr, xt_miss_ = nullptr;
+  uint8_t* xt_lists_h_ = nullptr;  // (the two lists' host memory, copied into xt_hit_ / xt_miss_ without a wait; layer_moe)
   cl_mem xt_tab_ = nullptr;  // (a split token's expert-table row on the GPU, ARC_XSPLIT_TAB; layer_moe)
   std::vector<int> xt_hit_h_, xt_miss_h_;
   int moe_group_ = 0;

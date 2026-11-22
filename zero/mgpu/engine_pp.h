@@ -37,9 +37,12 @@ class PpEngine {
     if (s.empty()) s.assign(n, 1.0);
     double sum = 0;
     for (double x : s) sum += std::max(0.0, x);
-    if ((int)s.size() != n || !(sum > 0))  // (a typo is said, not quietly made equal shares; no share > 0: no cut)
-      throw std::runtime_error("--tensor-split: " + std::to_string(n) + " shares, one a GPU, at least one above 0 (got " +
-                               std::to_string(s.size()) + ")");
+    // (a typo is said, not quietly made equal shares; no share > 0: no cut. The two said apart: 3 shares for 2 GPUs
+    //  read "at least one above 0", MaineTim, issue #44)
+    if ((int)s.size() != n)
+      throw std::runtime_error("--tensor-split: " + std::to_string(s.size()) + " shares for " + std::to_string(n) +
+                               " GPUs: give one a GPU");
+    if (!(sum > 0)) throw std::runtime_error("--tensor-split: at least one share above 0");
     std::vector<int> c(n + 1, 0);
     double acc = 0;
     for (int r = 0; r < n; ++r) {  // (each stage at least one layer)

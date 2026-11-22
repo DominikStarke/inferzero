@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-22: a layer split keeps its weights on the cards; faster CPU experts; KL script folders
+
+- **Fixed: `--split layer` put weights in host memory for no reason** (MaineTim, two B60s, #44). Each stage counted
+  the whole model's weights when deciding how much to keep in RAM, though it holds only its own layers. The 27B over
+  two cards put 4.64 / 6.15 GiB of each stage's weights in RAM, and the server generated 0.91 tok/s instead of ~23.
+  Each stage now counts the tensors it loads. One GPU is unchanged; the split's logits are the same as one GPU's
+  (simulated, the 4B).
+- **`--tensor-split` with the wrong number of shares** says so ("3 shares for 2 GPUs") instead of "at least one above
+  0".
+- **MoE generation with the expert cache: two host waits fewer for each layer, four when `ARC_XCPU=1`.** The hit and
+  miss lists are copied to the GPU without waiting. With `ARC_XCPU=1` a B60 spent ~2 s of 128 tokens in those waits
+  (skipzx-lab, #57). The results are the same bit for bit (Flash Next, 32 generated tokens, the logits of every step);
+  the speed is to measure on a card. `ARC_XLIST_SYNC=1` restores the old writes.
+- **`runz --bench-pp`** prints the experts line (cache hits, reads, the CPU experts' times) as a text prompt does.
+- **`bench/kl_options.sh` / `.ps1`:** each model file gets its own folder of cached references. The bash script's
+  `tr` failed on a reverse range, so every model shared one folder and could read another model's references
+  (Daleang, #73).
+
 ## 2026-11-22: the launchers show one row per model, its options as switches (QUEUE row 15, step 3)
 
 - **One row per model file** in both launchers. The up-to-six rows a file had (MTP + images, MTP, images, standard,

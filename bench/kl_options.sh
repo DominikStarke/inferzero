@@ -28,7 +28,10 @@ done
 RUNZ=$ROOT/bin/runz REF=$ROOT/bin/ref_forward
 for e in "$RUNZ" "$REF"; do [ -x "$e" ] || { echo "kl_options: $e not found (an inferzero package, or ./build.sh)" >&2; exit 1; }; done
 if pgrep -x serverz >/dev/null || pgrep -x runz >/dev/null; then echo "kl_options: a serverz / runz is running: stop it first" >&2; exit 1; fi
-WORK="$HOME/.inferzero/kl-options/$(basename "$MODEL" | tr -c 'A-Za-z0-9._-\n' '_')"
+# (the file's name, other characters as _, and its size: a folder per model file, so no model reads another's cached
+#  references. Until 2026-11-22 tr -c 'A-Za-z0-9._-\n' took "_-\n" for a reverse range and failed, and every model
+#  shared ~/.inferzero/kl-options/ itself: Daleang, #73)
+WORK="$HOME/.inferzero/kl-options/$(basename "$MODEL" | sed 's/[^A-Za-z0-9._-]/_/g')-$(stat -c %s "$MODEL")"
 [ "$FRESH" = 1 ] && rm -rf "$WORK"
 mkdir -p "$WORK"
 stamp() { echo "$(date +%H:%M:%S) $*" >&2; }

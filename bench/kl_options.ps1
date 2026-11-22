@@ -23,7 +23,8 @@ $ref = Join-Path $root "bin\ref_forward.exe"
 foreach ($e in $runz, $ref) { if (-not (Test-Path $e)) { throw "$e not found: run this from an inferzero package (or build it first)" } }
 if (-not (Test-Path $Model)) { throw "no model at $Model" }
 if (Get-Process serverz, runz -ErrorAction SilentlyContinue) { throw "a serverz / runz is running: stop it first (two programs on one GPU can fail)" }
-$work = Join-Path $env:USERPROFILE (".inferzero\kl-options\" + ((Split-Path $Model -Leaf) -replace '[^A-Za-z0-9._-]', '_'))
+# (the file's name and its size: a folder per model file, as kl_options.sh, so no model reads another's references)
+$work = Join-Path $env:USERPROFILE (".inferzero\kl-options\" + ((Split-Path $Model -Leaf) -replace '[^A-Za-z0-9._-]', '_') + "-" + (Get-Item -LiteralPath $Model).Length)
 if ($Fresh) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force $work | Out-Null
 function Stamp([string]$x) { Write-Host ("{0} {1}" -f (Get-Date -Format 'HH:mm:ss'), $x) }

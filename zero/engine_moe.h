@@ -326,15 +326,32 @@
         ++v[0];
       }
       const int nh = xt_hit_h_[0], ng = xt_miss_h_[0];
+      // (2026-11-22, #57: the two lists through host memory of their own, copied without a wait. Each blocking write
+      //  waited twice (clrt.h's shared bounce buffer), four host waits a split layer: with ARC_XCPU=1 on a B60, ~2 s of
+      //  128 tokens. Safe without one: the routing read above has just waited for the queue, so no earlier copy can
+      //  still read this memory, and the next write to it comes after the next layer's read. The same lists, the same
+      //  results bit for bit; ARC_XLIST_SYNC=1: the blocking writes as before)
       auto write_lists = [&] {
+        const size_t nb = (1 + 3 * (size_t)NU) * 4;
         if (!xt_hit_) {
-          xt_hit_ = buf((1 + 3 * (size_t)NU) * 4);
-          xt_miss_ = buf((1 + 3 * (size_t)NU) * 4);
+          xt_hit_ = buf(nb);
+          xt_miss_ = buf(nb);
         }
-        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_hit_, CL_TRUE, 0, xt_hit_h_.size() * 4, xt_hit_h_.data(), 0, nullptr,
-                                      nullptr));
-        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_miss_, CL_TRUE, 0, xt_miss_h_.size() * 4, xt_miss_h_.data(), 0,
-                                      nullptr, nullptr));
+        static const bool list_sync = getenv("ARC_XLIST_SYNC") && atoi(getenv("ARC_XLIST_SYNC")) != 0;
+        if (list_sync) {
+          CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_hit_, CL_TRUE, 0, xt_hit_h_.size() * 4, xt_hit_h_.data(), 0,
+                                        nullptr, nullptr));
+          CL_CHECK(clEnqueueWriteBuffer(cl_.queue, xt_miss_, CL_TRUE, 0, xt_miss_h_.size() * 4, xt_miss_h_.data(), 0,
+                                        nullptr, nullptr));
+          return;
+        }
+        if (!xt_lists_h_) xt_lists_h_ = (uint8_t*)zrt::host_alloc(2 * nb);
+        memcpy(xt_lists_h_, xt_hit_h_.data(), xt_hit_h_.size() * 4);
+        memcpy(xt_lists_h_ + nb, xt_miss_h_.data(), xt_miss_h_.size() * 4);
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_hit_->ptr, xt_lists_h_, xt_hit_h_.size() * 4, nullptr, 0,
+                                               nullptr));
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), xt_miss_->ptr, xt_lists_h_ + nb, xt_miss_h_.size() * 4,
+                                               nullptr, 0, nullptr));
       };
       if (nh > 0 && ng > 0) {
         write_lists();
