@@ -406,8 +406,13 @@ int main(int argc, char** argv) {
       // big tile's loop: 410 -> 184 instructions for 33 DPAS); the same results bit for bit
       {"slm 32x32 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
       {"slm 32x16 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 1, true, true, 4, false, 4},
+      {"slm 32x48 8x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 3, true, true, 8, false, 4},
       {"slm 32x32 4x4 c2 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
   };
+  // (2026-11-22) "slm 32x48 8x4 e2 p": the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), 8 column x 4 token
+  // sub-groups, a work-group 128 tokens x 384 columns (oneDNN's 256 x 192, 4 x 8 here, spills in the K loop at 256
+  // registers, ocloc dg2-g10), B a k-half at a time. Only on widths that are multiples of 384 (the engine runs a
+  // width's rest with the 32 x 32 tile): --shape 17280x5120, 17280x5120:2, 4992x17408 for the 27B's gate / up / down
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")
     for (Variant v : all) {

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-22: a 32 x 48 GEMM tile for the A770, opt-in
+
+- **`ARC_GEMM_XW_SLM_TILE=32x48 ARC_GEMM_XW_SLM_WG=8,4`:** the prompt GEMMs on Alchemist in 32 x 48 tiles, a
+  work-group of 8 column x 4 token sub-groups through local memory, after the strategy of oneDNN's int8 GEMM (ideas
+  only; credited in NOTICE).
+  - To fit 256 registers, the weights are read a k-half at a time, and the next chunk is read after this one's
+    DPAS. In the K loop, ocloc for the A770 counts 4.2 instructions a DPAS and no spill.
+  - A width that is not a multiple of 384 (the 27B's 5,120 and 17,408) runs its rest with today's 32 x 32 tile.
+  - Bit for bit the same results: checked with emulated DPAS on the laptop (`xw_peak` and the 4B's logits) and at
+    every start.
+- **Not measured on an A770 yet**, so it stays opt-in. `xw_peak --only "slm 32x48 8x4 e2 p" --shape 17280x5120`
+  times the kernel on widths it fits.
+
 ## 2026-11-22: structured output no longer stops on an escape (#80)
 
 - **A JSON schema answer could stop mid-key with invalid JSON** (StealthDrifter, #80: `{"message_\u000` for the

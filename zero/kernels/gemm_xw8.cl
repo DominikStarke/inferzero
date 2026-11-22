@@ -63,8 +63,19 @@
 #if XW_TM != 16 && XW_TM != 32 && XW_TM != 64
 #error "XW_TM must be 16, 32 or 64"
 #endif
-#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4
-#error "XW_NC must be 1, 2 or 4"
+// (3, 2026-11-22: 48 columns, the A770's 32 x 48 tile after oneDNN's int8 GEMM strategy (#45; ideas only, no code),
+//  only with XW_SLM, whose B is then read a k-half at a time (XW_HB): 32 x 48's sums are 192 registers)
+#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4 && !(XW_NC == 3 && defined(XW_SLM))
+#error "XW_NC must be 1, 2 or 4 (3 with XW_SLM)"
+#endif
+// (ocloc dg2-g10 at 256 registers, 32 x 48 with 8 x 4 sub-groups: XW_HB 1 spills inside the K loop (30 scratch
+//  messages), XW_HB 2 with XS_LATE none there (235 instructions for its DPAS, 4.2 each; 84 scratch messages outside
+//  the loop, the epilogue's). 4 x 8 sub-groups spill in the loop either way: 8 x 4 is the form)
+#if XW_NC == 3 && !defined(XW_HB)
+#define XW_HB 2
+#endif
+#if XW_NC == 3 && !defined(XS_LATE)
+#define XS_LATE
 #endif
 #ifndef XW_WGX
 #define XW_WGX 1
@@ -251,11 +262,48 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   for (int ch = ch0; ch < ch1; ch += XS_CPS) {  // (a stage of XS_CPS chunks)
     const int cur = ((ch - ch0) / XS_CPS) & 1;
     const bool more = ch + XS_CPS < ch1;
+#ifndef XS_LATE
     if (more) { XS_LOAD(ch + XS_CPS) }
+#endif
 #pragma unroll
     for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
       __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
       __local const uint* xb = xs[cur][j] + XS_AW + sx * XW_NC * 256;
+#if defined(XW_HB) && XW_HB == 2
+      // -DXW_HB=2: B a column group and a k-half at a time (16 registers of B), A read again for each: each sum
+      // still takes values 0..31 of the chunk, then 32..63 (integer sums: bit for bit either way)
+#pragma unroll
+      for (int hf = 0; hf < 2; ++hf) {
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) {
+          const int8 b0 = XS_RD(xb + c * 256 + hf * 128), b1 = XS_RD(xb + c * 256 + hf * 128 + 64);
+#pragma unroll
+          for (int t = 0; t < XW_TG; ++t) {
+            const int8 a = XS_RD(xa + t * 128 + hf * 64);
+            xacc[t][2 * c] = xw8_mad(a, b0, xacc[t][2 * c]);
+            xacc[t][2 * c + 1] = xw8_mad(a, b1, xacc[t][2 * c + 1]);
+          }
+        }
+      }
+#elif defined(XW_HB)
+      // -DXW_HB (XW_NC 3's default): B a k-half at a time for all column groups (XW_NC x 16 registers, not 32): values
+      // 0..31 of the chunk into every sum, then 32..63, as the plain form adds them (integer sums: bit for bit)
+#pragma unroll
+      for (int hf = 0; hf < 2; ++hf) {
+        int8 b0[XW_NC], b1[XW_NC];
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) b0[c] = XS_RD(xb + c * 256 + hf * 128), b1[c] = XS_RD(xb + c * 256 + hf * 128 + 64);
+#pragma unroll
+        for (int t = 0; t < XW_TG; ++t) {
+          const int8 a = XS_RD(xa + t * 128 + hf * 64);
+#pragma unroll
+          for (int c = 0; c < XW_NC; ++c) {
+            xacc[t][2 * c] = xw8_mad(a, b0[c], xacc[t][2 * c]);
+            xacc[t][2 * c + 1] = xw8_mad(a, b1[c], xacc[t][2 * c + 1]);
+          }
+        }
+      }
+#else
       int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
@@ -271,7 +319,13 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
           xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
         }
       }
+#endif  // XW_HB
     }
+#ifdef XS_LATE
+    // (-DXS_LATE, 2026-11-22: the next stage read after this one's DPAS, not before them, so its staging registers
+    //  are not held through them: the 32 x 48 tile's sums take 192. The same words to the same places)
+    if (more) { XS_LOAD(ch + XS_CPS) }
+#endif
     if (more) { XS_STORE(cur ^ 1) }
     barrier(CLK_LOCAL_MEM_FENCE);
   }
@@ -512,6 +566,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define EPI_T uint4
 #define EPI_RD(p) intel_sub_group_block_read4(p)
 #define EPI_WR(p, v) intel_sub_group_block_write4((p), (v))
+#elif XW_NH == 6  // (XW_NC 3: a row's 48 columns as a block of 4 words and one of 2, not 8: the 2 after are another's)
+#define EPI_T uint8
+#define EPI_RD(p) ((uint8)(intel_sub_group_block_read4(p), intel_sub_group_block_read2((p) + 32), (uint2)(0)))
+#define EPI_WR(p, v)                                  \
+  {                                                   \
+    intel_sub_group_block_write4((p), (v).s0123);     \
+    intel_sub_group_block_write2((p) + 32, (v).s45);  \
+  }
 #else
 #define EPI_T uint8
 #define EPI_RD(p) intel_sub_group_block_read8(p)

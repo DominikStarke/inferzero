@@ -297,9 +297,12 @@
       XwBig b;
       if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {  // (TMxCOLS, each 16 / 32 / 64: xw_peak --all's forms)
         int tm = 0, cols = 0;
-        if (sscanf(t, "%dx%d", &tm, &cols) == 2 && (tm == 16 || tm == 32 || tm == 64) && (cols == 16 || cols == 32 || cols == 64))
+        // (48 columns, 2026-11-22: the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), gemm_xw8.cl XW_NC 3
+        //  with B a k-half at a time; N's part beyond a multiple of 48 x X runs the default big tile, xw_piece)
+        if (sscanf(t, "%dx%d", &tm, &cols) == 2 && (tm == 16 || tm == 32 || tm == 64) &&
+            (cols == 16 || cols == 32 || cols == 64 || (cols == 48 && tm == 32)))
           b.tm = tm, b.nc = cols / 16;
-        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_TILE=%s not TMxCOLS with 16 / 32 / 64 each: 32x32\n", t);
+        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_TILE=%s not TMxCOLS with 16 / 32 / 64 each (or 32x48): 32x32\n", t);
       }
       if (const char* w = getenv("ARC_GEMM_XW_SLM_WG")) {
         int x = 0, y = 0;
@@ -558,6 +561,8 @@
     if (M > 0 && xw_big_on() && (pack & 3) == 3) {
       const XwBig& b = xw_big_cfg();  // (32 x 32, 4 x 4 unless the sweep's switches say otherwise)
       if (N % (16 * b.nc * b.x) == 0 && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
+      // (48 columns: whatever N holds of 48 x X; xw_piece runs the rest with the default big tile)
+      if (b.nc == 3 && N >= 48 * b.x && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
     }
     XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};
     if (xw_shape_on() && xw_tm() == 32) {
@@ -574,6 +579,26 @@
                 int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
     const XwTile t = xw_tile_for(N, K, M, pack);
     const int nc = t.nc;
+    if (nc == 3) {
+      // (the 32 x 48 tile over the columns a multiple of 48 x X, then the rest (the 27B's 5,120 / 17,408: 128) as the
+      //  default big tile would run it, 32 x 32 4 x 4, or the per-shape rule where that does not fit either. Views of
+      //  the packed weights from the rest's first column group (nsb x 4 x 256 words each, 16 scales); C from c_off + n3.
+      //  Each column's sums are its own: the split changes no value)
+      const int n3 = N - N % (48 * t.wgx), rest = N - n3;
+      xw_run(name, 3, pack, wq, wh, aq, asc, M, n3, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx, t.slm);
+      if (rest > 0) {
+        const size_t g = (size_t)n3 / 16, wbytes = g * (size_t)(K / 256) * 4 * 256 * 4;
+        cl_mem wq2 = from(wq, wbytes), wh2 = from(wh, g * 16 * 4);
+        XwTile r{32, 2, 4, 4};
+        if (!(rest % 128 == 0 && M % 128 == 0)) {
+          r = {xw_tm(), xw_nc_for(rest), xw_wgx(), 0};
+          if (xw_shape_on() && xw_tm() == 32) r = {32, 1, 4, 0};
+          while (r.nc > 1 && rest % (16 * r.nc)) r.nc /= 2;
+        }
+        xw_run(name, r.nc, pack, wq2, wh2, aq, asc, M, rest, K, C, ldc, c_off + n3, a, rgroup, s0, s1, wgy, 0, r.tm, r.wgx, r.slm);
+      }
+      return;
+    }
     if (nc != 6)
       return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx, t.slm);
     if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
@@ -737,6 +762,8 @@
       if (xw_big_on()) {
         const XwBig& b = xw_big_cfg();
         shapes.push_back({2 * b.y * b.tm, 2 * b.x * 16 * b.nc, K0});
+        // (48 columns: a width with a rest, as the 27B's (two of its work-groups and 128 more), so the split runs too)
+        if (b.nc == 3) shapes.push_back({2 * b.y * b.tm, 2 * b.x * 48 + 128, K0});
       }
       for (const auto& sh : shapes) {
         const int M = sh[0], N = sh[1], K = sh[2], nsb = K / 256;
