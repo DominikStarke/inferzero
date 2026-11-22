@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-22: attn_x8's lazy rescale, opt-in and parked (`ARC_ATTN_X8_LAZY=1`)
+
+- **`ARC_ATTN_X8_LAZY=1`** (with `ARC_ATTN_X8=1`): where no token's running maximum moved in a span, the XMX prompt
+  attention's output update is one fused multiply-add instead of a multiply and a multiply-add. The compiler counts
+  128 fewer instructions a span per sub-group.
+- **Not bit for bit:** each such update is rounded once instead of twice. The 27B on 480 tokens against full
+  precision, token by token: KL 0.00059 (max 0.0157), the top token the same on 471 / 480 (98.1 %). Without it,
+  attn_x8 gives 0.00060 (max 0.0100, 476 / 480) and the default attention 0.00056 (max 0.0133, 469 / 480).
+- **Parked:** the A770 runs put attn_x8 1.4-1.5x behind the default attention even at its best, and this step alone
+  cannot close that.
+
 ## 2026-11-22: the DeltaNet recurrence in one sweep a token, opt-in (`ARC_GDN_FUSE2=1`)
 
 - **`ARC_GDN_FUSE2=1`:** `gdn_recur` merges each token's state update with the next token's first sum into one sweep

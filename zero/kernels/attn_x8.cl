@@ -344,6 +344,18 @@ __kernel void attn_x8(__global const char* qi, __global const float* qsc, __glob
     __global const uint4* vp0 = X8_VP(q0);
     __global const uint4* vp1 = X8_VP(q1);
     const float8 cr = x8_rows(corr), pr = x8_rows(ps);
+#ifdef X8_LAZY
+    // (-DX8_LAZY, a prototype, not bit for bit: where no token's maximum moved this span (every rescale 1), the update
+    //  as one fused multiply-add, o + acc x pr rounded once instead of twice; a KL question)
+    if (sub_group_all(corr == 1.0f)) {
+#pragma unroll
+      for (int i = 0; i < DGH; ++i) {
+        const uint4 v0 = vp0[8 * i + lane], v1 = vp1[8 * i + lane];
+        const int8 acc = x8_us(pa, as_int8((uint8)(v0, v1)), (int8)0);
+        o[i] = fma(convert_float8(acc), pr, o[i]);
+      }
+    } else
+#endif
 #pragma unroll
     for (int i = 0; i < DGH; ++i) {
       const uint4 v0 = vp0[8 * i + lane], v1 = vp1[8 * i + lane];

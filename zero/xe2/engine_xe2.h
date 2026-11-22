@@ -534,6 +534,13 @@
     static const bool on = getenv("ARC_ATTN_X8_PSH") && atoi(getenv("ARC_ATTN_X8_PSH")) != 0;
     return on;
   }
+  // ARC_ATTN_X8_LAZY=1 (2026-11-22, opt-in): attn_x8.cl -DX8_LAZY, where no token's maximum moved in a span the P . V
+  // update as one fused multiply-add (o + acc x pr rounded once, not twice): ocloc dg2-g10, 128 of a sub-group's ~1,000
+  // instructions a span fewer. Not bit for bit: KL in docs/before-after.md
+  static bool x8_lazy_env() {
+    static const bool on = getenv("ARC_ATTN_X8_LAZY") && atoi(getenv("ARC_ATTN_X8_LAZY")) != 0;
+    return on;
+  }
   std::string attnfx_defs() const {
     const int hd = hp.qwen3 ? hp.head_dim : 256, hpg = hp.n_head / hp.n_head_kv;
     static const bool pf = !getenv("ARC_ATTN_FX_PF") || atoi(getenv("ARC_ATTN_FX_PF")) != 0;
@@ -543,7 +550,7 @@
     const char* xd = getenv("ARC_ATTN_FX_DEFS");
     const std::string extra = xd ? std::string(" ") + xd : std::string();
     const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "") +
-                                         (x8_psh_env() ? " -DX8_LEAN -DX8_PSH" : "")
+                                         (x8_psh_env() ? " -DX8_LEAN -DX8_PSH" : "") + (x8_lazy_env() ? " -DX8_LAZY" : "")
                                    : (pf ? " -DFX_PF" : "");
     return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
            " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;
