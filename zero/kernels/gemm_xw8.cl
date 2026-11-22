@@ -182,7 +182,21 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_AW (XW_WGY * XW_TG * 128)  // words of A a chunk (token group t's: 2 halves x 64 words)
 #define XS_BW (XW_WGX * XW_NC * 256)  // words of B a chunk (column group c's: lo0, lo1, hi0, hi1 x 64 words)
 #define XS_UA (XS_AW / 64)
+#ifdef XS_BG
+// -DXS_BG (2026-11-22, xw_peak only so far; the A770's GEMM question): only A staged in local memory, each sub-group
+// reading its B straight from global memory (L1: the work-group's token sub-groups read the same B), so the local-
+// memory reads a DPAS halve (64 B instead of 128) and the rest goes through the load path. ocloc dg2-g10: the K loop
+// 184 -> 169 instructions for its 33 DPAS, 37 -> 19 local-memory messages, no spill. The same words: bit for bit.
+// With the work-group order of B (XS_WGLB), not with XW_GU
+#if !defined(XS_WGLB) && !defined(XS_WGL) || defined(XW_GU) || defined(XW_HB)
+#error "XS_BG: with XS_WGLB, not XW_GU or XW_HB"
+#endif
+#define XS_U (XS_AW / 64)
+#define XS_SB 0  // (B's words in local memory a chunk)
+#else
 #define XS_U ((XS_AW + XS_BW) / 64)   // 64-word units a chunk
+#define XS_SB XS_BW
+#endif
 #define XS_NS (XW_WGX * XW_WGY)       // sub-groups a work-group
 // -DXS_CPS=2 / 4 (2026-11-21, ARC_GEMM_XW_SLM_CPS): that many 64-value chunks a stage, one barrier a stage instead of
 // a chunk; the chunks' DPAS run in their order, so the sums are the same. A piece's chunks are whole superblocks (4
@@ -194,7 +208,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #error "XS_CPS must be 1, 2 or 4"
 #endif
 #define XS_UPS ((XS_U * XS_CPS + XS_NS - 1) / XS_NS)  // (a stage's units a sub-group: v = sid + i * XS_NS)
-  __local uint xs[2][XS_CPS][XS_AW + XS_BW];
+  __local uint xs[2][XS_CPS][XS_AW + XS_SB];
   const int nch = K / 64, lane = (int)get_sub_group_local_id();
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
@@ -318,7 +332,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #else
     xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64) : ob;
 #endif
-    xs_dst[i] = j * (XS_AW + XS_BW) + u * 64;
+    xs_dst[i] = j * (XS_AW + XS_SB) + u * 64;
   }
 #undef XS_LOAD
 #undef XS_STORE
@@ -386,8 +400,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
+#ifdef XS_BG
+        __global const uint* gb = wpw + (size_t)(ch + j) * XS_BW + (sx * XW_NC + c) * 256;
+        lo0[c] = as_int8(intel_sub_group_block_read8(gb)), lo1[c] = as_int8(intel_sub_group_block_read8(gb + 64));
+        hi0[c] = as_int8(intel_sub_group_block_read8(gb + 128)), hi1[c] = as_int8(intel_sub_group_block_read8(gb + 192));
+#else
         lo0[c] = XS_RD(xb + c * 256), lo1[c] = XS_RD(xb + c * 256 + 64);
         hi0[c] = XS_RD(xb + c * 256 + 128), hi1[c] = XS_RD(xb + c * 256 + 192);
+#endif
       }
 #pragma unroll
       for (int t = 0; t < XW_TG; ++t) {

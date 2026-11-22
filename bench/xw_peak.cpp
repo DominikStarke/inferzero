@@ -140,6 +140,74 @@ __kernel void ldprobe(__global const uint* ap, __global const uint* wp, int nch,
     for (int h = 0; h < XW_NH; ++h) s += acc[t][h].s0 ^ acc[t][h].s1 ^ acc[t][h].s2 ^ acc[t][h].s3 ^ acc[t][h].s4 ^ acc[t][h].s5 ^ acc[t][h].s6 ^ acc[t][h].s7;
   out[get_group_id(0) * 8 + get_sub_group_local_id()] = s;
 }
+
+// --probe's local-memory rows (2026-11-22, the A770's GEMM question: is the big tile short of local-memory read
+// bandwidth?): the inner loop of gemm_xw8 -DXW_SLM (32 x 32 a sub-group, XW_WGX x XW_WGY sub-groups) on two chunks
+// staged once in local memory, so the loop reads local memory only. Modes: 0 the reads and the DPAS, 1 the reads
+// only, 2 the DPAS only, 3 the reads, the DPAS and a barrier a chunk (as the big tile's stage). A sub-group's reads a
+// chunk: its 4 token groups' A (2 x 256 B each) and its 2 column groups' B (4 x 256 B each), 4 KB
+#ifdef XW_WGY  // (only in the local-memory rows' builds)
+#define SP_AW (XW_WGY * XW_TG * 128)
+#define SP_BW (XW_WGX * XW_NC * 256)
+#define SP_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
+__attribute__((intel_reqd_sub_group_size(8)))
+__kernel void slmprobe(__global const uint* src, int nch, __global int* out) {
+  __local uint xs[2][SP_AW + SP_BW];
+  const int lid = get_local_id(0), sg = lid / 8, sx = sg % XW_WGX, sy = sg / XW_WGX;
+  for (int i = lid; i < 2 * (SP_AW + SP_BW); i += get_local_size(0)) (&xs[0][0])[i] = src[i % 16384];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  int8 acc[XW_TG][XW_NH];
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t)
+#pragma unroll
+    for (int h = 0; h < XW_NH; ++h) acc[t][h] = (int8)(0);
+  int8 a0[XW_TG], a1[XW_TG], lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t) a0[t] = a1[t] = SP_RD(&xs[0][0] + sy * XW_TG * 128 + t * 128);
+#pragma unroll
+  for (int c = 0; c < XW_NC; ++c) lo0[c] = lo1[c] = hi0[c] = hi1[c] = SP_RD(&xs[0][0] + SP_AW + (sx * XW_NC + c) * 256);
+  for (int ch = 0; ch < nch; ++ch) {
+    __local const uint* xa = &xs[ch & 1][0] + sy * XW_TG * 128;
+    __local const uint* xb = &xs[ch & 1][0] + SP_AW + sx * XW_NC * 256;
+#if PROBE_MODE != 2
+#pragma unroll
+    for (int c = 0; c < XW_NC; ++c) {
+      lo0[c] = SP_RD(xb + c * 256);
+      lo1[c] = SP_RD(xb + c * 256 + 64);
+      hi0[c] = SP_RD(xb + c * 256 + 128);
+      hi1[c] = SP_RD(xb + c * 256 + 192);
+    }
+#endif
+#pragma unroll
+    for (int t = 0; t < XW_TG; ++t) {
+#if PROBE_MODE != 2
+      a0[t] = SP_RD(xa + t * 128);
+      a1[t] = SP_RD(xa + t * 128 + 64);
+#endif
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+#if PROBE_MODE == 1
+        acc[t][2 * c] ^= a0[t] ^ a1[t] ^ lo0[c] ^ hi0[c];
+        acc[t][2 * c + 1] ^= lo1[c] ^ hi1[c];
+#else
+        acc[t][2 * c] = xw8_mad(a1[t], hi0[c], xw8_mad(a0[t], lo0[c], acc[t][2 * c]));
+        acc[t][2 * c + 1] = xw8_mad(a1[t], hi1[c], xw8_mad(a0[t], lo1[c], acc[t][2 * c + 1]));
+#endif
+      }
+    }
+#if PROBE_MODE == 3
+    barrier(CLK_LOCAL_MEM_FENCE);
+#endif
+  }
+  int s = 0;
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t)
+#pragma unroll
+    for (int h = 0; h < XW_NH; ++h) s += acc[t][h].s0 ^ acc[t][h].s1 ^ acc[t][h].s2 ^ acc[t][h].s3 ^ acc[t][h].s4 ^ acc[t][h].s5 ^ acc[t][h].s6 ^ acc[t][h].s7;
+  out[get_group_id(0) * get_local_size(0) + lid] = s;
+}
+#endif
+
 )CLC";
 
 using clk = std::chrono::steady_clock;
@@ -379,6 +447,42 @@ int main(int argc, char** argv) {
           printf("%2dx%-7d %-12s does not build (%s)\n", tile[0], 16 * tile[1], modes[mode], e.what());
         }
       }
+    // (the local-memory rows: the big tile's inner loop on local memory alone, kSlmProbe's slmprobe, 32 x 32 a
+    //  sub-group; X x Y sub-groups a work-group, the engine's 4 x 4 and the gate / up's 4 x 8)
+    printf("\nlocal-memory probe: the big tile's inner loop (32 x 32 a sub-group) on data in local memory; B/clk per Xe-core\n");
+    printf("%-10s %-16s %9s %9s %9s %9s %9s\n", "work-group", "mode", "ms", "DPAS T", "% peak", "GB/s", "B/clk/core");
+    const int wgs[][2] = {{4, 4}, {4, 8}};
+    const char* smodes[] = {"reads+DPAS", "reads only", "DPAS only", "reads+DPAS+bar"};
+    for (const auto& wg : wgs)
+      for (int mode = 0; mode < 4; ++mode) {
+        try {
+          const std::string opts = std::string("-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread -DXW_TM=32 -DXW_NC=2") +
+                                   " -DXW_WGX=" + std::to_string(wg[0]) + " -DXW_WGY=" + std::to_string(wg[1]) +
+                                   " -DPROBE_MODE=" + std::to_string(mode) + (emu ? " -DXW_EMU" : "");
+          cl_kernel k = cl.kernel(cl.build(src + kLdProbe, opts), "slmprobe");
+          const int nwg = (int)eus, lsz = 8 * wg[0] * wg[1];
+          int n = nch * 4;
+          cl_mem bso = cl.buffer(CL_MEM_READ_WRITE, (size_t)nwg * lsz * 4);
+          set_args(k, 0, bap, n, bso);
+          size_t g[1] = {(size_t)nwg * lsz}, l[1] = {(size_t)lsz};
+          std::vector<double> ms;
+          for (int it = 0; it < 7; ++it) {
+            const auto t0 = clk::now();
+            CL_CHECK(clEnqueueNDRangeKernel(cl.queue, k, 1, nullptr, g, l, 0, nullptr, nullptr));
+            zrt::sync();
+            ms.push_back(std::chrono::duration<double, std::milli>(clk::now() - t0).count());
+          }
+          std::sort(ms.begin(), ms.end());
+          const double t = ms[ms.size() / 2] / 1e3, sgs = (double)nwg * wg[0] * wg[1];
+          const double dpas = sgs * n * 4 * 4 * 2, ops = dpas * 2.0 * 8 * 8 * 32, bytes = sgs * n * (4 * 512 + 2 * 1024);
+          printf("%dx%-8d %-16s %9.2f ", wg[0], wg[1], smodes[mode], t * 1e3);
+          if (mode == 1) printf("%9s %9s ", "-", "-"); else printf("%9.1f %8.0f%% ", ops / t / 1e12, peak > 0 ? 100 * ops / t / 1e12 / peak : 0.0);
+          if (mode == 2) printf("%9s %9s\n", "-", "-"); else printf("%9.0f %9.1f\n", bytes / t / 1e9, bytes / t / (mhz * 1e6) / cores);
+          clReleaseMemObject(bso);
+        } catch (const std::exception& e) {
+          printf("%dx%-8d %-16s does not build (%s)\n", wg[0], wg[1], smodes[mode], e.what());
+        }
+      }
     return 0;
   }
   const std::vector<Variant> all = {
@@ -428,6 +532,9 @@ int main(int argc, char** argv) {
       {"slm 32x32 4x4 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 4, false, 4, true},
       {"slm 32x32 8x4 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 8, false, 4, true},
       {"slm 32x32 4x8 e2 p wgl", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL", 32, 2, true, true, 4, false, 8, true},
+      // (" bg": B read from global memory, only A staged in local memory: gemm_xw8.cl -DXS_BG, the A770's GEMM question)
+      {"slm 32x32 4x4 e2 p wgl bg", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_BG", 32, 2, true, true, 4, false, 4, true},
+      {"slm 32x32 4x8 e2 p wgl bg", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_BG", 32, 2, true, true, 4, false, 8, true},
   };
   // (2026-11-22) "slm 32x48 8x4 e2 p": the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), 8 column x 4 token
   // sub-groups, a work-group 128 tokens x 384 columns (oneDNN's 256 x 192, 4 x 8 here, spills in the K loop at 256

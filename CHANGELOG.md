@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-22: xw_peak times the big tile's local-memory loop; model ids without "-mtp-mtp"; --bench-batch on one GPU
+
+- **`xw_peak --probe` has local-memory rows:** the A770's big tile reads its operands from local memory, which the
+  probe did not time before. The new rows time that inner loop on local memory alone (reads with the XMX work, reads
+  only, the XMX work only, and with a barrier a chunk, at 4 x 4 and 4 x 8 sub-groups), in bytes a clock per Xe-core.
+  They say whether local-memory bandwidth is what holds the A770's GEMMs at ~56 % of their peak.
+- **`xw_peak`'s "bg" forms** ("slm 32x32 4x4 / 4x8 e2 p wgl bg"): the big tile with only A in local memory and B read
+  from global memory, halving the local-memory reads per XMX operation. Bit for bit; in xw_peak only so far.
+- **Model ids:** for a repository whose GGUF id already ends in "-mtp" (Unsloth's MTP GGUFs), the variants are now
+  `…-mtp-novision`, `…-vision` and `…-std` instead of `…-mtp-mtp`, `…-mtp-vision` and `…-mtp-std`. The main id and
+  every shortcut (`35b-mtp-std`, …) stay the same.
+- **`runz --bench-batch N` on one GPU** sizes the engine for N slots at load, as on several GPUs, so batched decoding
+  is no longer capped at 1 + the drafts ("forward_batch: not for this model or too many rows").
+
 ## 2026-11-22: attn_x8's lazy rescale, opt-in and parked (`ARC_ATTN_X8_LAZY=1`)
 
 - **`ARC_ATTN_X8_LAZY=1`** (with `ARC_ATTN_X8=1`): where no token's running maximum moved in a span, the XMX prompt

@@ -706,6 +706,9 @@ static int run_main(int argc, char** argv) {
     if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);  // (a split model's slots: made at load)
     return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);
   }
+  // (--bench-batch on one GPU: the engine sized for its slots at load, as the split model's above, so forward_batch's
+  //  rows are not capped at 1 + drafts; add_slots below then finds them made. hibagus, #48, 2026-11-22)
+  if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);
   Engine eng(model, eo);
   // (every position's logits are read after the prompt: no 8-token passes, see Engine::keep_rows; a reference of
   //  the last position only, or --kl-decode, keeps the passes the server takes)

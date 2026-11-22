@@ -515,7 +515,13 @@ static std::vector<ModelInfo> scan_models() {
       e.mtp = v.mtp;
       e.vision = v.vision;
       e.audio = v.vision && m.audio;  // (the audio encoder comes with the projector)
-      e.alias = m.alias + v.suffix;
+      // (a file whose id already ends in "-mtp" (a repository's MTP GGUF, Unsloth's): the variants' suffixes go on
+      //  the id without it, so "-vision" / "-std" do not read as MTP ones, and the MTP one without images is
+      //  "-mtp-novision" instead of "-mtp-mtp"; the main id and the shortcuts as before. n005, #81, 2026-11-22)
+      const bool ends_mtp = m.alias.size() > 4 && m.alias.compare(m.alias.size() - 4, 4, "-mtp") == 0;
+      const std::string stem = ends_mtp ? m.alias.substr(0, m.alias.size() - 4) : m.alias;
+      e.alias = !*v.suffix || !ends_mtp ? m.alias + v.suffix
+                : std::string(v.suffix) == "-mtp" ? m.alias + "-novision" : stem + v.suffix;
       if (!m.shortcut.empty()) e.shortcut = m.shortcut + v.suffix;
       e.tags = v.mtp && v.vision ? "MTP + vision" : v.mtp ? "MTP" : v.vision ? "vision" : "standard";
       all.push_back(e);
