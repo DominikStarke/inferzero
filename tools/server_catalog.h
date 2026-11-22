@@ -1183,14 +1183,14 @@ static int list_models(size_t speech = 0, int gpus = 1, const std::filesystem::p
         }
       }
       // (what the server runs: the chunk --ctx auto chose (a smaller one for --mtp's context, a MoE model's 8,192),
-      //  else the engine's default (zero/engine.h max_chunk): Gemma 4's MoE 2,048; Flash Next 4,096 on a split or a
+      //  else the engine's default (zero/engine.h max_chunk): DeepSeek-V4.1 1,024 (not in this list yet); Gemma 4's MoE 2,048; Flash Next 4,096 on a split or a
       //  GPU of 20 GiB or more (an iGPU's 15), else 2,048; MoE 4,096; a dense model with weights in host memory 1,024;
       //  resident decoded weights 512 on an iGPU or a card below 11 GiB, else 4,096. The repair list A1, 2026-11-22:
       //  this said "MoE 8192" while the server ran 4,096)
       const uint64_t gm = device_global_mem();
       const bool igpu = device_integrated();
       const bool fn_4k = gpus > 1 || gm >= (igpu ? (15ull << 30) : (20ull << 30)), res_long = !igpu && gm >= (11ull << 30);
-      int chunk = a.chunk > 0 ? a.chunk : gemma && moe ? 2048 : m.arch == "qwen4exp" ? (fn_4k ? 4096 : 2048) : moe ? 4096
+      int chunk = a.chunk > 0 ? a.chunk : m.arch == "deepseek41" ? 1024 : gemma && moe ? 2048 : m.arch == "qwen4exp" ? (fn_4k ? 4096 : 2048) : moe ? 4096
                   : a.host_gb > 0 ? 1024 : a.resident && !res_long ? 512 : 4096;
       if (gemma && m.vision) chunk = std::max(chunk, 2048);  // (an image is one chunk)
       d.set("chunk", chunk);

@@ -4,7 +4,7 @@
 // Also: what the f16 DPAS keeps inside (products, the 16-term sum, the accumulator), for the chunked DeltaNet on XMX,
 // which missed its start-up check on the 140T by f16's precision (QUEUE row 4).
 //
-// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAME] [--wgx 2|4]
+// usage (from the package folder): bin\xw_peak.exe [--m 4096] [--iters 10] [--shape NxK[:a]]... [--only NAMES] [--ref NAME] [--wgx 2|4]
 //   [--lock] [--emu] [--probe] [--kernels DIR] (default zero/kernels; every option: --help)
 //   default shapes: the Qwen3.8 27B's FFN, gate 17408x5120, up 17408x5120 with the fused SwiGLU (:2), down 5120x17408
 //   (split-K in 4 pieces, as the engine runs it). --emu: DPAS emulated (any GPU; correctness only, no speed meaning).
@@ -157,13 +157,21 @@ int main(int argc, char** argv) {
   bool force_emu = false, probe = false, lock = false, all_mode = false;
   AllSel sel;
   std::vector<int> Ms;
-  std::string only, kdir = "zero/kernels";
+  std::string only, ref_name, kdir = "zero/kernels";
+  std::vector<std::string> onlys;  // (--only, several times or a comma list)
   std::vector<Shape> shapes;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--m" && i + 1 < argc) M = atoi(argv[++i]);
     else if (a == "--iters" && i + 1 < argc) iters = std::max(1, atoi(argv[++i]));
-    else if (a == "--only" && i + 1 < argc) only = argv[++i];
+    else if (a == "--only" && i + 1 < argc) {
+      only = argv[++i];
+      for (size_t p = 0; p <= only.size();) {
+        const size_t q = std::min(only.find(',', p), only.size());
+        if (q > p) onlys.push_back(only.substr(p, q - p));
+        p = q + 1;
+      }
+    } else if (a == "--ref" && i + 1 < argc) ref_name = argv[++i];
     else if (a == "--kernels" && i + 1 < argc) kdir = argv[++i];
     else if (a == "--emu") force_emu = true;
     else if (a == "--lock") lock = true;
@@ -182,7 +190,9 @@ int main(int argc, char** argv) {
              "  --shape NxK[:a] a weight of N outputs and K inputs (N a multiple of 32, K of 256); :2 with the fused\n"
              "                  SwiGLU; repeat for several (default: the Qwen3.8 27B's FFN: gate 17408x5120,\n"
              "                  up 17408x5120:2, down 5120x17408)\n"
-             "  --only NAME     one variant besides the default, e.g. \"packAW 32x32\" (with --wgx / --lock:\n"
+             "  --only NAMES    variants besides the reference, a comma list or --only again, e.g. \"packAW 32x32\"\n"
+             "                  (the reference: \"slm 32x32 4x4 e2 p\" on a discrete 8-lane GPU, the engine's big tile there,\n"
+             "                  else \"default 32x16\"; --ref NAME another) (with --wgx / --lock:\n"
              "                  \"packAW 32x32 w2\", \"packAW 32x32 w2L\", \"default 32x16 L\")\n"
              "  --wgx N         every variant also with N column sub-groups a work-group (2 or 4), which read the\n"
              "                  same activations while they are in L1 (the engine's ARC_GEMM_XW_WGX)\n"
@@ -397,6 +407,11 @@ int main(int argc, char** argv) {
 //  dg2-g10 builds without a spill at 256 registers: CPS 2 spills at 32 x 32 and at 64 x 16 8 x 2)
 {"slm 32x32 4x8 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 4, false, 8},
 {"slm 32x32 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 32, 2, true, true, 8, false, 4},
+// (2026-11-22) the same two work-groups with -DXW_PTR, as the engine builds every local-memory form on Alchemist:
+// 4 x 8 = 128 x 256 values a work-group, 8 x 4 = 256 x 128 (the A770 plan after oneDNN: more reuse a work-group at
+// today's registers a thread)
+{"slm 32x32 8x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 8, false, 4},
+{"slm 32x32 4x8 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 4, false, 8},
 {"slm 64x16 4x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 4, false, 4},
 {"slm 64x16 8x4 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 8, false, 4},
 {"slm 64x16 8x2 e2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2", 64, 1, true, true, 8, false, 2},
@@ -421,9 +436,22 @@ int main(int argc, char** argv) {
       v.name += std::string(" ") + (wgx > 1 ? "w" + std::to_string(wgx) : std::string()) + (lock ? "L" : "");
       cand.push_back(v);
     }
+  // (the reference first, the row each other is checked against bit for bit and timed beside: the engine's big tile
+  //  on a discrete 8-lane GPU (Alchemist), "slm 32x32 4x4 e2 p", else the plain default; --ref NAME another. A shape
+  //  the reference does not fit: the next variant that fits is that shape's reference. 2026-11-22: the A770's users
+  //  had to time the model's own tile against "default 32x16" themselves, #45)
+  if (ref_name.empty()) ref_name = cl.sg8 && !zrt::integrated() ? "slm 32x32 4x4 e2 p" : "default 32x16";
   std::vector<Variant> vs;
   for (const Variant& v : cand)
-    if (vs.empty() || only.empty() || only == v.name) vs.push_back(v);  // (the default always: the reference)
+    if (v.name == ref_name) vs.push_back(v);
+  if (vs.empty()) {
+    printf("--ref %s: no such variant; the default 32x16 instead\n", ref_name.c_str());
+    vs.push_back(cand[0]);
+  }
+  for (const Variant& v : cand)
+    if (v.name != vs[0].name && (onlys.empty() || std::find(onlys.begin(), onlys.end(), v.name) != onlys.end())) vs.push_back(v);
+  for (const std::string& o : onlys)
+    if (std::none_of(cand.begin(), cand.end(), [&](const Variant& v) { return v.name == o; })) printf("--only %s: no such variant\n", o.c_str());
 
   struct Row { double ms = 0, best = 0; bool ok = true, ran = false; size_t diff = 0; size_t spill = 0; };
   std::vector<std::vector<Row>> res(vs.size(), std::vector<Row>(shapes.size()));
@@ -535,7 +563,7 @@ int main(int argc, char** argv) {
   printf("\n%d tokens; TOPS from the median of %d runs%s\n", M, iters, peak > 0 ? ", % of the measured peak" : "");
   printf("%-18s %8s", "variant", "spill");
   for (const Shape& s : shapes) printf(" | %-10s %5dx%-5d", s.name, s.N, s.K);
-  printf(" | %-16s | %s\n", "all shapes", "bits vs default");
+  printf(" | %-16s | %s\n", "all shapes", "bits vs the reference");
   for (size_t v = 0; v < vs.size(); ++v) {
     printf("%-18s %6zu B", vs[v].name.c_str(), res[v][0].spill);
     double ops = 0, ms = 0;

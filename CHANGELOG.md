@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-22: xw_peak against the A770's own tile; two bigger local-memory work-groups to measure
+
+- **`xw_peak`'s reference is the model's tile:** on a discrete 8-lane GPU (Alchemist), "slm 32x32 4x4 e2 p", the
+  engine's big tile there; elsewhere "default 32x16" as before (`--ref NAME` picks another). `--only` takes several
+  names (a comma list, or `--only` again).
+- **Two forms to measure on an A770:** "slm 32x32 8x4 e2 p" and "slm 32x32 4x8 e2 p", the 32 x 32 tile in work-groups
+  of 256 x 128 / 128 x 256 values with both operands in local memory. ocloc for the A770: no spill, 5.3 / 5.5
+  instructions a DPAS against 5.6. Bit for bit the reference's (emulated on the laptop). The engine takes them with
+  `ARC_GEMM_XW_SLM_WG=8,4` / `4,8`.
+- The 32 x 48 tile stays opt-in: on an A770 it was 11 % slower, and the 26.40 driver's compiler spills it (1,440 B a
+  thread), where ocloc did not.
+
 ## 2026-11-22: repairs of options that disagreed or clashed; the 35B's 8,192-token chunk
 
 - **The 35B-A3B (a standard MoE model) reads prompts in chunks of 8,192 tokens** under `--ctx auto`, where that
