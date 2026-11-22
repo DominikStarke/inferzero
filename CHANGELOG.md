@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-23: long contexts on cards that cannot hold the model: enough weights in RAM, no paging (#45)
+
+- **Fixed:** at a long context on a card that cannot hold the whole model, too few weights went to RAM and the GPU
+  paged. skipzx-lab's A770 (16 GB) with the 27B at 92,672 tokens and MTP: 0.32 GiB in RAM where ~1 GiB was needed,
+  15.59 GiB on a 15.11 GiB share, a 92K prompt at 645 tok/s.
+- The room the plan leaves on the GPU now counts:
+  - the MTP block's KV cache and working buffers;
+  - the decode partials, which grow with the context;
+  - the driver's reserve only while the context is small (it was subtracted twice, which left no margin at 92K).
+- At 4K the room is as before, give or take the MTP parts (d-dorok's B580 setting, #37).
+- `ARC_FIT_PARTS=1` also prints the room by part.
+
 ## 2026-11-23: the A770 at 1,710 tok/s: its GEMM barrier split, every GEMM at 4 x 8
 
 - **New defaults on discrete Alchemist cards (A770 / A750 / A580):** the big tile's barrier between local-memory

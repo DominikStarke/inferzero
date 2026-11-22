@@ -643,7 +643,25 @@
       //  more in use than the card reports (room 0.75 GiB: 7.08 tok/s, 11.64 GiB in use of 11.33) and only fell over
       //  at 11.88 (room 0.5: the prompt 1,877 -> 701 tok/s); its buffers were 1.56 GiB, this estimate 1.71. So the
       //  card's whole reported memory: the estimate's own excess and the 0.3 GiB the card had are the margin, issue #37)
-      return std::min(keep_def, std::max(0.0, need - driver_slack()));
+      // (since 2026-11-23: the MTP block's attention layer (its KV, which kv_est's layers leave out) and its working
+      //  buffers (0.11 GiB on the 27B), and apart_ (the decode partials, 4 x max(ctx / 256 + 1, 512) x heads x (hd + 2)
+      //  floats). And the driver's part credited only while the context is small: past 32K the KV that grows beyond it
+      //  uses up the credit. skipzx-lab's A770, the 27B at 92,672 with --mtp --chunk 1024 (#45, 1b44aec): the room
+      //  3.47 GiB against 4.45 used (buffers 1.02 + context 3.43), 0.32 GiB of the weights in RAM, 15.59 GiB on a
+      //  15.11 GiB share: paging, the prompt 645 tok/s. With these the room is ~4.3 there; at 4K (d-dorok's B580, #37)
+      //  it is as before but for the MTP parts and apart_ (+0.05-0.17))
+      const double mtp_part = opt.mtp ? (double)ctx * hp.n_head_kv * (double)kv_pos_bytes() + 0.12 * GiB : 0.0;
+      const double apart = 4.0 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4.0;
+      const double kv_long = std::max(0.0, kv_est(ctx, true) - kv_est(32768, true)) * std::max(opt.slots, 1);
+      const double credit = std::max(0.0, driver_slack() - kv_long);
+      const double room = std::min(keep_def, std::max(0.0, need + mtp_part + apart - credit));
+      if (getenv("ARC_FIT_PARTS") && !opt.dry)  // (diagnostics: the tight plan's room by part, with runz's memory line)
+        zlog::eprintf("inferzero: room %.3f GiB = fixed %.2f + activations %.3f + staging %.3f + residual %.3f + states %.3f + "
+                      "KV %.3f + MTP %.3f + partials %.3f + reserve %.3f - driver credit %.3f (cap %.2f)\n", room / GiB,
+                      (dense_rows ? 0.25 : 0.4), act / GiB, stage / GiB, resid / GiB, snaps / GiB,
+                      kv_est(ctx, true) * std::max(opt.slots, 1) / GiB, mtp_part / GiB, apart / GiB,
+                      (double)opt.stream_reserve / GiB, credit / GiB, keep_def / GiB);
+      return room;
     }();
     const double keep = getenv("ARC_HOST_KEEP_GB") || !disc ? keep_old : keep_auto;
     // (tight or not by the old rule (audit 2026-11-18): the automatic room above is worked out for a tight model's
