@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-22: the server loads a model's option variant by name (QUEUE row 15, step 2)
+
+- **A request can name a variant:** `"model": "qwen3.5-4b-mtp-fastdraft"` loads the 4B with MTP drafts from the common
+  tokens. The variants are the ones `--list-models` gives under each entry: `-precise`, `-full` / `-sparse`,
+  `-fastdraft`, `-precise-prompt`. Each now has its own context there (`ctx`). `/v1/models` lists a loaded variant
+  first, and naming the plain entry again loads it without the option.
+- **One server holds a model and its variant one after the other:** the four options behind the variants (attention,
+  MTP draft vocabulary, the second prompt pass, Flash Next's precise mode) are now set per engine. Their environment
+  variables (`ARC_QSA`, `ARC_MTP_VOCAB`, `ARC_H8_Q2`, `ARC_FN_PRECISE`) still work as before.
+- **Checked:** with each environment variable, the logits are byte for byte the same as release .22.03's (the 4B, the
+  4B with `--mtp` and `ARC_MTP_VOCAB`, the 27B with `ARC_H8_Q2`, the QSA 27B with `ARC_QSA=1`, Flash Next with
+  `ARC_FN_PRECISE=1`). Through the server, the 4B and its `-fastdraft` variant gave the same text.
+- Not yet: the launchers' redesign that shows these as switches of one model (step 3), and Pi's `/model` list
+  (step 4).
+
 ## 2026-11-22: the option catalog for the new launchers (QUEUE row 15, step 1)
 
 - **`scripts/options.tsv` has four new columns,** the data the redesigned launchers will be built on:

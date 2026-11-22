@@ -39,9 +39,16 @@
   // fused forms that cannot take two passes fall back to their separate kernels while it is on: the norm and the
   // rotation in one (ARC_H8_NORM), the SwiGLU in the up GEMM's epilogue, gate + up in one launch. H8R only (one scale
   // per token and column), not ARC_H8_SB. Off: every kernel and its build options as before
-  static bool h8_q2() {
-    static const bool on = getenv("ARC_H8_Q2") && atoi(getenv("ARC_H8_Q2")) != 0 && h8_row();
+  // (this engine's: EngineOptions::h8_q2 when a model-list variant set it, else ARC_H8_Q2; read once an engine: it is
+  //  asked on every GEMM)
+  static bool h8_q2_var() {
+    static const bool on = getenv("ARC_H8_Q2") && atoi(getenv("ARC_H8_Q2")) != 0;
     return on;
+  }
+  mutable int h8q2_ = -1;
+  bool h8_q2() const {
+    if (h8q2_ < 0) h8q2_ = (opt.h8_q2 >= 0 ? opt.h8_q2 != 0 : h8_q2_var()) && h8_row() ? 1 : 0;
+    return h8q2_ == 1;
   }
   cl_mem h8_aq2_ = nullptr, h8_asc2_ = nullptr;  // (ARC_H8_Q2: the residual plane, as h8_aq_ / h8_asc_)
   bool h8_q2_pass_ = false;                      // (the second pass is running: the rotation is already made)

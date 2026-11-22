@@ -1509,6 +1509,43 @@ int main(int argc, char** argv) {
   ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
   std::string catalog_fp = swap ? models_fingerprint() : std::string();  // (the files the catalog was scanned from)
+  // (QUEUE row 15 step 2, 2026-11-22: a catalog entry's option variants, loaded by their alias, the entry's with the
+  //  variant's suffix (qwen3.8-27b-mtp-fastdraft, from --list-models' variants): find_model makes the entry
+  //  (with_variant, kept here, never moved) and a load applies its option (apply_variant). The option catalog is read
+  //  once, from the package's scripts/options.tsv)
+  const srvstart::OptionCatalog opt_cat = srvstart::option_catalog(exe_dir);
+  std::deque<ModelInfo> variant_infos;
+  auto variant_entry = [&](const std::string& want) -> const ModelInfo* {
+    for (const ModelInfo& m : catalog)
+      for (const ModelVariant& v : variants_of(m, opt_cat)) {
+        if (m.alias + v.suffix != want && (m.shortcut.empty() || m.shortcut + v.suffix != want)) continue;
+        EngineOptions probe;
+        if (!apply_variant(probe, v.option, v.value)) continue;
+        ModelInfo x = with_variant(m, v);
+        for (ModelInfo& y : variant_infos)
+          if (y.alias == x.alias) return &(y = x);  // (made again: the catalog may have been scanned since)
+        variant_infos.push_back(x);
+        return &variant_infos.back();
+      }
+    return nullptr;
+  };
+  // the entry of a loaded or listed alias: the catalog's, or a variant's made before
+  auto entry_of = [&](const std::string& alias) -> const ModelInfo* {
+    for (const ModelInfo& m : catalog)
+      if (m.alias == alias) return &m;
+    for (const ModelInfo& m : variant_infos)
+      if (m.alias == alias) return &m;
+    return nullptr;
+  };
+  // (the model lists: the loaded variant first, as the catalog's loaded entry is listed, then the catalog)
+  auto listed_models = [&]() {
+    std::vector<ModelInfo> v;
+    if (cur)
+      for (const ModelInfo& m : variant_infos)
+        if (m.alias == cur->alias) v.push_back(m);
+    v.insert(v.end(), catalog.begin(), catalog.end());
+    return v;
+  };
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
   if (wh)  // (each Whisper step: with the loaded model's engine lock; a model switch can come between two)
     wh->gpu_turn = [&](const std::function<void()>& f) {
@@ -1549,6 +1586,14 @@ int main(int argc, char** argv) {
         if (m.supported && (m.alias == want || m.name == want || m.file == want)) {
           if (pass == 0 && stale(m)) { was_stale = true; break; }
           return &m;
+        }
+      if (!was_stale)
+        if (const ModelInfo* v = variant_entry(want)) {  // (an option variant: QUEUE row 15)
+          if (pass == 0 && stale(*v)) {
+            was_stale = true;
+          } else {
+            return v;
+          }
         }
       if (pass == 0) {  // (again only when the model files changed since, or the entry went stale: a download, a
                         //  file added, removed or packed)
@@ -2246,7 +2291,11 @@ int main(int argc, char** argv) {
       ar.is_chat_model = [&](const std::string& want) {
         std::shared_lock<std::shared_mutex> lk(swap_mu);
         bool r = cur && want == cur->alias;
-        for (const ModelInfo& m : catalog) r = r || (m.supported && (m.alias == want || m.name == want || m.file == want));
+        for (const ModelInfo& m : catalog) {
+          r = r || (m.supported && (m.alias == want || m.name == want || m.file == want));
+          for (const ModelVariant& v : r ? std::vector<ModelVariant>() : variants_of(m, opt_cat))  // (QUEUE row 15)
+            r = r || m.alias + v.suffix == want || (!m.shortcut.empty() && m.shortcut + v.suffix == want);
+        }
         return r;
       };
       ar.loaded_alias = [&]() -> std::string {
@@ -2289,6 +2338,7 @@ int main(int argc, char** argv) {
         const ModelInfo* m = nullptr;
         for (const ModelInfo& c : catalog)
           if (c.supported && (c.alias == want || c.name == want)) m = &c;
+        if (!m) m = entry_of(want);  // (an option variant made before: QUEUE row 15)
         if (!m && want != cur->alias) return rs.send(404, "application/json", "{\"error\":\"model not found\"}");
         const bool loaded = want == cur->alias;
         Json r = Json::object();
@@ -2312,7 +2362,8 @@ int main(int argc, char** argv) {
         return rs.send(200, "application/json", r.dump());
       }
       Json ms = Json::array();
-      for (const ModelInfo& m : catalog)
+      const std::vector<ModelInfo> lm = listed_models();  // (a loaded option variant too: QUEUE row 15)
+      for (const ModelInfo& m : lm)
         if (m.supported && (rq.path == "/api/tags" || m.alias == cur->alias)) ms.push(entry(&m, m.alias, m.vision, m.mtp));
       if ((rq.path == "/api/ps" || rq.path == "/api/tags") && !ms.size())  // (--no-swap: no catalog, the loaded model)
         ms.push(entry(nullptr, cur->alias, false, false));
@@ -2467,7 +2518,8 @@ int main(int argc, char** argv) {
       bool listed = !cur;
       // (unloaded in Settings: that model's file first, not last-model.txt's)
       if (!cur && !unloaded_path.empty()) last = std::filesystem::path(unloaded_path).lexically_normal().string();
-      for (const ModelInfo& m : catalog) {
+      const std::vector<ModelInfo> lm = listed_models();  // (a loaded option variant first: QUEUE row 15)
+      for (const ModelInfo& m : lm) {
         if (!m.supported) continue;
         const bool loaded = !listed && m.alias == cur->alias;
         const bool front = loaded || (!last.empty() && std::filesystem::path(m.path).lexically_normal().string() == last);
@@ -2546,6 +2598,7 @@ int main(int argc, char** argv) {
           s2.eo.mtp_block = m->draft != 2;
           if (m->draft == 1) s2.eo.dflash.clear();
           s2.mmproj = m->vision ? "" : "-";
+          if (!m->vopt.empty()) apply_variant(s2.eo, m->vopt, m->vval);  // (an option variant: QUEUE row 15)
           // (a --dflash drafter is for the first model, and only with MTP; other models find their own)
           if (!m->mtp || !same_file(m->path, model)) s2.eo.dflash.clear();
           try {
@@ -2561,14 +2614,15 @@ int main(int argc, char** argv) {
                     prev_path.empty() ? "no model was loaded before it" : ("loading " + prev_alias + " again").c_str());
             ServeOpts s3 = so;
             if (!same_file(prev_path, model)) s3.ctx_auto = true;
-            for (const ModelInfo& pm : catalog)  // (the previous variant's settings)
-              if (pm.alias == prev_alias) {
-                s3.eo.mtp = pm.mtp;
-                s3.dflash_auto = pm.draft != 1;
-                s3.eo.mtp_block = pm.draft != 2;
-                if (pm.draft == 1) s3.eo.dflash.clear();
-                s3.mmproj = pm.vision ? "" : "-";
-              }
+            if (const ModelInfo* pmp = entry_of(prev_alias)) {  // (the previous variant's settings, an option one's too)
+              const ModelInfo& pm = *pmp;
+              s3.eo.mtp = pm.mtp;
+              s3.dflash_auto = pm.draft != 1;
+              s3.eo.mtp_block = pm.draft != 2;
+              if (pm.draft == 1) s3.eo.dflash.clear();
+              s3.mmproj = pm.vision ? "" : "-";
+              if (!pm.vopt.empty()) apply_variant(s3.eo, pm.vopt, pm.vval);
+            }
             if (!s3.eo.mtp || !same_file(prev_path, model)) s3.eo.dflash.clear();
             std::string also;
             try {  // (that failing too leaves no model: requests get 503 until one names a model that loads)

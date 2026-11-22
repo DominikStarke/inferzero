@@ -89,6 +89,12 @@ struct Hparams {
 };
 
 struct EngineOptions {
+  // (QUEUE row 15 step 2, 2026-11-22: what a model-list variant sets per engine, so one server holds a model and a
+  //  variant of it one after the other. Their defaults leave the environment's switch to decide, as before)
+  int qsa = -2;        // ARC_QSA: -1 the model's own attention, 0 full, 1 sparse; -2: ARC_QSA / ARC_QSA_DENSE
+  int mtp_vocab = -1;  // ARC_MTP_VOCAB: the drafts' head rows (0: the full head); -1: ARC_MTP_VOCAB
+  int h8_q2 = -1;      // ARC_H8_Q2: 0 / 1; -1: ARC_H8_Q2
+  int fn_precise = -1;  // Flash Next's precise mode: 0 / 1; -1: ARC_FN_PRECISE (--precise sets it for the process)
   int ctx = 8192;
   int chunk = 0;              // prompt tokens per forward step; 0 = auto
   int min_chunk = 0;          // at least this many (Gemma 4 images: one non-causal block of up to the image limit)

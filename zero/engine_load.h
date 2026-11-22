@@ -556,7 +556,7 @@
   //  engine, fn_precise_hold_)
   bool fn_precise() const {
     static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
-    return env || fn_precise_hold_.on;
+    return (opt.fn_precise >= 0 ? opt.fn_precise != 0 : env) || fn_precise_hold_.on;  // (EngineOptions::fn_precise: a variant's)
   }
   // (each of precise mode's parts alone, for measuring which one carries the default mode's error (the plan's F1,
   //  2026-11-18). The HC mixers' rows as the file has them (BF16) are the default since 2026-11-19 (the user's

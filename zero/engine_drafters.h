@@ -694,10 +694,12 @@
   // and Flash Next's; not Gemma's drafter or DFlash2, not a split model's shards
   GpuWeight draft_head_;        // (empty when off)
   std::vector<int> draft_ids_;  // (row i of draft_head_ is token draft_ids_[i])
-  static int mtp_vocab_env() {
+  static int mtp_vocab_var() {
     static const int n = getenv("ARC_MTP_VOCAB") ? std::max(0, atoi(getenv("ARC_MTP_VOCAB"))) : 0;
     return n;
   }
+  // (this engine's: EngineOptions::mtp_vocab when a model-list variant set it, else the environment's)
+  int mtp_vocab_env() const { return opt.mtp_vocab >= 0 ? opt.mtp_vocab : mtp_vocab_var(); }
   // the ranked list next to the package (zero/kernels/../../scripts, kernels/../scripts) or in the folder run from
   std::vector<int> draft_vocab_file(int V) const {
     namespace fs = std::filesystem;

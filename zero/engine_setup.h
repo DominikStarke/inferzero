@@ -8,12 +8,14 @@
   // attention" for the QSA 27B; "set QSA as the default for QFN, meanwhile add full attention as option"): ARC_QSA=1
   // forces sparse, ARC_QSA=0 forces full, unset is each model's own default (the QSA 27B full, Flash Next sparse, its
   // trained form). ARC_QSA_DENSE=1 (release .21.19's switch) is ARC_QSA=0 and wins. -1 unset, 0 full, 1 sparse
-  static int qsa_env() {
+  static int qsa_env_var() {
     static const int v = getenv("ARC_QSA_DENSE") && atoi(getenv("ARC_QSA_DENSE")) != 0 ? 0
                          : getenv("ARC_QSA")                                         ? (atoi(getenv("ARC_QSA")) != 0 ? 1 : 0)
                                                                                      : -1;
     return v;
   }
+  // (this engine's: EngineOptions::qsa when a model-list variant set it, else the environment's)
+  int qsa_env() const { return opt.qsa >= -1 ? std::min(opt.qsa, 1) : qsa_env_var(); }
   static void qsa_say(const char* s) {
     static std::once_flag said;
     std::call_once(said, [s] { zlog::eprintf("inferzero: %s\n", s); });
