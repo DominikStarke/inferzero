@@ -650,7 +650,9 @@
       //  3.47 GiB against 4.45 used (buffers 1.02 + context 3.43), 0.32 GiB of the weights in RAM, 15.59 GiB on a
       //  15.11 GiB share: paging, the prompt 645 tok/s. With these the room is ~4.3 there; at 4K (d-dorok's B580, #37)
       //  it is as before but for the MTP parts and apart_ (+0.05-0.17))
-      const double mtp_part = opt.mtp ? (double)ctx * hp.n_head_kv * (double)kv_pos_bytes() + 0.12 * GiB : 0.0;
+      // (only when the MTP block loads (mtp_on: --mtp and a model with the block); its KV per slot, as kv_est's)
+      const double mtp_part =
+          mtp_on ? (double)ctx * hp.n_head_kv * (double)kv_pos_bytes() * std::max(opt.slots, 1) + 0.12 * GiB : 0.0;
       const double apart = 4.0 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4.0;
       const double kv_long = std::max(0.0, kv_est(ctx, true) - kv_est(32768, true)) * std::max(opt.slots, 1);
       const double credit = std::max(0.0, driver_slack() - kv_long);
