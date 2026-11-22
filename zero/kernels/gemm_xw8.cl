@@ -187,9 +187,10 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 // reading its B straight from global memory (L1: the work-group's token sub-groups read the same B), so the local-
 // memory reads a DPAS halve (64 B instead of 128) and the rest goes through the load path. ocloc dg2-g10: the K loop
 // 184 -> 169 instructions for its 33 DPAS, 37 -> 19 local-memory messages, no spill. The same words: bit for bit.
-// With the work-group order of B (XS_WGLB), not with XW_GU
-#if !defined(XS_WGLB) && !defined(XS_WGL) || defined(XW_GU) || defined(XW_HB)
-#error "XS_BG: with XS_WGLB, not XW_GU or XW_HB"
+// With the work-group order of B (XS_WGLB); with XW_GU the gate's and the up's rows each from their own matrix.
+// The engine: ARC_GEMM_XW_BG=1 (engine_xw.h)
+#if !defined(XS_WGLB) && !defined(XS_WGL) || defined(XW_HB)
+#error "XS_BG: with XS_WGLB, not XW_HB"
 #endif
 #define XS_U (XS_AW / 64)
 #define XS_SB 0  // (B's words in local memory a chunk)
@@ -401,7 +402,13 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
 #ifdef XS_BG
+#ifdef XW_GU
+        // (column group c: the gate's output group sx * XW_NCO + c for c < XW_NCO, else the up's of c - XW_NCO, as
+        //  the staged units' offsets)
+        __global const uint* gb = (c < XW_NCO ? wpw : wpu) + (size_t)(ch + j) * XS_BW + (sx * XW_NCO + c % XW_NCO) * 256;
+#else
         __global const uint* gb = wpw + (size_t)(ch + j) * XS_BW + (sx * XW_NC + c) * 256;
+#endif
         lo0[c] = as_int8(intel_sub_group_block_read8(gb)), lo1[c] = as_int8(intel_sub_group_block_read8(gb + 64));
         hi0[c] = as_int8(intel_sub_group_block_read8(gb + 128)), hi1[c] = as_int8(intel_sub_group_block_read8(gb + 192));
 #else

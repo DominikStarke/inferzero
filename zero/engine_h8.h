@@ -499,6 +499,7 @@
     const int wb = pw ? xw_wgl_b(w, Mp) : 0;
     const int order = h8_prepare(w, wq, hh, wb > 1 ? wb : pw ? 1 : 0);
     int pack = (xw_pack_a(Mp, w.K) ? 1 : 0) | (pw ? 2 : 0) | (order > 1 ? 8 : 0);
+    if ((pack & 8) && xw_bg_on()) pack |= 16;  // (ARC_GEMM_XW_BG: B from global memory, engine_xw.h)
     h8_act(Mp, w.K, act32);
     XwUnwgl un(this, xw_wgl_a(Mp, w.K) > 1 && wb <= 1 ? Mp : 0, w.K);
     if (xw_wgl_a(Mp, w.K) > 1 && wb > 1) pack |= 4;

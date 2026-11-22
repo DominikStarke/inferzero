@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-22: the A770's big tile with B from global memory, opt-in (`ARC_GEMM_XW_BG=1`)
+
+- **`ARC_GEMM_XW_BG=1`** (with `ARC_GEMM_XW_WGL=1`): the big tile keeps only A in local memory, and each sub-group
+  reads its B straight from global memory, where the work-group's token sub-groups share it in L1. Local-memory reads
+  per XMX operation halve, for the A770, where local-memory bandwidth may be what holds the GEMMs at ~56 % of peak
+  (`xw_peak --probe` measures it). Also with the fused gate / up (`ARC_GEMM_XW_GU=1`).
+- Bit for bit: checked at every start (a failure turns off only this). On the laptop (XMX emulated), the 4B's logits
+  are byte for byte the same with it, with the fused gate / up, with `ARC_GEMM_XW_SLM_WG_GU=4,8` and with the copy
+  path forced.
+
 ## 2026-11-22: xw_peak times the big tile's local-memory loop; model ids without "-mtp-mtp"; --bench-batch on one GPU
 
 - **`xw_peak --probe` has local-memory rows:** the A770's big tile reads its operands from local memory, which the

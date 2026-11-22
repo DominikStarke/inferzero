@@ -23,6 +23,7 @@ start-time checks, the speed check included; one that failed runs as a GPU witho
 | `ARC_GEMM_XW_BIG` / `_EPI2` (32 x 32 through local memory where it fits / the epilogue a row at a time, 2026-11-21) | – | – | 0 (until measured) | 1 / 1 (the 27B 4K +15.7 %) | – |
 | `ARC_GEMM_XW_SLM_WG_GU` (the gate / up GEMMs' big-tile sub-groups, "X,Y", the others keeping `ARC_GEMM_XW_SLM_WG`'s, 2026-11-22; bit for bit) | – | – | – | unset (opt-in; skipzx-lab's A770: GU fastest at 4,8, down / qkv at 4,4) | – |
 | `ARC_GEMM_XW_WGL` (the big tile's operands in its work-group order, 2026-11-22; written by h8r_act / rmsnorm_h8r / h8r_decode, checked bit for bit at start) | – | – | – (with `ARC_GEMM_XW_BIG=1` only) | 0 (opt-in until measured; xw_peak +6.5 %) | – |
+| `ARC_GEMM_XW_BG` (the big tile's B from global memory, only A in local memory, 2026-11-22; with WGL; bit for bit) | – | – | – | 0 (opt-in until measured) | – |
 | `ARC_GEMM_XW_SHAPE` (a tile per GEMM shape, 2026-11-20; one GPU only, not on a split model) | – | – | 0 (until measured) | 1: 16 x 32 where N <= n_embd and K <= 8,192, else 32 x 16 WGX 4 | – |
 | `ARC_H8_NORM` | on | off | on | on | off |
 | `ARC_H8_OUT` (the DeltaNet / attention outputs rotated by the kernels that make them, 2026-11-22; bit for bit) | 0 (opt-in) | 0 | 0 (opt-in) | 0 (opt-in until measured) | – |
