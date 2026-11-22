@@ -12,6 +12,10 @@
   - To be measured on his card. `ARC_HOST_KEEP_GB` still sets it by hand.
 - **Fixed: "does not fit ... expect paging"** was printed on every run with weights in host memory, the fastest
   included. The check now uses the limit the planner fills: the card's whole memory.
+- **The smaller fixed part applies to dense models only** (since 2026.11.23.06): MoE models, Flash Next and
+  DeepSeek-V4.1 keep 0.4 GiB, as only a dense model was measured.
+- **A room set by hand below the automatic one is warned of at load** (`ARC_HOST_KEEP_GB` with the model tight):
+  "its buffers may not fit and the GPU may page", with both values.
 
 ## 2026-11-23: the A770's big-tile barrier split, opt-in in the engine (`ARC_GEMM_XW_SPLIT=1`)
 

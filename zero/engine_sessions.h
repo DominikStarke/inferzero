@@ -586,13 +586,15 @@
     // (ARC_HOST_KEEP_GB set: its room decides whether the model is tight too, as before 2026-11-18; the automatic room
     //  had left it only the share of the weights, so =4 on a model under the 2.5 GiB line kept nothing in RAM. Self
     //  audit 2026-11-19)
+    const double keep_extra = disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0;
+    const double keep_def = 2.5 * GiB + keep_extra;  // (the old rule's room, without ARC_HOST_KEEP_GB)
     const double keep_old = [&] {
-      const double extra = disc ? (double)opt.stream_reserve + std::max(0.0, kv_est(ctx) * std::max(opt.slots, 1) - kv_est(32768)) : 0.0;
-      if (const char* e = getenv("ARC_HOST_KEEP_GB")) return std::max(0.5, atof(e)) * GiB + extra;
-      return 2.5 * GiB + extra;
+      if (const char* e = getenv("ARC_HOST_KEEP_GB")) return std::max(0.5, atof(e)) * GiB + keep_extra;
+      return keep_def;
     }();
-    const double keep = [&] {
-      if (getenv("ARC_HOST_KEEP_GB")) return keep_old;
+    // (the automatic room, worked out whether ARC_HOST_KEEP_GB is set or not: a room set by hand below it is warned
+    //  of below, the Researcher's review of #37)
+    const double keep_auto = [&] {
       if (!disc) return keep_old;
       // (the chunk the tight model gets: 1024, or the one asked)
       const double ch = opt.chunk > 0 ? (double)((std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128) : 1024.0;
@@ -607,7 +609,8 @@
       double stage = 0;
       for (const auto& [r, v] : role_max) stage += v * 1.03;
       double act = ch * ((double)hp.n_embd * 48 + (double)hp.n_ff * 24);
-      if (!hp.moe && !hp.hc && !hp.ds41) {
+      const bool dense_rows = !hp.moe && !hp.hc && !hp.ds41;  // (the exact rows and the smaller fixed part: dense only)
+      if (dense_rows) {
         // (a dense model: the buffers alloc_buffers makes a row, with the H8 copies (the f32 one and the rotated
         //  int8 one) counted whether H8 runs or not, and 10 % more. The rule above counted 0.63 GiB for the 27B's
         //  1,024-token chunk against 0.37 allocated, and its automatic room kept 1.02 GiB of weights in RAM on
@@ -634,20 +637,24 @@
       //  before. d-dorok's B580, the 27B at 4K, ARC_HOST_KEEP_GB (the room) 1.0 / 0.75 / 0.6 / 0.5: generation 12.87 /
       //  13.22 / 15.18 / 9.94 tok/s, 0.5 paging; the automatic room was ~1.28 (9.69 tok/s). With the exact activations
       //  above it is ~0.9: below 1.0, a step above the 0.6 that ran fastest and 0.4 above the 0.5 that paged, issue #37)
-      const double need = 0.25 * GiB + act + stage + resid + snaps + kv_est(ctx, true) * std::max(opt.slots, 1) +
+      const double need = (dense_rows ? 0.25 : 0.4) * GiB + act + stage + resid + snaps + kv_est(ctx, true) * std::max(opt.slots, 1) +
                           (double)opt.stream_reserve;
       // (less the driver's reserve, which budget already left out: d-dorok's B580 ran the 27B at 4K with 0.3 GiB
       //  more in use than the card reports (room 0.75 GiB: 7.08 tok/s, 11.64 GiB in use of 11.33) and only fell over
       //  at 11.88 (room 0.5: the prompt 1,877 -> 701 tok/s); its buffers were 1.56 GiB, this estimate 1.71. So the
       //  card's whole reported memory: the estimate's own excess and the 0.3 GiB the card had are the margin, issue #37)
-      return std::min(keep_old, std::max(0.0, need - driver_slack()));
+      return std::min(keep_def, std::max(0.0, need - driver_slack()));
     }();
+    const double keep = getenv("ARC_HOST_KEEP_GB") || !disc ? keep_old : keep_auto;
     // (tight or not by the old rule (audit 2026-11-18): the automatic room above is worked out for a tight model's
     //  buffers (1,024-token chunks, smaller rings), and keep_old does not change with the context below 32K, so the
     //  server's --ctx auto probe and the real load agree on it. The room then only says how many of a tight model's
     //  weights go to RAM. Deciding it by the smaller room let a model just under the old line come out not tight:
     //  every weight on the card and 4,096-token chunks, out of memory)
     tight_ = disc ? total > budget - keep_old : total > 0.85 * budget;
+    if (getenv("ARC_HOST_KEEP_GB") && disc && keep < keep_auto - 0.05 * GiB && !opt.dry && tight_)
+      zlog::eprintf("inferzero: warning: ARC_HOST_KEEP_GB leaves %.2f GiB of room on the GPU, below the automatic %.2f: "
+                    "its buffers may not fit and the GPU may page (issue #37)\n", keep / GiB, keep_auto / GiB);
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_ && disc) {
       want = std::max(0.0, std::min(total - (budget - keep), (double)plat::ram_available() - 4.0 * GiB));
