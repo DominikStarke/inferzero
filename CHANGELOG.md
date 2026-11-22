@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-22: the FFN's gate and up in one launch on the A770, opt-in
+
+- **`ARC_GEMM_XW_GU=1` on Alchemist:** the FFN's gate and up GEMMs in one launch of the A770's big tile, whose
+  epilogue writes silu(gate) x up. The gate's values (285 MB a layer of the 27B at a 4K prompt) are no longer written
+  out and read back. The B-series' 16-lane form gave a B60 +3.3 % at 4K.
+- Bit for bit the two launches: checked at every start, and on the laptop with emulated DPAS (the 4B's logits).
+- Opt-in until the A770s measure it.
+
 ## 2026-11-22: xw_peak against the A770's own tile; two bigger local-memory work-groups to measure
 
 - **`xw_peak`'s reference is the model's tile:** on a discrete 8-lane GPU (Alchemist), "slm 32x32 4x4 e2 p", the

@@ -419,7 +419,116 @@
   }
   // the FFN's gate and up (H8, prompt chunks) in one gemm_xw launch into C = big_ (row stride ldc): true when taken;
   // false: the caller runs the two GEMMs as before
+  // ---- 8 lanes (2026-11-22, the A770 plan for 1,700 tok/s): the gate and up in one launch of the big tile (gemm_xw8
+  // -DXW_SLM -DXW_PTR -DXW_EPI2 -DXW_GU, 32 x 32 with 4 x 4 sub-groups: a sub-group's two column groups are the gate's
+  // and the up's of 16 output columns, the same 33 DPAS a chunk; ocloc dg2-g10 no spill, its loop 198 instructions).
+  // Where the big tile takes both GEMMs (both operands packed, one piece of K); the same values bit for bit as the
+  // two launches (xw_gu_check8 at start; a difference or a failed build keeps them)
+  int xw_gu8_ok_ = -1;
+  bool xw_gu8_fits(int N, int Mp) const {
+    const XwBig& b = xw_big_cfg();
+    return xw_big_on() && xw_epi2() && xw_ptr() && b.tm == 32 && b.nc == 2 && b.cps == 1 && (xw_pack_cfg() & 3) == 3 &&
+           N % (16 * b.x) == 0 && Mp % (b.tm * b.y) == 0;
+  }
+  void xw_gu_run8(const char* name, cl_mem wqg, cl_mem whg, cl_mem wqu, cl_mem whu, cl_mem aq, cl_mem asc, int M, int N,
+                  int K, cl_mem C, int ldc, int c_off, int rgroup) {
+    const XwBig& b = xw_big_cfg();
+    const int nb = N / 16;  // (output column groups: one a sub-group)
+    int wgx = b.x;
+    while (wgx > 1 && nb % wgx) wgx /= 2;
+    const std::string sd = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=32 -DXW_NC=2" +
+                           (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
+                           (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
+                           std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU";
+    cl_kernel k = kernel("xw8", sd, "gemm_xw8");
+    size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
+    int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
+    set_args(k, 0, wqg, whg, aq, asc, C, MM, NN, KK, ld, co, a, rg, s0, s1, wqu, whu);
+    run(name, k, 2, gws, lws);
+  }
+  bool xw_gu_matmul8(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
+    if (gw.N != uw.N || gw.K != uw.K || gw.K % 256 || !xw_gu8_fits(gw.N, Mp) || h8_splits(gw.K, 0) > 1) return false;
+    if (!h8_takes(gw, Mp) || !h8_takes(uw, Mp)) return false;
+    if (!xw_pack_w(gw, Mp) || !xw_pack_w(uw, Mp) || !xw_pack_a(Mp, gw.K)) return false;  // (the packed order only)
+    if (xw_gu8_ok_ < 0) {
+      xw_gu8_ok_ = xw_gu_check8() ? 1 : 0;
+      zlog::eprintf(xw_gu8_ok_ ? "inferzero: the FFN's gate and up in one gemm_xw8 launch (ARC_GEMM_XW_GU, results checked bit for bit)\n"
+                               : "inferzero: ARC_GEMM_XW_GU: the fused gate / up gemm_xw8 differs or does not build: two launches as before\n");
+    }
+    if (!xw_gu8_ok_) return false;
+    cl_mem wqg = nullptr, whg = nullptr, wqu = nullptr, whu = nullptr;
+    h8_prepare(gw, wqg, whg, true);
+    h8_prepare(uw, wqu, whu, true);
+    h8_act(Mp, gw.K, act32);
+    static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
+    xw_gu_run8("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, rg_env);
+    return true;
+  }
+  // the 8-lane fused launch against the two it replaces (the gate stored, then the up with the fused SwiGLU, each
+  // through xw_piece as the engine runs it), on random data in the packed order: two widths (two and three
+  // work-groups of columns), two token tiles of the big tile's work-groups; bit for bit
+  bool xw_gu_check8() {
+    const XwBig& b = xw_big_cfg();
+    const int K = 2048, nsb = K / 256, M = 2 * 32 * b.y;
+    uint32_t seed = 4243;
+    auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
+    auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
+    std::vector<cl_mem> bufs;
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
+    cl_.soft_fail = true;
+    bool ok = true;
+    try {
+      for (int N : {2 * 16 * b.x, 3 * 16 * b.x}) {
+        const int ng = N / 16, ldc = N + 32;
+        std::vector<uint32_t> wg((size_t)ng * nsb * 4 * 256), wu(wg.size()), hg((size_t)ng * 16), hu(hg.size()), aq((size_t)M * K / 4);
+        for (auto* v : {&wg, &wu, &aq}) for (auto& x : *v) x = rnd();
+        for (auto* v : {&hg, &hu})
+          for (auto& x : *v) { const float f = rndf(0.001f, 0.01f); memcpy(&x, &f, 4); }
+        std::vector<float> asc((size_t)M), c0((size_t)M * ldc, 0.0f);
+        for (auto& v : asc) v = 0.02f * std::pow(10.0f, -rndf(0.0f, 3.0f));
+        cl_mem bg = buf(wg.size() * 4, wg.data()), bu = buf(wu.size() * 4, wu.data()), bhg = buf(hg.size() * 4, hg.data()),
+               bhu = buf(hu.size() * 4, hu.data()), ba = buf(aq.size() * 4, aq.data()), bs = buf(asc.size() * 4, asc.data()),
+               bc = buf(c0.size() * 4);
+        bufs.insert(bufs.end(), {bg, bu, bhg, bhu, ba, bs, bc});
+        std::vector<float> out[2];
+        for (int x = 0; x < 2; ++x) {
+          CL_CHECK(clEnqueueWriteBuffer(cl_.queue, bc, CL_TRUE, 0, c0.size() * 4, c0.data(), 0, nullptr, nullptr));
+          if (x == 0) {
+            xw_piece("xw_gu_check", bg, bhg, ba, bs, M, N, K, bc, ldc, 0, 0, 2, 0, nsb, b.y, 3);
+            xw_piece("xw_gu_check", bu, bhu, ba, bs, M, N, K, bc, ldc, 0, 2, 2, 0, nsb, b.y, 3);
+          } else {
+            xw_gu_run8("xw_gu_check", bg, bhg, bu, bhu, ba, bs, M, N, K, bc, ldc, 0, 2);
+          }
+          out[x].resize(c0.size());
+          CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, out[x].size() * 4, out[x].data(), 0, nullptr, nullptr));
+        }
+        bool sane = false;
+        for (size_t i = 0; i < c0.size(); ++i) {
+          if (!std::isfinite(out[0][i])) { sane = false; break; }
+          sane = sane || out[0][i] != 0.0f;
+        }
+        size_t diff = 0;
+        for (size_t i = 0; i < c0.size(); ++i) diff += memcmp(&out[0][i], &out[1][i], 4) != 0;
+        if (!sane || diff) {
+          zlog::eprintf("inferzero: ARC_GEMM_XW_GU (8 lanes) check %dx%d: %zu of %zu values differ%s\n", M, N, diff,
+                        c0.size(), sane ? "" : " (or no output)");
+          ok = false;
+        }
+      }
+    } catch (const zrt::GpuWaitError&) {
+      for (cl_mem& bb : bufs) free_buf(bb);
+      throw;
+    } catch (const std::exception& e) {
+      zlog::eprintf("inferzero: ARC_GEMM_XW_GU (8 lanes): %s\n", e.what());
+      ok = false;
+    }
+    for (cl_mem& bb : bufs) free_buf(bb);
+    return ok;
+  }
   bool xw_gu_matmul(const GpuWeight& gw, const GpuWeight& uw, int Mp, cl_mem C, int ldc, bool act32) {
+    // (8 lanes: opt-in, ARC_GEMM_XW_GU=1, until the A770s measure it; 16 lanes: on by default on discrete cards)
+    static const bool gu8_asked = getenv("ARC_GEMM_XW_GU") && atoi(getenv("ARC_GEMM_XW_GU")) != 0;
+    if (xw_lanes() == 8) return gu8_asked && xw_ && h8_row() && xw_gu_matmul8(gw, uw, Mp, C, ldc, act32);
     if (!xw_gu_env() || !xw_ || xw_lanes() != 16 || !xw_gu_shape(xw_nc()) || !h8_row()) return false;
     if (gw.N != uw.N || gw.K != uw.K || Mp % xw_tm() || gw.K % 256 || gw.N % (16 * (xw_nc() / 2))) return false;
     // (one piece of K only: the gate GEMM alone splits K past ARC_GEMM_SPLIT's superblocks, which the fused launch

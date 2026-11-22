@@ -84,6 +84,21 @@
 #if XW_WGX != 1 && XW_WGX != 2 && XW_WGX != 4 && !(XW_WGX == 8 && defined(XW_SLM))
 #error "XW_WGX must be 1, 2 or 4 (8 with XW_SLM)"
 #endif
+// -DXW_GU (ARC_GEMM_XW_GU on 8 lanes, 2026-11-22; the A770 plan for 1,700 tok/s): the FFN's gate and up GEMMs in one
+// launch, as gemm_xw.cl's XW_GU: a sub-group's first XW_NC / 2 column groups are the gate's (wq, wh), the others the
+// up's (wqu, whu) of the same output columns, and the epilogue writes silu(gate) * up, so the gate's f32 values (285 MB
+// a layer of the 27B at 4K) are neither stored nor read back. Only with XW_SLM, XW_PTR and XW_EPI2 (the Alchemist big
+// tile): its local-memory copy takes each column group from the gate's or the up's rows; the DPAS are the plain
+// tile's; the epilogue computes the gate value as the gate GEMM stores it and then the up GEMM's fused SwiGLU: bit for
+// bit the two launches (checked at start, engine_xw.h xw_gu_check8)
+#ifdef XW_GU
+#if !defined(XW_SLM) || !defined(XW_PTR) || !defined(XW_EPI2) || (XW_NC != 2 && XW_NC != 4)
+#error "XW_GU on 8 lanes: with XW_SLM, XW_PTR and XW_EPI2, XW_NC 2 or 4"
+#endif
+#define XW_NCO (XW_NC / 2)  // (output column groups a sub-group)
+#else
+#define XW_NCO XW_NC
+#endif
 #define XW_TG (XW_TM / 8)   // DPAS row groups of 8 tokens
 #define XW_NH (2 * XW_NC)   // DPAS column blocks of 8
 #define BCAST(x, i) intel_sub_group_shuffle((x), (i))
@@ -125,19 +140,24 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* restrict wh,
                        __global const char* restrict aq, __global const float* restrict asc,
                        __global float* restrict C, int M, int N, int K, int ldc, int c_off, int accumulate,
-                       int rgroup, int s_begin, int s_end) {
+                       int rgroup, int s_begin, int s_end
+#ifdef XW_GU
+                       , __global const uint* restrict wqu, __global const uint* restrict whu
+#endif
+                       ) {
   // (XW_WGX column sub-groups a work-group, sx this one's: local size 8 * XW_WGX)
 #if XW_WGX > 1
   const int sx = (int)get_local_id(0) / SG;
 #else
   const int sx = 0;
 #endif
-  const int NB = N / (LS * XW_NC * XW_WGX), rows = M / (XW_TM * (int)get_local_size(1));
+  const int NB = N / (LS * XW_NCO * XW_WGX), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
-  const int nsb = K / 256, g0 = (cb * XW_WGX + sx) * XW_NC;
+  // (XW_GU: g0 is the first output column group, of the gate's and the up's rows alike)
+  const int nsb = K / 256, g0 = (cb * XW_WGX + sx) * XW_NCO;
   __global const char* ap = aq + (size_t)m0 * K;
 
   int8 xacc[XW_TG][XW_NH];
@@ -159,9 +179,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #if !defined(XW_PACKA) || !defined(XW_PACKW) || !defined(XW_WGY)
 #error "XW_SLM needs XW_PACKA, XW_PACKW and XW_WGY"
 #endif
-#ifdef XW_GU
-#error "XW_SLM is not for the fused gate + up GEMM"
-#endif
 #define XS_AW (XW_WGY * XW_TG * 128)  // words of A a chunk (token group t's: 2 halves x 64 words)
 #define XS_BW (XW_WGX * XW_NC * 256)  // words of B a chunk (column group c's: lo0, lo1, hi0, hi1 x 64 words)
 #define XS_UA (XS_AW / 64)
@@ -182,7 +199,10 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
   __global const uint* apw = (__global const uint*)aq + (size_t)(row * XW_WGY * XW_TG) * nch * 128;
-  __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NC) * nsb * 4 * 256;
+  __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;
+#ifdef XW_GU
+  __global const uint* wpu = wqu + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;  // (the up's rows, as wpw the gate's)
+#endif
   const int ch0 = s_begin * 4, ch1 = s_end * 4;
   int8 st[XS_UPS];
   // unit u of chunk ch: A (u < XS_UA) of the work-group's token group u / 2, half u % 2; B of its column group
@@ -233,12 +253,28 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   uint xs_off[XS_UPS];
   int xs_dst[XS_UPS];
   bool xs_a[XS_UPS];
+#ifdef XW_GU
+  bool xs_up[XS_UPS];  // (a B unit of the up's rows)
+#define XS_BBASE(i) (xs_up[i] ? wpu : wpw)
+#else
+#define XS_BBASE(i) wpw
+#endif
 #pragma unroll
   for (int i = 0; i < XS_UPS; ++i) {
     const int v = sid + i * XS_NS, u = v % XS_U, j = v / XS_U, c = ch0 + j;
     xs_a[i] = u < XS_UA;  // (a unit past the stage's end, v >= XS_U * XS_CPS, is never read)
+#ifdef XW_GU
+    // (B unit of the work-group's column group cg = sub-group cg / XW_NC's group cg % XW_NC: the gate's rows of output
+    //  group cs * XW_NCO + cc for the first XW_NCO groups, the up's of cs * XW_NCO + cc - XW_NCO for the others)
+    const int cg = (u - XS_UA) >> 2, cs = cg / XW_NC, cc = cg % XW_NC;
+    xs_up[i] = !xs_a[i] && cc >= XW_NCO;
+    const int og = cs * XW_NCO + (cc >= XW_NCO ? cc - XW_NCO : cc);
+    xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
+                        : (uint)((og * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+#else
     xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
                         : (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+#endif
     xs_dst[i] = j * (XS_AW + XS_BW) + u * 64;
   }
 #undef XS_LOAD
@@ -246,7 +282,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_LOAD(ch)                                                                          \
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
     if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS)                                            \
-      st[i] = as_int8(intel_sub_group_block_read8((XS_IS_A(i) ? apw : wpw) + xs_off[i]));     \
+      st[i] = as_int8(intel_sub_group_block_read8((XS_IS_A(i) ? apw : XS_BBASE(i)) + xs_off[i])); \
     xs_off[i] += (XS_IS_A(i) ? 128u : 256u) * XS_CPS;                                         \
   }
 #define XS_STORE(b)                                                                          \
@@ -558,6 +594,45 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   // is decided once, not per value. On an A770 the 32 x 32 tiles lost most on up + SwiGLU (xw_peak, skipzx-lab, #45:
   // 12.67 ms against 7.19 for gate; at 32 x 16 8.13 against 6.67). Every value gets the same operations in the same
   // order (scale x column scale x sum, then + C or the SwiGLU): bit for bit the epilogue below.
+#if defined(XW_GU)
+  // (XW_GU: output group g0 + c's gate sums in xacc[t][2c], [2c + 1], its up sums XW_NCO groups on. The gate value
+  //  as the gate GEMM stores it (scale x column scale x sum), the up value and the product as the up GEMM's fused
+  //  SwiGLU computes them, a row's 16 x XW_NCO columns in one block message)
+#if XW_NCO == 1
+#define GU_T uint2
+#define GU_WR(p, v) intel_sub_group_block_write2((p), (v))
+#else
+#define GU_T uint4
+#define GU_WR(p, v) intel_sub_group_block_write4((p), (v))
+#endif
+  float dg[2 * XW_NCO], du[2 * XW_NCO];
+#pragma unroll
+  for (int h = 0; h < 2 * XW_NCO; ++h) {
+    dg[h] = as_float(intel_sub_group_block_read(wh + (size_t)(g0 + h / 2) * LS + (h & 1) * SG));
+    du[h] = as_float(intel_sub_group_block_read(whu + (size_t)(g0 + h / 2) * LS + (h & 1) * SG));
+  }
+#pragma unroll
+  for (int t = 0; t < XW_TG; ++t) {
+#pragma unroll
+    for (int r = 0; r < 8; ++r) {
+      const float as = BCAST(av[t], r);
+      __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + 8 * t + r) * ldc + (size_t)g0 * LS);
+      GU_T o;
+      uint* ow = (uint*)&o;
+#pragma unroll
+      for (int h = 0; h < 2 * XW_NCO; ++h) {
+        const int8 xg = xacc[t][h], xu = xacc[t][h + 2 * XW_NCO];
+        const int ig[8] = {xg.s0, xg.s1, xg.s2, xg.s3, xg.s4, xg.s5, xg.s6, xg.s7};
+        const int iu[8] = {xu.s0, xu.s1, xu.s2, xu.s3, xu.s4, xu.s5, xu.s6, xu.s7};
+        const float gt = as * dg[h] * (float)ig[r];
+        float v = as * du[h] * (float)iu[r];
+        v *= gt / (1.0f + exp(-gt));
+        ow[h] = as_uint(v);
+      }
+      GU_WR(cp, o);
+    }
+  }
+#else
 #if XW_NH == 2
 #define EPI_T uint2
 #define EPI_RD(p) intel_sub_group_block_read2(p)
@@ -625,6 +700,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   } else {
     EPI_ROWS(EPI_GEN)
   }
+#endif  // XW_GU
 #else
 #pragma unroll
   for (int h = 0; h < XW_NH; ++h) {
