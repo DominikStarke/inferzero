@@ -309,7 +309,7 @@ class Checker {
             cp = 0xFFFD;
           } else if (plain_ascii(cp)) {
             // (a printable ASCII character needs no escape: refused, so that a model whose next word does not fit
-            //  writes the letter itself, not t after t (the 4B on #80's schema did))
+            //  writes the letter itself, not \u0074 after \u0074 (the 4B on #80's schema did))
             return FAIL;
           }
           if (out) put_utf8(*out, cp);

@@ -7,7 +7,7 @@
 #   - the two QSA models (the QSA 27B, Flash Next): the other attention mode (ARC_QSA=1 / ARC_QSA=0) against its own
 #     reference and against the default's, the selection cut to 64 keys on both sides (ARC_QSA_TOPK / REF_TOPK);
 #   - where H8 runs: ARC_H8_Q2=1 (More precise prompt reading);
-#   - Flash Next: precise mode (ARC_FN_PRECISE=1);
+#   - Flash Next: its fast mode (ARC_FN_PRECISE=0; precise mode is the default since 2026-11-22);
 #   - with an MTP block: ARC_MTP_VOCAB=32768 (Faster drafting) must give the same text as plain --mtp.
 # The reference reads the weights row by row from the file: a few GB of RAM besides the file's pages, and CPU time
 # (about 30 minutes for 480 tokens of the 27B on a laptop). Each reference is made once and kept (--fresh: again).
@@ -84,8 +84,8 @@ if [ $FN = 1 ]; then
   add_row "default (sparse attention)" "sparse reference" "$REF_SPARSE" ARC_QSA_TOPK=64
   add_row "ARC_QSA=0 (full attention)" "full reference" "$REF_FULL" ARC_QSA=0
   add_row "ARC_QSA=0 (full attention)" "sparse reference (how far from the default)" "$REF_SPARSE" ARC_QSA=0
-  add_row "ARC_FN_PRECISE=1 (precise mode)" "sparse reference" "$REF_SPARSE" ARC_FN_PRECISE=1 ARC_QSA_TOPK=64
-  add_row "ARC_FN_PRECISE=1, ARC_QSA=0" "full reference" "$REF_FULL" ARC_FN_PRECISE=1 ARC_QSA=0
+  add_row "ARC_FN_PRECISE=0 (fast mode)" "sparse reference" "$REF_SPARSE" ARC_FN_PRECISE=0 ARC_QSA_TOPK=64
+  add_row "ARC_FN_PRECISE=0, ARC_QSA=0 (fast mode)" "full reference" "$REF_FULL" ARC_FN_PRECISE=0 ARC_QSA=0
 elif [ $Q27 = 1 ]; then
   add_row "default (full attention)" "full reference" "$REF_FULL"
   add_row "ARC_QSA=1 (sparse attention)" "sparse reference" "$REF_SPARSE" ARC_QSA=1 ARC_QSA_TOPK=64

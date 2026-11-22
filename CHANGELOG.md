@@ -22,7 +22,7 @@
   - In keys and in enum / const strings, an unfinished escape is allowed only when it can still become the next
     character of a name that fits. Enum and const strings are compared by their decoded text, so `café`
     matches "café".
-  - A `\u` escape of a plain printable ASCII character (`t` for `t`) is refused: JSON allows it, but a model
+  - A `\u` escape of a plain printable ASCII character (`\u0074` for `t`) is refused: JSON allows it, but a model
     whose next word did not fit fell back to them letter by letter. It now writes the letter.
 - **Checked:**
   - the checker's tests (`tests/test_api_compat.cpp`), including his schema and the same object inside anyOf;

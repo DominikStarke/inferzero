@@ -7,7 +7,7 @@
 #     reference and against the default's, the selection cut to 64 keys on both sides (ARC_QSA_TOPK / REF_TOPK) so
 #     that a few hundred tokens are sparse (it starts at 2,048 keys otherwise);
 #   - where H8 runs: ARC_H8_Q2=1 (More precise prompt reading);
-#   - Flash Next: precise mode (ARC_FN_PRECISE=1);
+#   - Flash Next: its fast mode (ARC_FN_PRECISE=0; precise mode is the default since 2026-11-22);
 #   - with an MTP block: ARC_MTP_VOCAB=32768 (Faster drafting) must give the same text as plain --mtp (a text check).
 # The reference reads the model's weights row by row from the file, so it needs a few GB of RAM besides the file's
 # pages, and CPU time: about 30 minutes for 480 tokens of the 27B on a laptop's 4 + 8 cores, less on a desktop. Each
@@ -89,8 +89,8 @@ if ($fn) {
   Add-Row "default (sparse attention)" "sparse reference" $refSparse @{ ARC_QSA_TOPK = "64" }
   Add-Row "ARC_QSA=0 (full attention)" "full reference" $refFull @{ ARC_QSA = "0" }
   Add-Row "ARC_QSA=0 (full attention)" "sparse reference (how far from the default)" $refSparse @{ ARC_QSA = "0" }
-  Add-Row "ARC_FN_PRECISE=1 (precise mode)" "sparse reference" $refSparse @{ ARC_FN_PRECISE = "1"; ARC_QSA_TOPK = "64" }
-  Add-Row "ARC_FN_PRECISE=1, ARC_QSA=0" "full reference" $refFull @{ ARC_FN_PRECISE = "1"; ARC_QSA = "0" }
+  Add-Row "ARC_FN_PRECISE=0 (fast mode)" "sparse reference" $refSparse @{ ARC_FN_PRECISE = "0"; ARC_QSA_TOPK = "64" }
+  Add-Row "ARC_FN_PRECISE=0, ARC_QSA=0 (fast mode)" "full reference" $refFull @{ ARC_FN_PRECISE = "0"; ARC_QSA = "0" }
 } elseif ($qsa27) {
   Add-Row "default (full attention)" "full reference" $refFull @{}
   Add-Row "ARC_QSA=1 (sparse attention)" "sparse reference" $refSparse @{ ARC_QSA = "1"; ARC_QSA_TOPK = "64" }
