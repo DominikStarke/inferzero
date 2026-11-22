@@ -1543,9 +1543,9 @@ int main(int argc, char** argv) {
   // the entry of a loaded or listed alias: the catalog's, or a variant's made before
   auto entry_of = [&](const std::string& alias) -> const ModelInfo* {
     for (const ModelInfo& m : catalog)
-      if (m.alias == alias) return &m;
+      if (alias_is(m, alias)) return &m;
     for (const ModelInfo& m : variant_infos)
-      if (m.alias == alias) return &m;
+      if (alias_is(m, alias)) return &m;
     return nullptr;
   };
   // (the model lists: the loaded variant first, as the catalog's loaded entry is listed, then the catalog)
@@ -1594,7 +1594,7 @@ int main(int argc, char** argv) {
     for (int pass = 0; pass < 2; ++pass) {
       bool was_stale = false;
       for (const ModelInfo& m : catalog)
-        if (m.supported && (m.alias == want || m.name == want || m.file == want)) {
+        if (m.supported && (alias_is(m, want) || m.name == want || m.file == want)) {
           if (pass == 0 && stale(m)) { was_stale = true; break; }
           return &m;
         }
@@ -2303,7 +2303,7 @@ int main(int argc, char** argv) {
         std::shared_lock<std::shared_mutex> lk(swap_mu);
         bool r = cur && want == cur->alias;
         for (const ModelInfo& m : catalog) {
-          r = r || (m.supported && (m.alias == want || m.name == want || m.file == want));
+          r = r || (m.supported && (alias_is(m, want) || m.name == want || m.file == want));
           for (const ModelVariant& v : r ? std::vector<ModelVariant>() : variants_of(m, opt_cat))  // (QUEUE row 15)
             r = r || m.alias + v.suffix == want || (!m.shortcut.empty() && m.shortcut + v.suffix == want);
         }
@@ -2348,7 +2348,7 @@ int main(int argc, char** argv) {
         const std::string want = apic::strip_tag(in["model"].str(in["name"].str()));
         const ModelInfo* m = nullptr;
         for (const ModelInfo& c : catalog)
-          if (c.supported && (c.alias == want || c.name == want)) m = &c;
+          if (c.supported && (alias_is(c, want) || c.name == want)) m = &c;
         if (!m) m = entry_of(want);  // (an option variant made before: QUEUE row 15)
         if (!m && want != cur->alias) return rs.send(404, "application/json", "{\"error\":\"model not found\"}");
         const bool loaded = want == cur->alias;

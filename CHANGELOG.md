@@ -11,6 +11,7 @@
 - **Model ids:** for a repository whose GGUF id already ends in "-mtp" (Unsloth's MTP GGUFs), the variants are now
   `…-mtp-novision`, `…-vision` and `…-std` instead of `…-mtp-mtp`, `…-mtp-vision` and `…-mtp-std`. The main id and
   every shortcut (`35b-mtp-std`, …) stay the same.
+  The old ids are still accepted in requests (`/api/show`, a chat's `model`, a switch), only no longer listed.
 - **`runz --bench-batch N` on one GPU** sizes the engine for N slots at load, as on several GPUs, so batched decoding
   is no longer capped at 1 + the drafts ("forward_batch: not for this model or too many rows").
 

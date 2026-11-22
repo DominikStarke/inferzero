@@ -27,7 +27,12 @@ struct ModelInfo {
   int draft = 0;
   std::string base, tags;
   std::string note;  // (why it cannot load, when the file says: a package or GSQ conversion from before 2026-11-10)
+  // (the id this variant had until release 2026.11.22.24, for a file whose id ends in "-mtp": still accepted as a
+  //  name, not listed. The Researcher's review, 2026-11-22)
+  std::string old_alias;
 };
+// a requested name for this entry: its id, or its id of before 2026.11.22.25
+inline bool alias_is(const ModelInfo& m, const std::string& w) { return m.alias == w || (!m.old_alias.empty() && m.old_alias == w); }
 // Two spellings of one model file (separators, case, a path given on the command line vs one found by the scan).
 static std::string lower_ascii(std::string s) {
   for (auto& c : s) c = (char)tolower((unsigned char)c);
@@ -522,6 +527,7 @@ static std::vector<ModelInfo> scan_models() {
       const std::string stem = ends_mtp ? m.alias.substr(0, m.alias.size() - 4) : m.alias;
       e.alias = !*v.suffix || !ends_mtp ? m.alias + v.suffix
                 : std::string(v.suffix) == "-mtp" ? m.alias + "-novision" : stem + v.suffix;
+      if (*v.suffix && ends_mtp) e.old_alias = m.alias + v.suffix;
       if (!m.shortcut.empty()) e.shortcut = m.shortcut + v.suffix;
       e.tags = v.mtp && v.vision ? "MTP + vision" : v.mtp ? "MTP" : v.vision ? "vision" : "standard";
       all.push_back(e);
