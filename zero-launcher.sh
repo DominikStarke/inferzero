@@ -10,7 +10,8 @@
 #   ./zero-launcher.sh --model 4b --install-service   a systemd user service for it instead of starting it here
 #   ./zero-launcher.sh --options          the speed and accuracy options (scripts/options.tsv) and what is chosen
 #   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
-# Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --no-browser, --yes (no
+# Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no
+# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-browser, --yes (no
 # questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to
@@ -745,7 +746,8 @@ cli_check() {  # KEY
 }
 
 server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT off / mtp / both / dflash, SEL_IMG 0 / 1)
-  CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget 8192)
+  CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget "${THINK:-8192}" --session-cache-gb "${SESS_GB:-8}")
+  [ -n "${CHUNK:-}" ] && CMD+=(--chunk "$CHUNK")
   case "${SEL_DRAFT:-}" in
     off) ;;
     mtp) CMD+=(--mtp --draft mtp);;
@@ -912,11 +914,12 @@ menu() {
   start_key "${keys[$((s - 1))]}"
 }
 
-usage() { sed -n '2,17p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
+  THINK=8192; SESS_GB=8; CHUNK=""  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
   REPLACE_SERVICE=0; EXTRA=()
   local opt_args=() a no_saved=0
   opt_load
@@ -935,6 +938,9 @@ main() {
       --port) PORT=${2:-}; shift;;
       --host) HOST=${2:-}; shift;;
       --gpus) GPUS=${2:-0}; shift;;
+      --think-budget) THINK=${2:-}; shift;;
+      --session-cache-gb) SESS_GB=${2:-}; shift;;
+      --chunk) CHUNK=${2:-}; shift;;
       --no-browser) NO_BROWSER=1;;
       --yes) YES=1;;
       --install-service) INSTALL_SERVICE=1;;
@@ -952,6 +958,9 @@ main() {
   done
   [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || { err "zero-launcher: --port: 1..65535"; return 2; }
   [[ "$GPUS" =~ ^[0-9]+$ ]] || { err "zero-launcher: --gpus: a number"; return 2; }
+  [[ "$THINK" =~ ^-?[0-9]+$ ]] || { err "zero-launcher: --think-budget: a number of tokens (-1: no limit)"; return 2; }
+  [[ "$SESS_GB" =~ ^[0-9]+([.][0-9]+)?$ ]] || { err "zero-launcher: --session-cache-gb: GB (0: off)"; return 2; }
+  [ -z "$CHUNK" ] || [[ "$CHUNK" =~ ^[0-9]+$ ]] || { err "zero-launcher: --chunk: a number of tokens"; return 2; }
   [ "$REPLACE_SERVICE" = 1 ] && [ "$INSTALL_SERVICE" != 1 ] && { err "zero-launcher: --replace-service needs --install-service"; return 2; }
   # (--opt id[=value] / --no-opt id / --default-opt id, each a comma list too: kept in options.json for later starts,
   #  as zero-server -Opt / -NoOpt / -DefaultOpt; with --no-saved-options the choices are exactly these, from the

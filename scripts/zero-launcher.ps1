@@ -336,9 +336,9 @@ foreach ($c in @(
 # selected model; a field you change turns yellow and is passed on (the others are left to the server)
 $portBox = New-Num 1024 65535 $Port 0 70
 $ctxBox = New-Text 80
-$chunkBox = New-Combo @("512", "1024", "2048", "4096", "8192")
+$chunkBox = New-Combo @("auto", "512", "1024", "2048", "4096", "8192", "16384")  # (auto: the server's choice, the launcher spec A2)
 $draftBox = New-Combo @("1", "2", "3", "4", "5", "6", "7") 60
-$thinkBox = New-Num 0 262144 8192 0 80
+$thinkBox = New-Num -1 262144 8192 0 80  # (-1: no limit, serverz's own default)
 $imgMinBox = New-Num 0 16384 0 0 70
 $imgMaxBox = New-Num 0 16384 0 0 70
 $budgetBox = New-Num 0 64 0 1 70
@@ -360,7 +360,7 @@ $keepThinkChk = New-Check "earlier turns keep their reasoning"
 $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
 $whDevBox = New-Combo @("gpu", "npu") 60
-$whMaxBox = New-Num 1 1440 180 0 70
+$whMaxBox = New-Num 1 600 180 0 70  # (serverz clamps to 1..600)
 
 $opt = New-Object System.Windows.Forms.TableLayoutPanel
 $opt.Dock = "Fill"; $opt.ColumnCount = 2; $opt.AutoScroll = $true
@@ -577,7 +577,7 @@ Update-Api
 [void](Add-Opt "GPUs (one model split)" $gpusBox "-Gpus: the cards a split model uses (Multi-GPU above sets it)" -Advanced)
 [void](Add-Opt "Decoded weights kept (GB)" $budgetBox "0 = chosen with the context" -Advanced)
 [void](Add-Opt "MTP drafts per step" $draftBox -Advanced)
-[void](Add-Opt "Thinking budget (tokens)" $thinkBox -Advanced)
+[void](Add-Opt "Thinking budget (tokens)" $thinkBox "-1 = no limit" -Advanced)
 [void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; all models together (default 8); 0 = off" -Advanced)
 [void](Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart" -Advanced)
 [void](Add-Opt "Prompt chunk" $chunkBox "smaller = more context, slower prompts" -Advanced)
@@ -889,7 +889,7 @@ function Fill-Defaults {
   $actx = Get-AutoCtx $m
   $v = [ordered]@{
     port = $Port; ctx = $(if ($m -and $actx) { "$actx" } else { "auto" })
-    chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
+    chunk = "auto"; drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
     network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $true
@@ -1472,7 +1472,7 @@ function Get-StartArgs([switch]$Speech) {
           $a += @("-Ctx", $v)
         } elseif ($v -eq "auto") { $a += @("-Ctx", "auto") }
       }
-      "chunk" { $a += @("-Chunk", $v) }
+      "chunk" { if ("$v" -match '^\d+$') { $a += @("-Chunk", $v) } }  # (auto: none, the server chooses: a MoE model's 8,192 where it costs nothing, --mtp's smaller ones)
       "drafts" { if ($m.mtp) { $a += @("-MtpDrafts", $v) } }
       "think" { $a += @("-ThinkBudget", [int]$v) }
       "img_min" { if ($m.vision) { $a += @("-ImageMinTokens", [int]$v) } }
@@ -1499,6 +1499,9 @@ function Get-StartArgs([switch]$Speech) {
     }
   }
   foreach ($k in $script:extraArgs.Keys) {
+    # (one already given by a field above, -ListenHost by Network or -Drafter by Drafting: the field's, once;
+    #  PowerShell refuses a parameter given twice, the launcher spec A5)
+    if ($a -contains "-$k") { continue }
     $v = $script:extraArgs[$k]
     if ($v -is [bool]) { if ($v) { $a += "-$k" } } else { $a += @("-$k", $(if ("$v" -match '[\s\\/]') { "`"$v`"" } else { "$v" })) }
   }
@@ -1586,6 +1589,17 @@ function Apply-Preset([string]$name) {
       $c = $fields[$fk]
       $script:over[$fk] = switch ($c.GetType().Name) { "NumericUpDown" { [double]$v } "CheckBox" { [bool]$v } default { "$v" } }
     } elseif ($k -in "DFlash", "Drafter", "DriverReserveGb", "AsrSlots") { $script:extraArgs[$k] = $v }
+    elseif ($k -in "Opt", "NoOpt", "DefaultOpt") {
+      # (a preset's switches by id, as zero-server takes them: -Opt id or id=value, -NoOpt id, -DefaultOpt id; they
+      #  were dropped as unknown, the launcher spec A5, 2026-11-22)
+      foreach ($e in @($v)) {
+        $id, $val = "$e" -split '=', 2
+        if (-not (Get-SwRow $script:catalog $id)) { $unknown += "$k $e"; continue }
+        if ($k -eq "Opt") { $script:optChoice[$id] = $(if ($val) { $val } else { "on" }) }
+        elseif ($k -eq "NoOpt") { $script:optChoice[$id] = "off" }
+        else { $script:optChoice.Remove($id) }
+      }
+    }
     else { $unknown += $k }
   }
   $script:presetName = $name

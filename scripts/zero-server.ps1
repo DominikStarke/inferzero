@@ -1270,7 +1270,14 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 # (the chosen speed / accuracy options: flags here, environment variables just before the server starts; both in the
 #  key, so a changed choice restarts a running server)
 $optFx = Opt-Effect
-$extra += $optFx.flags
+# (-BudgetGb wins over an options.json budget=N: --budget once, the launcher spec A5, 2026-11-22)
+$ofl = @($optFx.flags)
+if ($BudgetGb -gt 0) {
+  $keep = @()
+  for ($q = 0; $q -lt $ofl.Count; $q++) { if ($ofl[$q] -eq "--budget") { $q++; continue }; $keep += $ofl[$q] }
+  $ofl = $keep
+}
+$extra += $ofl
 # -SplitLayer / -TensorSplit (the repair list C10, 2026-11-22): serverz --split layer / --tensor-split; once, also with
 # -Opt split_layer (whose flag is --split layer too)
 if ($TensorSplit -and -not $SplitLayer -and -not ($extra -contains "--split")) { throw "-TensorSplit needs -SplitLayer (a layer split over -Gpus N)" }
