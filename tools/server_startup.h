@@ -8,9 +8,11 @@
 #include <sys/utsname.h>
 extern char** environ;
 #endif
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -142,11 +144,16 @@ inline void print_gpu() {
     LOG_ERR("GPU: none found (Level Zero did not start: is the Intel graphics driver installed?)\n");
   }
 }
-// The speed and accuracy options (scripts/options.tsv, QUEUE O5, 2026-11-21) that are in effect, in words: an env
-// option whose variable is set, a flag option on the command line, however they got there (the launchers, zero-server
-// -Opt, Docker's OPTIONS, by hand). "options: CPU experts: off; Copy drafting; Resident weights (12)". The catalog is
-// found next to the package (bin/../scripts) or in the folder the server runs in; without it, no line
-inline std::string options_in_effect(const std::filesystem::path& exe_dir, const std::vector<std::string>& args) {
+// The launchers' option catalog, scripts/options.tsv: one map a row, by the header's column names (a field the row
+// lacks is empty). Found next to the package (bin/../scripts) or in the folder the server runs in; none: no rows.
+// head: the header's names, to tell an old catalog without a column from an empty field
+struct OptionCatalog {
+  std::vector<std::string> head;
+  std::vector<std::map<std::string, std::string>> rows;
+  bool has(const char* c) const { return std::find(head.begin(), head.end(), c) != head.end(); }
+};
+inline OptionCatalog option_catalog(const std::filesystem::path& exe_dir) {
+  OptionCatalog cat;
   std::ifstream f;
   for (const auto& p : {exe_dir.parent_path() / "scripts" / "options.tsv", exe_dir / "scripts" / "options.tsv",
                         std::filesystem::current_path() / "scripts" / "options.tsv"}) {
@@ -154,7 +161,7 @@ inline std::string options_in_effect(const std::filesystem::path& exe_dir, const
     if (f) break;
     f.clear();
   }
-  if (!f) return "";
+  if (!f) return cat;
   auto split = [](std::string l) {
     if (!l.empty() && l.back() == '\r') l.pop_back();
     std::vector<std::string> v;
@@ -167,21 +174,29 @@ inline std::string options_in_effect(const std::filesystem::path& exe_dir, const
     return v;
   };
   std::string line;
-  if (!std::getline(f, line)) return "";
-  const std::vector<std::string> head = split(line);
-  auto col = [&](const char* n) {
-    for (size_t i = 0; i < head.size(); ++i)
-      if (head[i] == n) return (int)i;
-    return -1;
-  };
-  const int ck = col("kind"), cn = col("name"), con = col("on"), coff = col("off"), ct = col("title");
-  if (ck < 0 || cn < 0 || con < 0 || coff < 0 || ct < 0) return "";
-  std::string out;
-  auto add = [&](const std::string& s) { out += (out.empty() ? "" : "; ") + s; };
+  if (!std::getline(f, line)) return cat;
+  cat.head = split(line);
   while (std::getline(f, line)) {
     const std::vector<std::string> v = split(line);
-    auto at = [&](int i) { return i < (int)v.size() ? v[i] : std::string(); };
-    const std::string kind = at(ck), name = at(cn), on = at(con), off = at(coff), title = at(ct);
+    std::map<std::string, std::string> r;
+    for (size_t i = 0; i < cat.head.size(); ++i) r[cat.head[i]] = i < v.size() ? v[i] : std::string();
+    cat.rows.push_back(std::move(r));
+  }
+  return cat;
+}
+// The speed and accuracy options (scripts/options.tsv, QUEUE O5, 2026-11-21) that are in effect, in words: an env
+// option whose variable is set, a flag option on the command line, however they got there (the launchers, zero-server
+// -Opt, Docker's OPTIONS, by hand). "options: CPU experts: off; Copy drafting; Resident weights (12)". Without the
+// catalog (option_catalog), no line
+inline std::string options_in_effect(const std::filesystem::path& exe_dir, const std::vector<std::string>& args) {
+  const OptionCatalog cat = option_catalog(exe_dir);
+  if (cat.head.empty()) return "";
+  for (const char* c : {"kind", "name", "on", "off", "title"})
+    if (!cat.has(c)) return "";
+  std::string out;
+  auto add = [&](const std::string& s) { out += (out.empty() ? "" : "; ") + s; };
+  for (const auto& r : cat.rows) {
+    const std::string kind = r.at("kind"), name = r.at("name"), on = r.at("on"), off = r.at("off"), title = r.at("title");
     if (name.empty() || title.empty()) continue;
     if (kind == "env") {
       const char* e = getenv(name.c_str());

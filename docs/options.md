@@ -12,6 +12,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Cost:** none (RAM the expert tier already uses).
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** a B60 on PCIe 3.0 x8, Flash Next generation 22.5 -> 27.3-28.2 tok/s; an A770 on x16: no gain; the top token against f32 a little lower than off (a B60: 241 -> 237 of 256).
+- **Works with:** goes with CPU experts exact in precise mode.
 - **More:** [docs/tiered-placement.md](tiered-placement.md), stable.
 
 ## CPU experts exact in precise mode (`ARC_XCPU_Q2=1`)
@@ -23,6 +24,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** KL on 548 chat + 160 code positions 0.00076 / 0.00222 against one pass's 0.00126 / 0.00251; top token 702 against 700 of 708.
 - **Note:** needs xcpu and fn_precise.
+- **Works with:** needs CPU experts; needs Precise mode.
 - **More:** [docs/tiered-placement.md](tiered-placement.md), stable.
 
 ## Decoded weights kept for short prompts (`ARC_140T_RES=1`)
@@ -54,6 +56,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Cost:** slower but more precise.
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** the laptop (no XMX), the 27B on 480 tokens against f32: KL 0.00112 -> 0.00061 (plain 0.00056), top token 467 -> 474 of 480; its 4K prompt 117 -> 62 tok/s.
+- **In the model list:** as a variant of the models it fits, `-precise-prompt`.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
 
 ## Precise mode (`--precise`)
@@ -64,6 +67,8 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Cost:** slower but more exact.
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** KL against f32 under 0.015 (the default mode up to ~0.02 on text work).
+- **Works with:** goes with CPU experts exact in precise mode.
+- **In the model list:** as a variant of the models it fits, `-precise`.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), stable.
 
 ## Resident weights (`--budget <GiB>`)
@@ -85,6 +90,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** the same, bit for bit.
 - **Measured:** 4 Max 1550 stacks: prompt only direct, 512-token prompt 2,137 -> 2,548 tok/s (hibagus, #48).
 - **Note:** not with ARC_TP_OVERLAP.
+- **Works with:** needs `--gpus 2` or more; not with Multi-GPU by layers.
 - **More:** [docs/multi-gpu.md](multi-gpu.md), stable.
 
 ## Copy drafting (`--copy-draft`)
@@ -96,6 +102,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** the same, bit for bit.
 - **Measured:** a code edit on the laptop: the 27B 17.5 -> 22.1 tok/s, the 4B 42.0 -> 58.5; summaries unchanged.
 - **Note:** needs --mtp.
+- **Works with:** needs `--mtp`.
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.
 
 ## Drafts from the common tokens (English and code) (`ARC_MTP_VOCAB=32768`)
@@ -107,6 +114,8 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** the same, bit for bit.
 - **Measured:** the laptop's 4B on a coding prompt 35.9-37.3 -> 44.3-45.8 tok/s, the 27B 10.9 -> 12.6; Indonesian 27.4 -> 28.9; Chinese 31.6 -> 26.7.
 - **Note:** needs --mtp.
+- **Works with:** needs `--mtp`.
+- **In the model list:** as a variant of the models it fits, `-fastdraft`.
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.
 
 ## Kernels sent in lists (`ARC_BATCH=64`)
@@ -138,6 +147,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** the same, bit for bit.
 - **Measured:** bit for bit against one GPU (ARC_TP_SIM, the 4B and 27B, 2 and 3 GPUs); an A770 pair not measured yet.
 - **Note:** needs --gpus 2 or more; Qwen dense only; no --mtp, images, saved prompts or sessions yet.
+- **Works with:** needs `--gpus 2` or more; not with Multi-GPU sums; not with Attention: sparse (on) or full (off).
 - **More:** [docs/multi-gpu.md](multi-gpu.md), experimental.
 
 ## Attention: sparse (on) or full (off) (`ARC_QSA=1`)
@@ -149,4 +159,6 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Output:** slightly different, checked against f32 (KL).
 - **Measured:** the QSA 27B on 480 tokens, 64 keys: sparse against its own sparse f32 reference KL 0.0014, against the full one 0.0184. Flash Next, the last 256 of 3,584 tokens: full against its dense reference 0.00855, sparse against its sparse one 0.00914, the two forms ~0.011 apart. The speed of long prompts not measured yet.
 - **Note:** the QSA 27B or Flash Next; not with --attn-f32 or --split layer (full attention there).
+- **Works with:** not with Multi-GPU by layers.
+- **In the model list:** as a variant of the models it fits, `-sparse`, `-full`.
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.

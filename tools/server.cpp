@@ -981,7 +981,7 @@ int main(int argc, char** argv) {
       int gpus = 1;  // (--gpus N: each context as a split over N GPUs sizes it, a running split server's /props)
       for (int j = 1; j + 1 < argc; ++j)
         if (std::string(argv[j]) == "--gpus") gpus = std::clamp(atoi(argv[j + 1]), 1, 64);
-      return list_models(speech, gpus);
+      return list_models(speech, gpus, std::filesystem::path(argv[0]).parent_path());
     }
   zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;

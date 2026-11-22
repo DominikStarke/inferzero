@@ -20,6 +20,7 @@ struct ModelInfo {
   bool moe = false;  // routed experts (inferzero streams them from the SSD)
   bool precise_only = false;  // (an AutoRound package: Flash Next's precise mode on by itself, Engine::fn_precise)
   bool audio = false;  // the image projector also holds a Gemma 4 audio encoder (loaded with it: vision variants only)
+  bool flashnext = false, qsa = false;  // (Qwen3.8 Flash Next; a trained QSA attention indexer: the catalog's applies words)
   // inferzero, a file with a DFlash2 drafter: 0 both drafters, picked per step (the file's id); 1 the MTP block
   // only (-nodf); 2 DFlash2 only, the MTP block not loaded (-df)
   int draft = 0;
@@ -391,6 +392,8 @@ static std::vector<ModelInfo> scan_models() {
       nextn = g.get_int(m.arch + ".nextn_predict_layers", 0);
       m.moe = g.get_int(m.arch + ".expert_count", 0) > 0;
       m.precise_only = !g.get_str("inferzero.autoround.model", "").empty();
+      m.flashnext = m.arch == "qwen4exp";
+      m.qsa = g.get_int(m.arch + ".attention.indexer.head_count", 0) > 0;  // (a trained attention indexer: the QSA 27B, Flash Next)
     } catch (const std::exception& e) {
       // (a file from before the rename, keyed arcinferzero.*: listed as unsupported, and the log says why)
       static std::mutex told_mu;
@@ -935,7 +938,67 @@ static AutoCtx list_ctx(const std::string& path, const EngineOptions& eo, size_t
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.
 // speech: GPU bytes a running server keeps for speech to text (its /props speech_reserve_bytes, given by
 // --speech-reserve N): kept free as a load does (server_load.h), so each model's ctx is what a switch would give.
-static int list_models(size_t speech = 0, int gpus = 1) {
+// (QUEUE row 15 step 1, 2026-11-22) A list entry's model words for the option catalog's applies column (opts: dense /
+// moe / qsa / flashnext / mtp) and the catalog's variants that fit them (variants: [{suffix, option, value}]): an
+// option whose applies column names model words, one of them this entry's (its PC words are the launchers' to check:
+// they know the PC), each "suffix:value" of its variant column, but not the one whose value is the model's own
+// default (the QSA 27B attends fully unless ARC_QSA=1, Flash Next sparsely unless ARC_QSA=0: so -sparse for the one,
+// -full for the other). Listed inside the entry, not as entries of their own: the server cannot load a variant by name
+// yet (row 15 step 2), so Pi and the launchers' model lists stay as they were
+static void model_options(Json& j, const ModelInfo& m, const srvstart::OptionCatalog& cat) {
+  const bool dense = !m.moe;
+  const std::map<std::string, bool> words = {{"dense", dense}, {"moe", m.moe}, {"qsa", m.qsa}, {"flashnext", m.flashnext},
+                                             {"mtp", m.mtp}};
+  Json o = Json::object();
+  for (const auto& w : words) o.set(w.first, w.second);
+  j.set("opts", o);
+  Json vs = Json::array();
+  auto list = [](const std::string& s) {
+    std::vector<std::string> v;
+    std::string cur;
+    for (char c : s + ";") {
+      if (c == ';') {
+        while (!cur.empty() && cur.front() == ' ') cur.erase(cur.begin());
+        while (!cur.empty() && cur.back() == ' ') cur.pop_back();
+        if (!cur.empty()) v.push_back(cur);
+        cur.clear();
+      } else {
+        cur += c;
+      }
+    }
+    return v;
+  };
+  if (m.supported && cat.has("applies") && cat.has("variant"))
+    for (const auto& r : cat.rows) {
+      const std::vector<std::string> vv = list(r.at("variant"));
+      if (vv.empty()) continue;
+      bool named = false, fits = false;
+      for (const std::string& w : list(r.at("applies"))) {
+        const auto it = words.find(w);
+        if (it == words.end()) continue;  // (a PC's word)
+        named = true;
+        fits = fits || it->second;
+      }
+      if (named && !fits) continue;
+      for (const std::string& e : vv) {
+        const size_t c = e.find(':');
+        if (c == std::string::npos || c == 0) continue;
+        const std::string suffix = e.substr(0, c), value = e.substr(c + 1);
+        if (r.at("id") == "qsa" && value == (m.flashnext ? "1" : "0")) continue;  // (the model's own attention)
+        if (r.at("id") == "fn_precise" && m.precise_only) continue;  // (an AutoRound package: precise already)
+        Json v = Json::object();
+        v.set("suffix", suffix);
+        v.set("option", r.at("id"));
+        v.set("value", value);
+        v.set("alias", m.alias + suffix);  // (the entry's id with the suffix: qwen3.8-27b-mtp-fastdraft)
+        if (!m.shortcut.empty()) v.set("short", m.shortcut + suffix);
+        vs.push(v);
+      }
+    }
+  j.set("variants", vs);
+}
+static int list_models(size_t speech = 0, int gpus = 1, const std::filesystem::path& exe_dir = {}) {
+  const srvstart::OptionCatalog cat = srvstart::option_catalog(exe_dir);
   Json out = Json::array();
   std::map<std::string, std::string> dflash;  // model file -> its DFlash2 drafter (one search per file, not per variant)
   for (const ModelInfo& m : scan_models()) {
@@ -956,6 +1019,7 @@ static int list_models(size_t speech = 0, int gpus = 1) {
     j.set("short", m.shortcut);
     j.set("base", m.base);
     j.set("tags", m.tags);
+    model_options(j, m, cat);
     EngineOptions eo;
     eo.mtp = m.mtp;
     // dflash: a DFlash2 drafter for this model was found (dflash_path); variants with MTP draft with it as well (the

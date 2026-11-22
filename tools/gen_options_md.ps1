@@ -39,6 +39,20 @@ foreach ($d in $rows) {
   $md.Add("- **Output:** " + $(if ($d.output -eq "same") { "the same, bit for bit" } else { "slightly different, checked against f32 (KL)" }) + ".")
   $md.Add("- **Measured:** " + $d.measured + ".")
   if ($d.conflicts) { $md.Add("- **Note:** " + $d.conflicts + ".") }
+  # (row 15 step 1: the relates column in words, and the model-list variant; the tip is the launchers' tooltip)
+  if ($d.relates) {
+    $parts = foreach ($e in ($d.relates -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+      $k, $to = $e -split ':', 2
+      $what = if ($to -eq "mtp") { "``--mtp``" } elseif ($to -eq "gpus2") { "``--gpus 2`` or more" } else {
+        $t = @($rows | Where-Object { $_.id -eq $to })[0]; if ($t) { $t.title } else { $to } }
+      switch ($k) { "needs" { "needs $what" } "has" { "goes with $what" } "not" { "not with $what" } "or" { "instead of $what" } }
+    }
+    $md.Add("- **Works with:** " + ($parts -join "; ") + ".")
+  }
+  if ($d.variant) {
+    $vs = ($d.variant -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { "``" + ($_ -split ':', 2)[0] + "``" }) -join ", "
+    $md.Add("- **In the model list:** as a variant of the models it fits, " + $vs + ".")
+  }
   $md.Add("- **More:** [" + $d.docs + "](" + $link + "), " + $d.status + "."); $md.Add("")
 }
 [IO.File]::WriteAllText((Join-Path $root "docs\options.md"), ($md -join "`n"), $utf8)

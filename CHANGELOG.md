@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-22: the option catalog for the new launchers (QUEUE row 15, step 1)
+
+- **`scripts/options.tsv` has four new columns,** the data the redesigned launchers will be built on:
+  - `tip`: two or three plain sentences for a tooltip;
+  - `relates`: what an option needs, goes with, can't be combined with, or replaces (`needs:` / `has:` / `not:` /
+    `or:`), for example Copy drafting needs `--mtp`;
+  - `applies`: the models (dense, MoE, QSA, Flash Next, MTP) and PCs an option fits;
+  - `variant`: how it shows in the model list, for example `-precise` for Flash Next's precise mode, `-sparse` /
+    `-full` for the attention, `-fastdraft` for MTP drafts from the common tokens.
+- **`serverz --list-models`:** each entry now has `opts`, its model words, and `variants`, the options that fit it
+  under their own ids (`qwen3.8-27b-mtp-fastdraft`). They sit inside the entry, so Pi's model list and the launchers
+  are unchanged. The server can't load a variant by name yet; that's the next step.
+- **`tests/test_launcher_options.ps1`** checks the catalog: every tip, every word, and the relations both ways.
+- **`docs/options.md`** says what each option works with and how it shows in the model list.
+
 ## 2026-11-22: `bench/stray_words.ps1` counts Simplified Chinese characters in Japanese answers
 
 - **A new count, `simp`:** Simplified Chinese characters that Japanese text can't hold. These are the characters not in
