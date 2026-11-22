@@ -51,6 +51,16 @@ param(
   [switch]$Fast,
   [switch]$SplitLayer,
   [string]$TensorSplit = "",
+  [double]$ExpertRamGb = -1,
+  [double]$ExpertCacheGb = 0,
+  [double]$ExpertCachePct = 0,
+  [string]$MtpModel = "",
+  [string]$Mmproj = "",
+  [string]$Alias = "",
+  [switch]$NoWebTools,
+  [switch]$NoTerminal,
+  [string]$LogFile = "",
+  [string]$LogVerbosity = "",
   [string]$Whisper = "",
   [string]$WhisperDevice = "",
   [string]$Asr = "",
@@ -212,7 +222,8 @@ function Get-StateFlags($s) { if ($s) { "$($s.extra)" -replace '"[^"]*"', '""' }
 # an option given on the command line wins over the preset's.
 $presetDir = Join-Path $stateDir "presets"
 $presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
-  "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb",
+  "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "LogFile", "LogVerbosity", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
   "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
 function Preset-Path([string]$n) {
@@ -555,6 +566,13 @@ Options for start / restart:
                                  B65 / B580) or 3 (B70 and others); 7 with DFlash2; Qwen MoE 5; 4B and Flash Next 3;
                                  9B 2; Gemma 4's drafter 3)
   -DriverReserveGb <N>           GPU memory left to the driver, GiB (default 0.5; 0 to 8)
+  -ExpertRamGb <N>               a MoE model's experts kept in RAM, GiB (default: automatic; 0 = none)
+  -ExpertCacheGb <N> / -ExpertCachePct <P>   the experts' cache on the GPU, GiB or % of them (default: what fits)
+  -MtpModel <file>               an MTP head in a .gguf of its own (Flash Next's mtp-*.gguf)
+  -Mmproj <file>                 the image projector, when it is not the one next to the model
+  -Alias <name>                  the model's id in the API (default: the list's)
+  -NoWebTools / -NoTerminal      the web UI without its web tools / its terminal
+  -LogFile <file> / -LogVerbosity error|warn|info|debug   the server's log (docs/logging.md)
   -DFlash <folder>|off           a DFlash2 drafter of your own: its snapshot folder (with config.json and
                                  model.safetensors), e.g. for a fine-tuned variant the model list does not
                                  pair with one; off: no drafter. It stays with the server: a model
@@ -1267,6 +1285,19 @@ if ($NoSwap) { $extra += "--no-swap" }
 if ($ListenHost) { $extra += @("--host", $ListenHost) }
 if ($SessionDir) { $extra += @("--session-dir", "`"$SessionDir`"") }
 if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with the SSD cache is restarted without it)
+# (serverz options the launchers had no field for, the launcher spec A1, 2026-11-22: experts, files, logging)
+if ($ExpertRamGb -ge 0) { $extra += @("--expert-ram-gb", $ExpertRamGb.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+if ($ExpertCacheGb -gt 0) { $extra += @("--expert-cache-gb", $ExpertCacheGb.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+elseif ($ExpertCachePct -gt 0) { $extra += @("--expert-cache-pct", $ExpertCachePct.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+foreach ($fp in @(@("MtpModel", $MtpModel, "--mtp-model"), @("Mmproj", $Mmproj, "--mmproj"), @("LogFile", $LogFile, "--log-file"))) {
+  if (-not $fp[1]) { continue }
+  # (absolute: the server starts in the inferzero folder; a log file need not exist yet, its folder must)
+  $fv = $(if ($fp[0] -eq "LogFile") { [IO.Path]::GetFullPath($fp[1]) } elseif (Test-Path -LiteralPath $fp[1] -PathType Leaf) { (Resolve-Path -LiteralPath $fp[1]).Path } else { throw "-$($fp[0]): no file $($fp[1])" })
+  $extra += @($fp[2], "`"$fv`"")
+}
+if ($NoWebTools) { $extra += "--no-web-tools" }
+if ($NoTerminal) { $extra += "--no-terminal" }
+if ($LogVerbosity) { $extra += @("--log-verbosity", $LogVerbosity) }
 # (the chosen speed / accuracy options: flags here, environment variables just before the server starts; both in the
 #  key, so a changed choice restarts a running server)
 $optFx = Opt-Effect
@@ -1287,7 +1318,8 @@ if ($TensorSplit) { $extra += @("--tensor-split", $TensorSplit) }
 $extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb", "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal",
+  "LogFile", "LogVerbosity" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and
@@ -1297,7 +1329,7 @@ $useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant with
 # (Start-Process joins its arguments with spaces and quotes none: every value that can hold a space is quoted here,
 #  as the model's path already was; an alias or a drafter path with a space split in two, audit 2026-11-12 #13)
 function Quote-Arg($x) { '"' + ([string]$x).Replace('"', '') + '"' }
-$srvArgs = @("-m", (Quote-Arg $m.path), "--port", $Port, "--ctx", $ctxArg, "--alias", (Quote-Arg $m.alias), "--think-budget", $ThinkBudget) + $extra
+$srvArgs = @("-m", (Quote-Arg $m.path), "--port", $Port, "--ctx", $ctxArg, "--alias", (Quote-Arg $(if ($Alias) { $Alias } else { $m.alias })), "--think-budget", $ThinkBudget) + $extra
 if ($useMtp) { $srvArgs += "--mtp" }
 $draftArg = $(if ($script:draftPick) { $script:draftPick } else { "$($m.draft)" })
 if ($useMtp -and $draftArg -and $draftArg -ne "auto") { $srvArgs += @("--draft", (Quote-Arg $draftArg)) }  # (-nodf: MTP block only, -df: DFlash2 only)

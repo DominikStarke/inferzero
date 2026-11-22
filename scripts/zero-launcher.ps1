@@ -361,6 +361,19 @@ $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
 $whDevBox = New-Combo @("gpu", "npu") 60
 $whMaxBox = New-Num 1 600 180 0 70  # (serverz clamps to 1..600)
+# (serverz options the launcher had no field for, the launcher spec A1, 2026-11-22; each passed only when changed)
+$hostBox = New-Text 120
+$xramBox = New-Num -1 1024 -1 0 70
+$xcacheBox = New-Num 0 512 0 1 70
+$drvBox = New-Num 0 8 0.5 1 60
+$asrSlotsBox = New-Num 1 4 1 0 60
+$mtpModelBox = New-Text 170
+$mmprojBox = New-Text 170
+$aliasBox = New-Text 120
+$logFileBox = New-Text 170
+$logVBox = New-Combo @("info", "warn", "error", "debug") 70
+$noWebChk = New-Check "no web tools in the web UI"
+$noTermChk = New-Check "no terminal in the web UI"
 
 $opt = New-Object System.Windows.Forms.TableLayoutPanel
 $opt.Dock = "Fill"; $opt.ColumnCount = 2; $opt.AutoScroll = $true
@@ -589,12 +602,24 @@ Update-Api
 [void](Add-Opt "" $noSwapChk -Advanced)
 [void](Add-Opt "" $noStreamChk -Advanced)
 [void](Add-Opt "" $keepThinkChk -Advanced)
+[void](Add-Opt "Listen address" $hostBox "any address of this PC (Network above: all of them)" -Advanced)
+[void](Add-Opt "Experts in RAM (GB)" $xramBox "MoE: -1 = automatic, 0 = none" -Advanced)
+[void](Add-Opt "Experts on the GPU (GB)" $xcacheBox "MoE: 0 = what fits" -Advanced)
+[void](Add-Opt "GPU memory left to the driver (GB)" $drvBox -Advanced)
+[void](Add-Opt "MTP head file" $mtpModelBox "a .gguf of its own (Flash Next's mtp-*.gguf)" -Advanced)
+[void](Add-Opt "Image projector file" $mmprojBox "when it is not the one next to the model" -Advanced)
+[void](Add-Opt "Model id in the API" $aliasBox "empty = the list's" -Advanced)
+[void](Add-Opt "Log file" $logFileBox -Advanced)
+[void](Add-Opt "Log detail" $logVBox -Advanced)
+[void](Add-Opt "" $noWebChk -Advanced)
+[void](Add-Opt "" $noTermChk -Advanced)
 # ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
 Add-Span (New-Head "Speech to text") -Advanced
 [void](Add-Opt "Whisper" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart" -Advanced)
 [void](Add-Opt "Qwen3-ASR" $asrBox "auto | off (Whisper alone) | a .gguf file" -Advanced)
 [void](Add-Opt "Whisper encoder on" $whDevBox -Advanced)
 [void](Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced)
+[void](Add-Opt "Speech requests at once" $asrSlotsBox -Advanced)
 # (f32 attention: a test switch, out of the window since 2026-11-19 (launcher review); a preset that sets it still does.
 #  No MTP, Images and Precise mode are the Drafting, Images and Precise mode switches above)
 foreach ($tp in @(@($noSwapChk, "zero-server -NoSwap (serverz --no-swap)"), @($noStreamChk, "zero-server -NoStream (serverz --no-stream)"),
@@ -628,7 +653,7 @@ Show-Advanced $false
 
 # overrides: field name -> value the user set (passed on by Start, saved by Set as default / a preset)
 $script:over = @{}
-# a preset's options the window has no field for (-DFlash, -Drafter, -DriverReserveGb, -AsrSlots): passed on by Start
+# a preset's options the window has no field for (-DFlash, -Drafter): passed on by Start
 $script:extraArgs = [ordered]@{}
 $script:filling = $false
 $fields = [ordered]@{
@@ -637,6 +662,9 @@ $fields = [ordered]@{
   prefix_cache = $prefixBox; no_prefix = $noPrefixChk; no_swap = $noSwapChk; network = $netChk; attn_f32 = $f32Chk
   no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; gpus = $gpusBox; npu = $npuBox; no_stream = $noStreamChk; precise = $preciseChk
   preserve_think = $keepThinkChk; whisper = $whisperBox; asr = $asrBox; whisper_device = $whDevBox; whisper_max = $whMaxBox
+  host = $hostBox; expert_ram = $xramBox; expert_cache = $xcacheBox; driver_reserve = $drvBox; asr_slots = $asrSlotsBox
+  mtp_model = $mtpModelBox; mmproj = $mmprojBox; alias = $aliasBox; log_file = $logFileBox; log_v = $logVBox
+  no_web = $noWebChk; no_term = $noTermChk
 }
 function Get-Field($k) {
   $c = $fields[$k]
@@ -894,6 +922,8 @@ function Fill-Defaults {
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
     network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $true
     preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
+    host = ""; expert_ram = -1; expert_cache = 0; driver_reserve = 0.5; asr_slots = 1; mtp_model = ""; mmproj = ""; alias = ""
+    log_file = ""; log_v = "info"; no_web = $false; no_term = $false
   }
   foreach ($k in $fields.Keys) {
     Put-Field $k $(if ($script:over.ContainsKey($k)) { $script:over[$k] } else { $v[$k] })
@@ -1484,6 +1514,18 @@ function Get-StartArgs([switch]$Speech) {
       "no_prefix" { if ($v) { $a += "-NoPrefixCache" } }
       "no_swap" { if ($v) { $a += "-NoSwap" } }
       "network" { if ($v) { $a += @("-ListenHost", "0.0.0.0") } }
+      "host" { if ($v -and -not ($a -contains "-ListenHost")) { $a += @("-ListenHost", "$v") } }  # (Network on wins: 0.0.0.0)
+      "expert_ram" { if ($m.moe) { $a += @("-ExpertRamGb", ([double]$v).ToString([Globalization.CultureInfo]::InvariantCulture)) } }
+      "expert_cache" { if ($m.moe -and [double]$v -gt 0) { $a += @("-ExpertCacheGb", ([double]$v).ToString([Globalization.CultureInfo]::InvariantCulture)) } }
+      "driver_reserve" { $a += @("-DriverReserveGb", ([double]$v).ToString([Globalization.CultureInfo]::InvariantCulture)) }
+      "asr_slots" { $a += @("-AsrSlots", [int]$v) }
+      "mtp_model" { if ($v) { $a += @("-MtpModel", "`"$v`"") } }
+      "mmproj" { if ($v) { $a += @("-Mmproj", "`"$v`"") } }
+      "alias" { if ($v) { $a += @("-Alias", "$v") } }
+      "log_file" { if ($v) { $a += @("-LogFile", "`"$v`"") } }
+      "log_v" { $a += @("-LogVerbosity", "$v") }
+      "no_web" { if ($v) { $a += "-NoWebTools" } }
+      "no_term" { if ($v) { $a += "-NoTerminal" } }
       "attn_f32" { if ($v) { $a += "-AttnF32" } }
       # (no_mtp and vision: the Drafting and Images switches above; a preset's NoMtp / Vision set them)
       "slots" { $a += @("-Slots", [int]$v) }
@@ -1559,7 +1601,10 @@ $paramToField = [ordered]@{ Ctx = "ctx"; Chunk = "chunk"; MtpDrafts = "drafts"; 
   ImageMaxTokens = "img_max"; BudgetGb = "budget"; SessionCacheGb = "prompt_cache"; SessionDir = "prompt_cache_dir"
   PrefixCacheGb = "prefix_cache"; NoPrefixCache = "no_prefix"; NoSwap = "no_swap"; AttnF32 = "attn_f32"; NoMtp = "no_mtp"
   Vision = "vision"; Slots = "slots"; Gpus = "gpus"; Npu = "npu"; NoStream = "no_stream"; PreserveThinking = "preserve_think"
-  Whisper = "whisper"; Asr = "asr"; WhisperDevice = "whisper_device"; WhisperMaxMinutes = "whisper_max"; Port = "port" }
+  Whisper = "whisper"; Asr = "asr"; WhisperDevice = "whisper_device"; WhisperMaxMinutes = "whisper_max"; Port = "port"
+  ExpertRamGb = "expert_ram"; ExpertCacheGb = "expert_cache"; DriverReserveGb = "driver_reserve"; AsrSlots = "asr_slots"
+  MtpModel = "mtp_model"; Mmproj = "mmproj"; Alias = "alias"; LogFile = "log_file"; LogVerbosity = "log_v"; NoWebTools = "no_web"
+  NoTerminal = "no_term" }
 $script:presetName = ""
 $script:presetFilling = $false
 function Load-PresetList([string]$select = "") {
@@ -1581,14 +1626,14 @@ function Apply-Preset([string]$name) {
   foreach ($p in $o.PSObject.Properties) {
     $k = $p.Name; $v = $p.Value
     if ($k -eq "Model") { $model = "$v"; continue }
-    if ($k -eq "ListenHost") { if ("$v" -eq "0.0.0.0") { $script:over["network"] = $true } else { $script:extraArgs["ListenHost"] = "$v" }; continue }
+    if ($k -eq "ListenHost") { if ("$v" -eq "0.0.0.0") { $script:over["network"] = $true } else { $script:over["host"] = "$v" }; continue }
     if ($k -eq "Precise") { $script:over["precise"] = [bool]$v; continue }
     if ($k -in "NoPrecise", "Fast") { if ($v) { $script:over["precise"] = $false }; continue }
     $fk = $null; foreach ($pk in $paramToField.Keys) { if ($pk -eq $k) { $fk = $paramToField[$pk] } }
     if ($fk) {
       $c = $fields[$fk]
       $script:over[$fk] = switch ($c.GetType().Name) { "NumericUpDown" { [double]$v } "CheckBox" { [bool]$v } default { "$v" } }
-    } elseif ($k -in "DFlash", "Drafter", "DriverReserveGb", "AsrSlots") { $script:extraArgs[$k] = $v }
+    } elseif ($k -in "DFlash", "Drafter") { $script:extraArgs[$k] = $v }
     elseif ($k -in "Opt", "NoOpt", "DefaultOpt") {
       # (a preset's switches by id, as zero-server takes them: -Opt id or id=value, -NoOpt id, -DefaultOpt id; they
       #  were dropped as unknown, the launcher spec A5, 2026-11-22)
