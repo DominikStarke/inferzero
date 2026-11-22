@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-11-22: repairs of options that disagreed or clashed; the 35B's 8,192-token chunk
+
+- **The 35B-A3B (a standard MoE model) reads prompts in chunks of 8,192 tokens** under `--ctx auto`, where that
+  keeps the same context and every expert the GPU held at 4,096 (the user's request).
+  - The logits are byte for byte the same at 4,096, 8,192 and 16,384.
+  - Speed: a B390 with every expert on the GPU, 16K prompt 1,362-1,411 -> 1,659 tok/s; the laptop +4 %.
+  - Where 8,192 would take context or expert cache it stays at 4,096: the laptop's 131,072-token context, for one.
+    `ARC_MOE_BIG_CHUNK=1` tries 16,384 first, by the same rule (before, it could cut the context to 32K or take
+    expert cache without a word); `=0` keeps 4,096.
+- **The model list shows the chunk and drafts the server uses:** it said "MoE 8192" while the server ran 4,096,
+  counted Flash Next as MoE (5 drafts, not 3), and showed the 27B's 7 drafts on every card (4 on Alchemist and the
+  B60 / B65 / B580, 3 on the B70). The three help pages say the same rules now.
+- **Options win over their variables:** `--expert-ram-gb` over `ARC_XRAM_GB`, `--expert-cache-gb` /
+  `--expert-cache-pct` over `ARC_XCACHE_GB`, as `--npu` and `--precise` already did.
+- **The DFlash2 drafter is kept where a smaller prompt chunk makes room for it:** with `--dflash auto` it was
+  dropped before the smaller chunks were tried, so a 16 GB card lost it.
+- **The RAM tier on smaller machines (#80):** half the free RAM, leaving at least 4 GiB, where that is more than the
+  free RAM less 16 GiB. A 32 GB machine had none. The experts the GPU's cache holds are no longer copied into the
+  tier unless the tier alone holds them all, so it keeps room for the others.
+- **runz's bandwidth line** ("N % of this GPU's measured X GB/s") no longer measures system memory on a nearly full
+  card (a B580 with the 35B read "1326 % of 14 GB/s"): its test buffer is sized by the room left, or the figure is
+  left out.
+- **zero-server:**
+  - `-SplitLayer` and `-TensorSplit a,b` (serverz `--split layer` / `--tensor-split`);
+  - `-Model` takes a model's variant by its id or shortcut (`flash-fast`, `27b-precise-prompt`);
+  - presets can hold `-Opt` / `-NoOpt` / `-DefaultOpt`.
+- **zero-pi:**
+  - `--port`, passed to zero-server; Pi's model list now follows the server's port;
+  - variant shortcuts (`zero-pi flash-fast`);
+  - `--vision` without a value says so.
+- **Help pages:** what a split takes (Gemma 4 runs on one GPU; the layer split takes Qwen dense and standard MoE;
+  no drafting, images or saved conversations on a split yet), the shortcuts 35b-m / flash-ar4 / g31, and
+  `-BudgetGb`'s default.
+
 ## 2026-11-22: a 32 x 48 GEMM tile for the A770, opt-in
 
 - **`ARC_GEMM_XW_SLM_TILE=32x48 ARC_GEMM_XW_SLM_WG=8,4`:** the prompt GEMMs on Alchemist in 32 x 48 tiles, a

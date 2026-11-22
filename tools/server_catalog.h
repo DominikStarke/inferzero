@@ -591,11 +591,16 @@ static std::string find_dflash(const std::string& model) {
 // the driver adds and ~0.95 GiB for the desktop and other apps fit the device's global memory. A dry load (the
 // engine adds up its allocations without making them: seconds, no GPU memory) gives what does not depend on the
 // context; the result is remembered per model file, chunk size, MTP setting and device memory in %USERPROFILE%\.inferzero\ctx-auto.txt.
+// (and GPU 0's kind for the catalog's copies of the engine's per-GPU defaults: 8-lane sub-groups, XMX)
+static bool g_dev_sg8 = false, g_dev_xmx = false;
 static uint64_t device_global_mem() {
   static uint64_t dev = 0;
   if (!dev) {
     ClRt rt;
-    if (rt.init(false)) clGetDeviceInfo(rt.device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(dev), &dev, nullptr);
+    if (rt.init(false)) {
+      clGetDeviceInfo(rt.device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(dev), &dev, nullptr);
+      g_dev_sg8 = rt.sg8, g_dev_xmx = rt.xmx;
+    }
     if (rt.queue) clReleaseCommandQueue(rt.queue);
     if (rt.ctx) clReleaseContext(rt.ctx);
     // (ARC_GPU_MEM_GB: as Engine::device_mem counts it, so a capped figure is remembered apart)
@@ -603,6 +608,15 @@ static uint64_t device_global_mem() {
     if (cap > 0) dev = std::min<uint64_t>(dev, (uint64_t)(cap * 1073741824.0));
   }
   return dev;
+}
+// whether GPU 0 is an integrated GPU (after device_global_mem's start of the runtime), for the catalog's copy of the
+// engine's chunk rules
+static bool device_integrated() {
+  static const int v = [] {
+    device_global_mem();
+    return zrt::integrated() ? 1 : 0;
+  }();
+  return v == 1;
 }
 static std::string ctx_cache_file() {
   return app_dir() + ARC_DATA "ctx-auto.txt";
@@ -673,6 +687,7 @@ struct AutoCtx {
   bool resident = false;
   double dev = 0, keep = 0, snap = 0, reserve = 0, weights = 0, mtp = 0, buffers = 0, context = 0, per_1k = 0;
   double host_gb = 0;  // (weights the probe put in host memory, Engine::plan_tight: the load puts the same; not cached)
+  int chunk = 0;  // (the prompt chunk a choice below took, mtp_trade_chunk / moe_grow_chunk; 0: the engine's default)
 };
 static bool cached_ctx(const std::string& key, AutoCtx& r) {
   std::ifstream f(ctx_cache_file());
@@ -898,7 +913,7 @@ static AutoCtx mtp_trade_chunk(EngineOptions& eo, AutoCtx a, Probe probe, bool s
     }
     if (b.ctx > a.ctx) {
       a = b;
-      eo.chunk = ch;
+      eo.chunk = a.chunk = ch;
     }
     if (a.ctx >= kMtpCtxWant) break;
   }
@@ -908,16 +923,21 @@ static AutoCtx mtp_trade_chunk(EngineOptions& eo, AutoCtx a, Probe probe, bool s
                   from > 0 ? std::to_string(from).c_str() : "none");
   return a;
 }
-// ARC_MOE_BIG_CHUNK=1 (2026-11-22, opt-in; QUEUE "The B390's 35B prompt above OpenVINO's", O2): --ctx auto on a
-// standard MoE model (qwen35moe, its experts in GGUF types, not GSQ) takes prompt chunks of 16,384 or 8,192 tokens
-// instead of the default 4,096 where they fit, so its prompt decodes every expert to W8 a quarter or half as often
-// (decode + the XMX GEMM from 1,152 tokens a chunk: at 4,096 the decode was 36 % of a B390's 16K prompt). Fits: the
-// context stays what 4,096 gave, or at least kMtpCtxWant. A B390's 35B UD-Q4_K_M (cjm801, #75, Windows, .22.08), pp16384:
-// 1,166 tok/s at 4,096, 1,342 at 8,192, 1,714 at 16,384 (+47 %, against OpenVINO's ~1,453). Opt-in until the logits
-// are shown the same at each chunk on that model (the dense 27B's are, at 1,024 / 2,048 / 4,096)
+// A standard MoE model (qwen35moe, its experts in GGUF types, not GSQ) under --ctx auto: prompt chunks of 8,192
+// tokens instead of the engine's 4,096 where they cost nothing, so its prompt decodes every expert to W8 half as often
+// (decode + the XMX GEMM from 1,152 tokens a chunk: at 4,096 the decode was 36 % of a B390's 16K prompt). The default
+// since 2026-11-22 (the user: "set --chunk of 35B to 8192"): the 35B's logits byte for byte the same at 4,096 / 8,192
+// / 16,384 (the laptop, 10,752 tokens, 4604C1913CE17557); a B390 with every expert on the GPU, 16K prompt 1,362-1,411
+// -> 1,659 tok/s (kludged, #74); the laptop's 35B IQ4_XS, 10,752 tokens, 664.5 / 669.8 -> 695.8 / 698.2. "Cost
+// nothing": the same context as 4,096 gave and the same weights on the GPU: 16,384 kept the laptop's 131,072 tokens
+// but took 2.5 GB of its expert cache. ARC_MOE_BIG_CHUNK=1: 16,384 first (cjm801's B390, #75: 1,166 -> 1,714 tok/s at
+// 16K), =0: off (4,096)
+static int moe_big_chunk_env() {
+  static const int v = getenv("ARC_MOE_BIG_CHUNK") ? atoi(getenv("ARC_MOE_BIG_CHUNK")) : -1;
+  return v;
+}
 static bool moe_big_chunk_model(const std::string& model) {
-  static const bool on = getenv("ARC_MOE_BIG_CHUNK") && atoi(getenv("ARC_MOE_BIG_CHUNK")) != 0;
-  if (!on) return false;
+  if (moe_big_chunk_env() == 0) return false;
   try {
     const GgufFile g(model);
     return g.get_str("general.architecture", "") == "qwen35moe" && g.get_str("inferzero.expert_format", "") != "gsq2-v1";
@@ -928,8 +948,8 @@ static bool moe_big_chunk_model(const std::string& model) {
 template <class Probe>
 static AutoCtx moe_grow_chunk(const std::string& model, EngineOptions& eo, AutoCtx a, Probe probe, bool say) {
   if (eo.chunk != 0 || a.ctx <= 0 || !moe_big_chunk_model(model)) return a;
-  const int want = std::min(a.ctx, kMtpCtxWant);
   for (int ch : {16384, 8192}) {
+    if (ch == 16384 && moe_big_chunk_env() != 1) continue;
     EngineOptions e2 = eo;
     e2.chunk = ch;
     AutoCtx b;
@@ -938,11 +958,13 @@ static AutoCtx moe_grow_chunk(const std::string& model, EngineOptions& eo, AutoC
     } catch (const std::exception&) {
       continue;
     }
-    if (b.ctx < want) continue;
+    // (no context and no GPU weights given up for it: before 2026-11-22 a context down to 32K was accepted, so a
+    //  200K one could fall that far without a word; the repair list, B5)
+    if (b.ctx < a.ctx || b.weights + 1.0 < a.weights) continue;
     if (say)
-      zlog::eprintf("--ctx auto: a MoE model, prompt chunks of %d tokens instead of the default (ARC_MOE_BIG_CHUNK), "
-                    "%d tokens of context (%d at the default chunk)\n", ch, b.ctx, a.ctx);
-    eo.chunk = ch;
+      zlog::eprintf("--ctx auto: a MoE model, prompt chunks of %d tokens instead of 4,096 (the same %d tokens of context "
+                    "and weights on the GPU; ARC_MOE_BIG_CHUNK=0: 4,096)\n", ch, b.ctx);
+    eo.chunk = b.chunk = ch;
     return b;
   }
   return a;
@@ -1160,12 +1182,27 @@ static int list_models(size_t speech = 0, int gpus = 1, const std::filesystem::p
           break;
         }
       }
-      // (the engine's default: streamed experts 8192, Flash Next 2048, resident decoded weights 512)
-      // (as the engine; a dense model with weights in host memory, Engine::plan_tight, takes 1024: audit 2026-11-16)
-      int chunk = m.arch == "qwen4exp" || (gemma && moe) ? 2048 : moe ? 8192 : a.host_gb > 0 ? 1024 : a.resident ? 512 : 4096;
+      // (what the server runs: the chunk --ctx auto chose (a smaller one for --mtp's context, a MoE model's 8,192),
+      //  else the engine's default (zero/engine.h max_chunk): Gemma 4's MoE 2,048; Flash Next 4,096 on a split or a
+      //  GPU of 20 GiB or more (an iGPU's 15), else 2,048; MoE 4,096; a dense model with weights in host memory 1,024;
+      //  resident decoded weights 512 on an iGPU or a card below 11 GiB, else 4,096. The repair list A1, 2026-11-22:
+      //  this said "MoE 8192" while the server ran 4,096)
+      const uint64_t gm = device_global_mem();
+      const bool igpu = device_integrated();
+      const bool fn_4k = gpus > 1 || gm >= (igpu ? (15ull << 30) : (20ull << 30)), res_long = !igpu && gm >= (11ull << 30);
+      int chunk = a.chunk > 0 ? a.chunk : gemma && moe ? 2048 : m.arch == "qwen4exp" ? (fn_4k ? 4096 : 2048) : moe ? 4096
+                  : a.host_gb > 0 ? 1024 : a.resident && !res_long ? 512 : 4096;
       if (gemma && m.vision) chunk = std::max(chunk, 2048);  // (an image is one chunk)
       d.set("chunk", chunk);
-      d.set("mtp_drafts", !m.mtp ? 0 : !eo.dflash.empty() ? 7 : gemma ? (moe ? 3 : 2) : moe ? 5 : n_embd >= 5120 ? 7 : n_embd <= 2560 ? 3 : 2);
+      // (the engine's: zero/engine_drafters.h mtp_block_drafts, Flash Next 3; zero/xe2/engine_xe2.h xe2_mtp_drafts, a
+      //  7 on a discrete XMX card: 4 on Alchemist and cards of 1,280 threads or fewer (B60 / B65 / B580), 3 on the
+      //  others (the B70); a DFlash2 drafter 7. The repair list A2, 2026-11-22: Flash Next was counted as MoE (5) and
+      //  the 27B's 7 shown on every card)
+      int drafts = !m.mtp ? 0 : !eo.dflash.empty() ? 7 : gemma ? (moe ? 3 : 2) : m.flashnext ? 3 : moe ? 5
+                   : n_embd >= 5120 ? 7 : n_embd <= 2560 ? 3 : 2;
+      if (drafts == 7 && eo.dflash.empty() && !igpu && g_dev_xmx)
+        drafts = g_dev_sg8 || (zrt::hw_threads() > 0 && zrt::hw_threads() <= 1280) ? 4 : 3;
+      d.set("mtp_drafts", drafts);
       d.set("image_min", !m.vision ? 0 : gemma ? 1120 : 256);
       d.set("image_max", !m.vision ? 0 : pt == "gemma4v" ? 1120 : 2048);
       d.set("think_budget", 8192);

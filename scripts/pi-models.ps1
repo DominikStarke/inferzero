@@ -21,6 +21,9 @@ function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId =
   if (-not $cfg.providers.PSObject.Properties["inferzero"]) {
     $cfg.providers | Add-Member inferzero ([pscustomobject]@{ baseUrl = "$Base/v1"; api = "openai-completions"; apiKey = "inferzero"; models = @() })
   }
+  # (the server's address each time: a server on another port, zero-server / zero-pi -Port, is the one Pi talks to;
+  #  it was set only when the entry was made, so Pi kept 8090. The repair list C8, 2026-11-22)
+  $cfg.providers.inferzero.baseUrl = "$Base/v1"
   $list = New-Object System.Collections.Generic.List[object]
   # several files of one repository (e.g. Qwen3.6 35B UD-Q3_K_M and UD-Q3_K_S): the file name tells them apart in /model
   # (every variant of a file shares its name: count distinct files)

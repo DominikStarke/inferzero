@@ -225,6 +225,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     cl_kernel k = cl_.kernel(p, "rd_block"), ks = cl_.kernel(p, "rd_strip");
     // (1 GiB where the GPU has room for it: at 560 GB/s a 256 MB read is ~0.5 ms, near a Windows launch's own cost)
     size_t bytes = zrt::D().global_mem >= (8ull << 30) ? (size_t)1 << 30 : (size_t)256 << 20;
+    // (by the room the model leaves, 2026-11-22: a nearly full card's 1 GiB buffer was placed in system memory without
+    //  an error and timed PCIe's speed, "1326 % of this GPU's measured 14 GB/s" on a B580 with the 35B (#80; 450 GB/s
+    //  with the 9B). Room for it and 512 MB besides, else 256 MB, else no figure)
+    const uint64_t room = zrt::D().global_mem > gpu_bytes ? zrt::D().global_mem - gpu_bytes : 0, margin = 512ull << 20;
+    if (room < bytes + margin) bytes = (size_t)256 << 20;
+    if (room < bytes + margin) throw std::runtime_error("read_gbs: no room for its buffer next to the model");
     // (an allocation that fails throws here instead of ending the process: a GPU share nearly full of a model left
     //  runz exiting instead of printing without the "% of" figure; its caller catches it. Audit 2026-11-12)
     cl_mem b = nullptr, o = nullptr;

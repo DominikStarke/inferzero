@@ -37,8 +37,9 @@
     if (tp_moe()) xc_->set_range((int)tpe_.first, (int)tpe_.second);  // (multi-GPU: this GPU's experts only)
     if (xc_->st.built)
       zlog::eprintf("inferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
-    // (ARC_XRAM_GB overrides the option)
-    const double ram_gb = getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : opt.expert_ram_gb;
+    // (--expert-ram-gb when given, else ARC_XRAM_GB, else automatic: the option wins since 2026-11-22, as --npu and
+    //  --precise do over their variables; the variable overrode it before, the repair list A3)
+    const double ram_gb = opt.expert_ram_gb >= 0 ? opt.expert_ram_gb : getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : -1.0;
     uint64_t ram = 0;
     if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
@@ -55,8 +56,13 @@
                      cap = std::min<uint64_t>(32ull << 30, (128ull << 30) / std::max(1, opt.tp_size));
       ram = avail > keep ? std::min<uint64_t>(cap, (avail - keep) / 2 / std::max(1, opt.tp_size)) : 0;
     } else if (ram_gb < 0 && !zrt::integrated()) {
-      const uint64_t keep = 16ull << 30, avail = plat::ram_available();
-      ram = avail > keep ? (avail - keep) / std::max(1, opt.tp_size) : 0;
+      // (the free RAM less 16 GiB, or where more: half the free RAM, leaving at least 4 GiB, since 2026-11-22. A
+      //  32 GB machine got no tier: StealthDrifter's B580 (#80), the 35B Q3_K_M with 14.09 GB of experts and 6.31 GiB
+      //  of them cached, 174 GB from the SSD in 150 s; --expert-ram-gb 7-8: 92 -> 97-98 % of the experts found, an
+      //  uncached prompt 94-681 -> 1,358-1,532 tok/s. A machine with more free RAM keeps what it had)
+      const uint64_t keep = 16ull << 30, avail = plat::ram_available(), low = 4ull << 30;
+      const uint64_t r_big = avail > keep ? avail - keep : 0, r_half = avail > low ? std::min(avail / 2, avail - low) : 0;
+      ram = std::max(r_big, r_half) / std::max(1, opt.tp_size);
     }
     ram = std::min(ram, xc_->st.file_bytes);
     if (ram >= (1ull << 30)) {
@@ -75,11 +81,15 @@
     const double GiB = 1073741824.0;
     const uint64_t all = xc_->all_bytes();
     uint64_t want;
+    // (--expert-cache-gb, then --expert-cache-pct, then ARC_XCACHE_GB, then automatic: the options win since
+    //  2026-11-22; ARC_XCACHE_GB overrode both before, the repair list A3)
     const char* env_gb = getenv("ARC_XCACHE_GB");
-    if (env_gb || opt.expert_cache_gb > 0) {
-      want = (uint64_t)((env_gb ? atof(env_gb) : opt.expert_cache_gb) * GiB);
+    if (opt.expert_cache_gb > 0) {
+      want = (uint64_t)(opt.expert_cache_gb * GiB);
     } else if (opt.expert_cache_pct > 0) {
       want = (uint64_t)(all * std::min(opt.expert_cache_pct, 100.0) / 100);
+    } else if (env_gb) {
+      want = (uint64_t)(atof(env_gb) * GiB);
     } else {
       // the whole process (weights, buffers, transient area, cache) within the GPU share Windows gives the iGPU, less
       // driver_slack() for the driver: the share is the user's setting, the rest of the RAM what they leave to Windows

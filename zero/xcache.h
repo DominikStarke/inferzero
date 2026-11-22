@@ -595,7 +595,10 @@ struct XCache {
         // (against this GPU's share of the experts: a split model's cache and tier hold only its own [lo_, hi_);
         //  the Researcher's review, 2026-11-21)
         const uint64_t share = NE > 0 ? (uint64_t)((double)st.file_bytes * nloc() / NE) : st.file_bytes;
-        const bool fill_tier = fill_env >= 0 ? fill_env == 1 : st.ram_capacity() + (uint64_t)fill >= share;
+        // (and only where the tier alone holds the share, 2026-11-22: tier + cache >= share copied the cache's experts
+        //  into the tier too, which then had no room for the ones the cache lacks: StealthDrifter's B580, #80, the
+        //  35B's 14.09 GB of experts, a 6.31 GiB cache and an 8 GiB tier, 4-5 GB of SSD reads a reply on)
+        const bool fill_tier = fill_env >= 0 ? fill_env == 1 : st.ram_capacity() >= share;
         st.read(reqs, 0, false, fill_tier);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
           // A pinned source holds the layer's record, not its pool's padded slot.

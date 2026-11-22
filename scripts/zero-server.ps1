@@ -49,6 +49,8 @@ param(
   [switch]$Precise,
   [switch]$NoPrecise,
   [switch]$Fast,
+  [switch]$SplitLayer,
+  [string]$TensorSplit = "",
   [string]$Whisper = "",
   [string]$WhisperDevice = "",
   [string]$Asr = "",
@@ -210,7 +212,7 @@ function Get-StateFlags($s) { if ($s) { "$($s.extra)" -replace '"[^"]*"', '""' }
 # an option given on the command line wins over the preset's.
 $presetDir = Join-Path $stateDir "presets"
 $presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
-  "NoPrecise", "Fast", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
   "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
 function Preset-Path([string]$n) {
@@ -432,7 +434,7 @@ Common options for start / restart:
   -Npu on|off        part of each prompt on the NPU (27B, Gemma 4 12B)
   -Whisper auto|off  speech to text (Transcripts / Meetings tabs)
   -Slots <N>         conversations at once          -Host 0.0.0.0   reachable from other computers
-  -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8, Flash Next, DeepSeek-V4.1)
+  -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8, Flash Next, DeepSeek-V4.1; not Gemma 4)
   -DryRun            check the options, print the server's command line and a GPU memory estimate; start nothing
 
 More: zero-server help options (every option) | help writing (values, paths) | help errors (what a message means)
@@ -500,15 +502,21 @@ Options for start / restart:
                                  of a model, remembered, recomputed when the GPU memory changes). Not given:
                                  a running server keeps its context, a new one starts with auto. -Ctx auto
                                  also restarts a server that runs a fixed context.
-  -Chunk <N>                     prompt chunk size (default per model: 27B 4096; 35B 8192; Gemma 4 26B and Flash
-                                 Next 2048; 4B / 9B / E4B 512, on a discrete card of 12 GB or more 4096; Gemma with
-                                 images at least 2048); smaller = less GPU memory, more context
+  -Chunk <N>                     prompt chunk size (default per model: 27B 4096; the 35B 8192 where that keeps its
+                                 context and weights on the GPU, else 4096; Flash Next 4096 on 20 GB or more (iGPU
+                                 15) or a split, else 2048; Gemma 4 26B 2048; 4B / 9B / E4B 512, on a discrete card of
+                                 12 GB or more 4096; Gemma with images at least 2048; with MTP 2048 / 1024 where the
+                                 context would be under 32K); smaller = less GPU memory, more context
   -SessionCacheGb <N>            save conversations to disk when switching sessions (GB, all models together; default 8, 0 = off)
   -NoMtp                         no speculative decoding
   -Gpus <N>                      split the model over N GPUs (2-64, 1 = one GPU; Qwen3.5 / 3.6 / 3.8 dense, 35B-A3B,
                                  Flash Next, DeepSeek-V4.1): each GPU holds 1 / N of the weights and the KV, the
-                                 context is sized for that share (docs/multi-gpu.md). Kept on a restart and a
-                                 model switch, like -Slots
+                                 context is sized for that share (docs/multi-gpu.md). Gemma 4 runs on one GPU. A
+                                 split has no MTP / DFlash2 drafting, images or saved conversations yet. Kept on a
+                                 restart and a model switch, like -Slots
+  -SplitLayer                    with -Gpus: each GPU a range of the layers (serverz --split layer), for a model one
+                                 card cannot hold (Qwen dense and the 35B-A3B; not Flash Next, Gemma or DeepSeek)
+  -TensorSplit <a,b,..>          with -SplitLayer: each GPU's share of the layers (GPU 0's first; default equal)
   -Slots <N>                     hold N conversations at once (default 1): two Pi sessions each keep their own
                                  KV cache and states and take turns step by step (a prompt piece, a token), so
                                  neither waits for the other's whole answer; while both write, their next tokens
@@ -543,8 +551,9 @@ Options for start / restart:
   -Vision on|off                 image / audio input (default on). off: the projector (mmproj) is not loaded and
                                  --ctx auto keeps no GPU memory for it, so the context is longer
   -Port <N>                      port (default 8090; also for status / stop)
-  -MtpDrafts <2..7>              drafts per step (default: 7 for Qwen 27B-class (4 on B-series cards) and with
-                                 DFlash2, 5 for Qwen MoE, 3 for 4B, Flash Next and Gemma 4, 2 otherwise)
+  -MtpDrafts <2..7>              drafts per step (default: Qwen 27B-class 7, on discrete cards 4 (Alchemist, B60 /
+                                 B65 / B580) or 3 (B70 and others); 7 with DFlash2; Qwen MoE 5; 4B and Flash Next 3;
+                                 9B 2; Gemma 4's drafter 3)
   -DriverReserveGb <N>           GPU memory left to the driver, GiB (default 0.5; 0 to 8)
   -DFlash <folder>|off           a DFlash2 drafter of your own: its snapshot folder (with config.json and
                                  model.safetensors), e.g. for a fine-tuned variant the model list does not
@@ -552,7 +561,9 @@ Options for start / restart:
                                  picked inside it (Pi's /model) uses it too, until the next start
   -ThinkBudget <N>               default reasoning budget in tokens (default 8192; requests can override it)
   -ImageMinTokens / -ImageMaxTokens <N>  tokens per image (defaults: Qwen 256..2048, Gemma 4 12B 1120..2048)
-  -BudgetGb <GB>                 keep decoded weights resident up to GB (default: chosen with the context)
+  -BudgetGb <GB>                 keep decoded weights resident when the model and its decoded copy fit in GB
+                                 (default 9; with -Ctx auto: when that still leaves 128K tokens of context, or the
+                                 trained context if smaller; serverz --help all says the rest)
   -AttnF32                       f32 attention (tests)
   -PreserveThinking              earlier turns keep their reasoning (Qwen3.6 35B; Qwen3.8 27B always does)
   -NoPrefixCache                 do not keep system prompts on disk;  -PrefixCacheGb <N>  their disk space (8)
@@ -1135,6 +1146,21 @@ if ($Model -eq "none" -or (-not $Model -and $Action -eq "restart" -and $running 
   if (-not $m) { $m = [pscustomobject]@{ name = $full; file = Split-Path $full -Leaf; path = $full; mtp = $true; alias = [IO.Path]::GetFileNameWithoutExtension($full).ToLower(); ctx = 0 } }
 } else {
   $m = $models | Where-Object { $_.supported -and ($_.short -eq $Model.ToLower() -or $_.alias -eq $Model.ToLower()) } | Select-Object -First 1
+  # (a model's option variant by its id or shortcut, flash-fast, 27b-precise-prompt, flash-full: the entry, with the
+  #  variant's option for this start (not kept in options.json, as -Opt would be). The repair list C11, 2026-11-22:
+  #  the variants are nested in their entries, so -Model found none)
+  if (-not $m) {
+    foreach ($e in @($models | Where-Object { $_.supported })) {
+      $v = @($e.variants | Where-Object { $_ -and ($_.alias -eq $Model.ToLower() -or ($_.short -and $_.short -eq $Model.ToLower())) })
+      if ($v.Count) {
+        $m = $e
+        if ($v[0].option -eq "fn_precise") {  # (precise mode is -Precise / -Fast's: --fast for -fast)
+          if ("$($v[0].value)" -eq "0") { $Fast = [switch]$true; $Precise = [switch]$false } else { $Precise = [switch]$true }
+        } else { $optChoice[$v[0].option] = "$($v[0].value)" }
+        break
+      }
+    }
+  }
   if (-not $m) {
     $hits = @($models | Where-Object { $_.supported -and ($_.name + " " + $_.file) -like "*$Model*" })
     # (the variants of one file all match its name: then the file's main entry, the one listed first)
@@ -1245,10 +1271,16 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 #  key, so a changed choice restarts a running server)
 $optFx = Opt-Effect
 $extra += $optFx.flags
+# -SplitLayer / -TensorSplit (the repair list C10, 2026-11-22): serverz --split layer / --tensor-split; once, also with
+# -Opt split_layer (whose flag is --split layer too)
+if ($TensorSplit -and -not $SplitLayer -and -not ($extra -contains "--split")) { throw "-TensorSplit needs -SplitLayer (a layer split over -Gpus N)" }
+if ($TensorSplit -and $TensorSplit -notmatch '^[0-9.]+(,[0-9.]+)+$') { throw "-TensorSplit: shares as a,b,... (e.g. 3,1), one for each GPU (got $TensorSplit)" }
+if ($SplitLayer -and -not ($extra -contains "--split")) { $extra += @("--split", "layer") }
+if ($TensorSplit) { $extra += @("--tensor-split", $TensorSplit) }
 $extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

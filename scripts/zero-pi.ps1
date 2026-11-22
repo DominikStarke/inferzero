@@ -5,7 +5,7 @@
 #
 #   zero-pi                          the running / last model (the first time: choose from the list)
 #   zero-pi --pick                   choose from the list
-#   zero-pi 35b  /  zero-pi -Model swift   a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31, with -mtp /
+#   zero-pi 35b  /  zero-pi -Model swift   a shortcut (27b 35b 35b-s 35b-m 35b-mtp flash flash-ar4 9b 4b g12 e4b g26 g31, with -mtp /
 #                                   -vision / -std / -nodf / -df for a variant) or part of a model's name
 #   zero-pi -c  /  zero-pi -r         continue the last Pi session in this folder / choose one (Pi's options)
 #   zero-pi --think off              no reasoning (fastest answers); also minimal / low (default) / medium / high /
@@ -19,9 +19,10 @@
 # (No param() block on purpose: PowerShell would otherwise try to bind Pi's own options such as -p or --tools.)
 $ErrorActionPreference = "Stop"
 $shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "flash-ar4", "9b", "4b", "g12", "e4b", "g26", "g31")
-# (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
-function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
-$gpus = 0; $precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
+# (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...; an option variant last: flash-fast,
+#  27b-precise-prompt (scripts/options.tsv's variant column))
+function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?(-fast|-full|-sparse|-precise-prompt|-fastdraft)?$" }).Count -gt 0 }
+$gpus = 0; $precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""; $port = 0
 $whisper = ""; $asr = ""; $whDev = ""; $whMax = 0
 $piArgs = New-Object System.Collections.Generic.List[string]
 # an option's value: there, and not the next option ("--think" at the end gave Pi an empty level); numbers checked
@@ -83,12 +84,16 @@ MODEL
                                  by full name (e.g. ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); Enter keeps the
                                  model that is already running. Image projectors (mmproj-*) and drafters
                                  (mtp-*) next to a model are loaded with it, not listed.
-  27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31
+  27b 35b 35b-s 35b-m 35b-mtp flash flash-ar4 9b 4b g12 e4b g26 g31
                                  shortcuts, as the first argument: Qwen3.8 27B; Qwen3.6 35B-A3B (35b: UD-IQ4_XS
                                  from Unsloth's MTP repository, or UD-Q3_K_M / the GSQ file when that is the one
-                                 downloaded; 35b-s: UD-Q3_K_S, longer context; 35b-mtp: UD-Q3_K_M of the MTP
-                                 repository); flash: Qwen3.8 Flash Next; Qwen3.5 9B / 4B; Gemma 4 12B / E4B /
-                                 26B-A4B (g26: mixture of experts on the SSD, reads images)
+                                 downloaded; 35b-m: the same as 35b; 35b-s: UD-Q3_K_S, longer context; 35b-mtp:
+                                 UD-Q3_K_M of the MTP repository); flash: Qwen3.8 Flash Next; flash-ar4: Flash Next
+                                 with Intel's AutoRound INT4 experts (setup -Models flash-ar4); Qwen3.5 9B / 4B;
+                                 Gemma 4 12B / E4B / 26B-A4B (g26: mixture of experts on the SSD, reads images) /
+                                 31B (g31: Google's largest dense Gemma, slow, with its drafter)
+  <id or shortcut>-fast / -full / -precise-prompt   an option's variant of a model (Flash Next's fast mode, full
+                                 attention; more precise prompt reading where H8 runs), as zero-server --list shows
   <shortcut>-mtp / -vision / -std  a variant of the same file: MTP without images, images without MTP, neither
                                  (e.g. 9b-std: the most context, 27b-std, 35b-mtp-std). A shortcut must come
                                  before Pi's options and message; any model's id from --pick works too.
@@ -124,10 +129,12 @@ LAUNCHER OPTIONS
                                  Without --ctx: a running server keeps its context, a new one starts with auto.
                                  --ctx auto also restarts a server that runs a fixed context (e.g. one started
                                  with --ctx 32768).
-  --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; 35B 8192; Gemma 4 26B
-                                 and Flash Next 2048; 512 when the decoded weights stay resident, as on the 4B /
-                                 9B / E4B (4096 on a discrete card of 12 GB or more); Gemma with images at least
-                                 2048). Smaller chunks need less GPU
+  --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; the 35B 8192 where that
+                                 keeps its context and weights on the GPU, else 4096; Flash Next 4096 on 20 GB or
+                                 more (iGPU 15) or a split, else 2048; Gemma 4 26B 2048; 512 when the decoded weights
+                                 stay resident, as on the 4B / 9B / E4B (4096 on a discrete card of 12 GB or more);
+                                 Gemma with images at least 2048; with MTP 2048 / 1024 where the context would be
+                                 under 32K). Smaller chunks need less GPU
                                  memory, which the auto context turns into more context: 27B with
                                  --chunk 1024 -> ~65K tokens at 17.4 GiB, 118,784 at 18.3 GiB; ~11K-token
                                  prompts ~4 % slower, long prompts the same speed.
@@ -147,8 +154,12 @@ LAUNCHER OPTIONS
   --fast, -Fast                  Qwen3.8 Flash Next's fast mode: prompts about 1.7x as fast, less exact (KL on
                                  markdown 0.0033 -> 0.0415); its default is the precise mode. Kept like --npu
                                  (--precise: back to precise; --no-precise: --fast)
-  --gpus <N>, -Gpus              one model split over N GPUs (1-64; Qwen3.5 / 3.6 / 3.8, Flash Next,
-                                 DeepSeek-V4.1; docs/multi-gpu.md). Not given: a running split server keeps its GPUs
+  --gpus <N>, -Gpus              one model split over N GPUs (1-64; tensor parallel: Qwen3.5 / 3.6 / 3.8, Flash
+                                 Next, DeepSeek-V4.1; by layers, zero-server -Opt split_layer: Qwen dense and the
+                                 35B-A3B only; Gemma 4 on neither; a split has no MTP / DFlash2 drafting, images or
+                                 saved conversations yet; docs/multi-gpu.md). Not given: a running split server keeps
+                                 its GPUs
+  --port <N>, -Port              the server's port (default 8090): zero-server's -Port, and Pi's model list points there
   --whisper auto|on|off|<folder>, --asr auto|off|<file>, --whisper-device gpu|npu, --whisper-max-minutes <N>
   (also -Whisper ...)            speech to text, passed to zero-server as its -Whisper, -Asr, -WhisperDevice and
                                  -WhisperMaxMinutes (zero-server help options)
@@ -214,8 +225,9 @@ bin\serverz.exe --help all)
   -m, --model <model.gguf>       model file              --port <N>          port (default 8090)
   -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
   --alias <name>                 model id in the API     --mtp               speculative decoding
-  --mtp-drafts <N>               drafts per step (27B 7, on B-series cards 3; 35B 5; 4B, Flash Next and Gemma 4
-                                 3; else 2; 7 with DFlash2)
+  --mtp-drafts <N>               drafts per step (default: Qwen 27B-class 7, on discrete cards 4 (Alchemist, B60 /
+                                 B65 / B580) or 3 (B70 and others); 7 with DFlash2; Qwen MoE 5; 4B and Flash Next 3;
+                                 9B 2; Gemma 4's drafter 3)
   --mtp-model <file>             an MTP head in a .gguf of its own (Flash Next's mtp-*.gguf; implies --mtp)
   --draft auto|mtp|dflash        with a DFlash2 drafter: both (auto), the MTP block only, DFlash2 only (the
                                  -nodf / -df variants)
@@ -240,7 +252,7 @@ bin\serverz.exe --help all)
   --no-terminal                  no run_command (the web UI's terminal tool)
   --webui <dir>                  web UI folder           --kernels <dir>     kernel folder (zero\kernels)
   --list-models                  the models zero-server's list shows, as JSON
-  --help, -h                     every option with its default
+  --help, -h                     the short page; --help all: every option with its default
   API: http://127.0.0.1:8090/v1 (OpenAI chat completions), web UI http://127.0.0.1:8090/,
        /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear),
        with --whisper: /v1/audio/transcriptions and /translations, /v1/transcripts (the library), /v1/live
@@ -336,10 +348,11 @@ shortens a long conversation (the details it drops are gone for the model).
   elseif ($a -in "--chunk", "-Chunk") { $chunk = [int](Need-Number $a (Need-Value $args $i $a "a number of tokens") "a number of tokens"); $i++ }
   elseif ($a -in "--no-mtp", "-NoMtp") { $noMtp = $true }
   elseif ($a -in "--no-vision", "-NoVision") { $vision = "off" }
-  elseif ($a -in "--vision", "-Vision" -and $i + 1 -lt $args.Count) { $i++; $vision = ([string]$args[$i]).ToLower() }
+  elseif ($a -in "--vision", "-Vision") { $vision = (Need-Value $args $i $a "on or off").ToLower(); $i++ }  # (as the others: a missing value says so)
   elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
   elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
+  elseif ($a -in "--port", "-Port") { $port = [int](Need-Number $a (Need-Value $args $i $a "1..65535") "1..65535"); $i++ }  # (the server's port; zero-server keeps one per port)
   elseif ($a -in "--gpus", "-Gpus") { $gpus = [int](Need-Number $a (Need-Value $args $i $a "1..64") "1..64"); $i++ }  # (one model over N GPUs)
   elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode, its default; kept by zero-server)
   elseif ($a -in "--fast", "-Fast", "--no-precise", "-NoPrecise") { $precise = "off" }  # (its fast mode)
@@ -356,7 +369,7 @@ shortens a long conversation (the details it drops are gone for the model).
 # Which model: the one the server is running, else the one started last, else ask (--pick: always ask).
 . (Join-Path $PSScriptRoot "app-dir.ps1")
 $stateDir = Get-AppDir  # (%USERPROFILE%\.inferzero; renamed from arcinfer once)
-$base = "http://127.0.0.1:8090"
+$base = "http://127.0.0.1:$(if ($port -gt 0) { $port } else { 8090 })"
 # the id of the loaded model: the entry marked loaded (the server lists every model it can switch to), else the first
 function Get-LoadedId([int]$TimeoutSec) {
   $d = @((Invoke-RestMethod "$base/v1/models" -TimeoutSec $TimeoutSec).data)
@@ -375,6 +388,7 @@ if (-not $model -and -not $pick) {
 $sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # (not given: the server's default, 8 GB)
 if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
+if ($port -gt 0) { $sessArg.Port = $port }  # (the server on that port; Pi's model list points there, pi-models.ps1)
 if ($gpus -gt 0) { $sessArg.Gpus = $gpus }  # (only when given: a running split server keeps its GPUs)
 if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
 if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.Fast = $true }

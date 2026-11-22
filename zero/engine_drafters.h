@@ -784,6 +784,7 @@
   // copy drafting (R1): the context s = hist + [tok]; the most recent earlier place where s's last n tokens (n from
   // ARC_COPY_NGRAM, default 8, down to ARC_COPY_MIN, default 4) appear, and up to max_drafts of the tokens after it.
   // A pass over the context from its end per n (~0.1 ms each at 100K tokens); nothing found: empty
+  // (--copy-draft or ARC_COPY_DRAFT=1, either one: no option turns the variable's on off; unset it for that)
   bool copy_on() const {
     static const bool e = getenv("ARC_COPY_DRAFT") && atoi(getenv("ARC_COPY_DRAFT")) != 0;
     return opt.copy_draft || e;

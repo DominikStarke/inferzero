@@ -184,14 +184,25 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       return auto_ctx(model, o, so.budget_given, enc);
     };
     AutoCtx a = probe(eo);
-    if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {  // (a drafter that leaves little context: the MTP block only)
-      zlog::eprintf("DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);
-      eo.dflash.clear();
-      a = probe(eo);
+    // (--mtp on a card it leaves little context: a smaller prompt chunk before a smaller context, server_catalog.h;
+    //  with the drafter first: it is dropped only when even the smaller chunk leaves it under kDflashMinCtx. Before
+    //  2026-11-22 it was dropped first, so a 16 GB card lost it where 2,048 or 1,024 would have kept it; repair list B4)
+    if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {
+      EngineOptions e2 = eo;
+      const AutoCtx t = mtp_trade_chunk(e2, a, probe, false);
+      if (t.ctx >= kDflashMinCtx) {
+        zlog::eprintf("--ctx auto: with the DFlash2 drafter, prompt chunks of %d tokens for %d tokens of context\n", e2.chunk, t.ctx);
+        eo = e2, a = t;
+      } else {  // (a drafter that leaves little context even so: the MTP block only)
+        zlog::eprintf("DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", t.ctx);
+        eo.dflash.clear();
+        a = probe(eo);
+      }
     }
-    // (--mtp on a card it leaves little context: a smaller prompt chunk before a smaller context, server_catalog.h)
     a = mtp_trade_chunk(eo, a, probe, true);
-    a = moe_grow_chunk(model, eo, a, probe, true);  // (ARC_MOE_BIG_CHUNK: a MoE model's larger prompt chunk where it fits)
+    // (a MoE model's 8,192-token chunk where it costs nothing, server_catalog.h; one GPU only, as the model list counts
+    //  it: a split's sizing is its own, the repair list B5)
+    if (so.gpus <= 1) a = moe_grow_chunk(model, eo, a, probe, true);
     // (a split model whose shard does not fit either: the floor, as before; the split's own load checks each GPU and
     //  falls back to one GPU, where the refusal below then speaks)
     if (a.ctx <= 0 && so.gpus > 1) a.ctx = 4096;
