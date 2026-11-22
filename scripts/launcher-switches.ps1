@@ -140,7 +140,7 @@ function Get-SwChanged($cat, $choice) {
 # ---- the automatic preset, "Best measured for this PC" (the launcher spec B, 2026-11-22): scripts\best-setups.tsv's
 # rows, each a setting measured faster than the engine's default on some PC and model (its evidence and confidence
 # in the file). A row applies when this PC has all its pc words, the model is one of its models (shortcuts; * any),
-# the OS is its os (windows / linux / any) and its needs hold: gpus2same (two or more discrete cards, all of one kind)
+# the OS is its os (windows / linux / any) and its needs hold: gpus2same (two or more discrete cards, all of one PCI device ID)
 # and notfit (the model does not fit the card: weights in host memory). Its settings are zero-server's names:
 # Opt=<options.tsv id>, Npu=on, Gpus=all, NoMtp. Adding a row needs no code change
 function Read-BestSetups([string]$path) {
@@ -167,7 +167,7 @@ function Get-BestSetups($rows, $st) {
       $ok = $true
       foreach ($n in @(Split-SwList $r.needs | Where-Object { $_ -ne "-" })) {
         switch ($n) {
-          "gpus2same" { $ok = $ok -and [int]$st.discrete -ge 2 -and -not (@($st.pc) -contains "alchemist" -and @($st.pc) -contains "b-series") }
+          "gpus2same" { $ok = $ok -and [int]$st.discrete -ge 2 -and @($st.pc) -contains "multi-same" }  # (pc-kinds.ps1: every card one device ID)
           "notfit" { $ok = $ok -and [bool]$st.notfit }
           default { $ok = $false }  # (a need this launcher does not know: the row is left out)
         }

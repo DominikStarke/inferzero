@@ -181,7 +181,7 @@ defaults on some kind of PC and model, each with its evidence. Adding a row need
   - `pc`: the PC words it needs, all of them (`scripts/pc-kinds.ps1`; `igpu-ptl` is Panther Lake's B370 / B390);
   - `models`: the catalog shortcuts it is for, or `*`;
   - `os`: `windows`, `linux` or `any`;
-  - `needs`: `gpus2same` (two or more discrete cards of one kind) or `notfit` (the model's weights partly in host
+  - `needs`: `gpus2same` (two or more discrete cards of one PCI device ID, the PC word `multi-same`: tensor parallel takes no other mix) or `notfit` (the model's weights partly in host
     memory);
   - `settings`: in zero-server's names (`Opt=<options.tsv id>`, `Npu=on`, `Gpus=all`, `NoMtp`);
   - `why`, `evidence`, `confidence`.

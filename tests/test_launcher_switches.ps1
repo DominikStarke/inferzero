@@ -51,14 +51,15 @@ foreach ($c in @(
     @("Lunar Lake + 35B", @{ pc = @("igpu-xe2"); os = "windows"; short = "35b"; discrete = 1; notfit = $false }, ""),
     @("125H + 27B", @{ pc = @("igpu-xe-lpg"); os = "windows"; short = "27b"; discrete = 1; notfit = $false }, "mtl-npu"),
     @("125H + 27B on Linux", @{ pc = @("igpu-xe-lpg"); os = "linux"; short = "27b"; discrete = 1; notfit = $false }, ""),
-    @("2 x B60 + 27B", @{ pc = @("b-series", "multi-gpu"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, "bseries-tp"),
+    @("2 x B60 + 27B", @{ pc = @("b-series", "multi-gpu", "multi-same"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, "bseries-tp"),
+    @("B60 + B70 + 27B", @{ pc = @("b-series", "multi-gpu"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, ""),
     @("B60 + A770 + 27B", @{ pc = @("alchemist", "b-series", "multi-gpu"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, ""),
     @("B580 + 27B not fitting", @{ pc = @("b-series"); os = "windows"; short = "27b"; discrete = 1; notfit = $true }, "notfit-nomtp"),
-    @("2 x B60 + Gemma 12B", @{ pc = @("b-series", "multi-gpu"); os = "windows"; short = "g12"; discrete = 2; notfit = $false }, ""))) {
+    @("2 x B60 + Gemma 12B", @{ pc = @("b-series", "multi-gpu", "multi-same"); os = "windows"; short = "g12"; discrete = 2; notfit = $false }, ""))) {
   $got = (@(Get-BestSetups $best $c[1]) | ForEach-Object { $_.id }) -join ","
   if ($got -ne $c[2]) { $bad.Add("best-setups for $($c[0]): '$got', expected '$($c[2])'") }
 }
-$n += 8
+$n += 9
 if ($bad.Count) {
   $bad | ForEach-Object { Write-Output "test_launcher_switches: $_" }
   exit 1

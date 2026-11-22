@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-22: the B390 under Linux on the plain GEMM form; tensor parallel offered only for identical cards
+
+- **Panther Lake's B390 under Linux runs the plain GEMM form again**, as under Windows: both Linux B390s measured it
+  about 20 % faster at a 4K prompt than the 2D block loads (the 27B: 686 against 542-588 tok/s, and 715-717 against
+  587-599). The results are bit for bit the same either way; `ARC_GEMM_XW_2D=1` still turns them on.
+- **The launchers' automatic preset offers tensor parallel only for cards of one PCI device ID** (a new PC word,
+  `multi-same`): tensor parallel takes no other mix, so a B60 + B70 or an A770 + A750 no longer gets `-Gpus` set.
+
 ## 2026-11-22: the launchers' automatic "best measured" preset; options they could not set
 
 - **"Automatic (best measured)" is the launchers' default preset.** It applies `scripts/best-setups.tsv`: settings

@@ -24,6 +24,14 @@ function Get-PcKinds {
     elseif ($g -match 'Arc|Graphics') { $k += "igpu-xe-lpg" }
   }
   if ($discrete -gt 1) { $k += "multi-gpu" }
+  # multi-same: two or more discrete Arc cards, all of one PCI device ID (tensor parallel takes only GPU 0's own: a
+  # B60 + B70 or an A770 + A750 is refused without --split layer; the Researcher's review, 2026-11-22)
+  if ($discrete -gt 1) {
+    $ids = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -match "Intel" -and $_.Name -notmatch 'B3[0-9]0|140V|130V|Xe2|140T' -and $_.Name -match 'Arc\S* (A\d{3}|(Pro )?B\d{2,3}\b)' } |
+      ForEach-Object { if ("$($_.PNPDeviceID)" -match 'DEV_([0-9A-Fa-f]{4})') { $Matches[1].ToUpper() } else { "?" } })
+    if ($ids.Count -gt 1 -and @($ids | Select-Object -Unique).Count -eq 1 -and $ids[0] -ne "?") { $k += "multi-same" }
+  }
   return @($k | Select-Object -Unique)
 }
 # the discrete Arc cards (the launcher's Multi-GPU choice splits a model over them); 1 when there are none

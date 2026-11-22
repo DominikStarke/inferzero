@@ -743,11 +743,11 @@
     //  Linux only since 2026-11-22: a B390 under Windows (gee456, #49, SO-DIMM DDR5, the full sweep) was -12.8 % with
     //  it at 4K (631.0 -> 550.2), so Windows keeps the plain form until its pairs (#1, #75) tell the driver from the
     //  memory)
-#ifdef _WIN32
+    // (off on Panther Lake under Linux too since 2026-11-22: both Linux B390s measured the plain form faster on
+    //  .22.12 / .13, the 27B 4K, A B B A: n005 (#74, Fedora, runtime 26.35.39758.21) 2D 542.0 / 587.5 against plain
+    //  686.3; kludged (#74, Arch, 26.35.39758) 586.6 / 598.9 against 717.2 / 714.7; the 35B at 16K about even.
+    //  ARC_GEMM_XW_2D=1 still asks for it)
     xw_2d_discrete_ = !zrt::integrated();
-#else
-    xw_2d_discrete_ = !zrt::integrated() || zrt::panther_lake();
-#endif
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +

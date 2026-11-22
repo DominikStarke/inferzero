@@ -515,6 +515,13 @@ sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci)
     elif [[ "$l" =~ Meteor|Arc ]]; then k+=" igpu-xe-lpg"; fi
   done <<< "$names"
   [ $discrete -gt 1 ] && k+=" multi-gpu"
+  # (multi-same: those cards all of one PCI device ID, the only ones tensor parallel takes together)
+  if [ $discrete -gt 1 ]; then
+    local ids
+    ids=$(lspci -nn 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel | grep -Evi 'B3[0-9]0|140V|130V|140T|Lunar|Panther|Arrow Lake|Meteor' |
+      grep -Ei 'DG2|Alchemist|A[0-9]{3}[^0-9]|Battlemage|BMG|B[0-9]{2,3}[^0-9]' | grep -o '8086:[0-9a-fA-F]\{4\}' | sort -u | wc -l)
+    [ "$ids" = 1 ] && k+=" multi-same"
+  fi
   printf '%s' "$(printf '%s\n' $k | sort -u | tr '\n' ' ' | sed 's/ $//')"
 }
 # a catalog model's words (its field 13) and whether a DFlash2 drafter for it is in the cache
@@ -887,7 +894,7 @@ best_auto() {
     for w in ${needs//;/ }; do
       case "$w" in
         -) ;;
-        gpus2same) { [ "${n:-0}" -ge 2 ] && ! { [[ " $SW_PC " == *" alchemist "* ]] && [[ " $SW_PC " == *" b-series "* ]]; }; } || ok=0;;
+        gpus2same) { [ "${n:-0}" -ge 2 ] && [[ " $SW_PC " == *" multi-same "* ]]; } || ok=0;;  # (every card one device ID, sw_pc_kinds)
         *) ok=0;;
       esac
     done
