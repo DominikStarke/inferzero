@@ -71,5 +71,49 @@ OUT=$(start_key 4b 2>&1); rc=$?
 unset -f model_path download; source "$root/zero-launcher.sh"
 [ $rc -eq 1 ] && [[ "$OUT" != *DOWNLOADED* ]] && [ "$(cat "$UNIT")" = "private Pi unit" ]; ok $? "refused before download"; teardown
 
+# 14. the switches' rules against tests/launcher_switch_cases.tsv, the cases scripts/launcher-switches.ps1 is
+#     checked against (QUEUE row 15 step 3): the reason line each option shows, "-" when it applies
+cat_load
+nc=0 bad=0
+while IFS=$'\t' read -r words pc gpus drafting choices id expect; do
+  [ "$words" = words ] && continue
+  OPTC=()
+  if [ "$choices" != - ]; then IFS=',' read -r -a cs <<< "$choices"; for c in "${cs[@]}"; do OPTC[${c%%=*}]=${c#*=}; done; fi
+  SW_WORDS=${words//;/ }; SW_PC=${pc//;/ }; [ "$pc" = - ] && SW_PC=""; SW_GPUS=$gpus; SW_DRAFTING=$drafting
+  got=$(sw_reason "$id"); [ -z "$got" ] && got=-
+  nc=$((nc + 1))
+  if [ "$got" != "$expect" ]; then bad=1; echo "  $id for [$words] on [$pc], gpus $gpus, drafting $drafting, $choices: '$got', expected '$expect'"; fi
+done < <(tr -d '\r' < "$root/tests/launcher_switch_cases.tsv")
+[ $bad = 0 ] && [ $nc -gt 20 ]; ok $? "switch reasons ($nc cases)"
+# 15. every switch the menu draws has a title, a tip and a line under it that names the output; qsa is a choice
+bad=0
+for id in "${CT_IDS[@]}"; do
+  sw_value "$id" && continue
+  [ -n "${CT_tip[$id]}" ] && [ -n "${CT_title[$id]}" ] || { bad=1; echo "  $id: no tip or title"; }
+  [[ "$(sw_tipline "$id")" =~ (Same\ output|Output\ checked\ against\ full\ precision)\. ]] || { bad=1; echo "  $id: line under the tip: $(sw_tipline "$id")"; }
+done
+[ "$(sw_choices qsa)" = "on:Sparse off:Full" ] || { bad=1; echo "  qsa's choices: $(sw_choices qsa)"; }
+[ "$(sw_default h8_exact)" = off ] && [ "$(sw_default xcpu)" = auto ] && [ "$(sw_default copy_draft)" = off ] || { bad=1; echo "  defaults"; }
+[ $bad = 0 ]; ok $? "tips and choices"
+# 16. the full-screen menu fits 80 columns, for every model, with the options pane focused and the folded ones shown
+model_path() { return 1; }
+OPTC=(); GPUS=1; SW_PC="igpu-xe-lpg"; bad=0
+TUI_KEYS=(); for e in "${CATALOG[@]}"; do TUI_KEYS+=("${e%%|*}"); done
+for ((s = 0; s < ${#TUI_KEYS[@]}; s++)); do
+  for na in 0 1; do
+    TUI_SEL=$s TUI_FOC=3 TUI_PANE=opts TUI_SHOWNA=$na
+    while IFS= read -r l; do
+      l=${l//$'\033[K'/}; l=${l//$'\033[H'/}; l=${l//$'\033[J'/}
+      [ ${#l} -le 80 ] || { bad=1; echo "  ${TUI_KEYS[$s]}: a line of ${#l} columns: $l"; }
+    done < <(tui_draw)
+  done
+done
+unset -f model_path; source "$root/zero-launcher.sh"
+[ $bad = 0 ]; ok $? "menu within 80 columns"
+# 17. --opt with --model: an option the model cannot take is refused with the reason, before options.json is written
+T=$(mktemp -d); OUT=$(ARC_DATA_DIR="$T" bash "$root/zero-launcher.sh" --opt copy_draft --model flash 2>&1); rc=$?
+[ $rc -eq 2 ] && [[ "$OUT" == *"--opt copy_draft: for models with MTP only"* ]] && [ ! -f "$T/options.json" ]; ok $? "--opt refused for the model"
+rm -rf "$T"
+
 echo "test_zero_launcher: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

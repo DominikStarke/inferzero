@@ -22,3 +22,9 @@ function Get-PcKinds {
   if ($discrete -gt 1) { $k += "multi-gpu" }
   return @($k | Select-Object -Unique)
 }
+# the discrete Arc cards (the launcher's Multi-GPU choice splits a model over them); 1 when there are none
+function Get-DiscreteGpuCount {
+  $n = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object {
+      $_.Name -match "Intel" -and $_.Name -notmatch 'B3[0-9]0|140V|130V|Xe2|140T' -and $_.Name -match 'Arc\S* (A\d{3}|(Pro )?B\d{2,3}\b)' }).Count
+  return [math]::Max(1, $n)
+}

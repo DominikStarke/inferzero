@@ -18,6 +18,7 @@ using System;
 using System.Runtime.InteropServices;
 public static class ArcWin {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string id);
   [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int val, int size);
   [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string app, string id);
   [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
@@ -28,6 +29,9 @@ public static class ArcWin {
 }
 # (the window started by zero-launcher.cmd: its console is not needed; a terminal the user opened is left alone)
 if ($HideConsole) { try { $cw = [ArcWin]::GetConsoleWindow(); if ($cw -ne [IntPtr]::Zero) { [void][ArcWin]::ShowWindow($cw, 0) } } catch {} }
+# (its own taskbar button with the inferzero icon: without an app id of its own the window was grouped under
+#  PowerShell, whose button showed no icon of the launcher; the user, 2026-11-22)
+try { [void][ArcWin]::SetCurrentProcessExplicitAppUserModelID("inferzero.launcher") } catch {}
 try { [void][ArcWin]::SetProcessDPIAware() } catch {}  # (sharp text at 125-200 % scaling; sizes below scale with S)
 [System.Windows.Forms.Application]::EnableVisualStyles()
 # an error inside a WinForms event goes to the message bar, not to .NET's "Unhandled exception" box (before any window)
@@ -117,7 +121,17 @@ function Draw-ArcMark($g, [single]$x, [single]$y, [single]$size, $lit, $dim) {
 # seconds with nothing on the screen before); closed when the window shows. No message loop runs yet, so each step
 # paints it with Refresh(); a borderless window with Windows 11's rounded corners, in the theme's colours.
 $script:splash = $null; $script:splashMsg = $null
-function Set-Splash([string]$t) { if ($script:splash) { try { $script:splashMsg.Text = $t; $script:splash.Refresh() } catch {} } }
+# (the step and how far the loading is, in per cent: the blue line under the text is the progress bar. No message
+#  loop runs yet, so it moves at each step, not in between)
+$script:splashBar = $null
+function Set-Splash([string]$t, [int]$pct = -1) {
+  if (-not $script:splash) { return }
+  try {
+    $script:splashMsg.Text = $t
+    if ($pct -ge 0 -and $script:splashBar) { $script:splashBar.Width = [int]($script:splashBar.Parent.Width * [math]::Min(100, $pct) / 100) }
+    $script:splash.Refresh()
+  } catch {}
+}
 try {
   $sp = New-Object System.Windows.Forms.Form
   $sp.FormBorderStyle = "None"; $sp.StartPosition = "CenterScreen"; $sp.ShowInTaskbar = $false; $sp.TopMost = $true
@@ -143,8 +157,13 @@ try {
   $script:splashMsg.Font = New-Object System.Drawing.Font("Segoe UI", 9); $script:splashMsg.Location = New-Object System.Drawing.Point((S 30), (S 146))
   $script:splashMsg.Text = "Starting..."
   # (a thin accent line under the text: the window's one touch of colour besides the logo)
-  $ln = New-Object System.Windows.Forms.Panel; $ln.BackColor = $accent; $ln.Size = New-Object System.Drawing.Size((S 378), (S 2))
+  # (the progress bar: a track in the line colour, the part done in the accent colour; 2026-11-22 the user asked for
+  #  the line to show the loading)
+  $ln = New-Object System.Windows.Forms.Panel; $ln.BackColor = $Pal.line; $ln.Size = New-Object System.Drawing.Size((S 378), (S 3))
   $ln.Location = New-Object System.Drawing.Point((S 30), (S 132))
+  $script:splashBar = New-Object System.Windows.Forms.Panel; $script:splashBar.BackColor = $accent
+  $script:splashBar.Location = New-Object System.Drawing.Point(0, 0); $script:splashBar.Size = New-Object System.Drawing.Size([int]($ln.Width * 0.05), $ln.Height)
+  $ln.Controls.Add($script:splashBar)
   $in.Controls.AddRange(@($pic, $t1, $t2, $ln, $script:splashMsg))
   $sp.Show()
   $script:splash = $sp
@@ -156,7 +175,7 @@ try {
   }
 } catch { $script:splash = $null }
 function Close-Splash { if ($script:splash) { try { $script:splash.Close(); $script:splash.Dispose() } catch {}; $script:splash = $null } }
-Set-Splash "Loading fonts..."
+Set-Splash "Loading fonts..." 10
 # Segoe UI Variable (Windows 11), else Segoe UI; Cascadia Mono, else Consolas
 $fams = @((New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
 $uiFont = if ($fams -contains "Segoe UI Variable Text") { "Segoe UI Variable Text" } else { "Segoe UI" }
@@ -179,7 +198,7 @@ $script:props = $null
 $script:jobs = New-Object System.Collections.ArrayList
 $script:benching = $false  # (the GPU benchmark running: Start-GpuBench)
 
-Set-Splash "Building the window..."
+Set-Splash "Building the window..." 25
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "inferzero"
 $form.AutoScaleMode = "None"  # (sizes are scaled by S here)
@@ -306,9 +325,8 @@ $grid.DefaultCellStyle.SelectionBackColor = $Pal.sel; $grid.DefaultCellStyle.Sel
 $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding((S 4), 0, (S 4), 0)
 $grid.RowTemplate.Height = S 30
 foreach ($c in @(
-    @("model", "Model", 30), @("variant", "Variant", 11), @("mtp", "MTP", 5), @("vision", "Images", 6),
-    @("ctx", "Auto context", 10), @("vram", "VRAM (full context)", 11), @("size", "File", 7),
-    @("id", "Model id  [shortcut]", 20), @("compat", "Supported", 11))) {
+    @("model", "Model", 44), @("size", "File", 9), @("fit", "Fits", 9), @("ctx", "Auto context", 11),
+    @("id", "Model id  [shortcut]", 27))) {
   $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
   $col.Name = $c[0]; $col.HeaderText = $c[1]; $col.FillWeight = $c[2]
   [void]$grid.Columns.Add($col)
@@ -348,8 +366,19 @@ $opt = New-Object System.Windows.Forms.TableLayoutPanel
 $opt.Dock = "Fill"; $opt.ColumnCount = 2; $opt.AutoScroll = $true
 [void]$opt.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("AutoSize")))
 [void]$opt.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", 100)))
+$script:wrapRows = New-Object System.Collections.ArrayList  # (@(control, spans both columns))
+function Fit-Rows {
+  $cw = $opt.ClientSize.Width - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth - (S 8)
+  $c0 = 0; try { $c0 = @($opt.GetColumnWidths())[0] } catch {}
+  foreach ($r in $script:wrapRows) {
+    $w = [math]::Max((S 120), $(if ($r[1]) { $cw } else { $cw - $c0 }))
+    $r[0].MaximumSize = New-Object System.Drawing.Size($w, 0)
+    if (-not $r[0].AutoSize) { $r[0].Width = $w }  # (the tip box: a fixed height, the column's width)
+  }
+}
 function Add-Opt($label, $ctl, $hint = "", [switch]$Advanced) {
-  $p = New-Object System.Windows.Forms.FlowLayoutPanel; $p.AutoSize = $true; $p.WrapContents = $false
+  $p = New-Object System.Windows.Forms.FlowLayoutPanel; $p.AutoSize = $true; $p.WrapContents = $true
+  [void]$script:wrapRows.Add(@($p, $false))
   $p.Margin = New-Object System.Windows.Forms.Padding(0)
   [void]$p.Controls.Add($ctl)
   if ($hint) { $h = New-Label $hint; $h.ForeColor = $Pal.sub; [void]$p.Controls.Add($h) }
@@ -358,7 +387,166 @@ function Add-Opt($label, $ctl, $hint = "", [switch]$Advanced) {
   if ($Advanced) { $script:advRows += , @($l, $p) }
   return $p
 }
+# a control over both columns (a heading, a switch's row, a line of text)
+function Add-Span($ctl, [switch]$Advanced) {
+  $opt.Controls.Add($ctl); $opt.SetColumnSpan($ctl, 2)
+  [void]$script:wrapRows.Add(@($ctl, $true))
+  if ($Advanced) { $script:advRows += , @($ctl, $ctl) }
+}
+function New-Head([string]$t) { $h = New-Label $t $true; $h.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 2)); $h }
 $script:advRows = @()
+# (the command-line names in tooltips, for zero-server / serverz users; the labels say what each does)
+$tips = New-Object System.Windows.Forms.ToolTip; $tips.AutoPopDelay = 30000
+
+# ---- the selected model's switches (QUEUE row 15 step 3, docs/launcher-design.md): one row a model file, its
+# choices here. The switches, their tips and the reason one is greyed all come from scripts\options.tsv through
+# scripts\launcher-switches.ps1 (zero-launcher.sh has the same rules); the drafting and images choices from the
+# model list's rows of the file (serverz --list-models). A switch left alone stays "default": the engine's.
+Set-Splash "Reading the options..." 45
+. (Join-Path $PSScriptRoot "launcher-switches.ps1")
+$script:catalog = @(Read-OptionCatalog (Join-Path $PSScriptRoot "options.tsv"))
+$optJson = Join-Path $env:USERPROFILE ".inferzero\options.json"
+function Read-OptChoice {
+  $c = @{}
+  if (Test-Path -LiteralPath $optJson) { try { (Get-Content -Encoding UTF8 -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
+  return $c
+}
+# (which kinds of PC this is: scripts\pc-kinds.ps1, shared with zero-server options)
+. (Join-Path $PSScriptRoot "pc-kinds.ps1")
+$script:pcKinds = @(); try { $script:pcKinds = @(Get-PcKinds) } catch {}
+$script:gpuCount = 1; try { $script:gpuCount = Get-DiscreteGpuCount } catch {}
+$script:optChoice = Read-OptChoice  # (the switches' choices: options.json's, changed here; Start passes the difference)
+$script:swFilling = $false
+
+$modelHead = New-Label "Select a model" $true
+$modelHead.Font = Font 11 "Regular" $uiHead; $modelHead.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 4), (S 3), (S 6))
+Add-Span $modelHead
+# the tip of the switch under the mouse or with the keyboard focus, under the switches (the tooltip has it too)
+# (a fixed three lines, cut with an ellipsis: a long tip pushed the rest of the panel down; the tooltip has it all)
+$tipLbl = New-Label ""; $tipLbl.ForeColor = $Pal.sub; $tipLbl.AutoSize = $false; $tipLbl.AutoEllipsis = $true
+$tipLbl.Height = [int]($tipLbl.Font.GetHeight() * 3.4 * $script:dpiK) + (S 4); $tipLbl.Width = S 420
+function Show-Tip([string]$t) { $tipLbl.Text = $t }
+# (the info mark: Windows' own Info glyph, a circled i (U+E946 in Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets
+#  on Windows 10), as Windows Settings draws it; "(i)" where neither font is there)
+$infoFont = if ($fams -contains "Segoe Fluent Icons") { "Segoe Fluent Icons" } elseif ($fams -contains "Segoe MDL2 Assets") { "Segoe MDL2 Assets" } else { "" }
+function New-InfoMark([string]$t) {
+  $i = New-Label $(if ($infoFont) { [string][char]0xE946 } else { "(i)" })
+  if ($infoFont) { $i.Font = New-Object System.Drawing.Font($infoFont, 10); $i.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 8), (S 3), 0) }
+  $i.ForeColor = $Pal.accent; $tips.SetToolTip($i, $t); $i.Tag = $t; $i.AccessibleName = "About this option"; $i.AccessibleDescription = $t
+  $i.Cursor = [System.Windows.Forms.Cursors]::Help
+  $i.Add_MouseEnter({ param($s) Show-Tip $s.Tag }); $i
+}
+function Hook-Tip($ctl, [string]$t) {
+  $tips.SetToolTip($ctl, $t); $ctl.AccessibleDescription = $t
+  $ctl.Add_MouseEnter({ param($s) Show-Tip $s.AccessibleDescription })
+  $ctl.Add_Enter({ param($s) Show-Tip $s.AccessibleDescription })
+}
+# a choose-one group: toggle buttons in one panel (radio buttons: one on, the arrow keys move between them)
+function New-Choice([string]$name) {
+  $p = New-Object System.Windows.Forms.FlowLayoutPanel; $p.AutoSize = $true; $p.WrapContents = $false
+  $p.Margin = New-Object System.Windows.Forms.Padding(0); $p.Tag = $name; $p.AccessibleName = $name; $p
+}
+function Paint-Choice($rb) {
+  if ($rb.Checked) { $rb.BackColor = $Pal.accent; $rb.ForeColor = $Pal.onAccent } else { $rb.BackColor = $Pal.card; $rb.ForeColor = $(if ($rb.Enabled) { $Pal.text } else { $Pal.sub }) }
+}
+# $items: @{ value; label } each; $sel: the value on
+function Set-Choices($panel, $items, [string]$sel, [bool]$enabled, [string]$tip) {
+  $script:swFilling = $true
+  try {
+    $panel.SuspendLayout()
+    foreach ($c in @($panel.Controls)) { $c.Dispose() }
+    $panel.Controls.Clear()
+    foreach ($it in $items) {
+      $rb = New-Object System.Windows.Forms.RadioButton
+      $rb.Appearance = "Button"; $rb.AutoSize = $true; $rb.FlatStyle = "Flat"; $rb.TextAlign = "MiddleCenter"
+      $rb.Padding = New-Object System.Windows.Forms.Padding((S 6), 0, (S 6), 0)
+      $rb.Margin = New-Object System.Windows.Forms.Padding(0, (S 3), 0, 0)
+      $rb.FlatAppearance.BorderColor = $Pal.line; $rb.FlatAppearance.CheckedBackColor = $Pal.accent
+      $rb.Text = $it.label; $rb.Tag = $it.value; $rb.Enabled = $enabled; $rb.Checked = ($it.value -eq $sel)
+      $rb.AccessibleName = "$($panel.Tag): $($it.label)"
+      if ($tip) { Hook-Tip $rb $tip }
+      $rb.Add_CheckedChanged({ param($s) Paint-Choice $s; if ($s.Checked -and -not $script:swFilling) { Set-GroupChoice $s.Parent.Tag $s.Tag } })
+      Paint-Choice $rb
+      [void]$panel.Controls.Add($rb)
+    }
+    $panel.ResumeLayout()
+  } finally { $script:swFilling = $false }
+}
+function New-Reason { $r = New-Label ""; $r.ForeColor = $Pal.sub; $r }
+$draftPanel = New-Choice "Drafting"; $draftWhy = New-Reason
+$draftRow = Add-Opt "Drafting" $draftPanel; [void]$draftRow.Controls.Add($draftWhy)
+[void]$draftRow.Controls.Add((New-InfoMark "Drafting: small, fast guesses of the next tokens, each checked by the model itself, so the text stays the same and comes faster. MTP: the model's own draft block (a Gemma drafter on Gemma). DFlash2: a separate drafter, found next to the model. MTP + DFlash2: both, picked per step."))
+$imgChk = New-Check "on"; $imgWhy = New-Reason
+$imgRow = Add-Opt "Images" $imgChk; [void]$imgRow.Controls.Add($imgWhy)
+[void]$imgRow.Controls.Add((New-InfoMark "Images (and audio on Gemma E4B): the model's image encoder is loaded, which takes GPU memory from the context. Off: a longer context."))
+$attnPanel = New-Choice "Attention"; $attnWhy = New-Reason
+$attnRow = Add-Opt "Attention" $attnPanel; [void]$attnRow.Controls.Add($attnWhy)
+$mgPanel = New-Choice "Multi-GPU"; $mgWhy = New-Reason
+$mgRow = Add-Opt "Multi-GPU" $mgPanel; [void]$mgRow.Controls.Add($mgWhy)
+[void]$mgRow.Controls.Add((New-InfoMark "Multi-GPU: one model over several cards. Split by tensors: each GPU holds a share of every layer (the default). Split by layers: each GPU holds a range of the layers, for cards of different kinds or slow links."))
+Add-Span (New-Head "Speed and accuracy")
+# one row a switch: its check box (three states when the engine picks the default: the square is "automatic"),
+# the reason when it does not apply, and (i)
+$script:swRows = [ordered]@{}
+foreach ($o in $script:catalog) {
+  if ((Test-SwValue $o) -or @(Get-SwChoices $o).Count -or $o.id -eq "split_layer") { continue }  # (fields and groups of their own)
+  $row = New-Object System.Windows.Forms.FlowLayoutPanel; $row.AutoSize = $true; $row.WrapContents = $true
+  $row.Margin = New-Object System.Windows.Forms.Padding(0)
+  $cb = New-Check $o.title; $cb.Tag = $o.id
+  $auto = (Get-OptDefault $o) -eq "auto"
+  $cb.ThreeState = $auto
+  $tip = (Get-SwTip $script:catalog $o) + "`r`nDefault: $($o.default).   zero-server -Opt $($o.id) / -NoOpt $($o.id)"
+  Hook-Tip $cb $tip
+  $why = New-Reason
+  [void]$row.Controls.Add($cb); [void]$row.Controls.Add($why); [void]$row.Controls.Add((New-InfoMark $tip))
+  $cb.Add_CheckStateChanged({ param($s) if (-not $script:swFilling) { Set-Switch $s.Tag $s.CheckState } })
+  Add-Span $row
+  $script:swRows[$o.id] = @{ box = $cb; why = $why; row = $o; auto = $auto; panel = $row }
+}
+$naChk = New-Check ""; $naChk.ForeColor = $Pal.sub
+$naChk.Add_CheckedChanged({ Update-Switches })
+Add-Span $naChk
+Add-Span $tipLbl
+$opt.Add_Resize({ Fit-Rows })
+[void](Add-Opt "Context (tokens)" $ctxBox "auto: the largest that fits")
+# the fit bar: weights, context and buffers against this GPU's memory (amber above 90 %, red when it will not fit),
+# with the parts or the reason under it
+$fitBar = New-Object System.Windows.Forms.Panel
+$fitBar.Size = New-Object System.Drawing.Size((S 360), (S 14)); $fitBar.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 8), (S 3), 0)
+$fitBar.AccessibleName = "GPU memory"; $script:fitParts = $null
+$fitBar.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics; $w = $s.Width - 1; $h = $s.Height - 1
+    $bg = New-Object System.Drawing.SolidBrush($Pal.off); $g.FillRectangle($bg, 0, 0, $w, $h); $bg.Dispose()
+    $fp = $script:fitParts
+    if ($fp -and $fp.free -gt 0) {
+      $x = 0.0
+      $col = if ($fp.auto) { $Pal.accent } elseif ($fp.need -gt $fp.free) { $Pal.bad } elseif ($fp.need -gt 0.9 * $fp.free) { $Pal.warn } else { $Pal.accent }  # (auto: full by design)
+      foreach ($part in @(@($fp.weights, 255), @($fp.context, 170), @($fp.buffers, 110))) {
+        $pw = [math]::Min($w - $x, $w * [double]$part[0] / [math]::Max($fp.free, $fp.need))
+        if ($pw -le 0) { continue }
+        $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int]$part[1], $col))
+        $g.FillRectangle($b, [single]$x, 0, [single]$pw, $h); $b.Dispose(); $x += $pw
+      }
+    }
+    $pen = New-Object System.Drawing.Pen($Pal.line); $g.DrawRectangle($pen, 0, 0, $w, $h); $pen.Dispose()
+  })
+$fitLbl = New-Label ""
+$fitBox = New-Object System.Windows.Forms.FlowLayoutPanel; $fitBox.AutoSize = $true; $fitBox.FlowDirection = "TopDown"; $fitBox.WrapContents = $false
+$fitBox.Margin = New-Object System.Windows.Forms.Padding(0)
+[void]$fitBox.Controls.Add($fitBar); [void]$fitBox.Controls.Add($fitLbl)
+[void](Add-Opt "GPU memory" $fitBox)
+# what was changed from the defaults, with Reset
+$chgLbl = New-Label "nothing"; $chgLbl.ForeColor = $Pal.sub; $chgLbl.MaximumSize = New-Object System.Drawing.Size((S 440), 0)
+$resetBtn = New-Button "Reset" 70
+$resetBtn.AccessibleName = "Reset the switches to the defaults"
+$chgRow = Add-Opt "Changed from the defaults" $chgLbl; [void]$chgRow.Controls.Add($resetBtn)
+$advChk = New-Check "Advanced (port, network, slots, presets, speech, ...)"
+$advChk.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 4))
+Add-Span $advChk
+
+# ---- Advanced: every other server option zero-server.ps1 passes on. Each field shows what the server picks for the
+# selected model; a field you change turns yellow and is passed on (the others are left to the server)
 # presets: named sets of options (and the model), the same files zero-server start -Preset <name> reads
 $presetBox = New-Combo @() 170
 $presetSave = New-Button "Save as..." 90
@@ -366,15 +554,9 @@ $presetDel = New-Button "Delete" 70
 $presetPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $presetPanel.AutoSize = $true; $presetPanel.WrapContents = $false; $presetPanel.Margin = New-Object System.Windows.Forms.Padding(0)
 [void]$presetPanel.Controls.Add($presetBox); [void]$presetPanel.Controls.Add($presetSave); [void]$presetPanel.Controls.Add($presetDel)
-$opt.Controls.Add((New-Label "Preset")); $opt.Controls.Add($presetPanel)
-$optNote = New-Label "Filled in with the best values for the selected model. Change one to override it (yellow)."
-$optNote.ForeColor = $Pal.sub
-$opt.Controls.Add($optNote); $opt.SetColumnSpan($optNote, 2)
-# the options most people change; the rest behind "Show advanced options"
-[void](Add-Opt "Context (tokens)" $ctxBox "auto: the largest that fits")
-# whether the options as set fit the GPU memory (from the model's --list-models numbers, as zero-server -DryRun)
-$fitLbl = New-Label ""
-[void](Add-Opt "GPU memory" $fitLbl)
+[void](Add-Opt "Preset" $presetPanel -Advanced)
+[void](Add-Opt "Port" $portBox -Advanced)
+$netPanel = Add-Opt "Network" $netChk -Advanced
 # the addresses other apps connect to (OpenAI / Anthropic / Ollama formats), with a Copy button each
 $apiPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $apiPanel.AutoSize = $true; $apiPanel.WrapContents = $false; $apiPanel.Margin = New-Object System.Windows.Forms.Padding(0)
@@ -390,18 +572,32 @@ $apiFmt.Add_SelectedIndexChanged({ Update-Api })
 $apiCopy.Add_Click({ Update-Api; [System.Windows.Forms.Clipboard]::SetText($apiBox.Text) })
 [void]$apiPanel.Controls.Add($apiFmt); [void]$apiPanel.Controls.Add($apiBox); [void]$apiPanel.Controls.Add($apiCopy)
 Update-Api
-[void](Add-Opt "API address" $apiPanel "for other apps; API key: anything; model: the id in the list")
+[void](Add-Opt "API address" $apiPanel "for other apps; API key: anything; model: the id in the list" -Advanced)
+[void](Add-Opt "Conversations at once" $slotsBox "-Slots: each its own KV cache; the context is shared out (auto)" -Advanced)
+[void](Add-Opt "GPUs (one model split)" $gpusBox "-Gpus: the cards a split model uses (Multi-GPU above sets it)" -Advanced)
+[void](Add-Opt "Decoded weights kept (GB)" $budgetBox "0 = chosen with the context" -Advanced)
 [void](Add-Opt "MTP drafts per step" $draftBox -Advanced)
-[void](Add-Opt "Thinking budget (tokens)" $thinkBox)
-[void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; all models together (default 8); 0 = off")
-[void](Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart")
-[void](Add-Opt "Accuracy" $preciseChk -Advanced)
-$netPanel = Add-Opt "" $netChk
-# (the command-line names in tooltips, for zero-server / serverz users; the labels say what each does)
-$tips = New-Object System.Windows.Forms.ToolTip; $tips.AutoPopDelay = 15000
-foreach ($tp in @(@($noSwapChk, "zero-server -NoSwap (serverz --no-swap)"), @($noMtpChk, "zero-server -NoMtp"),
-    @($noStreamChk, "zero-server -NoStream (serverz --no-stream)"),
-    @($preciseChk, "zero-server -Precise (serverz --precise). Flash Next's KL against f32 on prose 0.0091 by default, 0.0060 precise"),
+[void](Add-Opt "Thinking budget (tokens)" $thinkBox -Advanced)
+[void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; all models together (default 8); 0 = off" -Advanced)
+[void](Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart" -Advanced)
+[void](Add-Opt "Prompt chunk" $chunkBox "smaller = more context, slower prompts" -Advanced)
+[void](Add-Opt "Image tokens min / max" $imgMinBox -Advanced)
+[void](Add-Opt "" $imgMaxBox -Advanced)
+[void](Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.inferzero\zero\sessions" -Advanced)
+[void](Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced)
+[void](Add-Opt "" $noPrefixChk -Advanced)
+[void](Add-Opt "" $noSwapChk -Advanced)
+[void](Add-Opt "" $noStreamChk -Advanced)
+[void](Add-Opt "" $keepThinkChk -Advanced)
+# ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
+Add-Span (New-Head "Speech to text") -Advanced
+[void](Add-Opt "Whisper" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart" -Advanced)
+[void](Add-Opt "Qwen3-ASR" $asrBox "auto | off (Whisper alone) | a .gguf file" -Advanced)
+[void](Add-Opt "Whisper encoder on" $whDevBox -Advanced)
+[void](Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced)
+# (f32 attention: a test switch, out of the window since 2026-11-19 (launcher review); a preset that sets it still does.
+#  No MTP, Images and Precise mode are the Drafting, Images and Precise mode switches above)
+foreach ($tp in @(@($noSwapChk, "zero-server -NoSwap (serverz --no-swap)"), @($noStreamChk, "zero-server -NoStream (serverz --no-stream)"),
     @($keepThinkChk, "zero-server -PreserveThinking"), @($netChk, "zero-server -ListenHost 0.0.0.0 (serverz --host 0.0.0.0)"),
     @($whisperBox, "zero-server -Whisper"), @($asrBox, "zero-server -Asr"), @($draftBox, "zero-server -MtpDrafts (serverz --mtp-drafts)"),
     @($budgetBox, "zero-server -BudgetGb (serverz --budget): decoded W8 weights kept on the GPU"))) {
@@ -426,93 +622,7 @@ function Update-NetWarn {
 }
 $netChk.Add_CheckedChanged({ Update-NetWarn })
 $portBox.Add_ValueChanged({ Update-NetWarn })
-# ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
-$speechHead = New-Label "Speech to text" $true
-$speechHead.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 2))
-$opt.Controls.Add($speechHead); $opt.SetColumnSpan($speechHead, 2)
-[void](Add-Opt "Whisper" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart")
-[void](Add-Opt "Qwen3-ASR" $asrBox "auto | off (Whisper alone) | a .gguf file")
-[void](Add-Opt "Whisper encoder on" $whDevBox -Advanced)
-[void](Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced)
-# ---- speed and accuracy options (QUEUE O1, 2026-11-21): one row a catalog entry of scripts\options.tsv (zero-server
-# start -Opt / -NoOpt / -DefaultOpt, kept in %USERPROFILE%\.inferzero\options.json), each with what it does and its
-# badges; one not for this PC greyed with the reason, not hidden. Precise mode and the decoded weights have fields of
-# their own above
-$optHead = New-Label "Speed and accuracy options" $true
-$optHead.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 2))
-$opt.Controls.Add($optHead); $opt.SetColumnSpan($optHead, 2)
-$script:catalog = @()
-$catTsv = Join-Path $PSScriptRoot "options.tsv"
-if (Test-Path -LiteralPath $catTsv) {
-  $cl = [IO.File]::ReadAllText($catTsv, (New-Object Text.UTF8Encoding $false)) -split "\r?\n" | Where-Object { $_ -ne "" }
-  $cc = $cl[0] -split "`t"
-  $script:catalog = @(foreach ($l in $cl[1..($cl.Count - 1)]) {
-    $v = $l -split "`t"; $d = [ordered]@{}
-    for ($i = 0; $i -lt $cc.Count; $i++) { $d[$cc[$i]] = $(if ($i -lt $v.Count) { $v[$i] } else { "" }) }
-    [pscustomobject]$d
-  })
-}
-$optJson = Join-Path $env:USERPROFILE ".inferzero\options.json"
-function Read-OptChoice {
-  $c = @{}
-  if (Test-Path -LiteralPath $optJson) { try { (Get-Content -Encoding UTF8 -LiteralPath $optJson -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $c[$_.Name] = "$($_.Value)" } } catch {} }
-  return $c
-}
-# (which kinds of PC this is: scripts\pc-kinds.ps1, shared with zero-server options)
-. (Join-Path $PSScriptRoot "pc-kinds.ps1")
-$script:pcKinds = @(); try { $script:pcKinds = @(Get-PcKinds) } catch {}
-$script:optBoxes = [ordered]@{}
-$kindWords = @{ "alchemist" = "Arc A-series cards"; "b-series" = "Arc B-series cards"; "igpu-xe2" = "Lunar Lake / Panther Lake";
-  "igpu-140t" = "the Arc 140T"; "igpu-xe-lpg" = "Core Ultra (Meteor Lake)"; "multi-gpu" = "several GPUs" }
-foreach ($o in $script:catalog) {
-  if ($o.id -in "fn_precise", "budget") { continue }  # (their own fields above)
-  $box = New-Combo @("default", "on", "off") 80
-  $fit = @($o.best_for -split ';' | Where-Object { $kindWords.ContainsKey($_) })
-  $forHere = -not $fit.Count -or @($fit | Where-Object { $_ -in $script:pcKinds }).Count -gt 0
-  $badges = @()
-  if ($forHere -and $fit.Count) { $badges += "recommended for this PC" }
-  if (-not $forHere) { $badges += "not for this PC (for " + (($fit | ForEach-Object { $kindWords[$_] }) -join ", ") + ")" }
-  $badges += $(if ($o.output -eq "same") { "same output" } else { "slightly different output (checked)" })
-  if ($o.cost -match 'VRAM') { $badges += "uses VRAM: $($o.cost)" }
-  if ($o.status -eq "experimental") { $badges += "experimental" }
-  if ($o.conflicts) { $badges += $o.conflicts }
-  $row = Add-Opt $o.title $box ("default: " + $o.default)
-  $bt = $badges -join (" " + [char]0xB7 + " ")  # (a middle dot; written as a code: Windows PowerShell reads this file as ANSI)
-  $what = New-Label ($o.what + ". " + $bt.Substring(0, 1).ToUpper() + $bt.Substring(1) + "."); $what.ForeColor = $Pal.sub
-  $what.MaximumSize = New-Object System.Drawing.Size((S 560), 0)
-  [void]$row.Controls.Add($what); $row.WrapContents = $true; $row.MaximumSize = New-Object System.Drawing.Size((S 760), 0)
-  if (-not $forHere) { $box.ForeColor = $Pal.sub }
-  $tips.SetToolTip($box, "zero-server -Opt $($o.id) / -NoOpt $($o.id) ($($o.kind) $($o.name)); measured: $($o.measured); docs\options.md")
-  $script:optBoxes[$o.id] = $box
-}
-function Fill-OptBoxes {
-  $c = Read-OptChoice
-  foreach ($id in $script:optBoxes.Keys) {
-    $v = if ($c.ContainsKey($id)) { $c[$id] } else { "default" }
-    $script:optBoxes[$id].SelectedIndex = [math]::Max(0, $script:optBoxes[$id].Items.IndexOf($(if ($v -in "on", "off") { $v } elseif ($v -eq "default") { "default" } else { "on" })))
-  }
-}
-Fill-OptBoxes
-$advChk = New-Check "Show advanced options"
-$advChk.Margin = New-Object System.Windows.Forms.Padding((S 3), (S 12), (S 3), (S 4))
-$opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
-[void](Add-Opt "Port" $portBox -Advanced)
-[void](Add-Opt "Prompt chunk" $chunkBox "smaller = more context, slower prompts" -Advanced)
-[void](Add-Opt "Conversations at once" $slotsBox "-Slots: each its own KV cache; the context is shared out (auto)" -Advanced)
-[void](Add-Opt "GPUs (one model split)" $gpusBox "-Gpus: Qwen3.5 / 3.6 / 3.8 over N cards, the context sized per GPU (auto)" -Advanced)
-[void](Add-Opt "Images / audio" $visionBox "off: no mmproj, a longer context" -Advanced)
-[void](Add-Opt "Image tokens min / max" $imgMinBox -Advanced)
-[void](Add-Opt "" $imgMaxBox -Advanced)
-[void](Add-Opt "Decoded weights kept (GB)" $budgetBox "0 = chosen with the context" -Advanced)
-[void](Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.inferzero\zero\sessions" -Advanced)
-[void](Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced)
-[void](Add-Opt "" $noPrefixChk -Advanced)
-[void](Add-Opt "" $noSwapChk -Advanced)
-[void](Add-Opt "" $noMtpChk -Advanced)
-[void](Add-Opt "" $noStreamChk -Advanced)
-[void](Add-Opt "" $keepThinkChk -Advanced)
-# (f32 attention: a test switch, out of the window since 2026-11-19 (launcher review); a preset that sets it still does)
-function Show-Advanced([bool]$on) { foreach ($r in $script:advRows) { $r[0].Visible = $on; $r[1].Visible = $on } }
+function Show-Advanced([bool]$on) { $opt.SuspendLayout(); foreach ($r in $script:advRows) { $r[0].Visible = $on; $r[1].Visible = $on }; $opt.ResumeLayout() }
 $advChk.Add_CheckedChanged({ Show-Advanced $advChk.Checked })
 Show-Advanced $false
 
@@ -579,13 +689,194 @@ foreach ($k in $fields.Keys) {
 # the ASR / Whisper fields only count with speech on
 function Update-Speech { $asrBox.Enabled = $whDevBox.Enabled = $whMaxBox.Enabled = (Get-Field "whisper") -notin "", "off" }
 $whisperBox.Add_TextChanged({ Update-Speech })
+# ---- one model a file: the model list's rows of a file (with and without the MTP block, the images, DFlash2) are
+# its Drafting and Images choices. The grid row's Tag is the list row these choices pick (what Start starts); the
+# file's group (its rows, the choices) is in the row's first cell's Tag
+function Get-DraftMode($e) {
+  if (-not $e.mtp) { return "off" }
+  if ("$($e.draft)" -eq "mtp" -or -not $e.dflash) { return "mtp" }
+  if ("$($e.draft)" -eq "dflash") { return "dflash" }
+  return "both"
+}
+function Get-DraftLabel([string]$d, $e) {
+  switch ($d) { "off" { "Off" } "mtp" { $(if ("$($e.arch)" -eq "gemma4") { "Drafter" } else { "MTP" }) } "both" { "MTP + DFlash2" } default { "DFlash2" } }
+}
+# the row for the file's Drafting and Images; Images off with no row of its own: a row with images, and Start
+# passes -Vision off (zero-server then takes the file's row without them, and passes the drafter itself)
+function Resolve-Entry($g) {
+  $e = @($g.entries | Where-Object { (Get-DraftMode $_) -eq $g.draft -and [bool]$_.vision -eq $g.img })[0]
+  if (-not $e) { $e = @($g.entries | Where-Object { (Get-DraftMode $_) -eq $g.draft })[0] }
+  if (-not $e) { $e = $g.entries[0] }
+  return $e
+}
+function Sel-Group { if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Cells["model"].Tag } else { $null } }
+function Sel-Entry { if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag } else { $null } }
+# the auto context of the row, or of its variant when a switch with one is on (serverz --list-models "variants")
+function Get-AutoCtx($m) {
+  if (-not $m) { return 0 }
+  foreach ($v in @($m.variants)) {
+    if (-not $v) { continue }
+    $o = Get-SwRow $script:catalog $v.option
+    if (-not $o) { continue }
+    $c = $(if ($v.option -eq "fn_precise") { $(if ($script:over.ContainsKey("precise") -and $script:over["precise"]) { "on" } else { "" }) } else { "$($script:optChoice[$v.option])" })
+    $val = $(if ($c -eq "on") { $(if ($o.on) { $o.on } else { "on" }) } elseif ($c -eq "off") { $o.off } else { $c })
+    if ($c -and "$val" -eq "$($v.value)" -and $v.ctx) { return [int]$v.ctx }
+  }
+  return [int]$m.ctx
+}
+# the switches' state for the rules (scripts\launcher-switches.ps1): the words of all the file's rows
+function Get-SwState {
+  $g = Sel-Group; $m = Sel-Entry
+  $words = @()
+  if ($g) { foreach ($e in $g.entries) { if ($e.opts) { $words += @($e.opts.PSObject.Properties | Where-Object { $_.Value -eq $true } | ForEach-Object { $_.Name }) } } }
+  $ch = @{}; foreach ($k in $script:optChoice.Keys) { if ($k -ne "fn_precise") { $ch[$k] = $script:optChoice[$k] } }
+  if (($m -and $m.precise_only) -or ($script:over.ContainsKey("precise") -and $script:over["precise"])) { $ch["fn_precise"] = "on" }
+  $gp = $(if ($script:over.ContainsKey("gpus")) { [int]$script:over["gpus"] } else { 1 })
+  return @{ words = @($words | Select-Object -Unique); pc = $script:pcKinds; gpus = $gp; drafting = [bool]($g -and $g.draft -ne "off"); choice = $ch }
+}
+$draftTip = "Drafting: small, fast guesses of the next tokens, each checked by the model itself, so the text stays the same and comes faster."
+# a choose-one group's buttons: built again when its choices change, else only their state (the keyboard focus stays)
+$script:choiceKeys = @{}
+function Update-Choices($panel, $items, [string]$sel, $enabledOf, [string]$tip) {
+  $key = (@($items | ForEach-Object { "$($_.value)=$($_.label)" }) -join "|")
+  if ($script:choiceKeys[$panel.Tag] -ne $key) { Set-Choices $panel $items $sel $true $tip; $script:choiceKeys[$panel.Tag] = $key }
+  $script:swFilling = $true
+  try {
+    foreach ($rb in $panel.Controls) {
+      $rb.Enabled = [bool](& $enabledOf $rb.Tag)
+      $rb.Checked = ("$($rb.Tag)" -eq $sel)
+      Paint-Choice $rb
+    }
+  } finally { $script:swFilling = $false }
+}
+# the selected model's head line, Drafting and Images, then the switches
+function Refresh-Model {
+  $g = Sel-Group
+  if (-not $g) { $modelHead.Text = "Select a model"; Update-Switches; return }
+  $grid.SelectedRows[0].Tag = Resolve-Entry $g
+  Fit-Rows
+  $e0 = $g.entries[0]
+  $modelHead.Text = "{0}   {1:N1} GB file" -f $g.title, ($e0.bytes / 1e9)
+  $modes = @(foreach ($d in "off", "mtp", "both", "dflash") { if (@($g.entries | Where-Object { (Get-DraftMode $_) -eq $d }).Count) { $d } })
+  $items = @(foreach ($d in $modes) { [pscustomobject]@{ value = $d; label = (Get-DraftLabel $d $e0) } })
+  $many = $modes.Count -gt 1
+  Update-Choices $draftPanel $items $g.draft { param($v) $many } $draftTip
+  $draftWhy.Text = $(if ($many) { "" } else { "this model has no MTP block or drafter" })
+  $hasImg = @($g.entries | Where-Object { $_.vision }).Count -gt 0
+  $script:swFilling = $true
+  try { $imgChk.Checked = $hasImg -and $g.img; $imgChk.Enabled = $hasImg } finally { $script:swFilling = $false }
+  $imgChk.AccessibleName = "Images, " + $(if ($imgChk.Checked) { "on" } else { "off" })
+  $imgWhy.Text = $(if ($hasImg) { "" } else { "this model reads no images" })
+  Update-Switches
+}
+$imgChk.Add_CheckedChanged({
+    if ($script:swFilling) { return }
+    $g = Sel-Group
+    if ($g) { $g.img = $imgChk.Checked; Refresh-Model; Show-Detail; Fill-Defaults }
+  })
+function Update-Switches {
+  $st = Get-SwState; $m = Sel-Entry; $na = 0
+  $script:swFilling = $true
+  try {
+    foreach ($id in $script:swRows.Keys) {
+      $r = $script:swRows[$id]; $o = $r.row; $cb = $r.box
+      $why = Get-SwReason $script:catalog $o $st
+      if ($id -eq "fn_precise" -and $m -and $m.precise_only) { $why = "always on for this model" }
+      if ($id -eq "fn_precise") { $cb.CheckState = $(if ($st.choice.ContainsKey("fn_precise")) { "Checked" } else { "Unchecked" }) }
+      elseif ($script:optChoice.ContainsKey($id)) { $cb.CheckState = $(if ($script:optChoice[$id] -eq "off") { "Unchecked" } else { "Checked" }) }
+      elseif ($r.auto) { $cb.CheckState = "Indeterminate" }
+      else { $cb.CheckState = $(if ((Get-OptDefault $o) -eq "on") { "Checked" } else { "Unchecked" }) }
+      $cb.Enabled = -not $why
+      $r.panel.Visible = (-not $why) -or $naChk.Checked
+      if ($why) { $na++ }
+      $r.why.Text = $(if ($why) { $why } elseif ($cb.CheckState -eq "Indeterminate") { "automatic" } else { "" })
+      $state = switch ("$($cb.CheckState)") { "Checked" { "on" } "Unchecked" { "off" } default { "automatic" } }
+      $cb.AccessibleName = "$($o.title), $state" + $(if ($why) { ", $why" } else { "" })
+      $changed = $(if ($id -eq "fn_precise") { [bool]$script:over["precise"] } else { $script:optChoice.ContainsKey($id) })
+      $cb.ForeColor = $(if ($changed -and -not $why) { $Pal.warn } else { $Pal.text })
+    }
+    $naChk.Text = $(if ($naChk.Checked) { "Hide the $na that don't apply to this model or PC" } else { "Show the $na that don't apply to this model or PC" })
+    $naChk.Visible = $na -gt 0
+  } finally { $script:swFilling = $false }
+  # Attention: the model's default or the two forms (the qsa option's variants)
+  $qo = Get-SwRow $script:catalog "qsa"
+  if ($qo) {
+    $qwhy = Get-SwReason $script:catalog $qo $st
+    $items = @([pscustomobject]@{ value = ""; label = "Model's default" }) + @(Get-SwChoices $qo)
+    Update-Choices $attnPanel $items "$($script:optChoice['qsa'])" { param($v) -not $qwhy } ((Get-SwTip $script:catalog $qo) + "`r`nDefault: $($qo.default).")
+    $attnWhy.Text = $qwhy
+  }
+  # Multi-GPU: one GPU, or the model split over the cards by tensors or by layers (split_layer)
+  $lo = Get-SwRow $script:catalog "split_layer"
+  $mgSel = $(if ($st.gpus -lt 2) { "one" } elseif ($script:optChoice["split_layer"] -eq "on") { "layer" } else { "tensor" })
+  $st2 = Get-SwState; $st2.gpus = [math]::Max(2, $st.gpus)
+  $lwhy = $(if ($lo) { Get-SwReason $script:catalog $lo $st2 } else { "not in the catalog" })
+  $mgItems = @([pscustomobject]@{ value = "one"; label = "One GPU" }, [pscustomobject]@{ value = "tensor"; label = "Split by tensors" }, [pscustomobject]@{ value = "layer"; label = "Split by layers" })
+  $multi = $script:gpuCount -ge 2
+  Update-Choices $mgPanel $mgItems $mgSel { param($v) $multi -and ($v -ne "layer" -or -not $lwhy) } $(if ($lo) { (Get-SwTip $script:catalog $lo) } else { "" })
+  $mgWhy.Text = $(if (-not $multi) { "needs 2 or more GPUs" } elseif ($lwhy) { "Split by layers: $lwhy" } else { "" })
+  Update-Changed
+}
+# a switch clicked: on / off, or back to the default when that is what it shows now (three states: the square is
+# the engine's own choice)
+function Set-Switch([string]$id, $state) {
+  if ($id -eq "fn_precise") {
+    $script:over["precise"] = ("$state" -eq "Checked")  # (off too: -NoPrecise, else a running server keeps it)
+  } else {
+    $r = $script:swRows[$id]
+    $v = switch ("$state") { "Checked" { "on" } "Unchecked" { "off" } default { "" } }
+    if (-not $r.auto -and $v -eq (Get-OptDefault $r.row)) { $v = "" }
+    if ($v) { $script:optChoice[$id] = $v } else { $script:optChoice.Remove($id) }
+  }
+  Update-Switches; Update-Fit
+  $script:swRows[$id].box.Focus() | Out-Null
+}
+# a choose-one group's button pressed
+function Set-GroupChoice([string]$name, $value) {
+  $g = Sel-Group
+  switch ($name) {
+    "Drafting" { if ($g) { $g.draft = $value; Refresh-Model; Show-Detail; Fill-Defaults } ; return }
+    "Attention" { if ($value) { $script:optChoice["qsa"] = $value } else { $script:optChoice.Remove("qsa") } }
+    "Multi-GPU" {
+      if ($value -eq "one") { $script:over["gpus"] = [double]1 } else { $script:over["gpus"] = [double][math]::Max(2, $script:gpuCount) }
+      if ($value -eq "layer") { $script:optChoice["split_layer"] = "on" } else { $script:optChoice.Remove("split_layer") }
+      Put-Field "gpus" $(if ($script:over.ContainsKey("gpus")) { $script:over["gpus"] } else { 1 }); Show-Mark "gpus"
+    }
+  }
+  Update-Switches; Update-Fit
+}
+# what was changed from the defaults: the file's Drafting and Images, Precise mode, the GPUs and the switches
+function Update-Changed {
+  $g = Sel-Group; $x = @()
+  if ($g) {
+    if ($g.draft -ne $g.draft0) { $x += "Drafting: " + (Get-DraftLabel $g.draft $g.entries[0]) }
+    if ($g.img -ne $g.img0) { $x += "Images: " + $(if ($g.img) { "on" } else { "off" }) }
+  }
+  if ($script:over["precise"]) { $x += "Precise mode" }
+  if ($script:over.ContainsKey("gpus") -and [int]$script:over["gpus"] -gt 1) { $x += "$([int]$script:over['gpus']) GPUs" }
+  $x += @(Get-SwChanged @($script:catalog | Where-Object { $_.id -ne "fn_precise" -and -not (Test-SwValue $_) }) $script:optChoice)
+  $chgLbl.Text = $(if ($x.Count) { $x -join "; " } else { "nothing" })
+  $resetBtn.Enabled = $x.Count -gt 0
+}
+# Reset: the switches, Drafting, Images, Precise mode and the GPUs back to the defaults (Start then passes
+# -DefaultOpt for the switches options.json had). Value options (a budget) stay: they have fields of their own
+function Reset-Switches {
+  foreach ($o in $script:catalog) { if (-not (Test-SwValue $o)) { $script:optChoice.Remove($o.id) } }
+  $script:over["precise"] = $false; $script:over["gpus"] = [double]1  # (off and one GPU: also for a running server)
+  $g = Sel-Group
+  if ($g) { $g.draft = $g.draft0; $g.img = $g.img0 }
+  Refresh-Model; Show-Detail; Fill-Defaults
+}
+$resetBtn.Add_Click({ Reset-Switches; $msg.Text = "The switches are back to the defaults (Start keeps it that way)." })
+
 # the selected model's best values (what the server picks itself), into every field not overridden
 function Fill-Defaults {
-  $m = if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag } else { $null }
+  $m = Sel-Entry
   $d = $null
   if ($m) { $d = $m.defaults }
+  $actx = Get-AutoCtx $m
   $v = [ordered]@{
-    port = $Port; ctx = $(if ($m -and $m.ctx) { "$($m.ctx)" } else { "auto" })
+    port = $Port; ctx = $(if ($m -and $actx) { "$actx" } else { "auto" })
     chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
@@ -596,31 +887,26 @@ function Fill-Defaults {
     Put-Field $k $(if ($script:over.ContainsKey($k)) { $script:over[$k] } else { $v[$k] })
     Show-Mark $k
   }
-  $draftBox.Enabled = $noMtpChk.Enabled = [bool]($m -and $m.mtp)
-  $imgMinBox.Enabled = $imgMaxBox.Enabled = $visionBox.Enabled = [bool]($m -and $m.vision)
+  $draftBox.Enabled = [bool]($m -and $m.mtp)
+  $imgMinBox.Enabled = $imgMaxBox.Enabled = [bool]($m -and $m.vision)
   $noStreamChk.Enabled = [bool]($m -and $m.moe)
-  # (only Flash Next has a precise mode; an AutoRound package runs only in it: the box shows it on and is disabled.
-  #  Set as filling, not as an edit: its change handler took it for the user's choice, and every model picked after
-  #  it started with -Precise; audit 2026-11-14)
-  $preciseOnly = [bool]($m -and $m.precise_only)
-  $preciseChk.Enabled = [bool]($m -and $m.arch -eq "qwen4exp") -and -not $preciseOnly
-  if ($preciseOnly) {
-    $script:filling = $true
-    try { $preciseChk.Checked = $true } finally { $script:filling = $false }
-  }
   Update-Speech
   Update-Fit
 }
 # whether the options fit: the model's fixed parts (weights, MTP block / drafter, buffers at the default chunk,
 # snapshots, encoders) + the KV cache of the context asked (per slot) + speech to text, against the GPU memory less
 # the driver's share. The same estimate as zero-server start -DryRun; with auto the server makes it fit itself.
+# Drawn as the fit bar (weights | context | buffers) with the parts under it.
 function Update-Fit {
-  $m = if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag } else { $null }
+  $m = Sel-Entry
   $mm = if ($m) { $m.memory } else { $null }
+  $script:fitParts = $null; $fitBar.Invalidate()
   if (-not $mm -or -not $mm.device) { $fitLbl.Text = $(if ($m) { "no estimate yet (Refresh list)" } else { "" }); $fitLbl.ForeColor = $Pal.sub; return }
   $free = [double]$mm.device - $mm.keep_free
   $gp = [math]::Max(1, [int](Get-Field "gpus"))  # (split: about 1 / N of the weights, snapshots and context per GPU)
-  $fixed = [double]$mm.weights / $gp + $mm.buffers + $mm.snapshots / $gp + $(if ($gp -gt 1) { 0 } else { [double]$mm.mtp + $mm.encoders })  # (a split runs without MTP and images)
+  $w = [double]$mm.weights / $gp
+  $g = Sel-Group; $enc = $(if ($g -and -not $g.img) { 0 } else { [double]$mm.encoders })  # (Images off: no encoder)
+  $buf = [double]$mm.buffers + $mm.snapshots / $gp + $(if ($gp -gt 1) { 0 } else { [double]$mm.mtp + $enc })  # (a split runs without MTP and images)
   $wh = Get-Field "whisper"; $as = Get-Field "asr"
   $speech = if ($wh -notin "", "off") { 8GB } elseif ($script:over.ContainsKey("asr") -and $as -notin "", "off") { 3.7GB } else { 0 }
   $ctx = Get-Field "ctx"
@@ -628,20 +914,26 @@ function Update-Fit {
   # (weights kept in RAM, serverz --list-models memory.host_weights: a model larger than a discrete card's memory, or a
   #  tight iGPU share; generation reads them over PCIe on a card, so it is slower)
   $hostTxt = if ($mm.host_weights -and [double]$mm.host_weights -gt 0) { "; {0:N1} GiB of the weights in RAM (slower generation)" -f ([double]$mm.host_weights / 1GB) } else { "" }
-  if ($ctx -eq "auto" -or -not $script:over.ContainsKey("ctx")) {
-    $need = $fixed + $mm.context / $gp
-    $fitLbl.Text = "{0:N1} of {1:N1} GiB at the auto context{2}{3}" -f ($need / 1GB), ($free / 1GB), $(if ($speech) { " (smaller with speech on)" } else { "" }), $hostTxt
+  $auto = $ctx -eq "auto" -or -not $script:over.ContainsKey("ctx")
+  if (-not $auto -and $ctx -notmatch '^\d+$') { $fitLbl.Text = "context: a number of tokens, or auto"; $fitLbl.ForeColor = $Pal.bad; return }
+  if ($auto) {
+    $actx = Get-AutoCtx $m
+    $kv = [double]$mm.context / $gp * $(if ($m.ctx -and $actx) { [double]$actx / $m.ctx } else { 1 })
+    $kv = [math]::Max([double]0, [math]::Min([double]$kv, [double]($free - $w - $buf)))  # (the server sizes the auto context to what is left)
+  } else { $kv = [double]$ctx / 1000 * $mm.context_per_1k * $slots / $gp }
+  $need = $w + $kv + $buf + $(if ($auto) { 0 } else { $speech })
+  $script:fitParts = @{ weights = $w; context = $kv; buffers = $buf + $(if ($auto) { 0 } else { $speech }); free = $free; need = $need; auto = $auto }
+  $fitBar.Invalidate()
+  $parts = "weights {0:N1} | context {1:N1} | buffers {2:N1}" -f ($w / 1GB), ($kv / 1GB), ($script:fitParts.buffers / 1GB)
+  $fitBar.AccessibleName = "GPU memory {0:N1} of {1:N1} GiB" -f ($need / 1GB), ($free / 1GB)
+  if ($auto) {
+    $fitLbl.Text = "{0:N1} / {1:N1} GiB at the auto context ({2:N0} tokens{3}): {4}{5}" -f ($need / 1GB), ($free / 1GB), (Get-AutoCtx $m), $(if ($speech) { "; smaller with speech on" } else { "" }), $parts, $hostTxt
     $fitLbl.ForeColor = $Pal.sub
-    return
-  }
-  if ($ctx -notmatch '^\d+$') { $fitLbl.Text = "context: a number of tokens, or auto"; $fitLbl.ForeColor = $Pal.bad; return }
-  $kv = [double]$ctx / 1000 * $mm.context_per_1k * $slots / $gp
-  $need = $fixed + $kv + $speech
-  if ($need -le $free) {
-    $fitLbl.Text = "fits: about {0:N1} of {1:N1} GiB (context {2:N1}{3}){4}" -f ($need / 1GB), ($free / 1GB), ($kv / 1GB), $(if ($speech) { ", speech {0:N1}" -f ($speech / 1GB) } else { "" }), $hostTxt
-    $fitLbl.ForeColor = $Pal.ok
+  } elseif ($need -le $free) {
+    $fitLbl.Text = "fits: {0:N1} / {1:N1} GiB: {2}{3}{4}" -f ($need / 1GB), ($free / 1GB), $parts, $(if ($speech) { ", speech {0:N1}" -f ($speech / 1GB) } else { "" }), $hostTxt
+    $fitLbl.ForeColor = $(if ($need -gt 0.9 * $free) { $Pal.warn } else { $Pal.ok })
   } else {
-    $fitLbl.Text = "may not fit: about {0:N1} of {1:N1} GiB. A smaller context, Images off, or auto" -f ($need / 1GB), ($free / 1GB)
+    $fitLbl.Text = "won't fit: {0:N1} / {1:N1} GiB ({2}). A smaller context, Images off, or auto" -f ($need / 1GB), ($free / 1GB), $parts
     $fitLbl.ForeColor = $Pal.bad
   }
 }
@@ -696,18 +988,20 @@ foreach ($n in $script:tabs.Keys) {
 $rightInner = New-Object System.Windows.Forms.Panel; $rightInner.Dock = "Fill"
 $rightInner.Controls.Add($tabBody); $rightInner.Controls.Add($tabStrip)
 
-$bottom = New-Object System.Windows.Forms.TableLayoutPanel
-$bottom.Dock = "Fill"; $bottom.ColumnCount = 2; $bottom.RowCount = 1
-foreach ($w in 46, 54) { [void]$bottom.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", $w))) }
-$bottom.Controls.Add((New-Card "Server options (used by Start)" $opt), 0, 0)
-$bottom.Controls.Add((New-Card "" $rightInner), 1, 0)
-
+Set-Splash "Laying out the window..." 65
+# (docs/launcher-design.md: the models on the left, one row a file, over the running server, its log and the model's
+#  details; the selected model's switches on the right)
 $gridCard = New-Card "" $grid
 $split = New-Object System.Windows.Forms.SplitContainer
 $split.Dock = "Fill"; $split.Orientation = "Horizontal"; $split.SplitterWidth = S 6
-$split.Padding = New-Object System.Windows.Forms.Padding((S 8), 0, (S 8), 0)
 [void]$split.Panel1.Controls.Add($gridCard)
-[void]$split.Panel2.Controls.Add($bottom)
+[void]$split.Panel2.Controls.Add((New-Card "" $rightInner))
+$bottom = New-Object System.Windows.Forms.TableLayoutPanel
+$bottom.Dock = "Fill"; $bottom.ColumnCount = 2; $bottom.RowCount = 1
+$bottom.Padding = New-Object System.Windows.Forms.Padding((S 8), 0, (S 8), 0)
+foreach ($w in 54, 46) { [void]$bottom.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", $w))) }
+$bottom.Controls.Add($split, 0, 0)
+$bottom.Controls.Add((New-Card "The selected model (Start uses these)" $opt), 1, 0)
 
 # ---- buttons and message line: the main actions; the rest in More
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -725,13 +1019,13 @@ $loadBar = New-Object System.Windows.Forms.ProgressBar
 $loadBar.Dock = "Top"; $loadBar.Height = S 6; $loadBar.Minimum = 0; $loadBar.Maximum = 100; $loadBar.Visible = $false
 $loadBar.MarqueeAnimationSpeed = 30
 
-$form.Controls.Add($split)
+$form.Controls.Add($bottom)
 $form.Controls.Add($buttons)
 $form.Controls.Add($msg)
 $form.Controls.Add($bar)      # (docked under the loading bar: the later Add docks first)
 $form.Controls.Add($loadBar)
 $form.Controls.Add($header)
-$form.Add_Load({ $split.SplitterDistance = [int]($split.Height * 0.42); Select-Tab "Running server" })
+$form.Add_Load({ $split.SplitterDistance = [int]($split.Height * 0.5); Select-Tab "Running server" })
 
 # ---- the More menu
 $more = New-Object System.Windows.Forms.ContextMenuStrip
@@ -878,8 +1172,8 @@ function Update-Status {
     $memBar.Visible = $memLbl.Visible = $false
   }
   foreach ($r in $grid.Rows) {
-    $m = $r.Tag
-    $on = $id -and $m -and $m.alias -eq $id
+    $m = $r.Tag; $g = $r.Cells["model"].Tag
+    $on = $id -and $g -and @($g.entries | Where-Object { $_.alias -eq $id }).Count
     $r.DefaultCellStyle.BackColor = if ($on) { $Pal.run } elseif ($m -and -not $m.supported) { $Pal.off } else { $Pal.card }
     $r.DefaultCellStyle.ForeColor = if ($m -and -not $m.supported) { $Pal.sub } else { $Pal.text }
   }
@@ -962,25 +1256,55 @@ function Start-List {
   $script:listProc = Start-Process -FilePath $script:exe -ArgumentList "--list-models" -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:listOut -RedirectStandardError (Join-Path $env:TEMP "zero-launcher-models.err")
 }
+# whether a model fits this GPU: its weights, drafter, buffers and encoders against the GPU memory ("RAM": a MoE
+# model whose experts stream from RAM and the SSD)
+function Get-FitWord($m) {
+  if (-not $m.supported) { return "no ($($m.arch))" }
+  $mm = $m.memory
+  if (-not $mm -or -not $mm.device) { return "-" }
+  $free = [double]$mm.device - $mm.keep_free
+  $fixed = [double]$mm.weights + $mm.mtp + $mm.buffers + $mm.snapshots + $mm.encoders
+  if ($m.moe -and [double]$m.bytes -gt $free) { return "RAM" }
+  if ($fixed -le $free) { return "fits" }
+  return "too big"
+}
+$script:groups = [ordered]@{}
+$script:listing = $false
 function Show-List {
   $sel = if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag.alias } else { $script:running }
   $selPath = if (-not $sel -and (Test-Path $lastFile)) { (Get-Content -Encoding UTF8 $lastFile -Raw).Trim() } else { $null }
-  $grid.Rows.Clear()
-  foreach ($m in $script:models) {
-    $mm = $m.memory
-    $vram = if ($m.supported -and $mm) { GiB ($mm.weights + $mm.mtp + $mm.buffers + $mm.context + $mm.snapshots + $mm.encoders) } else { "-" }
-    $i = $grid.Rows.Add($m.name + "  -  " + $m.file, $(if ($m.tags) { $m.tags } else { "-" }),
-      $(if ($m.mtp) { "yes" } else { "-" }), $(if ($m.vision) { "yes" } else { "-" }),
-      $(if ($m.supported -and $m.ctx) { "{0:N0}" -f $m.ctx } else { "-" }), $vram, ("{0:N1} GB" -f ($m.bytes / 1e9)),
-      $(if ($m.short) { "$($m.alias)  [$($m.short)]" } else { $m.alias }),
-      $(if ($m.supported) { "yes" } else { "no ($($m.arch))" }))
-    $grid.Rows[$i].Tag = $m
-    if (($sel -and $m.alias -eq $sel) -or ($selPath -and -not $sel -and $m.path -and [IO.Path]::GetFullPath($m.path) -eq [IO.Path]::GetFullPath($selPath))) {
-      $grid.Rows[$i].Selected = $true; $grid.FirstDisplayedScrollingRowIndex = $i; if (-not $sel) { $sel = $m.alias }
-    }
+  $old = $script:groups
+  $script:groups = [ordered]@{}
+  foreach ($m in $script:models) {  # (a file's rows in the list's order: its main row first)
+    $k = $(if ($m.path) { $m.path.ToLower() } else { $m.alias })
+    if (-not $script:groups.Contains($k)) { $script:groups[$k] = @{ entries = New-Object System.Collections.ArrayList; path = $m.path } }
+    [void]$script:groups[$k].entries.Add($m)
   }
-  $n = @($script:models | Where-Object { $_.supported }).Count
-  $msg.Text = "$n models / variants can run. Select a row and Start (or double-click it). The server keeps running when this window is closed."
+  $script:listing = $true
+  try {
+    $grid.Rows.Clear()
+    $selRow = -1
+    foreach ($k in $script:groups.Keys) {
+      $g = $script:groups[$k]; $e0 = $g.entries[0]
+      $g.title = $e0.name; $g.draft0 = Get-DraftMode $e0; $g.img0 = [bool]$e0.vision
+      # (the choices made for the file stay over a refresh of the list; the running row's choices otherwise)
+      $hit = @($g.entries | Where-Object { $sel -and $_.alias -eq $sel })[0]
+      if ($old.Contains($k)) { $g.draft = $old[$k].draft; $g.img = $old[$k].img }
+      elseif ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision }
+      else { $g.draft = $g.draft0; $g.img = $g.img0 }
+      $i = $grid.Rows.Add($e0.name + "  -  " + $e0.file, ("{0:N1} GB" -f ($e0.bytes / 1e9)), (Get-FitWord $e0),
+        $(if ($e0.supported -and $e0.ctx) { "{0:N0}" -f $e0.ctx } else { "-" }),
+        $(if ($e0.short) { "$($e0.alias)  [$($e0.short)]" } else { $e0.alias }))
+      $grid.Rows[$i].Cells["model"].Tag = $g
+      $grid.Rows[$i].Tag = Resolve-Entry $g
+      if ($selRow -lt 0 -and (($hit) -or ($selPath -and -not $sel -and $g.path -and [IO.Path]::GetFullPath($g.path) -eq [IO.Path]::GetFullPath($selPath)))) { $selRow = $i }
+    }
+    $grid.ClearSelection()
+    if ($selRow -ge 0) { $grid.Rows[$selRow].Selected = $true; $grid.FirstDisplayedScrollingRowIndex = $selRow }
+  } finally { $script:listing = $false }
+  $n = @($script:groups.Values | Where-Object { $_.entries[0].supported }).Count
+  $msg.Text = "$n models can run. Select one, choose its switches on the right, and Start (or double-click it). The server keeps running when this window is closed."
+  Refresh-Model
   Show-Detail
   Fill-Defaults
   Update-Status
@@ -1095,11 +1419,13 @@ function Start-Pack {
   }
 }
 # a model's row by id, shortcut or path
+# (by id or shortcut: any row of the file, whose Drafting and Images it then takes)
 function Find-Row([string]$v) {
   foreach ($r in $grid.Rows) {
-    $m = $r.Tag
-    if (-not $m -or -not $m.supported) { continue }
-    if ($m.alias -eq $v -or ($m.short -and $m.short -eq $v)) { return $r }
+    $g = $r.Cells["model"].Tag
+    if (-not $g) { continue }
+    $hit = @($g.entries | Where-Object { $_.supported -and ($_.alias -eq $v -or ($_.short -and $_.short -eq $v)) })[0]
+    if ($hit) { $g.draft = Get-DraftMode $hit; $g.img = [bool]$hit.vision; $r.Tag = Resolve-Entry $g; return $r }
   }
   foreach ($r in $grid.Rows) {
     $m = $r.Tag
@@ -1117,6 +1443,14 @@ function Get-StartArgs([switch]$Speech) {
     if (-not $m.supported) { Show-Bar $(if ($m.note) { "$($m.file): $($m.note)" } else { "inferzero does not support this model yet (architecture $($m.arch))." }) "warn"; return $null }
   }
   $a = @("start", "-Model", $m.alias)
+  # (the file's Drafting and Images: the row Resolve-Entry picked, and when that row has images or another drafter
+  #  than asked, -Vision off and -Drafter; zero-server takes the file's row without images then)
+  $g = $(if ($Speech) { $null } else { Sel-Group })
+  if ($g) {
+    if (-not $g.img -and $m.vision) { $a += @("-Vision", "off") }
+    if ($g.draft -ne "off" -and (Get-DraftMode $m) -ne $g.draft) { $a += @("-Drafter", $(switch ($g.draft) { "both" { "auto" } default { $g.draft } })) }
+    elseif ($g.draft -ne "off" -and -not $g.img -and $m.vision -and $g.draft -ne "both") { $a += @("-Drafter", $g.draft) }
+  }
   foreach ($k in @($script:over.Keys)) {
     $v = $script:over[$k]
     switch ($k) {
@@ -1139,8 +1473,7 @@ function Get-StartArgs([switch]$Speech) {
       "no_swap" { if ($v) { $a += "-NoSwap" } }
       "network" { if ($v) { $a += @("-ListenHost", "0.0.0.0") } }
       "attn_f32" { if ($v) { $a += "-AttnF32" } }
-      "no_mtp" { if ($v -and $m.mtp) { $a += "-NoMtp" } }
-      "vision" { if ($m.vision) { $a += @("-Vision", $v) } }
+      # (no_mtp and vision: the Drafting and Images switches above; a preset's NoMtp / Vision set them)
       "slots" { $a += @("-Slots", [int]$v) }
       "gpus" { $a += @("-Gpus", [int]$v) }  # (1 too: a running split server goes back to one GPU)
       "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
@@ -1157,14 +1490,17 @@ function Get-StartArgs([switch]$Speech) {
     $v = $script:extraArgs[$k]
     if ($v -is [bool]) { if ($v) { $a += "-$k" } } else { $a += @("-$k", $(if ("$v" -match '[\s\\/]') { "`"$v`"" } else { "$v" })) }
   }
-  # (the speed and accuracy options whose box differs from the choice zero-server keeps: on / off / back to default)
+  # (the switches whose choice differs from the one zero-server keeps in options.json: on / off / back to the
+  #  default; Precise mode goes as -Precise above, a value option has its own field)
   $saved = Read-OptChoice
   $on = @(); $off = @(); $def = @()
-  foreach ($id in $script:optBoxes.Keys) {
-    $want = [string]$script:optBoxes[$id].SelectedItem
-    $have = if ($saved.ContainsKey($id)) { $(if ($saved[$id] -eq "off") { "off" } else { "on" }) } else { "default" }
+  foreach ($o in $script:catalog) {
+    $id = $o.id
+    if ($id -eq "fn_precise" -or (Test-SwValue $o)) { continue }
+    $want = $(if ($script:optChoice.ContainsKey($id)) { "$($script:optChoice[$id])" } else { "default" })
+    $have = $(if ($saved.ContainsKey($id)) { "$($saved[$id])" } else { "default" })
     if ($want -eq $have) { continue }
-    switch ($want) { "on" { $on += $id } "off" { $off += $id } default { $def += $id } }
+    switch ($want) { "off" { $off += $id } "default" { $def += $id } default { $on += $(if ($want -eq "on") { $id } else { "$id=$want" }) } }
   }
   if ($on.Count) { $a += @("-Opt", ($on -join ",")) }
   if ($off.Count) { $a += @("-NoOpt", ($off -join ",")) }
@@ -1242,6 +1578,21 @@ function Apply-Preset([string]$name) {
     if ($r) { $grid.ClearSelection(); $r.Selected = $true; $grid.FirstDisplayedScrollingRowIndex = $r.Index }
     else { Show-Bar "Preset '$name': its model '$model' is not on this PC (the options are set)." "warn" }
   }
+  # (a preset's Vision, NoMtp and Drafter: the file's Images and Drafting switches)
+  $g = Sel-Group
+  if ($g) {
+    if ($script:over.ContainsKey("vision")) { $g.img = "$($script:over['vision'])" -ne "off" }
+    if ($script:over["no_mtp"]) { $g.draft = "off" }
+    $dp = "$($script:extraArgs['Drafter'])".ToLower()
+    if ($dp -in "auto", "mtp", "dflash", "off") {
+      $want = $(if ($dp -eq "auto") { "both" } else { $dp })
+      if (@($g.entries | Where-Object { (Get-DraftMode $_) -eq $want }).Count) { $g.draft = $want }
+      elseif ($dp -eq "auto" -and @($g.entries | Where-Object { (Get-DraftMode $_) -eq "mtp" }).Count) { $g.draft = "mtp" }
+      $script:extraArgs.Remove("Drafter")
+    }
+  }
+  $script:over.Remove("vision"); $script:over.Remove("no_mtp")
+  Refresh-Model
   Fill-Defaults
   $ex = if ($script:extraArgs.Count) { "; also " + (($script:extraArgs.Keys | ForEach-Object { "-$_ $($script:extraArgs[$_])" }) -join " ") } else { "" }
   if ($unknown.Count) { Show-Bar "Preset '$name': options the launcher does not know were left out: $($unknown -join ', ')" "warn" }
@@ -1310,7 +1661,9 @@ if (Test-Path $settingsFile) {
     foreach ($p in $o.PSObject.Properties) { if ($fields.Contains($p.Name)) { $script:over[$p.Name] = $p.Value } }
   } catch {}
 }
-if (@($script:over.Keys | Where-Object { $_ -notin "ctx", "drafts", "think", "prompt_cache", "network", "npu", "precise", "whisper", "asr" }).Count) { $advChk.Checked = $true }
+# (Advanced stays collapsed, the user's choice of 2026-11-22 for docs/launcher-design.md; the old No MTP and Images
+#  fields are the Drafting and Images switches now, per model)
+$script:over.Remove("vision"); $script:over.Remove("no_mtp")
 function Set-AsDefault {
   $script:over | ConvertTo-Json | Set-Content $settingsFile -Encoding utf8
   $n = $script:over.Count
@@ -1326,7 +1679,7 @@ function Set-AsDefault {
 function Reset-Options {
   $script:over = @{}; $script:extraArgs = [ordered]@{}; $script:presetName = ""
   Load-PresetList
-  Fill-Defaults
+  Reset-Switches
   $msg.Text = "Options back to the best values for each model (Set as default to keep it that way)."
 }
 
@@ -1493,7 +1846,7 @@ $updItem.Checked = [bool]$script:upd.enabled
 $startBtn.Add_Click({ Start-Selected })
 $webBtn.Add_Click({ Start-Process "$(Base)/" })
 $grid.Add_CellDoubleClick({ param($s, $e) if ($e.RowIndex -ge 0) { Start-Selected } })
-$grid.Add_SelectionChanged({ Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
+$grid.Add_SelectionChanged({ if ($script:listing) { return }; Refresh-Model; Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
 $stopBtn.Add_Click({
     if ([System.Windows.Forms.MessageBox]::Show("Stop the server ($($script:running))? Its GPU memory is freed.", "inferzero", "YesNo") -eq "Yes") {
       $msg.Text = "Stopping the server..."
@@ -1618,7 +1971,7 @@ $timer.Add_Tick({
     }
   })
 
-Set-Splash "Checking the package files..."
+Set-Splash "Checking the package files..." 85
 . (Join-Path $PSScriptRoot "launcher-firstrun.ps1")
 . (Join-Path $PSScriptRoot "launcher-downloads.ps1")  # (Download models: several at once, a Hugging Face link, pause)
 Load-PresetList
@@ -1647,16 +2000,24 @@ if ($SelfTest) {
         if ($i -gt 0) { $presetBox.SelectedIndex = $i }
         [Console]::Out.WriteLine("selftest preset: " + ((Get-StartArgs) -join " ") + "  |  fit: " + $fitLbl.Text + "  |  " + $msg.Text)
       }
-      # ($env:ARC_SELFTEST_OPTS = "copy_draft=on,xcpu=off": those boxes set, the options scrolled into view, and what Start
-      #  would pass printed)
-      if ($env:ARC_SELFTEST_OPTS) {
-        foreach ($kv in $env:ARC_SELFTEST_OPTS -split ',') {
+      # ($env:ARC_SELFTEST_MODEL = an id: that model selected (its row's Drafting and Images); ARC_SELFTEST_DRAFT =
+      #  off / mtp / both / dflash and ARC_SELFTEST_IMAGES = on / off: those set; ARC_SELFTEST_OPTS =
+      #  "copy_draft=on,xcpu=off": those switches set (on / off / auto). Then each switch's state and reason, the
+      #  changes and what Start would pass, printed)
+      if ($env:ARC_SELFTEST_MODEL -or $env:ARC_SELFTEST_OPTS -or $env:ARC_SELFTEST_DRAFT -or $env:ARC_SELFTEST_IMAGES) {
+        if ($env:ARC_SELFTEST_MODEL) { $r = Find-Row $env:ARC_SELFTEST_MODEL; if ($r) { $grid.ClearSelection(); $r.Selected = $true } }
+        if ($env:ARC_SELFTEST_DRAFT) { Set-GroupChoice "Drafting" $env:ARC_SELFTEST_DRAFT }
+        if ($env:ARC_SELFTEST_IMAGES) { $imgChk.Checked = $env:ARC_SELFTEST_IMAGES -eq "on" }
+        foreach ($kv in @("$env:ARC_SELFTEST_OPTS" -split ',' | Where-Object { $_ })) {
           $id, $v = $kv -split '=', 2
-          if ($script:optBoxes.Contains($id)) { $script:optBoxes[$id].SelectedIndex = $script:optBoxes[$id].Items.IndexOf($v) }
+          if ($script:swRows.Contains($id)) { $script:swRows[$id].box.CheckState = $(switch ($v) { "on" { "Checked" } "off" { "Unchecked" } default { "Indeterminate" } }) }
+          elseif ($id -in "Attention", "Multi-GPU") { Set-GroupChoice $id $v }
         }
-        $last = @($script:optBoxes.Values)[-1]
-        if ($last) { $opt.ScrollControlIntoView($last) } else { $opt.ScrollControlIntoView($optHead) }
-        [Console]::Out.WriteLine("selftest options: pc " + ($script:pcKinds -join ",") + "; rows " + $script:optBoxes.Count + "; start: " + ((Get-StartArgs) -join " "))
+        $sw = @(foreach ($id in $script:swRows.Keys) { $r = $script:swRows[$id]; "$id=$($r.box.CheckState)" + $(if ($r.why.Text) { "($($r.why.Text))" } else { "" }) })
+        [Console]::Out.WriteLine("selftest model: " + $modelHead.Text + "; row " + (Sel-Entry).alias + "; drafting " + (Sel-Group).draft + "; images " + $imgChk.Checked + "; " + $draftWhy.Text + $imgWhy.Text)
+        [Console]::Out.WriteLine("selftest switches: pc " + ($script:pcKinds -join ",") + "; " + ($sw -join " ") + "; attention: " + $attnWhy.Text + "; multi-gpu: " + $mgWhy.Text)
+        [Console]::Out.WriteLine("selftest changed: " + $chgLbl.Text + "  |  fit: " + $fitLbl.Text)
+        [Console]::Out.WriteLine("selftest start: " + ((Get-StartArgs) -join " "))
       }
       $form.Refresh(); [System.Windows.Forms.Application]::DoEvents()
       $bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
@@ -1677,6 +2038,7 @@ $form.Add_FormClosing({
 # (Application.Run, not ShowDialog: hiding a form shown with ShowDialog ends its modal loop, so minimizing to the tray
 #  (the Resize handler's Hide) ended the launcher and took the tray icon with it (PascalSoftwares, issue #33,
 #  2026-11-16; Windows PowerShell 5.1: the loop returned 0.02 s after the hide, and keeps running with Run))
+Set-Splash "Opening..." 100
 Close-Splash
 [System.Windows.Forms.Application]::Run($form)
 try { $pollPs.Dispose(); $pollRs.Dispose() } catch {}

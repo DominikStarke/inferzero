@@ -229,7 +229,7 @@ if ($Preset -and $Action -in "start", "restart") {
 }
 # -Drafter auto|mtp|dflash|off|<folder>: one name for the drafters. off = -NoMtp, a folder = -DFlash <folder>; mtp /
 # dflash / auto pick the model's variant below (the -nodf / -df / plain ids)
-$drafterPick = ""
+$drafterPick = ""; $script:draftPick = ""
 if ($Drafter) {
   $l = $Drafter.Trim().ToLower()
   if ($l -in "off", "no", "none", "0", "false") { $NoMtp = [switch]$true }
@@ -1155,6 +1155,9 @@ if (($Vision -eq "off" -and $m.vision) -or ($NoMtp -and $m.mtp) -or ($Vision -eq
 if ($drafterPick -and $m -ne $none -and $m.mtp) {
   $v = $models | Where-Object { $_.supported -and (Same-Path $_.path $m.path) -and [bool]$_.vision -eq [bool]$m.vision -and $_.mtp -and "$($_.draft)" -eq $drafterPick } | Select-Object -First 1
   if ($v) { $m = $v }
+  # (no variant of this images choice with that drafter: the launcher's Images off with MTP only or DFlash2 only. The
+  #  pick goes in as --draft itself when the file has a DFlash2 drafter)
+  elseif ($drafterPick -ne "auto" -and $m.dflash) { $script:draftPick = $drafterPick }
   elseif ($drafterPick -eq "dflash") { throw "-Drafter dflash: no DFlash2 drafter was found for $($m.alias); give its folder: -Drafter <folder>" }
   # (mtp / auto on a model without a DFlash2 drafter: its MTP block or Gemma drafter is the only one, as it is)
 }
@@ -1246,7 +1249,8 @@ $useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant with
 function Quote-Arg($x) { '"' + ([string]$x).Replace('"', '') + '"' }
 $srvArgs = @("-m", (Quote-Arg $m.path), "--port", $Port, "--ctx", $ctxArg, "--alias", (Quote-Arg $m.alias), "--think-budget", $ThinkBudget) + $extra
 if ($useMtp) { $srvArgs += "--mtp" }
-if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", (Quote-Arg $m.draft)) }  # (-nodf: MTP block only, -df: DFlash2 only)
+$draftArg = $(if ($script:draftPick) { $script:draftPick } else { "$($m.draft)" })
+if ($useMtp -and $draftArg -and $draftArg -ne "auto") { $srvArgs += @("--draft", (Quote-Arg $draftArg)) }  # (-nodf: MTP block only, -df: DFlash2 only)
 if ($Chunk -gt 0) { $srvArgs += @("--chunk", $Chunk) }
 if ($SessionCacheGb -gt 0) { $srvArgs += @("--session-cache-gb", $SessionCacheGb) }  # saved conversations on disk (default 8 GB, 0 = off)
 if ($novision -eq "1") { $srvArgs += "--no-mmproj" }

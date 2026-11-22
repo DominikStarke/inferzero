@@ -1,5 +1,24 @@
 # The launchers' redesign: one entry per model, its options as switches
 
+**Built 2026-11-22** (QUEUE row 15, step 3), with the user's three decisions below taken as recommended: one row
+per file with Drafting and Images as switches, the full-screen arrow-key menu on Linux, Advanced collapsed. Where the
+build differs from this proposal:
+
+- **Options go in as `-Opt` / `--opt`,** not as variant ids. zero-server matches `-Model` against the list's main
+  entries only, and `-Opt` also keeps the choice in `options.json`. The server reads the same setting either way, and
+  the Windows fit bar uses the variant's own context when one is on. Variant ids stay for Pi and API clients
+  (step 4).
+- **The switches that don't apply are folded** into one line, "Show the N that don't apply to this model or PC".
+  Clicking it shows each with its reason. With all of them shown, the panel scrolled on a laptop screen.
+- **The tip under the switches** has a fixed height of three lines; the tooltip holds all of it. The cost on its
+  last line is cut at the first bracket or semicolon, since the catalog's cost column goes on with measurements.
+- **The PC's words** are shortened in the reasons ("needs Arc A-series or Arc 140T"). On Linux they come from
+  `lspci`; there a PC reason only warns on the command line and never refuses, since the names are a guess.
+- **Linux has no fit bar:** the bash launcher has no memory estimate without `serverz --list-models`, which takes
+  minutes the first time.
+- **The rules' code:** `scripts/launcher-switches.ps1` (Windows) and `zero-launcher.sh`'s `sw_*` functions, both
+  checked against `tests/launcher_switch_cases.tsv`.
+
 A proposal for QUEUE row 15, step 3, to look at before the launchers are rewritten. It is built on the data that is
 already in place: `scripts/options.tsv` (each option's tip, what it needs or can't be combined with, which models and
 PCs it fits) and `serverz --list-models` (each model's variants, each with its own context).

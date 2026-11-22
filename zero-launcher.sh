@@ -24,16 +24,18 @@ SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE
 ROOT=$(cd "$(dirname "$SELF")" && pwd)
 SERVERZ="$ROOT/bin/serverz"
 
-# ---- the catalog: key|name|repo|GB|disk GB|RAM GB|mtp|files (space-separated)|drafter repo|drafter file|extra repo|extra file|extra into
+# ---- the catalog: key|name|repo|GB|disk GB|RAM GB|mtp|files (space-separated)|drafter repo|drafter file|extra repo|extra file|extra into|words
+# (words: the model's, as serverz --list-models "opts" gives them (dense moe qsa flashnext mtp h8) and vision, for the
+#  switches; df=NAME: a DFlash2 drafter for it is a cache repository whose name holds NAME and DFlash)
 CATALOG=(
-"4b|Qwen3.5 4B (fastest; MTP, reads images)|unsloth/Qwen3.5-4B-MTP-GGUF|3.7||16|1|Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf|||||"
-"9b|Qwen3.5 9B (MTP, reads images)|unsloth/Qwen3.5-9B-MTP-GGUF|7.1||16|1|Qwen3.5-9B-UD-Q4_K_XL.gguf mmproj-F16.gguf|||||"
-"35b|Qwen3.6 35B-A3B (fast mixture of experts; MTP, reads images)|unsloth/Qwen3.6-35B-A3B-MTP-GGUF|19.1||32|1|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf|||||"
-"27b|Qwen3.8 27B (best answers, slowest; MTP, reads images)|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|13.1||32|1|Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf|||||"
-"flash|Qwen3.8 Flash Next (512 experts on the SSD; reads images)|ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF|84.5|141|32|0|IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf mmproj-Qwen3.8-Flash-Next-f16.gguf|||bartowski/Qwen3.8-Flash-Next-GGUF|mmproj-Qwen3.8-Flash-Next-f16.gguf|IQ3_S"
-"g12|Gemma 4 12B (reads images; drafter)|google/gemma-4-12B-it-qat-q4_0-gguf|7.4||32|1|gemma-4-12b-it-qat-q4_0.gguf mmproj-gemma-4-12b-it-qat-q4_0.gguf mtp-gemma-4-12B-it.gguf|unsloth/gemma-4-12B-it-qat-GGUF|mtp-gemma-4-12B-it.gguf|||"
-"g31|Gemma 4 31B (Google's largest dense Gemma; slow; drafter)|google/gemma-4-31B-it-qat-q4_0-gguf|19.1||32|1|gemma-4-31B_q4_0-it.gguf gemma-4-31B-it-mmproj.gguf mtp-gemma-4-31B-it.gguf|unsloth/gemma-4-31B-it-qat-GGUF|mtp-gemma-4-31B-it.gguf|||"
-"e4b|Gemma 4 E4B (images, audio; drafter)|google/gemma-4-E4B-it-qat-q4_0-gguf|6.2||16|1|gemma-4-E4B_q4_0-it.gguf gemma-4-E4B-it-mmproj.gguf mtp-gemma-4-E4B-it.gguf|unsloth/gemma-4-E4B-it-qat-GGUF|mtp-gemma-4-E4B-it.gguf|||"
+"4b|Qwen3.5 4B (fastest; MTP, reads images)|unsloth/Qwen3.5-4B-MTP-GGUF|3.7||16|1|Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf||||||dense mtp h8 vision"
+"9b|Qwen3.5 9B (MTP, reads images)|unsloth/Qwen3.5-9B-MTP-GGUF|7.1||16|1|Qwen3.5-9B-UD-Q4_K_XL.gguf mmproj-F16.gguf||||||dense mtp h8 vision"
+"35b|Qwen3.6 35B-A3B (fast mixture of experts; MTP, reads images)|unsloth/Qwen3.6-35B-A3B-MTP-GGUF|19.1||32|1|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf||||||moe mtp vision df=Qwen3.6-35B"
+"27b|Qwen3.8 27B (best answers, slowest; MTP, reads images)|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|13.1||32|1|Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf||||||dense mtp h8 vision df=Qwen3.8-27B"
+"flash|Qwen3.8 Flash Next (512 experts on the SSD; reads images)|ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF|84.5|141|32|0|IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf mmproj-Qwen3.8-Flash-Next-f16.gguf|||bartowski/Qwen3.8-Flash-Next-GGUF|mmproj-Qwen3.8-Flash-Next-f16.gguf|IQ3_S|moe qsa flashnext vision df=Qwen3.8-Flash-Next"
+"g12|Gemma 4 12B (reads images; drafter)|google/gemma-4-12B-it-qat-q4_0-gguf|7.4||32|1|gemma-4-12b-it-qat-q4_0.gguf mmproj-gemma-4-12b-it-qat-q4_0.gguf mtp-gemma-4-12B-it.gguf|unsloth/gemma-4-12B-it-qat-GGUF|mtp-gemma-4-12B-it.gguf||||dense mtp vision"
+"g31|Gemma 4 31B (Google's largest dense Gemma; slow; drafter)|google/gemma-4-31B-it-qat-q4_0-gguf|19.1||32|1|gemma-4-31B_q4_0-it.gguf gemma-4-31B-it-mmproj.gguf mtp-gemma-4-31B-it.gguf|unsloth/gemma-4-31B-it-qat-GGUF|mtp-gemma-4-31B-it.gguf||||dense mtp vision"
+"e4b|Gemma 4 E4B (images, audio; drafter)|google/gemma-4-E4B-it-qat-q4_0-gguf|6.2||16|1|gemma-4-E4B_q4_0-it.gguf gemma-4-E4B-it-mmproj.gguf mtp-gemma-4-E4B-it.gguf|unsloth/gemma-4-E4B-it-qat-GGUF|mtp-gemma-4-E4B-it.gguf||||dense mtp vision"
 )
 # the cache variables the server and the downloader read (a systemd unit gets them too); never HF_TOKEN
 CACHE_ENV=(HF_HUB_CACHE HF_HOME XDG_CACHE_HOME HF_TOKEN_PATH)
@@ -54,7 +56,7 @@ m_known() { m_field "$1" 0 >/dev/null; }
 hub_dir() {  # the Hugging Face cache, as the engine (src/platform.h hf_home_hub) finds it
   if [ -n "${HF_HUB_CACHE:-}" ]; then printf '%s' "$HF_HUB_CACHE"
   elif [ -n "${HF_HOME:-}" ]; then printf '%s/hub' "$HF_HOME"
-  elif [ "${XDG_CACHE_HOME:0:1}" = "/" ]; then printf '%s/huggingface/hub' "$XDG_CACHE_HOME"
+  elif [ "${XDG_CACHE_HOME:-x}" != x ] && [ "${XDG_CACHE_HOME:0:1}" = "/" ]; then printf '%s/huggingface/hub' "$XDG_CACHE_HOME"
   else printf '%s/.cache/huggingface/hub' "$HOME"; fi
 }
 repo_root() { printf '%s/models--%s' "$(hub_dir)" "${1//\//--}"; }
@@ -383,9 +385,356 @@ opt_menu() {  # the menu's options screen: a number to change, Enter to go back
   done
 }
 
-server_cmd() {  # PATH MTP: fills CMD
+
+# ---- the switches (QUEUE row 15 step 3, docs/launcher-design.md): for a model and this PC, which options of the
+# catalog apply, the one-line reason when one does not, and each one's tip. The same rules as the Windows launcher's
+# scripts/launcher-switches.ps1; tests/test_zero_launcher.sh checks both against tests/launcher_switch_cases.tsv.
+# The state: SW_WORDS (the model's words: dense moe qsa flashnext mtp h8), SW_PC (this PC's: b-series alchemist
+# igpu-140t igpu-xe2 igpu-xe-lpg multi-gpu; empty: not known, nothing greyed for the PC), SW_GPUS, SW_DRAFTING (1 when
+# Drafting is on) and the choices in OPTC
+declare -A CT_title=() CT_applies=() CT_relates=() CT_default=() CT_on=() CT_off=() CT_variant=() CT_tip=() CT_output=() CT_cost=()
+CT_IDS=()
+SW_WORDS=""; SW_PC=""; SW_GPUS=1; SW_DRAFTING=0; SW_KIND=""
+cat_load() {  # the catalog into CT_* (one awk for the whole file, not one per field)
+  CT_IDS=()
+  [ -f "$OPT_TSV" ] || return 1
+  local id title applies relates def on off variant tip output cost
+  while IFS=$'\x1f' read -r id title applies relates def on off variant tip output cost; do
+    CT_IDS+=("$id"); CT_title[$id]=$title; CT_applies[$id]=$applies; CT_relates[$id]=$relates; CT_default[$id]=$def
+    CT_on[$id]=$on; CT_off[$id]=$off; CT_variant[$id]=$variant; CT_tip[$id]=$tip; CT_output[$id]=$output; CT_cost[$id]=$cost
+  done < <(tr -d '\r' < "$OPT_TSV" | awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
+    $1 != "" { printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n", $c["id"], $c["title"], $c["applies"],
+      $c["relates"], $c["default"], $c["on"], $c["off"], $c["variant"], $c["tip"], $c["output"], $c["cost"] }')
+}
+sw_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'; }
+sw_has() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }  # LIST WORD
+sw_or() {  # words joined "a, b or c"
+  local n=$# i=0 out="" w
+  for w in "$@"; do
+    i=$((i + 1))
+    if [ $i -eq 1 ]; then out=$w; elif [ $i -eq $n ]; then out+=" or $w"; else out+=", $w"; fi
+  done
+  printf '%s' "$out"
+}
+sw_mword() { case "$1" in dense) printf 'dense models';; moe) printf 'MoE models';; qsa) printf 'QSA models';; flashnext) printf 'Flash Next';;
+  mtp) printf 'models with MTP';; h8) printf 'dense Qwen3.5 / 3.8 models';; esac; }
+sw_pword() { case "$1" in b-series) printf 'Arc B-series';; alchemist) printf 'Arc A-series';; igpu-140t) printf 'Arc 140T';;
+  igpu-xe2) printf 'Lunar Lake / Panther Lake';; igpu-xe-lpg) printf 'Meteor Lake';; esac; }
+sw_title() { case "$1" in mtp) printf 'Drafting';; gpus2) printf '2 or more GPUs';; *) printf '%s' "${CT_title[$1]:-$1}";; esac; }
+sw_value() { [[ "${CT_on[$1]}" == "<"* ]]; }  # (a value option, such as budget: not a switch)
+sw_default() {  # on / off, or auto when the engine picks it by the PC or the model
+  local d=${CT_default[$1]}
+  if [[ "$d" =~ ^off([^a-z]|$) ]]; then printf off
+  elif [[ "$d" =~ ^on([^a-z:]|$) ]] && ! [[ "$d" =~ ^on[[:space:]]*: ]]; then printf on
+  else printf auto; fi
+}
+sw_on() {  # ID: 1 on, 0 off, empty when the engine picks
+  case "$1" in mtp) printf '%s' "$SW_DRAFTING"; return;; gpus2) [ "$SW_GPUS" -ge 2 ] && printf 1 || printf 0; return;; esac
+  if [ -n "${OPTC[$1]+x}" ]; then [ "${OPTC[$1]}" = off ] && printf 0 || printf 1; return; fi
+  case "$(sw_default "$1")" in on) printf 1;; off) printf 0;; esac
+}
+sw_choices() {  # ID: "on:Sparse off:Full" for a choose-one option (its two variants are its on and off values)
+  local vs e suf val out=() w
+  mapfile -t vs < <(sw_list "${CT_variant[$1]}")
+  [ ${#vs[@]} -eq 2 ] && [ -n "${CT_on[$1]}" ] && [ -n "${CT_off[$1]}" ] || return 1
+  for e in "${vs[@]}"; do
+    suf=${e%%:*}; val=${e#*:}; w=${suf#-}
+    if [ "$val" = "${CT_on[$1]}" ]; then out+=("on:${w^}"); elif [ "$val" = "${CT_off[$1]}" ]; then out+=("off:${w^}"); else return 1; fi
+  done
+  printf '%s\n' "${out[*]}"
+}
+sw_reason() {  # ID: the reason it does not apply now, or nothing; SW_KIND says which rule (model, pc, gpus, not, needs)
+  local id=$1 ap=() mw=() pw=() rel=() w e t multi=0 any
+  SW_KIND=""
+  mapfile -t ap < <(sw_list "${CT_applies[$id]}")
+  for w in "${ap[@]}"; do
+    case "$w" in dense|moe|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg) pw+=("$w");; multi-gpu) multi=1;; esac
+  done
+  if [ ${#mw[@]} -gt 0 ]; then
+    any=0; for w in "${mw[@]}"; do sw_has "$SW_WORDS" "$w" && any=1; done
+    if [ $any = 0 ]; then
+      local names=(); for w in "${mw[@]}"; do names+=("$(sw_mword "$w")"); done
+      SW_KIND=model; printf 'for %s only' "$(sw_or "${names[@]}")"; return
+    fi
+  fi
+  if [ -n "$SW_PC" ] && [ ${#pw[@]} -gt 0 ]; then
+    any=0; for w in "${pw[@]}"; do sw_has "$SW_PC" "$w" && any=1; done
+    if [ $any = 0 ]; then
+      local names=(); for w in "${pw[@]}"; do names+=("$(sw_pword "$w")"); done
+      SW_KIND=pc; printf 'needs %s' "$(sw_or "${names[@]}")"; return
+    fi
+  fi
+  mapfile -t rel < <(sw_list "${CT_relates[$id]}")
+  for e in "${rel[@]}"; do [ "$e" = needs:gpus2 ] && multi=1; done
+  if [ $multi = 1 ] && [ "$SW_GPUS" -lt 2 ]; then
+    SW_KIND=gpus
+    if sw_has "$SW_PC" multi-gpu; then printf 'choose a Multi-GPU split first'; else printf 'needs 2 or more GPUs'; fi
+    return
+  fi
+  for e in "${rel[@]}"; do
+    [[ "$e" == not:* ]] || continue
+    t=${e#not:}; [ "$(sw_on "$t")" = 1 ] && { SW_KIND=not; printf 'not with %s' "$(sw_title "$t")"; return; }
+  done
+  for e in "${rel[@]}"; do
+    [[ "$e" == needs:* ]] || continue
+    t=${e#needs:}; [ "$t" = gpus2 ] && continue
+    [ "$(sw_on "$t")" = 0 ] && { SW_KIND=needs; printf 'turn %s on first' "$(sw_title "$t")"; return; }
+  done
+}
+sw_tipline() {  # ID: what it needs, goes with or excludes, the output, the cost (up to its first bracket or ;)
+  local id=$1 rel=() e n=() h=() x=() p=() c
+  mapfile -t rel < <(sw_list "${CT_relates[$id]}")
+  for e in "${rel[@]}"; do
+    case "$e" in
+      needs:mtp) n+=("Drafting on (MTP)");; needs:*) n+=("$(sw_title "${e#needs:}")");;
+      has:*) h+=("$(sw_title "${e#has:}")");; not:*) x+=("$(sw_title "${e#not:}")");;
+    esac
+  done
+  [ ${#n[@]} -gt 0 ] && p+=("Needs: $(IFS=,; printf '%s' "${n[*]}" | sed 's/,/, /g').")
+  [ ${#h[@]} -gt 0 ] && p+=("Goes with: $(IFS=,; printf '%s' "${h[*]}" | sed 's/,/, /g').")
+  [ ${#x[@]} -gt 0 ] && p+=("Not with: $(IFS=,; printf '%s' "${x[*]}" | sed 's/,/, /g').")
+  [ ${#p[@]} -eq 0 ] && p+=("Works on its own.")
+  if [ "${CT_output[$id]}" = same ]; then p+=("Same output."); else p+=("Output checked against full precision."); fi
+  c=$(printf '%s' "${CT_cost[$id]}" | sed 's/[[:space:]]*[(;].*//')
+  [ -n "$c" ] && [ "$c" != none ] && p+=("Costs: $c.")
+  printf '%s' "${p[*]}"
+}
+sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci); nothing when lspci is missing
+  local names l k="" discrete=0
+  names=$(lspci 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel) || true
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    if [[ "$l" =~ B3[0-9]0|140V|130V|Lunar|Panther ]]; then k+=" igpu-xe2"
+    elif [[ "$l" =~ 140T|Arrow\ Lake ]]; then k+=" igpu-140t"
+    elif [[ "$l" =~ DG2|Alchemist|A[0-9]{3}[^0-9] ]]; then k+=" alchemist"; discrete=$((discrete + 1))
+    elif [[ "$l" =~ Battlemage|BMG|B[0-9]{2,3}[^0-9] ]]; then k+=" b-series"; discrete=$((discrete + 1))
+    elif [[ "$l" =~ Meteor|Arc ]]; then k+=" igpu-xe-lpg"; fi
+  done <<< "$names"
+  [ $discrete -gt 1 ] && k+=" multi-gpu"
+  printf '%s' "$(printf '%s\n' $k | sort -u | tr '\n' ' ' | sed 's/ $//')"
+}
+# a catalog model's words (its field 13) and whether a DFlash2 drafter for it is in the cache
+m_words() { local w; w=$(m_field "$1" 13); printf '%s' "${w%% df=*}" | sed 's/ *df=[^ ]*//'; }
+m_dflash() {  # KEY: a DFlash2 drafter's repository for the model in the Hugging Face cache (field 13's df= name)
+  local pat d
+  pat=$(m_field "$1" 13 | sed -n 's/.*df=\([^ ]*\).*/\1/p')
+  [ -n "$pat" ] || return 1
+  for d in "$(hub_dir)"/models--*"$pat"*[Dd][Ff]lash*; do [ -d "$d" ] && return 0; done
+  return 1
+}
+
+# ---- the full-screen menu (docs/launcher-design.md, Linux): the models on the left, the selected one's switches on
+# the right, the tip of the focused switch under them. Plain text, no colour: [x] [ ] [-] and > carry the state. In a
+# terminal of 80 columns or more; otherwise, and when not a terminal, the numbered menu
+declare -A TUI_DRAFT=() TUI_IMG=()
+tui_draft_choices() {  # KEY: off mtp both dflash, the ones this model has
+  local k=$1
+  sw_has "$(m_words "$k")" mtp || { printf 'off'; return; }
+  if m_dflash "$k"; then printf 'off mtp both dflash'; else printf 'off mtp'; fi
+}
+tui_draft_default() { local c; c=$(tui_draft_choices "$1"); case "$c" in *both*) printf both;; *mtp*) printf mtp;; *) printf off;; esac; }
+tui_draft_label() { case "$1" in off) printf 'Off';; mtp) printf 'MTP';; both) printf 'MTP+DF';; dflash) printf 'DFlash2';; esac; }
+tui_state() {  # KEY: SW_* for that model with its Drafting
+  local k=$1
+  SW_WORDS=$(m_words "$k"); SW_GPUS=$GPUS; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
+  [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" = off ] && SW_DRAFTING=0 || SW_DRAFTING=1
+}
+tui_cut() { local s=$1 n=$2; [ ${#s} -le "$n" ] && printf '%-*s' "$n" "$s" || printf '%s~' "${s:0:$((n - 1))}"; }
+tui_wrap() { printf '%s\n' "$1" | fold -s -w 78 | sed 's/^/ /'; }
+tui_items() {  # KEY: the right pane's items (draft, img, attn, the switches; the ones that do not apply folded)
+  local k=$1 id why
+  TUI_ITEMS=(draft img); TUI_NA=0
+  [ -n "${CT_title[qsa]+x}" ] && TUI_ITEMS+=(attn)
+  for id in "${CT_IDS[@]}"; do
+    sw_value "$id" && continue
+    sw_choices "$id" >/dev/null && continue
+    why=$(sw_reason "$id")
+    if [ -n "$why" ]; then TUI_NA=$((TUI_NA + 1)); [ "$TUI_SHOWNA" = 1 ] || continue; fi
+    TUI_ITEMS+=("$id")
+  done
+  [ $TUI_NA -gt 0 ] && TUI_ITEMS+=(na)
+}
+tui_item_line() {  # KEY ITEM: its line in the right pane (44 columns)
+  local k=$1 it=$2 why c d
+  case "$it" in
+    draft)
+      c=$(tui_draft_choices "$k"); d=${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}
+      if [ "$c" = off ]; then printf '[-] Drafting  none for this model'
+      else local w out=""; for w in $c; do if [ "$w" = "$d" ]; then out+="($(tui_draft_label "$w")) "; else out+="$(tui_draft_label "$w") "; fi; done; printf 'Drafting  %s' "$out"; fi;;
+    img)
+      if sw_has "$(m_words "$k")" vision; then
+        [ "${TUI_IMG[$k]:-1}" = 1 ] && printf '[x] Images' || printf '[ ] Images'
+      else printf '[-] Images  this model reads none'; fi;;
+    attn)
+      why=$(sw_reason qsa)
+      if [ -n "$why" ]; then printf '[-] Attention  %s' "$why"
+      else case "${OPTC[qsa]:-}" in on) printf 'Attention  default (Sparse) Full';; off) printf 'Attention  default Sparse (Full)';; *) printf 'Attention  (default) Sparse Full';; esac; fi;;
+    na) [ "$TUI_SHOWNA" = 1 ] && printf '    a: hide the %s that do not apply' "$TUI_NA" || printf '    a: show %s more that do not apply' "$TUI_NA";;
+    *)
+      why=$(sw_reason "$it")
+      if [ -n "$why" ]; then printf '[-] %s  %s' "${CT_title[$it]}" "$why"
+      else case "$(sw_on "$it")" in 1) printf '[x] %s' "${CT_title[$it]}";; 0) printf '[ ] %s' "${CT_title[$it]}";; *) printf '[~] %s (auto)' "${CT_title[$it]}";; esac; fi;;
+  esac
+}
+tui_tip() {  # KEY ITEM: the focused item's tip, for the lines under the lists
+  case "$2" in
+    draft) printf 'Drafting: fast guesses of the next tokens, each checked by the model, so the text stays the same and comes faster. MTP: the model'"'"'s own draft block; DFlash2: a separate drafter found in the cache; MTP+DF: both.';;
+    img) printf 'Images: the image encoder is loaded (it takes GPU memory from the context). Off: --no-mmproj, a longer context.';;
+    attn) printf '%s %s' "${CT_tip[qsa]}" "$(sw_tipline qsa)";;
+    na) printf 'Options that do not apply to this model or this PC, each with the reason.';;
+    *) printf '%s: %s %s' "${CT_title[$2]}" "${CT_tip[$2]}" "$(sw_tipline "$2")";;
+  esac
+}
+tui_changed() {  # KEY: what was changed from the defaults
+  local k=$1 x=() id c
+  [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" != "$(tui_draft_default "$k")" ] && x+=("Drafting: $(tui_draft_label "${TUI_DRAFT[$k]}")")
+  [ "${TUI_IMG[$k]:-1}" = 0 ] && sw_has "$(m_words "$k")" vision && x+=("Images: off")
+  for id in "${CT_IDS[@]}"; do
+    [ -n "${OPTC[$id]+x}" ] || continue
+    sw_value "$id" && continue
+    c=${OPTC[$id]}
+    if [ "$id" = qsa ]; then [ "$c" = on ] && x+=("Attention: Sparse") || x+=("Attention: Full")
+    elif [ "$c" = off ]; then x+=("${CT_title[$id]}: off"); else x+=("${CT_title[$id]}"); fi
+  done
+  if [ ${#x[@]} -eq 0 ]; then printf 'nothing'; else (IFS=';'; printf '%s' "${x[*]}" | sed 's/;/; /g'); fi
+}
+tui_draw() {
+  local k=${TUI_KEYS[$TUI_SEL]} i left right lines=() rows tip
+  tui_state "$k"; tui_items "$k"
+  [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
+  lines+=(" inferzero  $(tui_cut "$(m_field "$k" 1 | sed 's/ (.*//')" 40)  ~$(m_field "$k" 3) GB")
+  lines+=(" $(printf '%.0s-' {1..78})")
+  lines+=("   Models                         Options for the selected model")
+  rows=${#TUI_KEYS[@]}; [ ${#TUI_ITEMS[@]} -gt "$rows" ] && rows=${#TUI_ITEMS[@]}
+  for ((i = 0; i < rows; i++)); do
+    left=""; right=""
+    if [ $i -lt ${#TUI_KEYS[@]} ]; then
+      local mk=${TUI_KEYS[$i]} mark=" " cur=" "
+      model_path "$mk" >/dev/null 2>&1 && mark="*"
+      [ $i -eq "$TUI_SEL" ] && cur=">"
+      left="$cur$((i + 1)) $mark $(tui_cut "$(m_field "$mk" 1 | sed 's/ (.*//')" 26)"
+    fi
+    if [ $i -lt ${#TUI_ITEMS[@]} ]; then
+      local f=" "; [ "$TUI_PANE" = opts ] && [ $i -eq "$TUI_FOC" ] && f=">"
+      right="$f$(tui_cut "$(tui_item_line "$k" "${TUI_ITEMS[$i]}")" 44)"
+    fi
+    lines+=(" $(tui_cut "$left" 32) $right")
+  done
+  lines+=(" $(printf '%.0s-' {1..78})")
+  if [ "$TUI_PANE" = opts ]; then tip=$(tui_tip "$k" "${TUI_ITEMS[$TUI_FOC]}")
+  else tip="$(m_field "$k" 1), ~$(m_field "$k" 3) GB, wants $(m_field "$k" 5) GB of RAM. $(model_path "$k" >/dev/null 2>&1 && printf 'Downloaded.' || printf 'Enter downloads it first.')"; fi
+  mapfile -t -O ${#lines[@]} lines < <(tui_wrap "$tip" | head -3)
+  lines+=(" Changed from the defaults: $(tui_changed "$k" | cut -c1-50)")
+  lines+=(" $(printf '%.0s-' {1..78})")
+  lines+=(" up/down move  tab models/options  space switch  enter start  ? help  q quit")
+  printf '\033[H'
+  printf '%s\033[K\n' "${lines[@]}"
+  printf '\033[J'
+}
+tui_toggle() {  # the focused item: Space
+  local k=${TUI_KEYS[$TUI_SEL]} it=${TUI_ITEMS[$TUI_FOC]} c d w nx="" first="" take=0
+  case "$it" in
+    draft)
+      c=$(tui_draft_choices "$k"); d=${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}
+      for w in $c; do [ -z "$first" ] && first=$w; if [ $take = 1 ]; then nx=$w; take=2; fi; [ "$w" = "$d" ] && [ $take = 0 ] && take=1; done
+      TUI_DRAFT[$k]=${nx:-$first};;
+    img) sw_has "$(m_words "$k")" vision && { [ "${TUI_IMG[$k]:-1}" = 1 ] && TUI_IMG[$k]=0 || TUI_IMG[$k]=1; };;
+    attn) [ -z "$(sw_reason qsa)" ] && case "${OPTC[qsa]:-}" in on) OPTC[qsa]=off;; off) unset 'OPTC[qsa]';; *) OPTC[qsa]=on;; esac;;
+    na) [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
+    *)
+      [ -n "$(sw_reason "$it")" ] && return
+      d=$(sw_default "$it")
+      if [ "$d" = auto ]; then case "${OPTC[$it]:-}" in on) OPTC[$it]=off;; off) unset "OPTC[$it]";; *) OPTC[$it]=on;; esac
+      else case "$(sw_on "$it")" in 1) c=off;; *) c=on;; esac; if [ "$c" = "$d" ]; then unset "OPTC[$it]"; else OPTC[$it]=$c; fi; fi;;
+  esac
+}
+tui_help() {
+  printf '\033[H\033[J'
+  say " inferzero: keys"; say ""
+  say "   up / down     move in the list that has the > mark"
+  say "   tab           switch between the models and the selected model's options"
+  say "   1-9           choose a model by its number"
+  say "   space         turn the focused switch on or off, or step a choice (Drafting, Attention)"
+  say "                 [x] on   [ ] off   [~] the engine picks   [-] does not apply (the reason next to it)"
+  say "   a             show or hide the options that do not apply"
+  say "   enter         start the server with the selected model (downloads it first if needed)"
+  say "   r             reset the switches to the defaults"
+  say "   c             check the system"
+  say "   q             quit"
+  say ""; say " The switches are kept in $STATE_DIR/options.json, the same choices as zero-server on Windows."
+  say " Press a key to go back."
+  IFS= read -rsn1 _ || true
+}
+tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_START
+  local key rest saved
+  TUI_KEYS=(); local e; for e in "${CATALOG[@]}"; do TUI_KEYS+=("${e%%|*}"); done
+  TUI_SEL=0; TUI_FOC=0; TUI_PANE=models; TUI_SHOWNA=0; TUI_START=""
+  local lp; lp=$(cat "$STATE_DIR/launcher-last" 2>/dev/null)
+  for ((e = 0; e < ${#TUI_KEYS[@]}; e++)); do [ "${TUI_KEYS[$e]}" = "$lp" ] && TUI_SEL=$e; done
+  saved=$(stty -g 2>/dev/null)
+  trap 'stty "$saved" 2>/dev/null; printf "\033[?25h"' EXIT
+  stty -echo -icanon 2>/dev/null
+  printf '\033[?25l\033[H\033[J'
+  while :; do
+    tui_draw
+    IFS= read -rsn1 key || break
+    if [ "$key" = $'\e' ]; then IFS= read -rsn2 -t 0.05 rest || rest=""; key="ESC$rest"; fi
+    case "$key" in
+      'ESC[A') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -gt 0 ] && TUI_SEL=$((TUI_SEL - 1)); TUI_FOC=0; else [ $TUI_FOC -gt 0 ] && TUI_FOC=$((TUI_FOC - 1)); fi;;
+      'ESC[B') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -lt $((${#TUI_KEYS[@]} - 1)) ] && TUI_SEL=$((TUI_SEL + 1)); TUI_FOC=0; else [ $TUI_FOC -lt $((${#TUI_ITEMS[@]} - 1)) ] && TUI_FOC=$((TUI_FOC + 1)); fi;;
+      $'\t'|'ESC[C'|'ESC[D') [ "$TUI_PANE" = models ] && TUI_PANE=opts || TUI_PANE=models;;
+      [1-9]) [ "$key" -le ${#TUI_KEYS[@]} ] && { TUI_SEL=$((key - 1)); TUI_PANE=models; TUI_FOC=0; };;
+      ' ') if [ "$TUI_PANE" = opts ]; then tui_toggle; opt_save; else TUI_PANE=opts; fi;;
+      a|A) [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
+      r|R) local k=${TUI_KEYS[$TUI_SEL]} id; unset "TUI_DRAFT[$k]" "TUI_IMG[$k]"
+           for id in "${CT_IDS[@]}"; do sw_value "$id" || unset "OPTC[$id]"; done; opt_save;;
+      '?') tui_help; printf '\033[H\033[J';;
+      c|C) printf '\033[H\033[J'; print_check; say ""; say " Press a key to go back."; IFS= read -rsn1 _ || true; printf '\033[H\033[J';;
+      q|Q|'ESC') break;;
+      '') TUI_START=${TUI_KEYS[$TUI_SEL]}; break;;
+    esac
+  done
+  stty "$saved" 2>/dev/null; printf '\033[?25h\033[H\033[J'; trap - EXIT
+  [ -n "$TUI_START" ] || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null && printf '%s' "$TUI_START" > "$STATE_DIR/launcher-last"
+  SEL_DRAFT=${TUI_DRAFT[$TUI_START]:-$(tui_draft_default "$TUI_START")}; SEL_IMG=${TUI_IMG[$TUI_START]:-1}
+  start_key "$TUI_START"
+}
+tui_ok() {  # a terminal the full-screen menu can draw in: input and output a terminal, not dumb, 80 x 20 or more
+  [ -t 0 ] && [ -t 1 ] || return 1
+  case "${TERM:-dumb}" in dumb|unknown|'') return 1;; esac
+  local c r; c=$(tput cols 2>/dev/null || echo 80); r=$(tput lines 2>/dev/null || echo 24)
+  [ "${c:-0}" -ge 80 ] && [ "${r:-0}" -ge 20 ]
+}
+# --opt ID with --model KEY: an option that cannot apply to that model is refused with the menu's reason line (the
+# PC's reasons only warn: lspci's names are a guess, and a wrong guess must not stop a start)
+CLI_ON=()
+cli_check() {  # KEY
+  local k=$1 id why bad=0
+  [ ${#CLI_ON[@]} -gt 0 ] && [ ${#CT_IDS[@]} -gt 0 ] || return 0
+  SW_WORDS=$(m_words "$k"); SW_GPUS=${GPUS:-1}; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
+  SW_DRAFTING=$(m_field "$k" 6)
+  for id in "${CLI_ON[@]}"; do
+    [ -n "${CT_title[$id]+x}" ] || continue
+    why=$(sw_reason "$id")
+    [ -n "$why" ] || continue
+    sw_reason "$id" >/dev/null  # (again outside the subshell: for SW_KIND)
+    why=${why//turn Drafting on first/turn --mtp on first}
+    if [ "$SW_KIND" = pc ]; then err "zero-launcher: note: --opt $id: $why (as far as lspci tells)"; else err "zero-launcher: --opt $id: $why"; bad=1; fi
+  done
+  return $bad
+}
+
+server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT off / mtp / both / dflash, SEL_IMG 0 / 1)
   CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget 8192)
-  [ "$2" = 1 ] && CMD+=(--mtp)
+  case "${SEL_DRAFT:-}" in
+    off) ;;
+    mtp) CMD+=(--mtp --draft mtp);;
+    dflash) CMD+=(--mtp --draft dflash);;
+    both) CMD+=(--mtp);;
+    *) [ "$2" = 1 ] && CMD+=(--mtp);;
+  esac
+  [ "${SEL_IMG:-1}" = 0 ] && CMD+=(--no-mmproj)
   [ -n "$HOST" ] && CMD+=(--host "$HOST")
   [ "${GPUS:-0}" -gt 1 ] && CMD+=(--gpus "$GPUS")
   opt_effect
@@ -547,6 +896,7 @@ main() {
   REPLACE_SERVICE=0; EXTRA=()
   local opt_args=() a no_saved=0
   opt_load
+  cat_load; SW_PC=$(sw_pc_kinds)
   while [ $# -gt 0 ]; do
     case "$1" in
       --options) mode=options;;
@@ -591,12 +941,14 @@ main() {
         [ -n "$a" ] || continue
         id=${a%%=*}; val=""; [ "$id" != "$a" ] && val=${a#*=}
         case "${opt_args[$i]}" in
-          --opt) opt_set "$id" "${val:-on}" || return 2;;
+          --opt) opt_set "$id" "${val:-on}" || return 2; CLI_ON+=("$id");;
           --no-opt) [ -z "$val" ] || { err "zero-launcher: --no-opt $a: just the id"; return 2; }; opt_set "$id" off || return 2;;
           --default-opt) opt_set "$id" "" || return 2;;
         esac
       done
     done
+    # (refused before it is saved: an option that cannot apply to --model never reaches options.json)
+    if [ -n "$arg_model" ] && m_known "$arg_model"; then cli_check "$arg_model" || return 2; fi
     [ "$no_saved" = 1 ] || opt_save || { err "zero-launcher: cannot write $STATE_DIR/options.json"; return 1; }
   fi
   case "$mode" in
@@ -620,7 +972,7 @@ main() {
     return $?
   fi
   [ "$INSTALL_SERVICE" = 1 ] && { err "zero-launcher: --install-service needs --model"; return 2; }
-  menu
+  if tui_ok && [ ${#CT_IDS[@]} -gt 0 ]; then tui; else menu; fi
 }
 
 # (sourced by tests/test_zero_launcher.sh for its functions; run as a program otherwise)

@@ -188,6 +188,7 @@ function Unit($name, $exe, [string[]]$argv, $pattern) {
 }
 Unit "PowerShell scripts parse in 5.1 and 7, text read as UTF-8" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_ps_compat.ps1") "test_ps_compat: all passed"
 Unit "The launchers' option catalog is consistent (tips, relations, applies, variants)" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_launcher_options.ps1") "test_launcher_options: all passed"
+Unit "The launchers' switches: greyed with the right reason, every switch with a tip" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_launcher_switches.ps1") "test_launcher_switches: all passed"
 Unit "HTTP parser (malformed requests)" .\bin\test_http.exe @() "test_http: all passed"
 Unit "API compatibility" .\bin\test_api_compat.exe @() "all passed"
 Unit "web tools (HTML to text, result parsing, address filter)" .\bin\test_web_tools.exe @() "test_web_tools: all passed"

@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-11-22: the launchers show one row per model, its options as switches (QUEUE row 15, step 3)
+
+- **One row per model file** in both launchers. The up-to-six rows a file had (MTP + images, MTP, images, standard,
+  MTP block only, DFlash2 only) are now the model's **Drafting** choice (Off / MTP / MTP + DFlash2 / DFlash2, the ones
+  it has) and its **Images** switch.
+- **The selected model's options sit next to it as switches,** each with its tip (hover, or the line under the
+  switches) and a line saying what it needs or can't be combined with, whether the output stays the same, and its
+  cost. An option that doesn't apply is greyed with one short reason ("for MoE models only", "turn Drafting on
+  first", "needs 2 or more GPUs", "not with Multi-GPU by layers"). The ones that don't apply are folded into one line
+  that shows them, so the panel stays short.
+- **Choose-one groups:** Attention (the model's default / Sparse / Full) and Multi-GPU (one GPU / split by tensors /
+  split by layers).
+- **"Changed from the defaults"** lists what you turned on or off, with **Reset**. A switch left alone stays the
+  engine's default, so a later release's better default still reaches you. The choices are kept in
+  `options.json` as before.
+- **Windows:** the models on the left, the switches on the right. There's a fit bar of the GPU memory (weights,
+  context, buffers), and Advanced (port, network, slots, presets, speech, the rest) is collapsed by default. Other
+  changes:
+  - the info marks use Windows' own info icon;
+  - the window has its own taskbar button with the inferzero icon;
+  - the splash screen's blue line is now a progress bar.
+- **Linux:** `./zero-launcher.sh` opens a full-screen menu in plain text, 80 columns, no colour:
+  - arrow keys move, Tab switches between the models and the options, Space switches, Enter starts;
+  - number keys still pick a model;
+  - the numbered menu is kept for a terminal that can't draw it.
+  
+  Drafting and Images go to `serverz` as `--mtp` / `--draft` / `--no-mmproj`. `--opt ID --model KEY` now refuses an
+  option that model can't take, with the same reason, before saving it.
+- **One source for both:** the rules come from `scripts/options.tsv` (`scripts/launcher-switches.ps1` on Windows, the
+  same rules in bash). Both are checked against one table of cases (`tests/launcher_switch_cases.tsv`):
+  `tests/test_launcher_switches.ps1` and `tests/test_zero_launcher.sh`.
+- **zero-server:** `-Drafter mtp` / `dflash` with `-Vision off` works now: when the model list has no row for that
+  pair, the drafter is passed as `--draft` itself.
+- `h8_exact`'s default reads "off (H8 from 256-token chunks)" in the catalog, so the launchers read it as off.
+
 ## 2026-11-22: Flash Next's prompt mixers, where the BF16 rows cost, and `ARC_HCF_NB` (opt-in)
 
 - **Found:** with the BF16 mixer rows (the default since 11-19, for accuracy), Flash Next's prompt mixers run as f32

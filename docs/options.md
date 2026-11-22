@@ -41,7 +41,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 ## Exact prompts on Lunar Lake / Panther Lake (`ARC_H8_MIN=100000`)
 
 - **What it does:** Prompts read without the H8 rotation on iGPUs with 16-lane XMX (Arc 140V, B390): a little more exact, slower.
-- **Default:** 256 (H8 from 256-token chunks).
+- **Default:** off (H8 from 256-token chunks).
 - **Best for:** igpu-xe2, dense.
 - **Cost:** 256-1,023-token prompts 1.4-1.8x slower.
 - **Output:** slightly different, checked against f32 (KL).
