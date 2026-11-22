@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-22: the DeltaNet recurrence in one sweep a token, opt-in (`ARC_GDN_FUSE2=1`)
+
+- **`ARC_GDN_FUSE2=1`:** `gdn_recur` merges each token's state update with the next token's first sum into one sweep
+  over the state, with twice as many independent sums in flight. The 27B runs only 768 threads of it on an A770's 512
+  EUs, so each thread waits on its chains of 32 dependent multiply-adds, and this is the lever for that.
+- Bit for bit the same: every element and sum keeps its order. The 4B's logits are byte for byte the same on the
+  laptop for prompt chunks and generated tokens.
+- On the laptop's 125H it is slower (gdn_recur 37.2 -> 40.6 ms on a 512-token prompt): that GPU has few EUs and
+  enough threads to hide the wait. Opt-in until the A770s measure it; not with `ARC_GDN_PF`.
+
 ## 2026-11-22: the A770's big tile shaped per GEMM, opt-in (`ARC_GEMM_XW_SLM_WG_GU`)
 
 - **`ARC_GEMM_XW_SLM_WG_GU="X,Y"`:** the FFN's gate and up GEMMs use their own work-group shape on the A770's big

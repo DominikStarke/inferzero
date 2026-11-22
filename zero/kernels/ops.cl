@@ -662,6 +662,144 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
                                   as_uint((b0 + b1) + (b2 + b3)));
     }
   }
+#elif defined(GDN_FUSE2)
+  // -DGDN_FUSE2 (ARC_GDN_FUSE2=1, 2026-11-22, opt-in; the A770 plan's DeltaNet step): token t's second pass (the state
+  // update and its q sums) and token t + 1's first pass (the decay and its k sums) in one sweep over the state, so 8
+  // independent sum chains are in flight instead of 4 and the state is swept once a token instead of twice. Each
+  // element gets the same operations in the same order, and each chain adds the same terms in the same order: bit for
+  // bit the default. Token t + 2's operands are requested before the sweep that needs t + 1's (two tokens ahead).
+#define GDN_KR(n0, n1)                                                                                              \
+  {as_float(n0.s0), as_float(n0.s1), as_float(n0.s2), as_float(n0.s3), as_float(n0.s4), as_float(n0.s5),          \
+   as_float(n0.s6), as_float(n0.s7), as_float(n1.s0), as_float(n1.s1), as_float(n1.s2), as_float(n1.s3),          \
+   as_float(n1.s4), as_float(n1.s5), as_float(n1.s6), as_float(n1.s7)}
+#define GDN_LOAD(tt, k0_, k1_, q0_, q1_, v_, d_, b_)                                                                \
+  {                                                                                                                 \
+    __global const float* nrow_ = x + (size_t)(tt) * C;                                                             \
+    k0_ = intel_sub_group_block_read8((__global const uint*)(nrow_ + ko));                                          \
+    q0_ = intel_sub_group_block_read8((__global const uint*)(nrow_ + qo));                                          \
+    GDN_LOAD_HI(nrow_, k1_, q1_)                                                                                    \
+    v_ = intel_sub_group_block_read((__global const uint*)(nrow_ + vo));                                            \
+    d_ = ab[(size_t)(tt) * 2 * nv + h];                                                                             \
+    b_ = ab[(size_t)(tt) * 2 * nv + nv + h];                                                                        \
+  }
+#define GDN_LOADK(tt, k0_, k1_, d_)                                                       \
+  {                                                                                     \
+    __global const float* nrow_ = x + (size_t)(tt) * C;                                 \
+    k0_ = intel_sub_group_block_read8((__global const uint*)(nrow_ + ko));              \
+    GDN_LOAD_K1(nrow_, k1_)                                                             \
+    d_ = ab[(size_t)(tt) * 2 * nv + h];                                                 \
+  }
+#define GDN_LOADQ(tt, q0_, q1_, v_, b_)                                                   \
+  {                                                                                     \
+    __global const float* nrow_ = x + (size_t)(tt) * C;                                 \
+    q0_ = intel_sub_group_block_read8((__global const uint*)(nrow_ + qo));              \
+    GDN_LOAD_Q1(nrow_, q1_)                                                             \
+    v_ = intel_sub_group_block_read((__global const uint*)(nrow_ + vo));                \
+    b_ = ab[(size_t)(tt) * 2 * nv + nv + h];                                            \
+  }
+#if GW == 8
+#define GDN_LOAD_K1(r_, k1_) k1_ = intel_sub_group_block_read8((__global const uint*)((r_) + ko + 64));
+#define GDN_LOAD_Q1(r_, q1_) q1_ = intel_sub_group_block_read8((__global const uint*)((r_) + qo + 64));
+#else
+#define GDN_LOAD_K1(r_, k1_)
+#define GDN_LOAD_Q1(r_, q1_)
+#endif
+#if GW == 8
+#define GDN_LOAD_HI(r_, k1_, q1_)                                                    \
+  k1_ = intel_sub_group_block_read8((__global const uint*)((r_) + ko + 64));         \
+  q1_ = intel_sub_group_block_read8((__global const uint*)((r_) + qo + 64));
+#else
+#define GDN_LOAD_HI(r_, k1_, q1_)
+#endif
+  // (c*: token t's operands; kn* and dn: token t + 1's k and decay, needed by the sweep of token t, so requested a
+  //  token earlier; q, v and beta one token ahead as the default's: dg2-g10 spilled with all of them two ahead)
+  uint8 ck0 = kn0, ck1 = kn1, cq0 = qn0, cq1 = qn1;
+  uint cv = vn;
+  float cd = dn, cb = bn;
+  if (1 < M_valid) GDN_LOADK(1, kn0, kn1, dn)
+  float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+  if (M_valid > 0) {  // (token 0's first pass, as the default's)
+    const float kr[16] = GDN_KR(ck0, ck1);
+    const float decay = GDN_DECAY(cd);
+#pragma unroll
+    for (int i = 0; i < 128; i += 4) {
+      s[i] *= decay; s[i + 1] *= decay; s[i + 2] *= decay; s[i + 3] *= decay;
+      a0 = fma(s[i], BCW(kr[i / GW], i % GW), a0);
+      a1 = fma(s[i + 1], BCW(kr[(i + 1) / GW], (i + 1) % GW), a1);
+      a2 = fma(s[i + 2], BCW(kr[(i + 2) / GW], (i + 2) % GW), a2);
+      a3 = fma(s[i + 3], BCW(kr[(i + 3) / GW], (i + 3) % GW), a3);
+    }
+  }
+  for (int t = 0; t < M_valid; ++t) {
+    const float kr[16] = GDN_KR(ck0, ck1);
+    const float qr[16] = GDN_KR(cq0, cq1);
+    const float v = as_float(cv), beta = GDN_BETA(cb);
+    const float d = (v - ((a0 + a1) + (a2 + a3))) * beta;
+    // (requested now: token t + 1's q, v, beta, used by the next step; token t + 2's k and decay, by the next sweep)
+    uint8 nq0 = 0, nq1 = 0, fk0 = 0, fk1 = 0;
+    uint nv_ = 0;
+    float nb = 0.0f, fd = 0.0f;
+    if (t + 1 < M_valid) GDN_LOADQ(t + 1, nq0, nq1, nv_, nb)
+    if (t + 2 < M_valid) GDN_LOADK(t + 2, fk0, fk1, fd)
+#if defined(GDN_L1PF) && defined(cl_intel_subgroup_buffer_prefetch)
+    if (t + 1 + GDN_L1PF < M_valid) {  // (as the default's, a token further: the loads above are two ahead)
+      __global const float* prow = x + (size_t)(t + 1 + GDN_L1PF) * C;
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + ko));
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + qo));
+#if GW == 8
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + ko + 64));
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + qo + 64));
+#endif
+      intel_sub_group_block_prefetch_ui((__global const uint*)(prow + vo));
+    }
+#endif
+    float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
+    if (t + 1 < M_valid) {
+      // token t's update and q sums, then token t + 1's decay and k sums, element by element
+      const float nk[16] = GDN_KR(kn0, kn1);
+      const float ndecay = GDN_DECAY(dn);
+      a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+#pragma unroll
+      for (int i = 0; i < 128; i += 4) {
+        s[i] = fma(BCW(kr[i / GW], i % GW), d, s[i]);
+        s[i + 1] = fma(BCW(kr[(i + 1) / GW], (i + 1) % GW), d, s[i + 1]);
+        s[i + 2] = fma(BCW(kr[(i + 2) / GW], (i + 2) % GW), d, s[i + 2]);
+        s[i + 3] = fma(BCW(kr[(i + 3) / GW], (i + 3) % GW), d, s[i + 3]);
+        b0 = fma(s[i], BCW(qr[i / GW], i % GW), b0);
+        b1 = fma(s[i + 1], BCW(qr[(i + 1) / GW], (i + 1) % GW), b1);
+        b2 = fma(s[i + 2], BCW(qr[(i + 2) / GW], (i + 2) % GW), b2);
+        b3 = fma(s[i + 3], BCW(qr[(i + 3) / GW], (i + 3) % GW), b3);
+        s[i] *= ndecay; s[i + 1] *= ndecay; s[i + 2] *= ndecay; s[i + 3] *= ndecay;
+        a0 = fma(s[i], BCW(nk[i / GW], i % GW), a0);
+        a1 = fma(s[i + 1], BCW(nk[(i + 1) / GW], (i + 1) % GW), a1);
+        a2 = fma(s[i + 2], BCW(nk[(i + 2) / GW], (i + 2) % GW), a2);
+        a3 = fma(s[i + 3], BCW(nk[(i + 3) / GW], (i + 3) % GW), a3);
+      }
+    } else {  // (the last token: its second pass alone)
+#pragma unroll
+      for (int i = 0; i < 128; i += 4) {
+        s[i] = fma(BCW(kr[i / GW], i % GW), d, s[i]);
+        s[i + 1] = fma(BCW(kr[(i + 1) / GW], (i + 1) % GW), d, s[i + 1]);
+        s[i + 2] = fma(BCW(kr[(i + 2) / GW], (i + 2) % GW), d, s[i + 2]);
+        s[i + 3] = fma(BCW(kr[(i + 3) / GW], (i + 3) % GW), d, s[i + 3]);
+        b0 = fma(s[i], BCW(qr[i / GW], i % GW), b0);
+        b1 = fma(s[i + 1], BCW(qr[(i + 1) / GW], (i + 1) % GW), b1);
+        b2 = fma(s[i + 2], BCW(qr[(i + 2) / GW], (i + 2) % GW), b2);
+        b3 = fma(s[i + 3], BCW(qr[(i + 3) / GW], (i + 3) % GW), b3);
+      }
+    }
+    intel_sub_group_block_write((__global uint*)(o + (size_t)t * nv * 128 + h * 128 + jb),
+                                as_uint((b0 + b1) + (b2 + b3)));
+    ck0 = kn0, ck1 = kn1, cq0 = nq0, cq1 = nq1, cv = nv_, cd = dn, cb = nb;
+    kn0 = fk0, kn1 = fk1, dn = fd;
+  }
+#undef GDN_KR
+#undef GDN_LOAD
+#undef GDN_LOAD_HI
+#undef GDN_LOADK
+#undef GDN_LOADQ
+#undef GDN_LOAD_K1
+#undef GDN_LOAD_Q1
 #else
   for (int t = 0; t < M_valid; ++t) {
     // (element i of q / k: register i / GW of lane i % GW, as the sub-group block reads lay them out)

@@ -38,8 +38,11 @@
     // (ARC_GDN_L1PF=D: token t+D's operands prefetched into L1, bit-identical; 2 by default on discrete cards, off on
     //  iGPUs: zero/xe2/engine_xe2.h xe2_gdn_l1pf; only where the driver has cl_intel_subgroup_buffer_prefetch)
     const int gdn_l1 = xe2_gdn_l1pf();
+    // (ARC_GDN_FUSE2=1, opt-in: token t's second pass and t + 1's first in one sweep, bit-identical; not with ARC_GDN_PF)
+    static const bool gdn_f2 = getenv("ARC_GDN_FUSE2") && atoi(getenv("ARC_GDN_FUSE2")) != 0;
     const std::string gpf = (gdn_pf > 1 ? " -DGDN_PF=" + std::to_string(gdn_pf) : std::string()) +
-                            (gdn_l1 > 1 ? " -DGDN_L1PF=" + std::to_string(gdn_l1) : std::string());
+                            (gdn_l1 > 1 ? " -DGDN_L1PF=" + std::to_string(gdn_l1) : std::string()) +
+                            (gdn_f2 && gdn_pf <= 1 ? " -DGDN_FUSE2" : "");
     k_gdn_recur_ = kernel("ops", big + gpf, "gdn_recur");
     k_gdn_recur_g_ = kernel("ops", big + gpf + " -DFUSE_GATES", "gdn_recur");
     const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
