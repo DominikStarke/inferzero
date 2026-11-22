@@ -268,7 +268,7 @@ class Client : public std::enable_shared_from_this<Client> {
   std::string instructions() const { return instructions_; }
   std::vector<Tool> tools() {
     if (tools_changed_.exchange(false)) {
-      try { load_tools(); } catch (...) {}
+      try { load_tools(); } catch (const std::exception& ex_) { LOG_WRN("inferzero: loading an MCP server's tools again failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: loading an MCP server's tools again failed\n"); }
     }
     std::lock_guard<std::mutex> lk(mu_);
     return tools_;
@@ -778,7 +778,7 @@ class Client : public std::enable_shared_from_this<Client> {
         Json p = Json::object();
         p.set("requestId", (double)id);
         p.set("reason", over ? "timed out" : "the user stopped it");
-        try { notify("notifications/cancelled", p); } catch (...) {}
+        try { notify("notifications/cancelled", p); } catch (const std::exception& ex_) { LOG_WRN("inferzero: telling an MCP server a request stopped failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: telling an MCP server a request stopped failed\n"); }
         throw std::runtime_error(method + (over ? ": no answer within " + std::to_string(timeout_ms / 1000) + " s" : ": stopped"));
       }
       lk.lock();
@@ -865,7 +865,7 @@ inline Json enabled_all() {
   try {
     Json j = Json::parse(ss.str());
     if (j.is_object()) return j;
-  } catch (...) {}
+  } catch (const std::exception&) {}  // (not JSON)
   return Json::object();
 }
 inline std::vector<std::string> enabled(const std::string& project) {

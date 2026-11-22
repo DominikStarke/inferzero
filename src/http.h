@@ -62,7 +62,7 @@ class HttpResponse {
     // (for the log only, never stops the reply; cleared by a later success: an inner request answered on the same
     //  response (the file tools') must not leave its error on the outer reply's line)
     if (status >= 400) {
-      try { err_ = error_text(body); } catch (...) {}
+      try { err_ = error_text(body); } catch (const std::exception&) {}
     } else {
       err_.clear();
     }
@@ -405,7 +405,7 @@ class HttpServer {
     if (!on_done) return;
     try {
       on_done(rq, rs, ms);
-    } catch (...) {}
+    } catch (const std::exception& ex_) { LOG_WRN("inferzero: the access line failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: the access line failed\n"); }
   }
   // (refused before a handler: logged here, a warning: the request is not one the server reads)
   static void reply_close(plat::socket_t c, int status, const char* msg) {
@@ -681,7 +681,7 @@ class HttpServer {
         if (!s.on_done) return;
         try {
           s.on_done(rq, rs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-        } catch (...) {}
+        } catch (const std::exception& ex_) { LOG_WRN("inferzero: the access line failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: the access line failed\n"); }
       }
     } done{*this, rq, rs, t0};
     try {
@@ -697,7 +697,7 @@ class HttpServer {
       const std::string body = "{\"error\":{\"message\":\"" + m + "\",\"type\":\"server_error\"}}";
       if (!rs.done() && !rs.streaming()) rs.send(500, "application/json", body);
       else if (rs.streaming() && !rs.done()) {  // (a stream that broke off: an error event, as OpenAI sends one)
-        try { rs.sse_event(body); } catch (...) {}
+        try { rs.sse_event(body); } catch (const std::exception&) {}  // (the client is gone)
         rs.sse_end();
       }
     }

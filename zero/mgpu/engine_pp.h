@@ -133,7 +133,7 @@ class PpEngine {
         if (r + 1 == S) return l;
       }
     } catch (...) {
-      try { reset(); } catch (...) {}
+      try { reset(); } catch (const std::exception& ex_) { LOG_WRN("inferzero: resetting the layer split after a failed pass failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: resetting the layer split after a failed pass failed\n"); }
       throw;
     }
     static const std::vector<float> none;

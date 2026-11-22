@@ -60,7 +60,7 @@ struct OutKeep {
         tail.append(b + room, n - room);
         if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
       }
-    } catch (...) {}
+    } catch (...) {}  // (out of memory: this part left out, counted in total)
   }
   void into(Result& r) {
     if (tail.size() > kMaxOut / 4) tail.erase(0, tail.size() - kMaxOut / 4);

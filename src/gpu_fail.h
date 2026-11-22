@@ -76,6 +76,23 @@ inline bool same_boot(const std::string& a, const std::string& b) {
 #endif
 }
 
+// the marker's time= (YYYY-MM-DDTHH:MM:SSZ) in seconds since 1970; -1 if it is not one
+inline long long parse_utc(const std::string& s) {
+  std::tm t{};
+  if (sscanf(s.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec) != 6)
+    return -1;
+  t.tm_year -= 1900;
+  t.tm_mon -= 1;
+#ifdef _WIN32
+  return (long long)_mkgmtime(&t);
+#else
+  return (long long)timegm(&t);
+#endif
+}
+// (a marker older than this counts as stale: Windows' Fast Startup keeps the time since boot over a "Shut down",
+//  so only a Restart would clear the marker otherwise)
+constexpr long long kStaleS = 12 * 3600;
+
 inline std::string utc_now() {
   std::tm t{};
   if (!plat::utc_time(std::time(nullptr), t)) return "";
@@ -141,6 +158,13 @@ inline void check_marker() {
             kv["time"].c_str(), kv["kernel"].c_str(), kv["program"].c_str());
     return;
   }
+  const long long at = parse_utc(kv["time"]);
+  if (at > 0 && (long long)std::time(nullptr) - at > kStaleS) {
+    plat::remove_file(path.c_str());
+    LOG_INF("inferzero: a GPU %s marker more than 12 hours old (%s, %s in %s) deleted\n", kv["kind"].c_str(),
+            kv["time"].c_str(), kv["kernel"].c_str(), kv["program"].c_str());
+    return;
+  }
   std::string when = kv["time"];
   if (when.size() >= 16) when = when.substr(11, 5) + " UTC";
   const char* ign = getenv("ARC_IGNORE_HANG");
@@ -149,7 +173,7 @@ inline void check_marker() {
             kv["kind"].c_str(), when.c_str(), kv["kernel"].c_str(), kv["program"].c_str());
     return;
   }
-  LOG_ERR("inferzero: a GPU %s at %s in %s (%s): restart the computer before using the GPU again (or delete %s, run "
+  LOG_ERR("inferzero: a GPU %s at %s in %s (%s): restart the computer (Restart, not Shut down) before using the GPU again (or delete %s, run "
           "runz --clear-hang, or set ARC_IGNORE_HANG=1)\n",
           kv["kind"].c_str(), when.c_str(), kv["kernel"].c_str(), kv["program"].c_str(), path.c_str());
   fflush(stderr);

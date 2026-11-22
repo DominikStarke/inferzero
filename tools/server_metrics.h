@@ -79,7 +79,7 @@ inline void unloaded() noexcept {
     std::lock_guard<std::mutex> lk(r.mu);
     r.model.clear(), r.arch.clear();
     r.ctx = 0, r.gpus = 1, r.gpu_bytes = 0, r.kv_usage = 0;
-  } catch (...) {}
+  } catch (...) {}  // (noexcept: the metrics never stop the server, not even with a log line that fails)
 }
 struct Done {
   std::string model, finish;
@@ -108,7 +108,7 @@ inline void aborted(const std::string& model, size_t prompt, size_t cached, size
     PerModel& p = r.m[model];
     p.prompt += prompt, p.gen += gen, p.pc_queries += prompt, p.pc_hits += cached;
     ++p.success["abort"];
-  } catch (...) {}
+  } catch (...) {}  // (noexcept: the metrics never stop the server, not even with a log line that fails)
 }
 // (the handler label: the API's paths as they are, everything else "other", so the series stay few)
 inline std::string handler_of(const std::string& path) {

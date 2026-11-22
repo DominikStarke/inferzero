@@ -1228,7 +1228,7 @@ class TpEngine {
           }
 #endif
         }
-      } catch (...) {}
+      } catch (const std::exception& ex_) { LOG_WRN("inferzero: freeing the split model's shards failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: freeing the split model's shards failed\n"); }
       free_limit_s_ = 0;
     }
     {
@@ -1341,7 +1341,7 @@ class TpEngine {
       for (int q = 0; q < n; ++q)
         run_on({q}, [&](int r) {
           zrt::oom_throws = true;
-          try { tmp[r] = (char*)zrt::device_alloc(tb); } catch (...) {}
+          try { tmp[r] = (char*)zrt::device_alloc(tb); } catch (const std::exception&) {}  // (out of memory: checked below)
           zrt::oom_throws = false;
         }, false, false);
       timed = std::all_of(tmp.begin(), tmp.end(), [](char* p) { return p != nullptr; });
@@ -1412,7 +1412,7 @@ class TpEngine {
           try {
             shards_[r]->tp_reserve_sums();
             comm_.inbox[r] = (char*)zrt::device_alloc(2 * comm_.half_b);
-          } catch (...) {}
+          } catch (const std::exception&) {}  // (out of memory: checked below)
           zrt::oom_throws = false;
         }, false, false);
       if (!std::all_of(comm_.inbox.begin(), comm_.inbox.end(), [](char* p) { return p != nullptr; })) {

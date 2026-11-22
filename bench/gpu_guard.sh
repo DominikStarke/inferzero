@@ -55,14 +55,17 @@ setsid "${inhibit[@]}" "$@" > >(tee "$LOG") 2> >(tee "$LOG.err" >&2) &
 pid=$!
 trap 'kill -TERM -- -$pid 2>/dev/null' INT TERM
 t=0
-while kill -0 "$pid" 2>/dev/null; do
+alive() { kill -0 "$pid" 2>/dev/null || kill -0 -- -"$pid" 2>/dev/null; }  # (either: before setsid has run, no group yet)
+# (the group, not $pid: with systemd-inhibit, $pid is it and the GPU program its child, which can outlive it stuck
+#  in the driver)
+while alive; do
   sleep 0.5
   t=$((t + 1))
   if [ $t -gt $((TIMEOUT * 2)) ]; then
     echo "gpu_guard: $1 still running after $TIMEOUT s: killing it" >&2
     kill -KILL -- -"$pid" 2>/dev/null
-    for _ in $(seq 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-    if kill -0 "$pid" 2>/dev/null; then
+    for _ in $(seq 20); do alive || break; sleep 0.5; done
+    if alive; then
       tmp="$MARKER.tmp"
       printf 'time=%s\nprogram=%s\nkernel=(unknown: killed by gpu_guard)\nkind=hang\ngpu=\nboot=%s\nkilled=no\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "$1")" "$BOOT" > "$tmp" && mv -f "$tmp" "$MARKER"

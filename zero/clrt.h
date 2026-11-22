@@ -332,8 +332,13 @@ inline bool launch_stats_on();
 inline uint64_t wait_limit_ns() {
   static const uint64_t v = [] {
     const char* e = getenv("ARC_GPU_WAIT_S");
-    const double s = e ? atof(e) : 0.0;
-    return s > 0 ? (uint64_t)(s * 1e9) : UINT64_MAX;
+    double s = e ? atof(e) : 0.0;
+    // (at least 5 s: below about 1 s healthy waits would be taken for hangs; any value with ARC_GPU_FAULT_TEST)
+    if (s > 0 && s < 5 && !getenv("ARC_GPU_FAULT_TEST")) {
+      LOG_WRN("inferzero: ARC_GPU_WAIT_S=%s is below 5 s: 5 s used\n", e);
+      s = 5;
+    }
+    return s > 0 ? (uint64_t)std::max(1.0, s * 1e9) : UINT64_MAX;
   }();
   return v;
 }

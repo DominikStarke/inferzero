@@ -90,7 +90,7 @@ inline void emit(int lvl, const char* s, size_t n) noexcept {
   try {
     mu().lock();
     locked = true;
-  } catch (...) {}
+  } catch (...) {}  // (the logger cannot log its own lock's failure: the line goes out unlocked)
   fprintf(stderr, "%s%s%.*s%s\n", col, pre, len, s, *col ? "\x1b[0m" : "");
   fflush(stderr);
   if (c.file) {
@@ -206,7 +206,7 @@ inline void raw(const char* fmt, ...) noexcept {
   if (c.on) try {
       mu().lock();
       locked = true;
-    } catch (...) {}
+    } catch (...) {}  // (the logger cannot log its own lock's failure: the line goes out unlocked)
   vfprintf(stderr, fmt, ap);
   fflush(stderr);
   if (c.on && c.file) {

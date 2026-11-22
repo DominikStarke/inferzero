@@ -318,7 +318,7 @@ inline Result transcribe_ranges(Engine& eng, AudioQwen3A& enc, const Tokenizer& 
       decltype(gpu)& g;
       Engine& e;
       ~Rebind() {
-        try { g([&] { e.bind(0); }); } catch (...) {}
+        try { g([&] { e.bind(0); }); } catch (const std::exception& ex_) { LOG_WRN("inferzero: binding the engine again after speech to text failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: binding the engine again after speech to text failed\n"); }
       }
     } rebind{gpu, eng};
     std::vector<Run> runs(std::min(ranges.size(), g0 + B) - g0);

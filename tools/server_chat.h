@@ -961,7 +961,7 @@
       d.accepted = (uint64_t)std::max(n_accepted, dr_acc[0] + dr_acc[1]);
       d.kv = eng_.ctx > 0 ? (double)(P.size() + gen.size()) / eng_.ctx : 0;
       zmet::request_done(d);
-    } catch (...) {}
+    } catch (const std::exception& ex_) { LOG_WRN("inferzero: the /metrics record failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: the /metrics record failed\n"); }
     // (-lv 3: llama.cpp's form of the same numbers)
     LOG_DBG("[%s] prompt eval time = %10.2f ms / %5zu tokens (%8.2f ms per token, %8.2f tokens per second)\n", id.c_str(),
             prompt_ms, P.size() - start, prompt_ms / std::max<double>(1, (double)(P.size() - start)),

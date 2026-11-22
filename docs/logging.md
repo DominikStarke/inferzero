@@ -82,7 +82,7 @@ the free RAM. A kernel that fails names itself, its launch size and, while it wa
   the marker written.
 - Any other Level Zero failure mid-work: the error line as before, exit code 5.
 - At start, while the marker is from this start of the computer: `inferzero: a GPU hang at 03:51 UTC in attn_x8
-  (attn_bench): restart the computer before using the GPU again (or delete …, run runz --clear-hang, or set
+  (attn_bench): restart the computer (Restart, not Shut down) before using the GPU again (or delete …, run runz --clear-hang, or set
   ARC_IGNORE_HANG=1)`, exit code 3. A marker from an earlier start is deleted with an `I` line; one that cannot be
   read is a `W` line and ignored.
 - `ARC_WAIT_STATS=1`: `inferzero: the longest single GPU wait: … s` at the end of the run.

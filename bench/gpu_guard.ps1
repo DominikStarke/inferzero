@@ -13,14 +13,21 @@
 # 5. The command's exit code 3 (a GPU hang) or 4 (a lost GPU): the marker is there; prints it.
 # Exit code: the command's; 124 when it was killed at the timeout; 3 when a refusal or a stuck process.
 # Windows PowerShell 5.1 and PowerShell 7.
-param(
-  [int]$TimeoutS = 60,
-  [double]$WaitS = 0,  # ARC_GPU_WAIT_S for the command (0: -TimeoutS - 10, at least 5)
-  [string]$Log = "",
-  [Parameter(ValueFromRemainingArguments = $true)][string[]]$Command
-)
+# (the options read from $args by hand, no param block: with -File, 5.1's binder took "--" for a parameter with an
+#  empty name, and the command's own options (/c, -x) must reach it untouched)
+$TimeoutS = 60
+$WaitS = 0.0  # ARC_GPU_WAIT_S for the command (0: -TimeoutS - 10, at least 5)
+$Log = ""
+$Command = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $a = [string]$args[$i]
+  if ($a -eq "--") { $Command = @($args | Select-Object -Skip ($i + 1) | ForEach-Object { [string]$_ }); break }
+  elseif ($a -eq "-TimeoutS" -and $i + 1 -lt $args.Count) { $TimeoutS = [int]$args[++$i] }
+  elseif ($a -eq "-WaitS" -and $i + 1 -lt $args.Count) { $WaitS = [double]$args[++$i] }
+  elseif ($a -eq "-Log" -and $i + 1 -lt $args.Count) { $Log = [string]$args[++$i] }
+  else { $Command = @($args | Select-Object -Skip $i | ForEach-Object { [string]$_ }); break }
+}
 $ErrorActionPreference = "Stop"
-if ($Command -and $Command[0] -eq "--") { $Command = @($Command | Select-Object -Skip 1) }
 if (-not $Command -or $Command.Count -eq 0) {
   Write-Host "usage: gpu_guard.ps1 [-TimeoutS 60] [-WaitS S] [-Log file] -- program [arguments]"
   exit 1
@@ -53,15 +60,21 @@ function Test-MarkerThisBoot {
   if (-not $kv -or -not $kv.ContainsKey("boot")) { return $false }
   $b = 0L
   if (-not [long]::TryParse($kv["boot"], [ref]$b)) { return $false }
+  # (older than 12 h: stale, as the engine counts it; Fast Startup keeps the time since boot over a "Shut down")
+  $t = [DateTime]::MinValue
+  $sty = [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal
+  if ($kv.ContainsKey("time") -and [DateTime]::TryParseExact($kv["time"], "yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture, $sty, [ref]$t)) {
+    if (([DateTime]::UtcNow - $t).TotalHours -gt 12) { return $false }
+  }
   return [math]::Abs((Get-BootId) - $b) -le 120
 }
 function Show-Marker {
   Write-Host "The GPU hang marker ($marker):" -ForegroundColor Red
   Get-Content -Encoding UTF8 -LiteralPath $marker | ForEach-Object { Write-Host "  $_" }
-  Write-Host "Restart the computer before using the GPU again (or runz --clear-hang)." -ForegroundColor Red
+  Write-Host "Restart the computer (Restart, not Shut down) before using the GPU again (or runz --clear-hang)." -ForegroundColor Red
 }
 function Write-Marker([string]$prog, [string]$extra) {
-  $s = "time=" + [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") + "`nprogram=$prog`nkernel=(unknown: killed by gpu_guard)`nkind=hang`ngpu=`nboot=" + (Get-BootId) + "`n$extra`n"
+  $s = "time=" + [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture) + "`nprogram=$prog`nkernel=(unknown: killed by gpu_guard)`nkind=hang`ngpu=`nboot=" + (Get-BootId) + "`n$extra`n"
   $tmp = "$marker.tmp"
   [IO.File]::WriteAllText($tmp, $s, $utf8)
   Move-Item -Force -LiteralPath $tmp -Destination $marker
@@ -132,7 +145,11 @@ try {
   if ($timedOut) {
     # 4. the kill, then the check that it is gone
     Write-Host "gpu_guard: $prog still running after $TimeoutS s: killing it" -ForegroundColor Red
-    & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+    # (taskkill's stderr under "Stop" in 5.1 would be a terminating error, skipping the check below)
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null } catch {}
+    $ErrorActionPreference = $eap
     if (-not $p.WaitForExit(10000)) {
       Write-Marker $prog "killed=no"
       Write-Host "gpu_guard: $prog did not end 10 s after the kill (stuck in the driver): marker written, no further GPU runs until a restart." -ForegroundColor Red

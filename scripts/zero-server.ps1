@@ -1470,6 +1470,7 @@ if ($optFx.words.Count) { Say "  options: $($optFx.words -join ', ')" }
 try {
   $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
     -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
+  $null = $p.Handle  # (cached now: 5.1 gives no ExitCode after the exit without it, the GPU failsafe's 3 / 4 below)
 } finally {
   foreach ($k in $envBefore.Keys) { if ($null -eq $envBefore[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } else { Set-Item "Env:$k" $envBefore[$k] } }
 }
@@ -1509,7 +1510,7 @@ while ($true) {
     try { $sc = $p.ExitCode } catch {}
     $mk = Join-Path (Get-AppDir) "gpu_hang.txt"
     if (($sc -eq 3 -or $sc -eq 4) -and (Test-Path -LiteralPath $mk)) {
-      Write-Host "The GPU hung or was lost (serverz exit $sc): restart the computer before using the GPU again. The marker ($mk):" -ForegroundColor Red
+      Write-Host "The GPU hung or was lost (serverz exit $sc): restart the computer (Restart, not Shut down) before using the GPU again. The marker ($mk):" -ForegroundColor Red
       Get-Content -Encoding UTF8 -LiteralPath $mk | ForEach-Object { Write-Host "  $_" }
     }
     exit 2

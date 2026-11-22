@@ -682,7 +682,7 @@ class Server {
     } catch (const std::exception& e) {
       // every request of the step fails (the waiting ones would otherwise wait for good), and their slots start
       // over: the engine left their positions as they were, but part of their device state may be written
-      try { eng_.bind(cur_slot_); } catch (...) {}
+      try { eng_.bind(cur_slot_); } catch (const std::exception& ex_) { LOG_WRN("inferzero: binding the slot again after a failed step failed: %s\n", ex_.what()); } catch (...) { LOG_WRN("inferzero: binding the slot again after a failed step failed\n"); }
       for (GenStep* g : st) {
         g->failed = e.what();
         g->done = true;
@@ -966,7 +966,19 @@ class Server {
 #include "server_file_tools.h"  // (the model's file tools, /v1/tools/*, and the files API)
 #include "server_mcp.h"         // (MCP servers' tools for the model, /v1/mcp)
 
+// (one top-level catch, docs/gpu-failsafe.md 1: an exception that reaches main is an error line and code 1; _Exit,
+//  not a return, since the server's threads may still run and static destructors under them can hang)
+static int server_main(int argc, char** argv);
 int main(int argc, char** argv) {
+  try {
+    return server_main(argc, argv);
+  } catch (const std::exception& e) {
+    LOG_ERR("error: %s\n", e.what());
+    fflush(stderr);
+    _Exit(1);
+  }
+}
+static int server_main(int argc, char** argv) {
 #ifndef _WIN32
   plat::ignore_sigpipe();  // (first: a log pipe whose reader is gone must give a write error, not end the server)
 #endif
@@ -999,7 +1011,7 @@ int main(int argc, char** argv) {
       size_t used = 0;
       const int v = std::stoi(s, &used);
       if (used == s.size()) return v;
-    } catch (...) {}
+    } catch (const std::exception&) {}  // (not a whole number)
     throw std::runtime_error(opt + ": expected an integer (got \"" + s + "\")");
   };
   auto to_double = [](const std::string& opt, const std::string& s) {
@@ -1007,7 +1019,7 @@ int main(int argc, char** argv) {
       size_t used = 0;
       const double v = std::stod(s, &used);
       if (used == s.size() && std::isfinite(v)) return v;  // (nan / inf refused: they become sizes and limits)
-    } catch (...) {}
+    } catch (const std::exception&) {}  // (not a number)
     throw std::runtime_error(opt + ": expected a number (got \"" + s + "\")");
   };
   // the options and what each takes ("": a switch), for the messages of a missing value and of an unknown option
@@ -1747,7 +1759,7 @@ int main(int argc, char** argv) {
       std::string pid;
       const std::string q = "&" + rq.query + "&";
       if (const size_t p = q.find("&project="); p != std::string::npos) pid = q.substr(p + 9, q.find('&', p + 9) - p - 9);
-      if (pid.empty() && !rq.body.empty()) try { pid = Json::parse(rq.body)["project"].str(); } catch (...) {}
+      if (pid.empty() && !rq.body.empty()) try { pid = Json::parse(rq.body)["project"].str(); } catch (const std::exception&) {}  // (not JSON: no project)
       if (!pid.empty()) {
         proj::Project known;
         if (!memo::valid_project(pid)) return fail(400, "project: 16 hex digits");

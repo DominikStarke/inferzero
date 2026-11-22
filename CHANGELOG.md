@@ -9,10 +9,10 @@
   No GPU call is made after a lost device. The error line names the last kernel launched and the program
   ([docs/gpu-failsafe.md](docs/gpu-failsafe.md), [docs/logging.md](docs/logging.md)).
 - **New: `ARC_GPU_WAIT_S`, a limit in seconds for one GPU wait.** Past it the process ends as a hang. It is off
-  unless set. `ARC_WAIT_STATS=1` prints the run's longest wait, to pick a default for iGPUs later.
+  unless set, and at least 5 s. `ARC_WAIT_STATS=1` prints the run's longest wait, to pick a default for iGPUs later.
 - **New: the hang marker**, `%USERPROFILE%\.inferzero\gpu_hang.txt`. After a hang or a lost device, the GPU
-  programs refuse to start until the computer restarts. `runz --clear-hang` deletes the marker, and
-  `ARC_IGNORE_HANG=1` runs anyway.
+  programs refuse to start until the computer restarts (Restart, not Shut down, which keeps Windows' boot time
+  with Fast Startup) or for 12 hours. `runz --clear-hang` deletes the marker, and `ARC_IGNORE_HANG=1` runs anyway.
 - **The launchers no longer restart onto a hung GPU:**
   - `zero-server` prints the marker;
   - the Linux launcher's systemd unit stops restarting on 3 / 4;
@@ -25,6 +25,9 @@
 - Why: a hung test kernel (an attention prototype, not in any release) froze the development laptop's screen twice
   on 2026-11-23.
 - With the defaults, results and speed are unchanged: no kernel changed, and the waits are the same calls as before.
+- **Errors that were swallowed silently now leave a line:** an engine that could not be bound again, a failed
+  access line, `/metrics` or an MCP server's tools give a `W` line. An exception that reaches `serverz`'s `main` is an
+  `E` line and code 1 (it was a crash).
 - **Fixed in the long-context room (the entry below):**
   - the MTP block's part is counted only when the block loads (`--mtp` on a model that has one);
   - its KV is counted per slot.

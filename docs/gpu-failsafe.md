@@ -16,8 +16,15 @@ Status (2026-11-23): steps 1-4 of the order below built, with two changes from t
     that needs its own check on the iGPU. `gpu_guard` sets the limit for every test run instead.
   - The OpenCL path (`src/clrt.h`, which `attn_bench` uses) checks the marker but has no wait limit. `gpu_guard`
     covers it.
+- **The `catch (...)` audit (section 1), done:** of the 25 silent ones,
+  - the parse fallbacks and the expected out-of-memory tries are narrowed to `std::exception`;
+  - the unexpected ones (an engine bound again in a destructor, the access line, `/metrics`, an MCP server's tools)
+    log a `W` line with what was being done;
+  - a few stay `catch (...)` with a comment that says why: the logger's own lock, the `noexcept` metrics, and the
+    out-of-memory appends in the terminal and MCP readers, where a log line could throw again.
+  - `serverz` has the top-level `catch` now, as `runz` had.
 - **Not built yet:**
-  - the `catch (...)` audit and one top-level `catch` in every `main` (section 1);
+  - a top-level `catch` in the other tools' `main`;
   - a split model's shards ending through `gpu_fatal` after their own limit (they still throw `GpuWaitError` as before);
   - the server's `503` to open requests;
   - `--edge` in `attn_bench` / `xw_peak` (section 6).
