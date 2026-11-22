@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: the A770's big-tile barrier split, opt-in in the engine (`ARC_GEMM_XW_SPLIT=1`)
+
+- **`ARC_GEMM_XW_SPLIT=1`:** the big tile's barrier between local-memory stages is split into an arrive and a wait,
+  in the plain tile and the fused gate / up. xw_peak's "split" forms (2026.11.23.03) test the same kernel. Bit for
+  bit: checked at start, and where it fails or the driver lacks the split barrier, the plain barrier is kept.
+- **Not built:** a 4 x 4 form with the next k-half's reads issued before the current DPAS. On the A770 it spills
+  (100-149 scratch messages at 32 x 32: the operands of both halves next to the 128 registers of sums).
+
 ## 2026-11-23: the A770's big tile shaped per input, and its barrier split (both opt-in, tests)
 
 - **`ARC_GEMM_XW_SLM_WG_ROLES="group=X,Y;..."`:** the big tile's sub-group shape per group of GEMMs that read the

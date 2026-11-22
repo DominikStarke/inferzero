@@ -424,6 +424,15 @@
   // 1,432.6 / 1,431.8 -> 1,527.8 / 1,528.0 tok/s (+6.7 %, rounds 0 / 1 / 0 / 1), down / up / gate 444.3 / 437.6 / 382.9
   // -> 413.9 / 386.8 / 329.7 ms, xw_peak 103.5 -> 114.9 T "identical", the logits' sha256 the same. The 140T (an iGPU,
   // whose big tile is opt-in): only with =1, until measured
+  // ARC_GEMM_XW_SPLIT=1 (8 lanes, 2026-11-23, opt-in): the big tile's stage barrier split into arrive and wait
+  // (gemm_xw8.cl -DXS_SPLIT), the plain tile's and the fused gate / up's. skipzx-lab's local-memory probe (#45): at
+  // 4 x 8 the barrier a chunk cost 37 %. The same stages in the same order: bit for bit, the start check run with it;
+  // where that fails or does not build (no cl_intel_split_work_group_barrier), checked again without it
+  bool xw_split_ = false;  // (set by xw_init: the env, then the check)
+  static bool xw_split_env() {
+    static const bool on = getenv("ARC_GEMM_XW_SPLIT") && atoi(getenv("ARC_GEMM_XW_SPLIT")) != 0;
+    return on;
+  }
   bool xw_ptr() const {
     static const int e = getenv("ARC_GEMM_XW_PTR") ? (atoi(getenv("ARC_GEMM_XW_PTR")) != 0 ? 1 : 0) : -1;
     return e >= 0 ? e == 1 : cl_.sg8 && !zrt::integrated();
@@ -453,7 +462,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "");
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -626,7 +635,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "");
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -973,12 +982,15 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
     static std::map<std::string, bool> wglk;  // (per key: ARC_GEMM_XW_WGL's forms checked the same)
     static std::map<std::string, bool> bgk;  // (and ARC_GEMM_XW_BG's)
+    static std::map<std::string, bool> splk;  // (and whether ARC_GEMM_XW_SPLIT's check passed)
+    xw_split_ = xw_split_env() && xw_big_on() && xw_lanes() == 8;
+    if (splk.count(key)) xw_split_ = splk[key];
     if (fb2d.count(key)) xw_2d_fb_ = fb2d[key];
     if (crnd.count(key)) xw_c_rnd_ = crnd[key];
     auto it = known.find(key);
@@ -987,6 +999,16 @@
       xw_c_rnd_ = rnd_env && atoi(rnd_env) != 0;
       crnd[key] = xw_c_rnd_;
       bool ok = xw_check();
+      if (!ok && xw_split_) {  // (the split barrier failing: once more with the plain one)
+        xw_split_ = false;
+        ok = xw_check();
+        zlog::eprintf("inferzero: ARC_GEMM_XW_SPLIT: the split barrier differs or does not build: the plain barrier (%s)\n",
+                      ok ? "checked" : "differs too");
+      } else if (ok && xw_split_) {
+        zlog::eprintf("inferzero: gemm_xw8: the big tile's barrier split in arrive and wait (ARC_GEMM_XW_SPLIT, results "
+                      "checked bit for bit)\n");
+      }
+      splk[key] = xw_split_;
       // (C in 2D blocks failing: once more with the add's product rounded first, unless asked not to)
       if (!ok && xw_2d_c() && !xw_c_rnd_ && !(rnd_env && atoi(rnd_env) == 0)) {
         xw_c_rnd_ = true;
@@ -1112,7 +1134,7 @@
         // (ARC_GEMM_XW_SLM_WG_GU: the gate / up GEMMs' work-groups too, as the gate)
         const XwBig& g = xw_big_gu_cfg();
         if (g.x != b.x || g.y != b.y) shapes.push_back({2 * g.y * g.tm, 2 * g.x * 16 * g.nc, K0, 7});
-        // (ARC_GEMM_XW_SLM_WG_ROLES: a shape as each listed group'"'"'s first role)
+        // (ARC_GEMM_XW_SLM_WG_ROLES: a shape as each listed group's first role)
         static const int first_role[5] = {0, 3, 7, 9, 2};
         for (int gi = 0; gi < 5; ++gi)
           if (xw_role_cfg().set[gi]) {

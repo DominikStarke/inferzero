@@ -537,6 +537,7 @@ static int run_main(int argc, char** argv) {
             "  ARC_GEMM_XW_WGL=0 / 1 the big tile's operands in its work-group order (default on Alchemist, the same results)\n"
             "  ARC_GEMM_XW_SLM_WG_GU=X,Y the gate / up GEMMs' big-tile sub-groups, the others ARC_GEMM_XW_SLM_WG's (Alchemist: 4,8)\n"
             "  ARC_GEMM_XW_BG=1 (with WGL) the big tile's B read from global memory, only A in local memory (opt-in, the same)\n"
+            "  ARC_GEMM_XW_SPLIT=1 the big tile's stage barrier split in arrive and wait (opt-in, the same results)\n"
             "  ARC_H8_OUT=0 / 1 the DeltaNet / attention outputs rotated for H8 by the kernels that make them (default on\n"
             "  Alchemist, the same results)\n"
             "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
