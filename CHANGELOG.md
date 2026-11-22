@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-22: faster structured output with large schemas (#80)
+
+- **Each candidate token was checked by parsing the whole answer against the whole schema again.** Where few tokens
+  fit (an enum, a key), the sampler goes far down the vocabulary; with a 32K-character schema that made the 9B 13x
+  slower (StealthDrifter, #80).
+- **Now:** once the first few candidates of a step are refused, the verdict on a candidate's first byte and first
+  two bytes is kept for that step. A text that cannot become a valid value has no continuation that can, so a token
+  whose start was refused is refused without a parse.
+- **The same tokens are allowed, so the answers are the same.** The 4B at temperature 0 with a 42,855-character
+  schema (a 600-value enum and an anyOf of 20 objects): byte for byte the same answers, 15.0 / 22.2 -> 13.4 / 13.2 s
+  for two answers of ~250 tokens. `ARC_JSON_PREFIX=0` checks every candidate in full, as before.
+
 ## 2026-11-22: work-group-ordered operands for the A770's GEMM, in xw_peak
 
 - **`xw_peak`'s " wgl" forms** ("slm 32x32 4x4 / 8x4 / 4x8 e2 p wgl"): the A770's big tile reading A and B in its

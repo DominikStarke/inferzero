@@ -736,10 +736,44 @@
             static const bool dbg_json = getenv("ARC_DEBUG_JSON") != nullptr;
             int first = -1;
             bool first_ok = true;
+            // (#80, 2026-11-22: every candidate was the whole answer parsed again against the whole schema, and where
+            //  few tokens fit (an enum, a key) the sampler goes far down the vocabulary: 13x slower with a 32K-character
+            //  schema. The checker is prefix-closed (a text that cannot become a value has no continuation that can),
+            //  so after the first few candidates of a step fail, the verdict on each candidate's first byte and first
+            //  two bytes is kept for the step and a token whose prefix failed is refused without a parse. The same
+            //  verdicts, so the same tokens)
+            int8_t pre1[256];
+            std::memset(pre1, -1, sizeof pre1);
+            std::unordered_map<uint16_t, bool> pre2;
+            int tried = 0;
+            std::string buf = ans;
+            const size_t base = buf.size();
+            auto fits = [&](const char* p, size_t n) {
+              buf.resize(base);
+              buf.append(p, n);
+              return jc->check(buf) != jcon::FAIL;
+            };
             t = sampler.sample_allowed(logits, gen, [&](int tok) {
               if (tok_.is_special(tok)) return false;  // (control tokens are never part of the JSON text)
-              const std::string pc = tok_.piece(tok);
-              const bool ok = !pc.empty() && jc->check(ans + pc) != jcon::FAIL;
+              const std::string& pc = tok_.piece(tok);
+              bool ok = !pc.empty();
+              static const bool prefix_on = !getenv("ARC_JSON_PREFIX") || atoi(getenv("ARC_JSON_PREFIX")) != 0;
+              if (ok && prefix_on && ++tried > 8) {  // (ARC_JSON_PREFIX=0: every candidate parsed, as before)
+                const uint8_t b0 = (uint8_t)pc[0];
+                if (pre1[b0] < 0) pre1[b0] = fits(pc.data(), 1) ? 1 : 0;
+                ok = pre1[b0] == 1;
+                if (ok && pc.size() >= 2) {
+                  const uint16_t k2 = (uint16_t)(b0 << 8 | (uint8_t)pc[1]);
+                  auto it = pre2.find(k2);
+                  if (it == pre2.end()) it = pre2.emplace(k2, fits(pc.data(), 2)).first;
+                  ok = it->second;
+                }
+                if (ok && pc.size() <= 2) {  // (the prefix is the whole piece: its verdict is the token's)
+                  if (first < 0) { first = tok; first_ok = ok; }
+                  return ok;
+                }
+              }
+              ok = ok && fits(pc.data(), pc.size());
               if (first < 0) { first = tok; first_ok = ok; }
               return ok;
             });
