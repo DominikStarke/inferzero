@@ -107,6 +107,7 @@
       </tbody>
     </table></div>
     <p class="note">A Core Ultra X9 378H laptop (Arc B390, LPDDR5X-8533, 111-113 GB/s measured, Windows; cjm801, <a href="https://github.com/rizagp/inferzero/issues/75">issue #75</a>, release 2026.11.21.13), unsloth's UD-Q4_K_M files: the 27B's prompt 700 tok/s at 8K and 664 at 32K, generation 6.2-6.4 tok/s (95-98 GB/s), 15.4 with drafting on code; the 35B-A3B's prompt 1,196 at 8K and 1,100 at 18K, generation 33-35 (that file has no MTP block, so no drafting).</p>
+    <p class="note">The same laptop on release 2026.11.22.08 (cjm801, #75): the 35B-A3B's 16K prompt <b>1,714 tok/s with <code>--chunk 16384</code></b>, 1,342 with 8,192, 1,166 with the default 4,096. OpenVINO GenAI measured ~1,453 at 18K on this machine. The experts' decode into 8 bits runs once per chunk for every expert (36 % of the prompt at 4,096), so fewer, larger chunks cut it. A larger default chunk for this case is being checked for accuracy. With the HF DFlash2 drafter the 35B generates 79 tok/s on code (82 % of the drafts accepted) and 30.8 on Chinese prose (36 %). The 2D GEMM loads were 15 % slower here, as on gee456's Windows B390, so Windows keeps the plain form.</p>
   </div>
 </section>
 
@@ -249,7 +250,7 @@
         <tr><td>Qwen3.8 Flash Next <small>46 % of its experts on the card</small></td><td class="n">1,414 <small>4K</small><br>1,145 <small>16K</small></td><td class="n">44.9 <small>warm, the CPU computing the missed experts (44.2 without)</small><br>6.6 <small>cold</small></td><td class="n">–</td><td>2026.11.17.04; generation a5acc31 = release 2026.11.20.03</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Another Pro B70 under Windows (<a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>, release 2026.11.13.06, before several prompt changes): the 27B's 4K prompt 2,105 tok/s, generation 32.2, 75.2 with drafting.</p>
+    <p class="note">Another Pro B70 under Windows (<a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>, release 2026.11.13.06, before several prompt changes): the 27B's 4K prompt 2,105 tok/s, generation 32.2, 75.2 with drafting. The same card's full sweep on release 2026.11.22 (friskens, #12): prompt 3,164-3,182 tok/s at 4K, 2,553-2,617 at 32K and 762-823 at 262K; generation 33.0-33.3. The defaults were the best combination for both.</p>
     <h3 class="sub">One and two Pro B70s on a Threadripper 2950X (PCIe 3.0 x16 each, Ubuntu 26.04)</h3>
     <p class="setup">Daleang, <a href="https://github.com/rizagp/inferzero/issues/73">issue #73</a>, main 6b99c2a, <code>--bench-pp 4096 --n 128</code>; the two cards' sums straight from GPU to GPU (11.1 GB/s)</p>
     <div class="tbl"><table>
