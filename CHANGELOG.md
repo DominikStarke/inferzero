@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-23: no more out-of-memory at the first prompt on Windows machines with a lot of RAM (#82)
+
+- **Fixed:** on Windows, a discrete card with a lot of RAM (a B70 with 96 GB, Flash Next) ran out of memory at its
+  first prompt. The automatic RAM tier for MoE experts grew past what Windows lets the GPU map of system memory
+  (about half the RAM): 52.1 GiB against a 47.9 GiB budget. The automatic tier is now capped at that budget, less
+  what the GPU maps already and 4 GiB, and its log line says so when the cap applies. A size set by hand
+  (`--expert-ram-gb`, `ARC_XRAM_GB`) is kept, with a warning when it is larger. Linux is unchanged.
+- **The GPU memory lines describe the right GPU:** on a desktop with an Intel iGPU and an Arc card, they read the
+  iGPU's numbers ("Windows budget 47.13 GiB" on a 32 GB B70). They now take the adapter of the engine's GPU, and on a
+  discrete card add a line for the RAM the GPU maps.
+
 ## 2026-11-23: the A770's prompt defaults: its GEMMs in the work-group order, the fused gate / up at 4 x 8
 
 - **New defaults on discrete Alchemist cards (A770 / A750 / A580):**

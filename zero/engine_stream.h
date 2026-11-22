@@ -65,6 +65,29 @@
       ram = std::max(r_big, r_half) / std::max(1, opt.tp_size);
     }
     ram = std::min(ram, xc_->st.file_bytes);
+    // (Windows, a discrete card: pinned host memory it copies from counts against what Windows lets the GPU map of
+    //  RAM (WDDM's non-local budget, ~half the RAM), on top of what the engine maps already; a tier past it fails the
+    //  copies' residency. LukaszBrzyszkiewicz's B70 (#82, 96 GB RAM, Flash Next): a 52.1 GiB tier against a 47.9 GiB
+    //  budget, out of memory at the first prompt's copy. The automatic size is capped at the budget less the current
+    //  use and 4 GiB; a size given by hand is kept, with a warning. Linux has no such budget)
+    std::string ram_note;
+    if (!zrt::integrated() && ram > 0) {
+      uint64_t nb = 0, nu = 0;
+      if (zrt::video_budget(nb, nu, true)) {
+        const uint64_t margin = 4ull << 30, room = (nb > nu + margin ? nb - nu - margin : 0) / std::max(1, opt.tp_size);
+        char b[200];
+        if (ram > room && ram_gb < 0) {
+          ram = room;
+          snprintf(b, sizeof b, " (capped by what Windows lets the GPU map of RAM: %.1f GiB, %.1f in use)", nb / 1073741824.0,
+                   nu / 1073741824.0);
+          ram_note = b;
+        } else if (ram > room) {
+          zlog::eprintf("inferzero: warning: --expert-ram-gb / ARC_XRAM_GB %.1f GiB is more than Windows lets the GPU map of "
+                        "RAM now (%.1f GiB left of %.1f): its copies may fail (issue #82)\n", ram / 1073741824.0,
+                        room / 1073741824.0, nb / 1073741824.0);
+        }
+      }
+    }
     if (ram >= (1ull << 30)) {
       // (pinned host memory of the context: every GPU of a split model copies from it)
       xc_->st.ram_alloc = [zc = xc_->zc](size_t n) -> char* {
@@ -74,7 +97,8 @@
       };
       xc_->st.ram_free = [zc = xc_->zc](char* p) { zrt::mem_free(zc, p); };
       xc_->st.set_ram(ram);
-      zlog::eprintf("inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
+      zlog::eprintf("inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB%s\n", ram / 1073741824.0,
+                    ram_note.c_str());
     }
   }
   void size_expert_cache() {

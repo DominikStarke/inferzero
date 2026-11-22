@@ -586,27 +586,38 @@ inline void* device_alloc(size_t n) {
 }
 // What Windows lets this process keep resident on the GPU now (WDDM budget, DXGI) and what it uses: the GPU share is
 // an upper bound, the budget shrinks when the system is short of memory. Returns false without the numbers.
-inline bool video_budget(uint64_t& budget, uint64_t& usage) {
+// non_local: the shared (system-memory) segment instead, what Windows lets the GPU map of host memory: pinned host
+// memory a discrete card copies from counts against it (the RAM tier of MoE experts, engine_stream.h; issue #82)
+inline bool video_budget(uint64_t& budget, uint64_t& usage, bool non_local = false) {
 #ifndef _WIN32
-  (void)budget, (void)usage;
+  (void)budget, (void)usage, (void)non_local;
   return false;  // (no WDDM budget on Linux: Level Zero Sysman later, docs/linux-port.md)
 #else
   IDXGIFactory4* f = nullptr;
   if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&f))) return false;
   bool ok = false;
+  // (the Intel adapter of this thread's GPU: on a discrete card the one with the most memory of its own, on an iGPU
+  //  the one with the least. The first Intel adapter, as before 2026-11-23, was the iGPU on a desktop with one and a
+  //  B70: "Windows budget 47.13 GiB" on a 32 GB card, issue #82)
+  const bool want_dedicated = !integrated();
+  uint64_t best = 0;
+  bool have = false;
   // (audit 2026-11-12 #5: any failure ends the walk; before, an error other than NOT_FOUND ran the body with the
   //  adapter the last pass had released)
-  for (UINT i = 0; !ok; ++i) {
+  for (UINT i = 0;; ++i) {
     IDXGIAdapter1* a1 = nullptr;
     if (f->EnumAdapters1(i, &a1) != S_OK || !a1) break;
     DXGI_ADAPTER_DESC1 d{};
     IDXGIAdapter3* a3 = nullptr;
-    if (SUCCEEDED(a1->GetDesc1(&d)) && d.VendorId == 0x8086 && SUCCEEDED(a1->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&a3))) {
+    if (SUCCEEDED(a1->GetDesc1(&d)) && d.VendorId == 0x8086 && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+        SUCCEEDED(a1->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&a3))) {
+      const uint64_t ded = (uint64_t)d.DedicatedVideoMemory;
+      const bool better = !have || (want_dedicated ? ded > best : ded < best);
       DXGI_QUERY_VIDEO_MEMORY_INFO m{};
-      if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &m))) {
+      if (better && SUCCEEDED(a3->QueryVideoMemoryInfo(0, non_local ? DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL : DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &m))) {
         budget = m.Budget;
         usage = m.CurrentUsage;
-        ok = true;
+        best = ded, have = true, ok = true;
       }
       a3->Release();
     }
@@ -624,6 +635,9 @@ inline void print_memory(int lvl = zlog::INF) {
   if (video_budget(b, u))
     zlog::log(lvl, "  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
             b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, avail / 1073741824.0);
+  uint64_t nb = 0, nu = 0;  // (the shared segment: RAM the GPU maps, pinned host memory included; issue #82)
+  if (!integrated() && video_budget(nb, nu, true))  // (an iGPU's memory is all local: 0 there)
+    zlog::log(lvl, "  RAM the GPU maps: Windows budget %.2f GiB, in use %.2f GiB\n", nb / 1073741824.0, nu / 1073741824.0);
 #ifndef _WIN32
   else
     zlog::log(lvl, "  GPU memory: allocated by the engine %.2f GiB; RAM free %.2f GiB\n", D().device_bytes / 1073741824.0,
