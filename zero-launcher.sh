@@ -11,7 +11,7 @@
 #   ./zero-launcher.sh --options          the speed and accuracy options (scripts/options.tsv) and what is chosen
 #   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
 # Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no
-# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-browser, --yes (no
+# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's\n# best measured settings for this PC), --no-browser, --yes (no
 # questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to
@@ -508,7 +508,7 @@ sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci)
   names=$(lspci 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel) || true
   while IFS= read -r l; do
     [ -n "$l" ] || continue
-    if [[ "$l" =~ B3[0-9]0|140V|130V|Lunar|Panther ]]; then k+=" igpu-xe2"
+    if [[ "$l" =~ B3[0-9]0|140V|130V|Lunar|Panther ]]; then k+=" igpu-xe2"; [[ "$l" =~ B3[0-9]0|Panther ]] && k+=" igpu-ptl"
     elif [[ "$l" =~ 140T|Arrow\ Lake ]]; then k+=" igpu-140t"
     elif [[ "$l" =~ DG2|Alchemist|A[0-9]{3}[^0-9] ]]; then k+=" alchemist"; discrete=$((discrete + 1))
     elif [[ "$l" =~ Battlemage|BMG|B[0-9]{2,3}[^0-9] ]]; then k+=" b-series"; discrete=$((discrete + 1))
@@ -864,6 +864,45 @@ install_service() {
   say "(to keep it running while logged out: sudo loginctl enable-linger \$USER)"
 }
 
+# the discrete Arc cards (lspci), for best-setups.tsv's Gpus=all and gpus2same
+sw_discrete() {
+  lspci 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel | grep -Evi 'B3[0-9]0|140V|130V|140T|Lunar|Panther|Arrow Lake|Meteor' |
+    grep -Eci 'DG2|Alchemist|A[0-9]{3}[^0-9]|Battlemage|BMG|B[0-9]{2,3}[^0-9]' || true
+}
+# "Automatic (best measured)" (the launcher spec B, 2026-11-22): scripts/best-setups.tsv's rows for this PC and the
+# model KEY, each on a setting not chosen already (--opt / --gpus / the menu's Drafting); --no-auto: none. A row's
+# needs this launcher cannot tell (notfit: the server's memory plan) leave the row out, as the engine's default
+best_auto() {
+  [ "${NO_AUTO:-0}" = 1 ] && return 0
+  local key=$1 f="$ROOT/scripts/best-setups.tsv" line id pc models os needs settings why ok w s k v n
+  [ -f "$f" ] || return 0
+  n=$(sw_discrete)
+  while IFS=$'\t' read -r id pc models os needs settings why _; do
+    [ "$id" = id ] && continue
+    [ -n "$id" ] && [ "${id:0:1}" != "#" ] || continue
+    ok=1
+    for w in ${pc//;/ }; do [ "$w" = "-" ] && continue; [[ " $SW_PC " == *" $w "* ]] || ok=0; done
+    [[ ";$models;" == *";*;"* || ";$models;" == *";$key;"* ]] || ok=0
+    [ "$os" = any ] || [ "$os" = linux ] || ok=0
+    for w in ${needs//;/ }; do
+      case "$w" in
+        -) ;;
+        gpus2same) { [ "${n:-0}" -ge 2 ] && ! { [[ " $SW_PC " == *" alchemist "* ]] && [[ " $SW_PC " == *" b-series "* ]]; }; } || ok=0;;
+        *) ok=0;;
+      esac
+    done
+    [ $ok = 1 ] || continue
+    for s in ${settings//;/ }; do
+      k=${s%%=*}; v=${s#*=}
+      case "$k" in
+        Opt) if opt_known "$v" && [ -z "${OPTC[$v]+x}" ]; then OPTC[$v]=on; say "best measured: $why ($v)"; fi;;
+        Gpus) if [ "${GPUS:-0}" = 0 ] && [ "${n:-0}" -ge 2 ]; then GPUS=$([ "$v" = all ] && printf '%s' "$n" || printf '%s' "$v"); say "best measured: $why (--gpus $GPUS)"; fi;;
+        NoMtp) if [ -z "${SEL_DRAFT:-}" ]; then SEL_DRAFT=off; say "best measured: $why (no drafting)"; fi;;
+      esac
+    done
+  done < "$f"
+}
+
 start_key() {  # KEY: download if needed, then the server or the unit
   local key=$1 path why
   if [ "$INSTALL_SERVICE" = 1 ]; then  # (refused before any download, not after several GB of it)
@@ -871,6 +910,7 @@ start_key() {  # KEY: download if needed, then the server or the unit
     service_unit >/dev/null || return 1
   fi
   path=$(model_path "$key") || { download "$key" "$YES" || return 1; path=$(model_path "$key") || return 1; }
+  best_auto "$key"  # (scripts/best-setups.tsv; --no-auto: none)
   # (the switches' state for this model: options that do not apply to it are not passed, opt_effect)
   SW_WORDS=$(m_words "$key"); SW_GPUS=${GPUS:-1}; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
   case "${SEL_DRAFT:-}" in off) SW_DRAFTING=0;; '') SW_DRAFTING=$(m_field "$key" 6);; *) SW_DRAFTING=1;; esac
@@ -914,12 +954,12 @@ menu() {
   start_key "${keys[$((s - 1))]}"
 }
 
-usage() { sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
-  THINK=8192; SESS_GB=8; CHUNK=""  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
+  THINK=8192; SESS_GB=8; CHUNK=""; NO_AUTO=0  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
   REPLACE_SERVICE=0; EXTRA=()
   local opt_args=() a no_saved=0
   opt_load
@@ -941,6 +981,7 @@ main() {
       --think-budget) THINK=${2:-}; shift;;
       --session-cache-gb) SESS_GB=${2:-}; shift;;
       --chunk) CHUNK=${2:-}; shift;;
+      --no-auto) NO_AUTO=1;;
       --no-browser) NO_BROWSER=1;;
       --yes) YES=1;;
       --install-service) INSTALL_SERVICE=1;;

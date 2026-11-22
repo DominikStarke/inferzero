@@ -428,6 +428,9 @@ function Read-OptChoice {
 . (Join-Path $PSScriptRoot "pc-kinds.ps1")
 $script:pcKinds = @(); try { $script:pcKinds = @(Get-PcKinds) } catch {}
 $script:gpuCount = 1; try { $script:gpuCount = Get-DiscreteGpuCount } catch {}
+# (the automatic preset's rows, scripts\best-setups.tsv: Apply-Auto)
+$script:bestRows = @(); try { $script:bestRows = @(Read-BestSetups (Join-Path $PSScriptRoot "best-setups.tsv")) } catch {}
+$script:autoOn = $true; $script:autoSet = @(); $script:autoWhy = @{}
 $script:optChoice = Read-OptChoice  # (the switches' choices: options.json's, changed here; Start passes the difference)
 $script:swFilling = $false
 
@@ -829,7 +832,7 @@ function Update-Switches {
       $cb.Enabled = -not $why
       $r.panel.Visible = (-not $why) -or $naChk.Checked
       if ($why) { $na++ }
-      $r.why.Text = $(if ($why) { $why } elseif ($cb.CheckState -eq "Indeterminate") { "automatic" } else { "" })
+      $r.why.Text = $(if ($why) { $why } elseif ($script:autoWhy[$id]) { "best measured: " + $script:autoWhy[$id] } elseif ($cb.CheckState -eq "Indeterminate") { "automatic" } else { "" })
       $state = switch ("$($cb.CheckState)") { "Checked" { "on" } "Unchecked" { "off" } default { "automatic" } }
       $cb.AccessibleName = "$($o.title), $state" + $(if ($why) { ", $why" } else { "" })
       $changed = $(if ($id -eq "fn_precise") { -not (Test-Precise) } else { $script:optChoice.ContainsKey($id) })
@@ -885,6 +888,56 @@ function Set-GroupChoice([string]$name, $value) {
   }
   Update-Switches; Update-Fit
 }
+# ---- "Automatic (best measured)", the default preset (the launcher spec B, 2026-11-22): best-setups.tsv's rows for
+# this PC and the selected model, on every setting not changed by hand; what it set is undone when the model changes,
+# on Reset (and then set again) and when another preset is chosen. Each setting it made shows its reason
+function Undo-Auto {
+  $g = Sel-Group
+  foreach ($a in $script:autoSet) {
+    switch ($a.kind) {
+      "opt" { if ("$($script:optChoice[$a.key])" -eq "$($a.value)") { $script:optChoice.Remove($a.key) } }
+      "field" { if ($script:over.ContainsKey($a.key) -and "$($script:over[$a.key])" -eq "$($a.value)") { $script:over.Remove($a.key) } }
+      "draft" { if ($a.group -and $a.group.draft -eq "off") { $a.group.draft = $a.group.draft0 } }
+    }
+  }
+  $script:autoSet = @(); $script:autoWhy = @{}
+}
+function Apply-Auto {
+  Undo-Auto
+  if (-not $script:autoOn) { return }
+  $g = Sel-Group; $m = Sel-Entry
+  if (-not $g -or -not $m) { return }
+  $short = "$($g.entries[0].short)" -replace '-(mtp|vision|std|df|nodf)$', ''
+  $st = @{ pc = $script:pcKinds; os = "windows"; short = $short; discrete = $script:gpuCount
+    notfit = [bool]($m.memory -and [double]$m.memory.host_weights -gt 0) }
+  foreach ($r in @(Get-BestSetups $script:bestRows $st)) {
+    foreach ($s in @(Get-BestSettings $r)) {
+      switch ($s.key) {
+        "Opt" {
+          if ($script:optChoice.ContainsKey($s.value) -or -not (Get-SwRow $script:catalog $s.value)) { continue }
+          $script:optChoice[$s.value] = "on"; $script:autoSet += @{ kind = "opt"; key = $s.value; value = "on" }
+          $script:autoWhy[$s.value] = $r.why
+        }
+        "Npu" {
+          if ($script:over.ContainsKey("npu")) { continue }
+          $script:over["npu"] = "$($s.value)"; $script:autoSet += @{ kind = "field"; key = "npu"; value = "$($s.value)" }
+          $script:autoWhy["npu"] = $r.why
+        }
+        "Gpus" {
+          if ($script:over.ContainsKey("gpus") -or $script:gpuCount -lt 2) { continue }
+          $n = $(if ($s.value -eq "all") { [double]$script:gpuCount } else { [double]$s.value })
+          $script:over["gpus"] = $n; $script:autoSet += @{ kind = "field"; key = "gpus"; value = $n }
+          $script:autoWhy["gpus"] = $r.why
+        }
+        "NoMtp" {
+          if ($g.draft -ne $g.draft0 -or $g.draft -eq "off") { continue }
+          $g.draft = "off"; $script:autoSet += @{ kind = "draft"; group = $g }
+          $script:autoWhy["draft"] = $r.why
+        }
+      }
+    }
+  }
+}
 # what was changed from the defaults: the file's Drafting and Images, Precise mode, the GPUs and the switches
 function Update-Changed {
   $g = Sel-Group; $x = @()
@@ -895,6 +948,7 @@ function Update-Changed {
   if (-not (Test-Precise)) { $x += "Fast mode" }
   if ($script:over.ContainsKey("gpus") -and [int]$script:over["gpus"] -gt 1) { $x += "$([int]$script:over['gpus']) GPUs" }
   $x += @(Get-SwChanged @($script:catalog | Where-Object { $_.id -ne "fn_precise" -and -not (Test-SwValue $_) }) $script:optChoice)
+  if ($script:autoWhy.Count) { $x += "(Automatic, best measured: " + (@($script:autoWhy.Values | Select-Object -Unique) -join "; ") + ")" }
   $chgLbl.Text = $(if ($x.Count) { $x -join "; " } else { "nothing" })
   $resetBtn.Enabled = $x.Count -gt 0
 }
@@ -905,6 +959,13 @@ function Reset-Switches {
   $script:over["precise"] = $true; $script:over["gpus"] = [double]1  # (precise and one GPU: also for a running server)
   $g = Sel-Group
   if ($g) { $g.draft = $g.draft0; $g.img = $g.img0; $g.imgWant = $g.img0 }
+  # (then the automatic preset again, when it is the one chosen: its GPUs first, else one GPU as above)
+  Undo-Auto
+  if ($script:autoOn) {
+    $script:over.Remove("gpus")
+    Apply-Auto
+    if (-not $script:over.ContainsKey("gpus")) { $script:over["gpus"] = [double]1 }
+  }
   Refresh-Model; Show-Detail; Fill-Defaults
 }
 $resetBtn.Add_Click({ Reset-Switches; $msg.Text = "The switches are back to the defaults (Start keeps it that way)." })
@@ -1611,12 +1672,13 @@ function Load-PresetList([string]$select = "") {
   $script:presetFilling = $true
   try {
     $presetBox.Items.Clear()
-    [void]$presetBox.Items.Add("(none)")
+    [void]$presetBox.Items.Add("Automatic (best measured)")  # (index 0, the default: best-setups.tsv, Apply-Auto)
+    [void]$presetBox.Items.Add("(none: the engine's defaults)")
     foreach ($f in @(Get-ChildItem -LiteralPath $presetDir -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name)) { [void]$presetBox.Items.Add($f.BaseName) }
-    $i = if ($select) { $presetBox.Items.IndexOf($select) } else { 0 }
+    $i = if ($select) { $presetBox.Items.IndexOf($select) } else { $(if ($script:autoOn) { 0 } else { 1 }) }
     $presetBox.SelectedIndex = [math]::Max(0, $i)
   } finally { $script:presetFilling = $false }
-  $presetDel.Enabled = $presetBox.SelectedIndex -gt 0
+  $presetDel.Enabled = $presetBox.SelectedIndex -gt 1
 }
 function Apply-Preset([string]$name) {
   $pp = Join-Path $presetDir "$name.json"
@@ -1690,8 +1752,13 @@ function Read-Line([string]$title, [string]$prompt, [string]$value = "") {
 }
 $presetBox.Add_SelectedIndexChanged({
     if ($script:presetFilling) { return }
-    $presetDel.Enabled = $presetBox.SelectedIndex -gt 0
-    if ($presetBox.SelectedIndex -gt 0) { Apply-Preset ([string]$presetBox.SelectedItem) } else { $script:presetName = "" }
+    $presetDel.Enabled = $presetBox.SelectedIndex -gt 1
+    if ($presetBox.SelectedIndex -gt 1) { $script:autoOn = $false; Undo-Auto; Apply-Preset ([string]$presetBox.SelectedItem) }
+    else {
+      $script:presetName = ""
+      $script:autoOn = $presetBox.SelectedIndex -eq 0
+      Apply-Auto; Refresh-Model; Show-Detail; Fill-Defaults
+    }
   })
 $presetSave.Add_Click({
     $a = Get-StartArgs
@@ -1717,7 +1784,7 @@ $presetSave.Add_Click({
     $msg.Text = "Preset '$name' saved ($pp). From a terminal: zero-server start -Preset `"$name`""
   })
 $presetDel.Add_Click({
-    if ($presetBox.SelectedIndex -le 0) { return }
+    if ($presetBox.SelectedIndex -le 1) { return }
     $name = [string]$presetBox.SelectedItem
     if ([System.Windows.Forms.MessageBox]::Show("Delete the preset '$name'? (Only its settings file; the model stays.)", "inferzero", "YesNo") -ne "Yes") { return }
     Remove-Item -LiteralPath (Join-Path $presetDir "$name.json") -ErrorAction SilentlyContinue
@@ -1921,7 +1988,7 @@ $updItem.Checked = [bool]$script:upd.enabled
 $startBtn.Add_Click({ Start-Selected })
 $webBtn.Add_Click({ Start-Process "$(Base)/" })
 $grid.Add_CellDoubleClick({ param($s, $e) if ($e.RowIndex -ge 0) { Start-Selected } })
-$grid.Add_SelectionChanged({ if ($script:listing) { return }; Refresh-Model; Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
+$grid.Add_SelectionChanged({ if ($script:listing) { return }; Apply-Auto; Refresh-Model; Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
 $stopBtn.Add_Click({
     if ([System.Windows.Forms.MessageBox]::Show("Stop the server ($($script:running))? Its GPU memory is freed.", "inferzero", "YesNo") -eq "Yes") {
       $msg.Text = "Stopping the server..."

@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-11-22: the launchers' automatic "best measured" preset; options they could not set
+
+- **"Automatic (best measured)" is the launchers' default preset.** It applies `scripts/best-setups.tsv`: settings
+  measured faster than the defaults on a kind of PC, each with its reason shown and its evidence in the file.
+  - a B390 with the 35B-A3B: prompt chunks of 16,384 where they cost nothing (`moe_big_chunk`, a new option);
+  - a Meteor Lake laptop with the 27B or Gemma 4 12B: the NPU next to the GPU;
+  - an Alchemist card under Linux with the 4B / 9B: decoded weights kept for short prompts;
+  - two or more B-series cards of one kind: the 27B, 9B, 4B, 35B or Flash Next over all of them;
+  - a model that does not fit the card: no drafting (MTP was 30-42 % slower there on a B580).
+
+  Any setting changed by hand wins; "(none)" is the engine's defaults. The Linux launcher's `--no-auto` leaves them out.
+- **Options the launchers could not set:**
+  - zero-server: `-ExpertRamGb`, `-ExpertCacheGb` / `-ExpertCachePct`, `-MtpModel`, `-Mmproj`, `-Alias`,
+    `-NoWebTools`, `-NoTerminal`, `-LogFile`, `-LogVerbosity`;
+  - the Windows launcher's Advanced section: fields for those, any listen address, the driver's reserve and the
+    speech requests at once;
+  - the Linux launcher: `--think-budget`, `--session-cache-gb` (8 by default, as on Windows), `--chunk`.
+- **Fixed:**
+  - presets kept `-Opt` / `-NoOpt` / `-DefaultOpt` on load;
+  - no option passed twice (`-ListenHost`, `-Drafter`, `--budget`);
+  - the chunk "auto" (the server's choice) and 16,384;
+  - the longest clip up to 600 minutes (as serverz takes it);
+  - a thinking budget of -1 for no limit.
+- **The layer split is offered for the 35B-A3B** (a new model word, `moe_std`) and not for Flash Next.
+
 ## 2026-11-22: structured output checks only what is new (#80)
 
 - **Completed values are no longer parsed again.** A value the checker completed inside the answer so far (a key's

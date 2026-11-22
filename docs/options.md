@@ -34,7 +34,7 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Best for:** alchemist, igpu-140t, dense.
 - **Cost:** about 2x the weights' size in VRAM.
 - **Output:** the same, bit for bit.
-- **Measured:** not measured on a card yet.
+- **Measured:** an Alchemist card under Linux, the 4B's 128-token prompt 1,161 -> 2,030 tok/s (skipzx-lab, PR #61).
 - **Note:** needs room for the weights twice.
 - **More:** [docs/xe2-tuning.md](xe2-tuning.md), experimental.
 
@@ -162,3 +162,13 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Works with:** not with Multi-GPU by layers.
 - **In the model list:** as a variant of the models it fits, `-sparse`, `-full`.
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.
+
+## Larger MoE prompt chunks (`ARC_MOE_BIG_CHUNK=1`)
+
+- **What it does:** A standard MoE model's prompt in chunks of 16,384 tokens where that keeps the same context and every expert the GPU held (by default 8,192 by the same rule; off: 4,096).
+- **Default:** auto (8,192 where it costs nothing).
+- **Best for:** moe, igpu-xe2.
+- **Cost:** none where it applies: a chunk that would cost context or experts is not taken.
+- **Output:** the same, bit for bit.
+- **Measured:** a B390's 35B 16K prompt 1,166 -> 1,714 tok/s (cjm801, #75) and 1,362-1,411 -> 1,692 (kludged, #74); the logits the same at each chunk.
+- **More:** [docs/before-after.md](before-after.md), stable.

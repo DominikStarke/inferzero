@@ -124,6 +124,18 @@ ok $? "greyed option left out ($a | $b)"
 T=$(mktemp -d); OUT=$(ARC_DATA_DIR="$T" bash "$root/zero-launcher.sh" --opt copy_draft --model flash 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$OUT" == *"--opt copy_draft: for models with MTP only"* ]] && [ ! -f "$T/options.json" ]; ok $? "--opt refused for the model"
 rm -rf "$T"
+# 18. best-setups.tsv (the automatic preset): two B-series cards and the 27B get --gpus 2; two unlike cards none; a
+#     35B on a Panther Lake B390 the larger chunks; --no-auto none; a --gpus given wins
+sw_discrete() { printf '2'; }
+cat_load; OPTC=(); NO_AUTO=0; SEL_DRAFT=""
+SW_PC="b-series multi-gpu"; GPUS=0; best_auto 27b >/dev/null; a=$GPUS
+SW_PC="alchemist b-series multi-gpu"; GPUS=0; best_auto 27b >/dev/null; b=$GPUS
+SW_PC="b-series multi-gpu"; GPUS=0; NO_AUTO=1; best_auto 27b >/dev/null; c=$GPUS; NO_AUTO=0
+SW_PC="b-series multi-gpu"; GPUS=1; best_auto 27b >/dev/null; d=$GPUS
+SW_PC="igpu-xe2 igpu-ptl"; GPUS=0; best_auto 35b >/dev/null; e=${OPTC[moe_big_chunk]:-}
+[ "$a" = 2 ] && [ "$b" = 0 ] && [ "$c" = 0 ] && [ "$d" = 1 ] && [ "$e" = on ]
+ok $? "best-setups rows (two B-series: $a, unlike: $b, --no-auto: $c, --gpus 1 given: $d, B390 35B chunks: $e)"
+OPTC=(); GPUS=0; SW_PC=""; unset -f sw_discrete; source "$root/zero-launcher.sh"
 
 echo "test_zero_launcher: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -43,6 +43,22 @@ foreach ($p in @(@("copy_draft", "off"), @("xcpu", "auto"), @("tp_p2p", "auto"),
   $d = Get-OptDefault (Get-SwRow $cat $p[0])
   if ($d -ne $p[1]) { $bad.Add("$($p[0])'s default read as '$d', expected '$($p[1])'") }
 }
+# the automatic preset's rows (scripts\best-setups.tsv, the launcher spec B6): which rows a PC and a model get
+$best = @(Read-BestSetups (Join-Path $root "scripts\best-setups.tsv"))
+if ($best.Count -lt 5) { $bad.Add("best-setups.tsv: $($best.Count) rows read") }
+foreach ($c in @(
+    @("B390 + 35B", @{ pc = @("igpu-xe2", "igpu-ptl"); os = "windows"; short = "35b"; discrete = 1; notfit = $false }, "ptl-35b"),
+    @("Lunar Lake + 35B", @{ pc = @("igpu-xe2"); os = "windows"; short = "35b"; discrete = 1; notfit = $false }, ""),
+    @("125H + 27B", @{ pc = @("igpu-xe-lpg"); os = "windows"; short = "27b"; discrete = 1; notfit = $false }, "mtl-npu"),
+    @("125H + 27B on Linux", @{ pc = @("igpu-xe-lpg"); os = "linux"; short = "27b"; discrete = 1; notfit = $false }, ""),
+    @("2 x B60 + 27B", @{ pc = @("b-series", "multi-gpu"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, "bseries-tp"),
+    @("B60 + A770 + 27B", @{ pc = @("alchemist", "b-series", "multi-gpu"); os = "windows"; short = "27b"; discrete = 2; notfit = $false }, ""),
+    @("B580 + 27B not fitting", @{ pc = @("b-series"); os = "windows"; short = "27b"; discrete = 1; notfit = $true }, "notfit-nomtp"),
+    @("2 x B60 + Gemma 12B", @{ pc = @("b-series", "multi-gpu"); os = "windows"; short = "g12"; discrete = 2; notfit = $false }, ""))) {
+  $got = (@(Get-BestSetups $best $c[1]) | ForEach-Object { $_.id }) -join ","
+  if ($got -ne $c[2]) { $bad.Add("best-setups for $($c[0]): '$got', expected '$($c[2])'") }
+}
+$n += 8
 if ($bad.Count) {
   $bad | ForEach-Object { Write-Output "test_launcher_switches: $_" }
   exit 1

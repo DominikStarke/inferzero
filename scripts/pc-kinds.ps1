@@ -2,6 +2,7 @@
 # Dot-sourced by zero-server.ps1 (zero-server options) and zero-launcher.ps1 (the options section), so the two agree.
 # Windows PowerShell 5.1 or 7.
 #   igpu-xe2      Lunar Lake / Panther Lake iGPUs (Arc 130V / 140V, B370 / B390: Xe2 / Xe3, 16-lane XMX)
+#   igpu-ptl      Panther Lake's B370 / B390 too (besides igpu-xe2)
 #   igpu-140t     the Arc 140T (Xe-LPG Plus, 8-lane XMX: the 140T preset)
 #   igpu-xe-lpg   other Core Ultra iGPUs (Meteor Lake's Arc Graphics)
 #   alchemist     discrete Arc A-series (A770, A750, A580, ...)
@@ -13,7 +14,10 @@ function Get-PcKinds {
   $k = @(); $discrete = 0
   $gs = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "Intel" } | ForEach-Object { $_.Name })
   foreach ($g in $gs) {
-    if ($g -match 'B3[0-9]0|140V|130V|Xe2') { $k += "igpu-xe2" }
+    if ($g -match 'B3[0-9]0|140V|130V|Xe2') {
+      $k += "igpu-xe2"
+      if ($g -match 'B3[0-9]0') { $k += "igpu-ptl" }  # (Panther Lake's B370 / B390 alone: best-setups.tsv's rows for it, 2026-11-22)
+    }
     elseif ($g -match '140T') { $k += "igpu-140t" }
     elseif ($g -match 'Arc\S* A\d{3}') { $k += "alchemist"; $discrete++ }
     elseif ($g -match 'Arc\S* (Pro )?B\d{2,3}\b') { $k += "b-series"; $discrete++ }

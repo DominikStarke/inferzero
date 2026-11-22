@@ -136,3 +136,49 @@ function Get-SwChanged($cat, $choice) {
       if ($c -eq "off") { "$($r.title): off" } elseif ($c -eq "on") { $r.title } else { "$($r.title) ($c)" }
     })
 }
+
+# ---- the automatic preset, "Best measured for this PC" (the launcher spec B, 2026-11-22): scripts\best-setups.tsv's
+# rows, each a setting measured faster than the engine's default on some PC and model (its evidence and confidence
+# in the file). A row applies when this PC has all its pc words, the model is one of its models (shortcuts; * any),
+# the OS is its os (windows / linux / any) and its needs hold: gpus2same (two or more discrete cards, all of one kind)
+# and notfit (the model does not fit the card: weights in host memory). Its settings are zero-server's names:
+# Opt=<options.tsv id>, Npu=on, Gpus=all, NoMtp. Adding a row needs no code change
+function Read-BestSetups([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) { return @() }
+  $lines = @(Get-Content -Encoding UTF8 -LiteralPath $path | Where-Object { $_ -and -not $_.StartsWith("#") })
+  if ($lines.Count -lt 2) { return @() }
+  $h = $lines[0] -split "`t"
+  @(foreach ($l in $lines[1..($lines.Count - 1)]) {
+      $f = $l -split "`t"
+      $o = [ordered]@{}
+      for ($i = 0; $i -lt $h.Count; $i++) { $o[$h[$i]] = $(if ($i -lt $f.Count) { $f[$i] } else { "" }) }
+      [pscustomobject]$o
+    })
+}
+# the rows for a model on this PC: $st = @{ pc = words; os = "windows" / "linux"; short = the model's shortcut
+# (without a variant suffix); discrete = the discrete cards; notfit = the model's weights partly in host memory }
+function Get-BestSetups($rows, $st) {
+  @(foreach ($r in $rows) {
+      $pcw = @(Split-SwList $r.pc | Where-Object { $_ -ne "-" })
+      if (@($pcw | Where-Object { @($st.pc) -notcontains $_ }).Count) { continue }
+      $ms = @(Split-SwList $r.models)
+      if ($ms -notcontains "*" -and $ms -notcontains "$($st.short)") { continue }
+      if ($r.os -and $r.os -ne "any" -and $r.os -ne $st.os) { continue }
+      $ok = $true
+      foreach ($n in @(Split-SwList $r.needs | Where-Object { $_ -ne "-" })) {
+        switch ($n) {
+          "gpus2same" { $ok = $ok -and [int]$st.discrete -ge 2 -and -not (@($st.pc) -contains "alchemist" -and @($st.pc) -contains "b-series") }
+          "notfit" { $ok = $ok -and [bool]$st.notfit }
+          default { $ok = $false }  # (a need this launcher does not know: the row is left out)
+        }
+      }
+      if ($ok) { $r }
+    })
+}
+# a row's settings as (key, value) pairs: "Opt=moe_big_chunk" -> (Opt, moe_big_chunk), "NoMtp" -> (NoMtp, $true)
+function Get-BestSettings($r) {
+  @(foreach ($s in @(Split-SwList $r.settings)) {
+      $k, $v = $s -split '=', 2
+      [pscustomobject]@{ key = $k.Trim(); value = $(if ($null -eq $v) { $true } else { $v.Trim() }) }
+    })
+}

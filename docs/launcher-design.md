@@ -171,3 +171,28 @@ The groups come from the catalog's `or:` relations and from the model list's fla
 2. **Linux:** a full-screen menu with arrow keys, or keep today's numbered prompts and add the options screen's
    switches and tips there?
 3. **Advanced collapsed by default?** Port, network access, slots, presets and budget would move under it.
+
+## The automatic preset: "Automatic (best measured)" (built 2026-11-22)
+
+The launchers' default preset applies `scripts/best-setups.tsv`: settings measured faster than the engine's
+defaults on some kind of PC and model, each with its evidence. Adding a row needs no code change.
+
+- **A row's columns:**
+  - `pc`: the PC words it needs, all of them (`scripts/pc-kinds.ps1`; `igpu-ptl` is Panther Lake's B370 / B390);
+  - `models`: the catalog shortcuts it is for, or `*`;
+  - `os`: `windows`, `linux` or `any`;
+  - `needs`: `gpus2same` (two or more discrete cards of one kind) or `notfit` (the model's weights partly in host
+    memory);
+  - `settings`: in zero-server's names (`Opt=<options.tsv id>`, `Npu=on`, `Gpus=all`, `NoMtp`);
+  - `why`, `evidence`, `confidence`.
+- **What goes in:** only settings that beat the defaults in measured runs, with an accuracy cost within the KL
+  limits and no extra memory unless there is free room. Settings that depend on the text or on the number of users
+  (DFlash2 by language, `--copy-draft`, `--slots`) stay out.
+- **Windows launcher:**
+  - the preset list starts with "Automatic (best measured)", then "(none: the engine's defaults)", then the saved
+    presets;
+  - on each model, Automatic sets what its rows say on every setting not changed by hand, and shows each reason
+    ("best measured: ...") beside the switch and in "Changed from the defaults";
+  - choosing another model, Reset or another preset undoes what it set.
+- **Linux launcher:** the same rows when a catalog model starts, each named in a "best measured:" line; `--no-auto`
+  leaves them out. A row whose needs it cannot tell (`notfit`) is left out there.
