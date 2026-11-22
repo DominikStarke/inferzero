@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-11-22: the A770's GEMM operands in its work-group order, opt-in (`ARC_GEMM_XW_WGL=1`)
+
+- **The engine writes the work-group order `xw_peak` measured** (+6.5 % on skipzx-lab's A770 there): with
+  `ARC_GEMM_XW_WGL=1` on Alchemist, the big tile's activations and weights are laid out so each work-group's
+  64-value chunk is one contiguous run of each. The kernels that make them write that order directly, with no
+  extra pass:
+  - the activations: `h8r_act` and the fused norm `rmsnorm_h8r`;
+  - the weights: `h8r_decode`.
+- **Works with `ARC_GEMM_XW_GU=1`**, the fused gate / up launch.
+- **The exceptions:**
+  - a weight's first chunk, made in two passes, keeps the packed order;
+  - a GEMM the big tile does not take reads a copy of its input in the packed order.
+- Not with the 32 x 48 tile, `ARC_H8_Q2` or the 140T preset's resident weights.
+- Bit for bit the packed order. Every start checks it, and a failed check turns off only this option. On the laptop
+  (DPAS emulated), the 4B's logits matched byte for byte in every combination:
+  - with and without the fused gate / up;
+  - the fused norm;
+  - 4 x 8 sub-groups;
+  - the copy path (`ARC_GEMM_XW_WGL=2`, a test that forces it).
+- Opt-in until the A770s measure it.
+
 ## 2026-11-22: the B390 under Linux on the plain GEMM form; tensor parallel offered only for identical cards
 
 - **Panther Lake's B390 under Linux runs the plain GEMM form again**, as under Windows: both Linux B390s measured it

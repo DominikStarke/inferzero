@@ -819,9 +819,18 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
 #else
     const int o = lid;
 #endif
+#if defined(XW_WGLB) && defined(XW_PACKW_OUT)
+    // (-DXW_WGLB=G, ARC_GEMM_XW_WGL: gemm_xw8 -DXS_WGLB's order, the groups in blocks of G (the big tile's work-group
+    //  columns): chunk c of group g at ((g / G) * K / 64 + c) * G * 256 + (g % G) * 256, the same 256 words in it)
+    __global uint* wr = wq + (size_t)(g / XW_WGLB) * XW_WGLB * 4 * K + (size_t)(g % XW_WGLB) * 256 +
+                        (size_t)blk * (4 * HB) * XW_WGLB;
+#pragma unroll
+    for (int i = 0; i < H8WPL; ++i) wr[256 * XW_WGLB * i + o] = tout[cl * H8TP + w0 + 16 * i];
+#else
     __global uint* wr = wq + (size_t)g * 4 * K + (size_t)blk * (4 * HB);
 #pragma unroll
     for (int i = 0; i < H8WPL; ++i) wr[256 * i + o] = tout[cl * H8TP + w0 + 16 * i];
+#endif
   }
   }  // (jb)
 }

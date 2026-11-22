@@ -220,9 +220,17 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
 #ifdef XW_PACKA_OUT
     // (gemm_xw8 -DXW_PACKA's order, as h8.cl h8r_act writes it: [M / 8][K / 64][2 halves][8 rows][8 words], 128 uints
     //  a 64-value chunk; lane l's word of chunk bk * HB / 64 + rr is word l % 8 of half l / 8)
+#ifdef XW_WGLA
+    // (-DXW_WGLA=U, ARC_GEMM_XW_WGL: the token groups in blocks of U, as h8.cl h8r_act writes them)
+    __global uint* ar = aqh + ((size_t)(m / 8 / XW_WGLA) * (K / 64) + bk * (HB / 64)) * (128 * XW_WGLA) +
+                        (size_t)(m / 8 % XW_WGLA) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#pragma unroll
+    for (int rr = 0; rr < ROT_NV / 4; ++rr) ar[128 * XW_WGLA * rr] = rot_pack(hv + 4 * rr, iv);
+#else
     __global uint* ar = aqh + ((size_t)(m / 8) * (K / 64) + bk * (HB / 64)) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
 #pragma unroll
     for (int rr = 0; rr < ROT_NV / 4; ++rr) ar[128 * rr] = rot_pack(hv + 4 * rr, iv);
+#endif
 #else
     __global uint* ar = aqh + (size_t)m * (K / 4) + bk * (HB / 4);
 #pragma unroll

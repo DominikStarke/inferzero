@@ -309,10 +309,19 @@ __kernel void h8r_act(__global const uint* restrict aq, __global const float* re
 #ifdef XW_PACKA_OUT
   // (gemm_xw8 -DXW_PACKA's order, engine_xw.h ARC_GEMM_XW_PACK: [M / 8][K / 64][2 halves][8 rows][8 words]; lane l's
   //  word is word l % 8 of half l / 8 of chunk bk * HB / 64 + r, 128 uints a chunk)
+#ifdef XW_WGLA
+  // (-DXW_WGLA=U, ARC_GEMM_XW_WGL: gemm_xw8 -DXS_WGLA's order, the token groups of 8 in blocks of U (the big tile's
+  //  work-group rows): chunk c of group t at ((t / U) * K / 64 + c) * U * 128 + (t % U) * 128, the same 128 words in it)
+#define H8A_STEP (128 * XW_WGLA)
+  const size_t ao = ((size_t)(m / 8 / XW_WGLA) * (K / 64) + bk * (HB / 64)) * H8A_STEP + (size_t)(m / 8 % XW_WGLA) * 128 +
+                    (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#else
+#define H8A_STEP 128
   const size_t ao = ((size_t)(m / 8) * (K / 64) + bk * (HB / 64)) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8);
+#endif
   __global uint* ar = aqh + ao;
 #pragma unroll
-  for (int r = 0; r < ROT_NV / 4; ++r) ar[128 * r] = rot_pack(v + 4 * r, iv);
+  for (int r = 0; r < ROT_NV / 4; ++r) ar[H8A_STEP * r] = rot_pack(v + 4 * r, iv);
 #else
   const size_t ao = (size_t)m * (K / 4) + bk * (HB / 4);
   __global uint* ar = aqh + ao;
@@ -336,11 +345,19 @@ __kernel void h8r_act(__global const uint* restrict aq, __global const float* re
   __global uint* ar2 = aqh2 + ao;
 #ifdef XW_PACKA_OUT
 #pragma unroll
-  for (int r = 0; r < ROT_NV / 4; ++r) ar2[128 * r] = rot_pack(v + 4 * r, iv2);
+  for (int r = 0; r < ROT_NV / 4; ++r) ar2[H8A_STEP * r] = rot_pack(v + 4 * r, iv2);
 #else
 #pragma unroll
   for (int r = 0; r < ROT_NV / 4; ++r) intel_sub_group_block_write(ar2 + r * SG, rot_pack(v + 4 * r, iv2));
 #endif
 #endif
+}
+
+// ARC_GEMM_XW_WGL (engine_xw.h xw_unwgl): an input in -DXW_WGLA=U's order copied back to gemm_xw8's packed one, for
+// a GEMM the big tile does not take (its width not a multiple of the tile's). Word i of dst: chunk c of token group t
+// (128 words each), from ((t / U) * nch + c) * U * 128 + (t % U) * 128. grid (M * K / 4)
+__kernel void h8_unwgl(__global const uint* restrict src, __global uint* restrict dst, int nch, int U) {
+  const size_t i = get_global_id(0), unit = i / 128, t = unit / nch, c = unit % nch;
+  dst[i] = src[((t / U) * nch + c) * U * 128 + (t % U) * 128 + i % 128];
 }
 #endif

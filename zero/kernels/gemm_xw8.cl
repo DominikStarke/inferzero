@@ -198,26 +198,44 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int nch = K / 64, lane = (int)get_sub_group_local_id();
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
+  // -DXS_WGL (2026-11-22, the A770 plan's step 4, after oneDNN's blocked layouts): A and B in the work-group's order,
+  // [work-group row][chunk][its XS_UA units of 64 words] and [work-group column][chunk][its XS_BW / 64 units], so a
+  // work-group's chunk is one contiguous run of each (4 KB of A and 8 KB of B at 32 x 32 4 x 4) instead of 16 / 32
+  // pieces of 256 bytes spread over the matrix. The same words reach the same places: bit for bit. -DXS_WGLA / -DXS_WGLB
+  // one of them (the engine, ARC_GEMM_XW_WGL: h8r_act / rmsnorm_h8r -DXW_WGLA and h8r_decode -DXW_WGLB write them; a
+  // weight made in two passes keeps the packed order). With XW_GU the gate's and the up's rows are each in the order
+  // of the plain big tile's groups (XW_WGX x XW_NC of them a block), so a work-group's XW_WGX output groups are half a
+  // block of each
 #ifdef XS_WGL
-  // -DXS_WGL (2026-11-22, the A770 plan's step 4, after oneDNN's blocked layouts; bench\xw_peak only so far): A and B
-  // in the work-group's order, [work-group row][chunk][its XS_UA units of 64 words] and [work-group column][chunk][its
-  // XS_BW / 64 units], so a work-group's chunk is one contiguous run of each (4 KB of A and 8 KB of B at 32 x 32 4 x 4)
-  // instead of 16 / 32 pieces of 256 bytes spread over the matrix. The same words reach the same places: bit for bit
-#if !defined(XW_PTR) || defined(XW_GU)
-#error "XS_WGL: with XW_PTR, not XW_GU"
+#define XS_WGLA
+#define XS_WGLB
 #endif
+#if (defined(XS_WGLA) || defined(XS_WGLB)) && !defined(XW_PTR)
+#error "XS_WGL: with XW_PTR"
+#endif
+#ifdef XS_WGLA
   __global const uint* apw = (__global const uint*)aq + (size_t)row * nch * XS_AW;
-  __global const uint* wpw = wq + (size_t)cb * nch * XS_BW;
 #define XS_ASTEP ((uint)XS_AW)
-#define XS_BSTEP ((uint)XS_BW)
 #else
   __global const uint* apw = (__global const uint*)aq + (size_t)(row * XW_WGY * XW_TG) * nch * 128;
-  __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;
 #define XS_ASTEP 128u
-#define XS_BSTEP 256u
 #endif
+#if defined(XS_WGLB) && defined(XW_GU)
+  // (output group og of the matrix: block og / XS_GB, place og % XS_GB; this work-group's are cb * XW_WGX * XW_NCO on,
+  //  half a block: its first at block cb / 2, place (cb % 2) * XW_WGX * XW_NCO)
+#define XS_GB (XW_WGX * XW_NC)
+  __global const uint* wpw = wq + (size_t)(cb / 2) * nch * XS_BW + (size_t)(cb % 2) * (XW_WGX * XW_NCO) * 256;
+  __global const uint* wpu = wqu + (size_t)(cb / 2) * nch * XS_BW + (size_t)(cb % 2) * (XW_WGX * XW_NCO) * 256;
+#define XS_BSTEP ((uint)XS_BW)
+#elif defined(XS_WGLB)
+  __global const uint* wpw = wq + (size_t)cb * nch * XS_BW;
+#define XS_BSTEP ((uint)XS_BW)
+#else
+  __global const uint* wpw = wq + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;
 #ifdef XW_GU
   __global const uint* wpu = wqu + (size_t)(cb * XW_WGX * XW_NCO) * nsb * 4 * 256;  // (the up's rows, as wpw the gate's)
+#endif
+#define XS_BSTEP 256u
 #endif
   const int ch0 = s_begin * 4, ch1 = s_end * 4;
   int8 st[XS_UPS];
@@ -285,13 +303,20 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     const int cg = (u - XS_UA) >> 2, cs = cg / XW_NC, cc = cg % XW_NC;
     xs_up[i] = !xs_a[i] && cc >= XW_NCO;
     const int og = cs * XW_NCO + (cc >= XW_NCO ? cc - XW_NCO : cc);
-    xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
-                        : (uint)((og * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
-#elif defined(XS_WGL)
-    xs_off[i] = xs_a[i] ? (uint)(c * XS_AW + u * 64) : (uint)(c * XS_BW + (u - XS_UA) * 64);
+#ifdef XS_WGLB
+    const uint ob = (uint)(c * XS_BW + og * 256 + ((u - XS_UA) & 3) * 64);
 #else
-    xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64)
-                        : (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+    const uint ob = (uint)((og * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+#endif
+#elif defined(XS_WGLB)
+    const uint ob = (uint)(c * XS_BW + (u - XS_UA) * 64);
+#else
+    const uint ob = (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+#endif
+#ifdef XS_WGLA
+    xs_off[i] = xs_a[i] ? (uint)(c * XS_AW + u * 64) : ob;
+#else
+    xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64) : ob;
 #endif
     xs_dst[i] = j * (XS_AW + XS_BW) + u * 64;
   }

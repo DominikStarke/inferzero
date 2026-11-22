@@ -28,7 +28,8 @@
   cl_mem h8_aq_ = nullptr, h8_asc_ = nullptr;   // (one GEMM input rotated: int8 [M][K], per-256 scales [K / 256][M])
   cl_mem stage_hh_[kRoles] = {};                // (the H8 scales of the weight staged per role)
   bool stage_h8_[kRoles] = {};                  // (the staged weight is in its rotated H8 form, not W8: the 140T preset mixes both)
-  bool stage_packed_[kRoles] = {};              // (that H8 form in gemm_xw8's packed order, ARC_GEMM_XW_PACK: engine_xw.h)
+  int stage_packed_[kRoles] = {};               // (that H8 form in gemm_xw8's packed order, ARC_GEMM_XW_PACK: engine_xw.h; 1, or
+                                                //  ARC_GEMM_XW_WGL's block of groups G > 1)
   size_t stage_hh_bytes_[kRoles] = {};
   std::map<const GpuWeight*, cl_mem> h8_res_;   // (a resident weight converted in place: its H8 scales)
 
@@ -51,6 +52,9 @@
     return h8q2_ == 1;
   }
   cl_mem h8_aq2_ = nullptr, h8_asc2_ = nullptr;  // (ARC_H8_Q2: the residual plane, as h8_aq_ / h8_asc_)
+  size_t h8_aq_bytes_ = 0;
+  cl_mem h8_aq_un_ = nullptr;  // (ARC_GEMM_XW_WGL: an input in the block order copied back to the packed one, for a GEMM
+                               //  the big tile does not take; made the first time one needs it, engine_xw.h xw_unwgl)
   bool h8_q2_pass_ = false;                      // (the second pass is running: the rotation is already made)
   static bool h8_env() {
     static const bool on = getenv("ARC_H8") && atoi(getenv("ARC_H8")) != 0;
@@ -123,6 +127,8 @@
   void h8_reserve(size_t M, int maxK) {
     if (!h8_) return;
     h8_aq_ = buf(M * (size_t)maxK);
+    h8_aq_bytes_ = M * (size_t)maxK;
+    h8_aq_un_ = nullptr;  // (ARC_GEMM_XW_WGL's copy: made again at the new size when a GEMM needs it)
     h8_asc_ = buf(M * (size_t)(maxK / 256) * 4);
     if (h8_q2()) {  // (the second plane: as big as the first; only with ARC_H8_Q2=1)
       h8_aq2_ = buf(M * (size_t)maxK);
@@ -192,7 +198,7 @@
                          ((w.gemm_qtype >= 100 && w.gemm_qtype <= 103) || (!old_set && w.gemm_qtype == GGML_Q8_0 && w8_variant(w.type) == 4));
     return on && w.raw && type_ok && w.type != GGML_IQ1_M && w.type != GGML_IQ1_S && h8_block(w.K) >= 512 && w.N % 16 == 0;
   }
-  void h8r_decode(const GpuWeight& w, cl_mem wq, cl_mem col, bool packed = false) {
+  void h8r_decode(const GpuWeight& w, cl_mem wq, cl_mem col, int packed = 0) {  // (packed: as h8_prepare's)
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
     // (ARC_H8_DEC_PRIV=1: each lane loads its superblock into registers, as before 2026-11-14; the default stages the
     //  work-group's superblocks in local memory once, B60 prefill plan 13.3, the same values bit for bit)
@@ -208,7 +214,8 @@
     cl_kernel k = kernel("decode", h8_grf() + "-DH8RDEC" + (d ? " -DH8_D" : "") + (pv ? " -DH8D_PRIV" : "") + (w.iq3t ? " -DIQ3T" : "") +
                                        " -DH8DR=" + std::to_string(rb) + " -DQT=" +
                                        std::to_string(w.type) + " -DHB=" + std::to_string(hb) + " -DSRC=" +
-                                       std::to_string(w.gemm_qtype) + (packed ? " -DXW_PACKW_OUT" : ""), "h8r_decode");
+                                       std::to_string(w.gemm_qtype) + (packed ? " -DXW_PACKW_OUT" : "") +
+                                       (packed > 1 ? " -DXW_WGLB=" + std::to_string(packed) : std::string()), "h8r_decode");
     int N = w.N, K = w.K;
     set_args(k, 0, w.raw, N, K, tabs_, wq, col);
     size_t gws[2] = {(size_t)N / 16 * 256, (size_t)((K / hb + rb - 1) / rb)}, lws[2] = {256, 1};
@@ -312,7 +319,7 @@
     //  GEMMs read the packed order, can take the fused norm; before, ARC_H8_NORM fell back to rmsnorm_quant there)
     cl_kernel k = kernel("ops", h8_grf() + "-DH8NORM" + (d ? " -DH8_D" : "") + " -DHB=" +
                                     std::to_string(hb) + " -DH8N_K=" + std::to_string(K) +
-                                    (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : ""), "rmsnorm_h8r");
+                                    (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") + xw_wgla_defs(Mp, K), "rmsnorm_h8r");
     float eps = hp.eps;
     int wh = 0, KK = K, MM = Mp, TT = T, a32 = act32;
     set_args(k, 0, x, row_off, w, KK, MM, TT, eps, aq_, asc_, absum_, big_, wh, a32, h8_aq_, h8_asc_);
@@ -336,7 +343,7 @@
     if (h8_row()) {
       // (gemm_xw8's packed order where it will read them, ARC_GEMM_XW_PACK: engine_xw.h xw_pack_a)
       cl_kernel k = h8r_kernel(hb, 0, "h8r_act", (h8_fsrc_ ? std::string(" -DH8F=0") : h8f_defs_) +
-                                                     (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") +
+                                                     (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") + xw_wgla_defs(Mp, K) +
                                                      (h8_q2() ? " -DQ2" : ""));
       set_args(k, 0, src, asc_, a32, h8_aq_, h8_asc_, M, KK);
       if (h8_q2()) set_args(k, 7, h8_aq2_, h8_asc2_);  // (after the 7 above: aqh2, asch2)
@@ -354,32 +361,37 @@
   // the H8 form of a weight for this GEMM: resident ones converted once, staged ones after each decode (stage_owner_
   // stays the weight, so a layer's next chunks find it converted)
   // (packed: a staged weight in gemm_xw8's packed order, ARC_GEMM_XW_PACK; resident weights stay in the plain one)
-  void h8_prepare(const GpuWeight& w, cl_mem& wq, cl_mem& hh, bool packed = false) {
+  // (packed: 0 the plain order, 1 gemm_xw8's packed order, G > 1 that in ARC_GEMM_XW_WGL's blocks of G groups where
+  //  the one-pass decode makes it (h8r_decode -DXW_WGLB), else 1. Returns the order made: 0, 1 or G)
+  int h8_prepare(const GpuWeight& w, cl_mem& wq, cl_mem& hh, int packed = 0) {
     if (w.wq && h8_row() && !p140_res_) {  // (p140_res_: the resident copy stays unrotated for the short chunks)
       if (packed) throw std::logic_error("h8_prepare: a resident weight in the packed order");
       auto it = h8_col_.find(&w);
       hh = it != h8_col_.end() ? it->second : h8r_weights(w, w.wq, w.wh);
       wq = w.wq;
-      return;
+      return 0;
     }
     if (h8_row()) {
       wq = stage_q_[w.role];
-      if (stage_owner_[w.role] != &w || !stage_h8_[w.role] || stage_packed_[w.role] != packed) {
-        auto it = h8_col_.find(&w);
-        if (it != h8_col_.end() && h8_dec_ok(w)) {
-          h8r_decode(w, wq, it->second, packed);  // (decode + rotation in one pass, bit-identical)
+      auto it = h8_col_.find(&w);
+      // (the block order only from the one-pass decode: h8r_weights rotates in place, within each group's region)
+      const bool one = it != h8_col_.end() && h8_dec_ok(w);
+      const int order = packed > 1 && !one ? 1 : packed;
+      if (stage_owner_[w.role] != &w || !stage_h8_[w.role] || stage_packed_[w.role] != order) {
+        if (one) {
+          h8r_decode(w, wq, it->second, order);  // (decode + rotation in one pass, bit-identical)
           hh = it->second;
         } else {
           decode_w8(w, wq, stage_h_[w.role]);
-          hh = h8r_weights(w, wq, stage_h_[w.role], packed);
+          hh = h8r_weights(w, wq, stage_h_[w.role], order != 0);
         }
         stage_owner_[w.role] = &w;
         stage_h8_[w.role] = true;
-        stage_packed_[w.role] = packed;
+        stage_packed_[w.role] = order;
       } else {
         hh = h8_col_.at(&w);
       }
-      return;
+      return order;
     }
     if (w.wq) {
       auto it = h8_res_.find(&w);
@@ -390,7 +402,7 @@
       }
       wq = w.wq;
       hh = it->second;
-      return;
+      return 0;
     }
     const size_t need = (size_t)w.N * (w.K / 256) * 4;
     if (stage_hh_bytes_[w.role] < need) {  // (a matrix made after alloc_buffers: the encoders', MTP)
@@ -404,6 +416,7 @@
       stage_owner_[w.role] = &w;
       stage_h8_[w.role] = true;
     }
+    return 0;
   }
   // the split-K pieces of an H8 GEMM: 17 or 34 superblocks each for rows longer than 8192 (ARC_GEMM_SPLIT), one with the
   // fused SwiGLU (silu(gate) * (u1 + u2) is not silu(gate) * u1 + u2). Each piece is rounded on its own before it is
@@ -450,9 +463,15 @@
     cl_mem wq = nullptr, hh = nullptr;
     // (gemm_xw8's packed operand order where it takes this GEMM, ARC_GEMM_XW_PACK: engine_xw.h)
     const bool pw = xw_pack_w(w, Mp);
-    const int pack = (xw_pack_a(Mp, w.K) ? 1 : 0) | (pw ? 2 : 0);
-    h8_prepare(w, wq, hh, pw);
+    // (ARC_GEMM_XW_WGL: the weight in the big tile's block order where it takes the GEMM, pack bit 8; the input in
+    //  it, bit 4, is the same for every GEMM of this M and K, so a GEMM the big tile does not take gets a copy in the
+    //  packed order, xw_unwgl)
+    const int wb = pw ? xw_wgl_b(w, Mp) : 0;
+    const int order = h8_prepare(w, wq, hh, wb > 1 ? wb : pw ? 1 : 0);
+    int pack = (xw_pack_a(Mp, w.K) ? 1 : 0) | (pw ? 2 : 0) | (order > 1 ? 8 : 0);
     h8_act(Mp, w.K, act32);
+    XwUnwgl un(this, xw_wgl_a(Mp, w.K) > 1 && wb <= 1 ? Mp : 0, w.K);
+    if (xw_wgl_a(Mp, w.K) > 1 && wb > 1) pack |= 4;
     // (the 140T preset: 32 tokens, 2 column groups, 128 registers on XMX)
     const bool pt = p140_take(w, Mp) && !h8_env();
     // (xw_: wider XMX tiles, the same results, by default in the 140T preset and with h8_auto_ (discrete cards), elsewhere ARC_GEMM_XW=1; zero/xe2/engine_xw.h. On 8-lane GPUs the 140T preset's

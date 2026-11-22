@@ -533,6 +533,7 @@ static int run_main(int argc, char** argv) {
             "  ARC_GEMM_XW_BIG=0 / 1 the 32 x 32 tile through local memory where it fits (default on Alchemist),\n"
             "  ARC_GEMM_XW_EPI2=0 / 1 the epilogue a row at a time (default on Alchemist), ARC_GEMM_XW_SLM=1 / 2 / 8\n"
             "  local memory with that many token sub-groups (=1: 4) on every tile it fits; all the same results\n"
+            "  ARC_GEMM_XW_WGL=1 the big tile's operands in its work-group order (opt-in, the same results; with GU too)\n"
             "  MoE partly off the GPU: ARC_XCPU=0 / 1 the experts missing from the GPU cache computed by the CPU from the RAM\n"
             "  tier (KL-checked; on by default on discrete 16-lane cards: the B-series, a Data Center Max; off on Alchemist and\n"
             "  iGPUs; the same results run to run from the same cache state, its .lru file); in Flash Next's precise\n"
