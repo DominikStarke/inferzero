@@ -25,12 +25,12 @@ ROOT=$(cd "$(dirname "$SELF")" && pwd)
 SERVERZ="$ROOT/bin/serverz"
 
 # ---- the catalog: key|name|repo|GB|disk GB|RAM GB|mtp|files (space-separated)|drafter repo|drafter file|extra repo|extra file|extra into|words
-# (words: the model's, as serverz --list-models "opts" gives them (dense moe qsa flashnext mtp h8) and vision, for the
+# (words: the model's, as serverz --list-models "opts" gives them (dense moe moe_std qsa flashnext mtp h8) and vision, for the
 #  switches; df=NAME: a DFlash2 drafter for it is a cache repository whose name holds NAME and DFlash)
 CATALOG=(
 "4b|Qwen3.5 4B (fastest; MTP, reads images)|unsloth/Qwen3.5-4B-MTP-GGUF|3.7||16|1|Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf||||||dense mtp h8 vision"
 "9b|Qwen3.5 9B (MTP, reads images)|unsloth/Qwen3.5-9B-MTP-GGUF|7.1||16|1|Qwen3.5-9B-UD-Q4_K_XL.gguf mmproj-F16.gguf||||||dense mtp h8 vision"
-"35b|Qwen3.6 35B-A3B (fast mixture of experts; MTP, reads images)|unsloth/Qwen3.6-35B-A3B-MTP-GGUF|19.1||32|1|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf||||||moe mtp vision df=Qwen3.6-35B"
+"35b|Qwen3.6 35B-A3B (fast mixture of experts; MTP, reads images)|unsloth/Qwen3.6-35B-A3B-MTP-GGUF|19.1||32|1|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf||||||moe moe_std mtp vision df=Qwen3.6-35B"
 "27b|Qwen3.8 27B (best answers, slowest; MTP, reads images)|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|13.1||32|1|Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf||||||dense mtp h8 vision df=Qwen3.8-27B"
 "flash|Qwen3.8 Flash Next (512 experts on the SSD; reads images)|ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF|84.5|141|32|0|IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf mmproj-Qwen3.8-Flash-Next-f16.gguf|||bartowski/Qwen3.8-Flash-Next-GGUF|mmproj-Qwen3.8-Flash-Next-f16.gguf|IQ3_S|moe qsa flashnext vision df=Qwen3.8-Flash-Next"
 "g12|Gemma 4 12B (reads images; drafter)|google/gemma-4-12B-it-qat-q4_0-gguf|7.4||32|1|gemma-4-12b-it-qat-q4_0.gguf mmproj-gemma-4-12b-it-qat-q4_0.gguf mtp-gemma-4-12B-it.gguf|unsloth/gemma-4-12B-it-qat-GGUF|mtp-gemma-4-12B-it.gguf||||dense mtp vision"
@@ -392,7 +392,7 @@ opt_menu() {  # the menu's options screen: a number to change, Enter to go back
 # ---- the switches (QUEUE row 15 step 3, docs/launcher-design.md): for a model and this PC, which options of the
 # catalog apply, the one-line reason when one does not, and each one's tip. The same rules as the Windows launcher's
 # scripts/launcher-switches.ps1; tests/test_zero_launcher.sh checks both against tests/launcher_switch_cases.tsv.
-# The state: SW_WORDS (the model's words: dense moe qsa flashnext mtp h8), SW_PC (this PC's: b-series alchemist
+# The state: SW_WORDS (the model's words: dense moe moe_std qsa flashnext mtp h8), SW_PC (this PC's: b-series alchemist
 # igpu-140t igpu-xe2 igpu-xe-lpg multi-gpu; empty: not known, nothing greyed for the PC), SW_GPUS, SW_DRAFTING (1 when
 # Drafting is on) and the choices in OPTC
 declare -A CT_title=() CT_applies=() CT_relates=() CT_default=() CT_on=() CT_off=() CT_variant=() CT_tip=() CT_output=() CT_cost=()
@@ -419,7 +419,7 @@ sw_or() {  # words joined "a, b or c"
   done
   printf '%s' "$out"
 }
-sw_mword() { case "$1" in dense) printf 'dense models';; moe) printf 'MoE models';; qsa) printf 'QSA models';; flashnext) printf 'Flash Next';;
+sw_mword() { case "$1" in dense) printf 'dense models';; moe) printf 'MoE models';; moe_std) printf 'standard MoE models';; qsa) printf 'QSA models';; flashnext) printf 'Flash Next';;
   mtp) printf 'models with MTP';; h8) printf 'dense Qwen3.5 / 3.8 models';; esac; }
 sw_pword() { case "$1" in b-series) printf 'Arc B-series';; alchemist) printf 'Arc A-series';; igpu-140t) printf 'Arc 140T';;
   igpu-xe2) printf 'Lunar Lake / Panther Lake';; igpu-xe-lpg) printf 'Meteor Lake';; esac; }
@@ -451,7 +451,7 @@ sw_reason() {  # ID: the reason it does not apply now, or nothing; SW_KIND says 
   SW_KIND=""
   mapfile -t ap < <(sw_list "${CT_applies[$id]}")
   for w in "${ap[@]}"; do
-    case "$w" in dense|moe|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg) pw+=("$w");; multi-gpu) multi=1;; esac
+    case "$w" in dense|moe|moe_std|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg) pw+=("$w");; multi-gpu) multi=1;; esac
   done
   if [ ${#mw[@]} -gt 0 ]; then
     any=0; for w in "${mw[@]}"; do sw_has "$SW_WORDS" "$w" && any=1; done
