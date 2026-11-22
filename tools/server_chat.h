@@ -728,6 +728,10 @@
           if (t < 0) t = sampler.sample(logits, gen);
         } else if (answering && jc) {
           const std::string ans = text.substr(co.enable_thinking ? tclose + think_close_.size() : 0);
+          // (every check of this step starts with the answer so far: its completed values are kept, json_constraint.h
+          //  set_prefix; ARC_JSON_PREFIX=0 also turns that off)
+          static const bool memo_on = !getenv("ARC_JSON_PREFIX") || atoi(getenv("ARC_JSON_PREFIX")) != 0;
+          if (memo_on) jc->set_prefix(ans);
           if (jc->check(ans) == jcon::DONE) {
             t = stop_ids_.empty() ? tok_.eos : stop_ids_.front();  // the value is complete: end the answer
           } else {

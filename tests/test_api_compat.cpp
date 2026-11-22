@@ -83,6 +83,35 @@ int main() {
            "anyOf: an extra key under additionalProperties false refused");
     expect(a.check("{\"reply\": {\"message_kind\": \"story_turn\", \"content\": \"x\"}}") == jcon::DONE, "anyOf: the object done");
     expect(a.check("{\"reply\": null}") == jcon::DONE, "anyOf: the null branch");
+    // the memo of completed values (set_prefix): every prefix of an answer gives the same verdict with and without it,
+    // and a later answer that does not extend the prefix is not misread
+    {
+      const std::string full = "{\"reply\": {\"message_kind\": \"story_turn\", \"content\": \"a long \\\"quoted\\\" text, 12 and 3.5\"}}";
+      Checker plain(an, false), memo(an, false);
+      bool same = true;
+      for (size_t n = 0; n <= full.size(); ++n) {
+        memo.set_prefix(full.substr(0, n));
+        for (const char* tail : {"", "x", "\"", "}", ",", " "}) {
+          const std::string s = full.substr(0, n) + tail;
+          same = same && plain.check(s) == memo.check(s);
+        }
+      }
+      memo.set_prefix("{\"reply\": nu");
+      same = same && memo.check("{\"reply\": null}") == jcon::DONE && memo.check("{\"reply\": nuX") == jcon::FAIL;
+      expect(same, "memo: the same verdict on every prefix and its continuations");
+      Json nums = Json::parse(R"({"type":"object","properties":{"a":{"type":"array","items":{"type":"number"}}},"required":["a"]})");
+      Checker np(nums, false), nm(nums, false);
+      const std::string t = "{\"a\": [1, 23, 4.5e2, -7, 100]}";
+      bool same2 = true;
+      for (size_t n = 0; n <= t.size(); ++n) {
+        nm.set_prefix(t.substr(0, n));
+        for (const char* tail : {"", "1", "]", ",", "."}) {
+          const std::string s = t.substr(0, n) + tail;
+          same2 = same2 && np.check(s) == nm.check(s);
+        }
+      }
+      expect(same2, "memo: numbers ending at the prefix's end are not kept as done");
+    }
   }
   // ---- request translation
   {

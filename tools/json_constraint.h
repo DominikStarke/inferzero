@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace jcon {
@@ -129,6 +130,8 @@ class Checker {
   // How `s` (the answer so far) relates to the schema: FAIL (no continuation fits), PARTIAL (it can still grow
   // into a match), DONE (a complete match, with at most trailing whitespace).
   Res check(const std::string& s) const {
+    // (the memo below only for a text that starts with the prefix it was made on)
+    memo_live_ = base_ > 0 && s.size() >= base_ && s.compare(0, base_, prefix_) == 0;
     size_t i = 0;
     if (!ws(s, i)) return FAIL;  // (the 8-character limit before the value too: no endless leading whitespace)
     if (i == s.size()) return PARTIAL;
@@ -139,10 +142,37 @@ class Checker {
     ws(s, j);
     return j == s.size() && j - i <= 2 ? DONE : FAIL;  // (at most a little whitespace after the value)
   }
+  // The text every check until the next call starts with: the answer so far (#80, 2026-11-22). A value of the schema
+  // that the parser completed inside it, at a position and a schema node, ends where it ended for every text that
+  // starts with it, so it is kept (memo_) and a later check skips it: a check then costs the member being written,
+  // not the whole answer, and nothing it decides changes. The answer only grows from step to step, so the memo stays;
+  // a prefix that does not extend the last one (another answer) clears it
+  void set_prefix(const std::string& p) {
+    if (p.size() < prefix_.size() || p.compare(0, prefix_.size(), prefix_) != 0) memo_.clear();
+    prefix_ = p;
+    base_ = p.size();
+  }
 
  private:
   Json root_;
   bool object_only_;
+  struct MemoKey {
+    const Json* sc;
+    size_t i;
+    bool operator==(const MemoKey& o) const { return sc == o.sc && i == o.i; }
+  };
+  struct MemoHash {
+    size_t operator()(const MemoKey& k) const { return std::hash<const void*>()(k.sc) ^ (k.i * 0x9E3779B97F4A7C15ull); }
+  };
+  mutable std::unordered_map<MemoKey, size_t, MemoHash> memo_;  // (schema node, start) -> end of a completed value
+  struct EnumOpts {
+    std::vector<std::string> opts, strs;
+    bool made = false;
+  };
+  mutable std::unordered_map<const Json*, EnumOpts> enum_opts_;  // (an enum / const node's options, made once)
+  std::string prefix_;
+  size_t base_ = 0;
+  mutable bool memo_live_ = false;
 
   const Json& resolve(const Json& sc) const {
     const std::string ref = sc["$ref"].str();
@@ -163,7 +193,21 @@ class Checker {
     return n <= 8;
   }
 
+  // value_at with the memo: a value completed before the prefix's end (its last character read, a number's end
+  // included, inside the prefix) is the same for every text with that prefix
   Res value(const Json& sc0, const std::string& s, size_t& i, int depth) const {
+    if (!memo_live_ || i >= base_) return value_at(sc0, s, i, depth);
+    const auto it = memo_.find({&sc0, i});
+    if (it != memo_.end()) {
+      i = it->second;
+      return DONE;
+    }
+    const size_t i0 = i;
+    const Res r = value_at(sc0, s, i, depth);
+    if (r == DONE && i < base_) memo_.emplace(MemoKey{&sc0, i0}, i);
+    return r;
+  }
+  Res value_at(const Json& sc0, const std::string& s, size_t& i, int depth) const {
     if (depth > 32) return FAIL;
     const Json& sc = resolve(sc0);
     // anyOf / oneOf: the first branch that is not FAIL from here
@@ -184,13 +228,20 @@ class Checker {
     const char c = s[i];
     // enum / const: the value's text must be (a prefix of) one of the allowed values' JSON text
     if (sc["enum"].is_array() || sc.has("const")) {
-      std::vector<std::string> opts, strs;  // (strs: the string options' own text, compared decoded, #80)
-      auto add = [&](const Json& e) {
-        if (e.is_string()) strs.push_back(e.str());
-        else opts.push_back(e.dump());
-      };
-      if (sc.has("const")) add(sc["const"]);
-      for (const Json& e : sc["enum"].items()) add(e);
+      // (strs: the string options' own text, compared decoded, #80; both lists made once per schema node, not for
+      //  every check: a 600-value enum was 600 strings built for each candidate token)
+      EnumOpts& eo = enum_opts_[&sc];
+      if (!eo.made) {
+        auto add = [&](const Json& e) {
+          if (e.is_string()) eo.strs.push_back(e.str());
+          else eo.opts.push_back(e.dump());
+        };
+        if (sc.has("const")) add(sc["const"]);
+        for (const Json& e : sc["enum"].items()) add(e);
+        eo.made = true;
+      }
+      const std::vector<std::string>& opts = eo.opts;
+      const std::vector<std::string>& strs = eo.strs;
       if (c == '"' && !strs.empty()) {
         size_t j = i;
         std::string got, pend;
@@ -205,11 +256,12 @@ class Checker {
           if (can_become(got, pend, o)) { i = s.size(); return PARTIAL; }
         return FAIL;
       }
-      const std::string rest = s.substr(i);
+      // (the rest of the text compared in place: a copy of it was made for every check)
+      const size_t n = s.size() - i;
       bool partial = false;
       for (const std::string& o : opts) {
-        if (rest.compare(0, o.size(), o) == 0) { i += o.size(); return DONE; }
-        if (o.compare(0, rest.size(), rest) == 0) partial = true;
+        if (n >= o.size() && s.compare(i, o.size(), o) == 0) { i += o.size(); return DONE; }
+        if (n <= o.size() && o.compare(0, n, s, i, n) == 0) partial = true;
       }
       if (partial) { i = s.size(); return PARTIAL; }
       return FAIL;

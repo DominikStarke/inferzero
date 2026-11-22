@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-22: structured output checks only what is new (#80)
+
+- **Completed values are no longer parsed again.** A value the checker completed inside the answer so far (a key's
+  string, an enum value, an array's item) ends where it ended for every later check, so it is kept with its schema
+  node and position, and skipped. A check now costs the member being written, not the whole answer, and nothing it
+  decides changes.
+- **An enum's options are made once,** not for every candidate token (a 600-value enum built 600 strings each time),
+  and the rest of the answer is compared in place instead of copied.
+- **Measured on the 4B at temperature 0, the answers byte for byte the same:**
+  - a 42,855-character schema with a 600-value enum: 15.0 / 22.2 s -> 13.3 / 13.2 s for two ~250-token answers;
+  - 20 anyOf branches, each starting with a 60-item array, a 1,363-token answer: 18.3 -> 19.1 tok/s.
+
+  StealthDrifter's own 32K schema on the 9B (13x slower before) is still to be measured.
+- `ARC_JSON_PREFIX=0` turns the memo and the first-bytes verdicts off; the enum cache stays.
+
 ## 2026-11-22: faster structured output with large schemas (#80)
 
 - **Each candidate token was checked by parsing the whole answer against the whole schema again.** Where few tokens
