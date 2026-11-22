@@ -200,6 +200,10 @@ function Opt-Effect {
 # which kinds of PC this one is (the catalog's best_for words): scripts\pc-kinds.ps1, shared with the launcher
 . (Join-Path $PSScriptRoot "pc-kinds.ps1")
 function PC-Kinds { Get-PcKinds }
+# a running server's options from its state file, with the quoted values (a Whisper or ASR folder) left out, for the
+# flag tests: a faster-whisper folder holds "--faster", which read as --fast (the Researcher, 2026-11-22). Its folders
+# are read from the state's own whisper / asr fields (a state file of before: from extra, once)
+function Get-StateFlags($s) { if ($s) { "$($s.extra)" -replace '"[^"]*"', '""' } else { "" } }
 
 # ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
 # zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
@@ -1052,10 +1056,10 @@ switch ($Action) {
       if ($p.driver_warning) { Write-Host "  WARNING: $($p.driver_warning)" -ForegroundColor Yellow }  # (2026-11-20)
       if (Test-Path $lastFile) { Say ("  " + (Get-Content -Encoding UTF8 $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
-      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
+      if ((Test-Path $stateFile) -and (Get-StateFlags (Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json)) -match "--npu on") {
         Say "  NPU: on (-Npu on; kept when the model changes and on a restart, off after stop)"
       }
-      if ((Test-Path $stateFile) -and "$((Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).extra)" -match "--fast") {
+      if ((Test-Path $stateFile) -and (Get-StateFlags (Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json)) -match '(^|\s)--fast(\s|\||$)') {
         Say "  fast mode: on (-Fast; Flash Next; kept like -Npu, -Precise turns it off)"
       }
       if ((Test-Path $stateFile) -and ($c = (Get-Content -Encoding UTF8 $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
@@ -1165,29 +1169,31 @@ if ($drafterPick -and $m -ne $none -and $m.mtp) {
 }
 # a restart (another model, other options) keeps the running server's slots unless -Slots is given: zero-pi on
 # another model dropped them (and the second Pi / client then waited for the only slot)
-if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -match "--slots (\d+)") { $Slots = [int]$Matches[1] }
+if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and (Get-StateFlags $st) -match "--slots (\d+)") { $Slots = [int]$Matches[1] }
 # (-Gpus: kept the same way; -Gpus 1 goes back to one GPU)
-if (-not $PSBoundParameters.ContainsKey("Gpus") -and $st -and "$($st.extra)" -match "--gpus (\d+)") { $Gpus = [int]$Matches[1] }
+if (-not $PSBoundParameters.ContainsKey("Gpus") -and $st -and (Get-StateFlags $st) -match "--gpus (\d+)") { $Gpus = [int]$Matches[1] }
 if ($Gpus -lt 0 -or $Gpus -gt 64) { throw "-Gpus: expected 1 to 64 (got $Gpus)" }
 # -Npu on: the NPU next to the GPU for prompts (serverz --npu on). A start on another model (zero-pi, Pi's /model
 # inside the server) and a restart keep a running server's setting (-Npu off turns it off); a start after stop is off
 # unless -Npu on is given (a restart dropped it: the 27B lost the NPU when -Whisper was added)
-if (-not $Npu -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
+if (-not $Npu -and $Action -in "start", "restart" -and $st -and (Get-StateFlags $st) -match "--npu on") { $Npu = "on" }
 # -Fast: Flash Next's fast mode (serverz --fast; its precise mode is the default since 2026-11-22), kept the same way
 # (-Precise turns it off; -NoPrecise, the switch of before, is -Fast)
 if ($NoPrecise) { $Fast = [switch]$true }
-if (-not $Fast -and -not $Precise -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--fast") { $Fast = [switch]$true }
+if (-not $Fast -and -not $Precise -and $Action -in "start", "restart" -and $st -and (Get-StateFlags $st) -match '(^|\s)--fast(\s|\||$)') { $Fast = [switch]$true }
 if ($Precise) { $Fast = [switch]$false }
 # -Whisper: kept the same way (with its device; -Whisper off turns it off)
-if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|[^\s|]+)') {
-  $Whisper = $Matches[1].Trim('"')
+$stWhisper = $(if (-not $st) { "" } elseif ($st.PSObject.Properties["whisper"]) { "$($st.whisper)" } elseif ("$($st.extra)" -match '--whisper ("[^"]*"|[^\s|]+)') { $Matches[1].Trim('"') } else { "" })
+if (-not $Whisper -and $Action -in "start", "restart" -and $stWhisper) {
+  $Whisper = $stWhisper
   # ([^\s|]: the state's extra ends "...|think N", which "npu|think" did not match as npu: Whisper went back to the GPU)
-  if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device ([^\s|]+)") { $WhisperDevice = $Matches[1] }
-  if ($WhisperMaxMinutes -le 0 -and "$($st.extra)" -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
+  if (-not $WhisperDevice -and (Get-StateFlags $st) -match "--whisper-device ([^\s|]+)") { $WhisperDevice = $Matches[1] }
+  if ($WhisperMaxMinutes -le 0 -and (Get-StateFlags $st) -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
 }
 # -Asr: kept the same way, with or without Whisper (without it: Qwen3-ASR alone); -Asr off turns it off
-if (-not $Asr -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
-if ($AsrSlots -le 0 -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--asr-slots ([0-9]+)") { $AsrSlots = [int]$Matches[1] }
+$stAsr = $(if (-not $st) { "" } elseif ($st.PSObject.Properties["asr"]) { "$($st.asr)" } elseif ("$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Matches[1].Trim('"') } else { "" })
+if (-not $Asr -and $Action -in "start", "restart" -and $stAsr) { $Asr = $stAsr }
+if ($AsrSlots -le 0 -and $Action -in "start", "restart" -and $st -and (Get-StateFlags $st) -match "--asr-slots ([0-9]+)") { $AsrSlots = [int]$Matches[1] }
 if ($AsrSlots -lt 0 -or $AsrSlots -gt 4) { throw "-AsrSlots: expected 1 to 4 (got $AsrSlots)" }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1 -or $Gpus -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot on one GPU)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
@@ -1213,7 +1219,8 @@ if ($DriverReserveGb -ge 0) {
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
 if ($Gpus -gt 1) { $extra += @("--gpus", $Gpus) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
-if ($Fast) { $extra += "--fast" }
+# (-Precise passes --precise too: it then wins over an ARC_FN_PRECISE=0 from options.json)
+if ($Fast) { $extra += "--fast" } elseif ($Precise) { $extra += "--precise" }
 if ($Whisper -and $Whisper -ne "off") {
   $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
   if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
@@ -1396,7 +1403,7 @@ try {
   foreach ($k in $envBefore.Keys) { if ($null -eq $envBefore[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } else { Set-Item "Env:$k" $envBefore[$k] } }
 }
 if ($m -ne $none) { Set-Content $lastFile $m.path -Encoding utf8 }  # (none: the chat model used last stays the default)
-@{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; port = $Port; cmd = $srvCmd; started = (Get-Date).ToString("s") } |
+@{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; whisper = $(if ($Whisper -and $Whisper -ne "off") { "$Whisper" } else { "" }); asr = $(if ($Asr -and ($Asr -ne "off" -or ($Whisper -and $Whisper -ne "off"))) { "$Asr" } else { "" }); port = $Port; cmd = $srvCmd; started = (Get-Date).ToString("s") } |
   ConvertTo-Json | Set-Content $stateFile -Encoding utf8
 
 $t0 = Get-Date
