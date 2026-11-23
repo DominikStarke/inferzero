@@ -218,24 +218,9 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
   const bool valid = m < M_valid;
   __global const float* xr = x + (size_t)(m + row_off) * K;
   float ss = 0.0f;
-  // -DH8N_ONCE (2026-11-23, ARC_H8_NORM_ONCE=1, opt-in; the A770's H8 passes, #45: rmsnorm_h8r 88 ms of a 4K prompt,
-  // ~0.69 ms a launch for ~105 MB, ~150 GB/s of ~405): the row read from global memory once, into rowv during the sum
-  // of squares, and the values taken from there (the second read of 20 KB a row went to global memory again where the
-  // caches did not hold it). The same floats in the same order: bit for bit
   if (valid)
-    for (int i = get_local_id(0); i < K; i += get_local_size(0)) {
-#ifdef H8N_ONCE
-      const float xv = xr[i];
-      rowv[i] = xv;
-      ss += xv * xv;
-#else
-      ss += xr[i] * xr[i];
-#endif
-    }
+    for (int i = get_local_id(0); i < K; i += get_local_size(0)) ss += xr[i] * xr[i];
   ss = work_group_reduce_add(ss);
-#ifdef H8N_ONCE
-  barrier(CLK_LOCAL_MEM_FENCE);  // (rowv complete before any sub-group reads another's values)
-#endif
   const float r = rsqrt(ss / K + eps);
   const int lane = get_sub_group_local_id();
   for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
@@ -243,11 +228,7 @@ __kernel void rmsnorm_h8r(__global const float* x, int row_off, __global const f
     const int base = s * 256 + 16 * lane;
     float v[16];
     if (valid) {
-#ifdef H8N_ONCE
-      const float16 xa = vload16(0, rowv + base), wa = vload16(0, w + base);
-#else
       const float16 xa = vload16(0, xr + base), wa = vload16(0, w + base);
-#endif
       const float xv[16] = {xa.s0, xa.s1, xa.s2, xa.s3, xa.s4, xa.s5, xa.s6, xa.s7, xa.s8, xa.s9, xa.sa, xa.sb, xa.sc, xa.sd, xa.se, xa.sf};
       const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
 #pragma unroll

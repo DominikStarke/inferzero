@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-23: `ARC_H8_NORM_ONCE` removed
+
+- **Removed: `ARC_H8_NORM_ONCE`.** On the A770 it gained nothing (rmsnorm_h8r 88.1 -> 86.3 ms, the 4K prompt within
+  drift, #45): the norm's second read already came from the caches.
+
 ## 2026-11-23: wider K reads in the one-token attention (opt-in)
 
 - **New, opt-in: `ARC_ATTN_DEC_KW8=1`.** The attention of each generated token reads the cached keys in larger blocks (half

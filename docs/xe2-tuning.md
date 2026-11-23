@@ -1242,5 +1242,4 @@ user's log could not show whether it ran).
 | `ARC_HOST_CPU_THREADS=N` | the threads of the CPU's matrix loop for weights in host memory (unset: the CPU's physical cores since 2026-11-23; 0: OpenMP's default) |
 | `ARC_HOST_CPU_NATIVE=1` | the CPU's IQ3_S matrices in host memory kept as the file's own blocks and decoded in its dot loop (0.43 bytes a weight), not an int8 copy (1.125); KL-checked; other types keep the copy |
 | `ARC_ATTN_DEC_KW8=1` | the one-token attention (attn_decode) reads a 16-key tile's K in 8-word block reads, not 1-word ones (the Qwen shapes with one scale a row); bit for bit |
-| `ARC_H8_NORM_ONCE=1` | the fused norm (rmsnorm_h8r) reads its row from global memory once, into local memory, not twice; bit for bit |
 | `ARC_GPU_WAIT_S=s` / `ARC_WAIT_STATS=1` / `ARC_GPU_FAULT_TEST=hang\|lost` / `ARC_IGNORE_HANG=1` | the GPU failsafe's wait limit, longest-wait report, fault test and marker override ([gpu-failsafe.md](gpu-failsafe.md)) |
