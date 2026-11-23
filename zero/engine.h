@@ -1489,6 +1489,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     // (more rows than one round (N > 4T): the default rows kept (xe2_gemv_rows' 2 / 4). It forced G 1, S 1 here, so
     //  every large GEMV lost its tuned rows with the switch on: the Researcher's review of #91; 2 x 2 was faster in
     //  gemv_bench and lost in the model)
+    // (ARC_GEMV_SPLITK_FORCE=S, a test: every eligible GEMV split S ways at one row a sub-group, whatever the rule says:
+    //  the split kernel's numbers on a GPU where the rule never splits, the laptop's, where every N > 4T)
+    static const int force = getenv("ARC_GEMV_SPLITK_FORCE") ? atoi(getenv("ARC_GEMV_SPLITK_FORCE")) : 0;
+    if (force > 1 && force <= 8 && (force & (force - 1)) == 0 && force <= steps) best = 1, bg = 1, bs = force;
     if (best < 0) return false;
     grows = bg;
     split = bs;
