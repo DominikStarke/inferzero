@@ -273,6 +273,76 @@ Developer cuts them.
    - **Runs it waits on:** `serverz` lists the file as unsupported (no load); `runz --ctx auto` dry-run sizes on the
      real file (no GPU work beyond the dry plan).
 
+**I1.7. Experts streamed, as the 35B-A3B: Inkling on the laptop and on 16 GB cards** (the user, 2026-11-23: "as
+this is an MoE model I want it to work like 35B so this laptop can run it"). Design; not written yet.
+
+Why it fits: the experts are 18.3 GiB of the file's 21.3, and a token uses 8 of 128 per layer. The rest the GPU keeps
+for good is ~1.2 GiB (attention, controllers, router, conv taps in Q8_0 / f32, the head in Q8_0) plus the KV cache.
+The token embedding table stays in the mapped file and is read on the CPU, as for every model.
+
+| | resident (I1.5) | streamed (I1.7) |
+|---|---|---|
+| expert bytes on the GPU | all 18.3 GiB, raw | an LRU cache of whatever room is left |
+| expert bytes in total | NVFP4 10.7 + BF16 7.6 GiB | NVFP4 10.7 + Q8_0 4.0 = 14.7 GiB (the expert file) |
+| the laptop (GPU share ~18 GiB) | does not fit | ~14 GiB of cache at 8K context: ~95 % of the experts, near-zero SSD reads once warm |
+| an A770 / B580 / B50 (12-16 GB) | does not fit | 9-13 GiB of cache: 60-90 %, the rest from the SSD / RAM tier |
+
+**What it reuses** (the 35B's path: `zero/expert_store.h`, `zero/xcache.h`, `zero/engine_stream.h`,
+`zero/engine_moe.h`, `zero/kernels/moe.cl`, `zero/kernels/decode_moe.cl`):
+- **The expert file:** `open_or_build` writes each (layer, expert) record in the GPU raw form next to the model in
+  `%USERPROFILE%\.inferzero`, read later with unbuffered I/O, one record per read.
+- **The cache:** the LRU pools by record size, with prefetch of the next layer's misses while the GPU works.
+  A prompt chunk takes new experts at the back of the list, so a prompt doesn't sweep the cache. The 35B on this
+  laptop runs this way today, with its experts on the SSD.
+- **Fused gate_up:** expert records already hold gate then up rows (Gemma 4 26B's fused `ffn_gate_up_exps`), and the
+  `-DXCACHE` kernels take the two offsets of one record.
+- **NVFP4:** the I1.1 `decode32` branch is already in `MOE_Q` (generation) and `MOE_RG` (prompt tiles), with the
+  per-32 fold. Its accuracy is checked here, against the exact I1.5 path.
+
+**What is new** (all under `hp.inkling`, other models bit-identical):
+1. **The expert file's builder:** BF16 experts (layers 20-23) requantized to Q8_0 as their records are written. The
+   builder refuses float experts today ("the experts run in a quantized type only"). 4 layers x 2.04 GB -> ~1.1 GB
+   each; KL against the exact path checks it. The builder's 14.7 GB on C: (never D:) is checked against free space
+   first, as now.
+2. **The loop:** a token runs layers 6-17 three times, all three passes on the same physical layer's experts. The
+   cache tables stay per physical layer (24), so pass 2 and 3 mostly hit what pass 1 fetched. `ensure()` runs once
+   per pass, which is 48 calls a token instead of 24, each after that pass's routing.
+3. **The routing:** a sigmoid router with the selection bias, `w / (sum + 1e-20) x 8`. It becomes a `ROUTE_SIG`
+   variant of `moe.cl`'s routing macros (`moe_route1`, `moe_route` / `moe_scan` / `moe_scatter`), as `ROUTE_DS` is
+   DeepSeek's, and replaces `ink_route`. The router stays f32 (`ink_mm_f32`) into the routing kernels' logits buffer.
+4. **The activation and the per-expert scales:** `-DMOE_SITU` in `decode_moe.cl`, situ instead of SwiGLU in
+   `moe_gateup_q` and `moe_rg`'s epilogue.
+   - The gate-up `.scale` multiplies both halves before the activation, so the kernels read it by expert id (a 128
+     f32 table per layer).
+   - The down `.scale` is linear, so it folds into the routing weight (`w x s_down[e]`, as `-DESCALE` does for Gemma).
+5. **The input and the output:** the MoE input is Inkling's `ffn_norm(mix + controller)` in f32, quantized by
+   `quant_rows` into `aq_` (the engine's path takes it from there). The combine writes into Inkling's own buffer
+   (`ink_mo_`), not `x_`, as DeepSeek combines into `hco_`; the FFN's short convolution and the residual follow as in
+   I1.5.
+6. **The plan:** `plan_weights` / `size_expert_cache()` treat Inkling as a streamed MoE (`hp.moe = hp.moe_std = true`,
+   `stream_`). The cache gets what the GPU has left after the resident part and the context (`ctx_bytes`:
+   `ink_ctx_cache_bytes`), as for the 35B. `--ctx auto` gives the expert cache its share first and the context the
+   rest.
+7. **A switch:** `ARC_INK_RESIDENT=1` (or a card where everything fits, with the plan's choice) keeps the I1.5 path,
+   which is exact and resident. It stays the accuracy reference for the streamed path on the tiny file.
+
+**Expected on the laptop** (estimates, to be measured; Xe-LPG, 75 GB/s, ~11 TOPS DP4a):
+- **Generation:** ~3.6 GB read a token (attention 1.4 GB over the 48 passes, experts ~1.7 GB, head 0.5 GB): a ceiling
+  of ~20 tok/s, likely 10-15 once the cache is warm, about the 35B's 21.6.
+- **Prompt:** ~10 int8 GOP a token. The int8 GEMMs set a ceiling of ~1,000 tok/s, likely 300-500. Until then, I1.5's
+  f32 attention kernel is the limit at long prompts: the prompt's attention work is I3's.
+- **A cold start** reads the experts from the SSD as they are first chosen, like the 35B's first prompt.
+
+**Steps:**
+- **a.** The builder (Q8_0 for float experts).
+- **b.** `ROUTE_SIG`, `MOE_SITU` and the gate-up scale table in the kernels (ocloc on mtl / dg2 / bmg).
+- **c.** The engine: `hp.moe_std` and streaming for Inkling, `layer_moe` called from `ink_layer` with its input in
+  `aq_` and its output in `ink_mo_`, the plan.
+- **d.** The run list:
+  - the tiny file streamed vs resident (KL, top token), with a cache smaller than the experts so that misses happen;
+  - the expert file's build on the real model (14.7 GB written to C:);
+  - the real model on the laptop through gpu_guard: KL against ref_forward on a short prompt, then speed.
+
 **I2-I4. Speed, later, each needs cards** (from the analysis): tg on a B70 at ~83 % of its bandwidth, then DSpark
 drafting; prompt with NVFP4 read straight in the expert GEMM and chunk 8,192; the A770 needs DSpark and a ~3-bit file or
 the RAM tier, since the Q8 file doesn't fit 16 GB.
