@@ -400,11 +400,11 @@
     for (auto& t : f_.tensors) {
       int il = -1;
       if (t.dims.size() != 2 || sscanf(t.name.c_str(), "blk.%d.", &il) != 1 || il >= hp.n_layer) continue;
-      raw += t.nbytes;
+      raw += (size_t)stored_bytes(t);  // (Q4_1 / Q5_0 / Q8_1 at their Q8_0 size on the card, #88)
       w8 += (size_t)t.dims[0] * t.dims[1] * 41 / 40;
       if (tp_on()) {
         const double sh = tp_weight_share(t.name);
-        raw_s += (double)t.nbytes * sh;
+        raw_s += stored_bytes(t) * sh;
         w8_s += (double)((size_t)t.dims[0] * t.dims[1] * 41 / 40) * sh;
       }
     }

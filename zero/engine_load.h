@@ -342,6 +342,15 @@
       throw std::runtime_error("unexpected tensor shape: " + t.name);
     return t;
   }
+  // (a tensor's bytes as make_weight stores it on the GPU, for the memory plans: Q4_1, Q5_0 and Q8_1 become Q8_0, 34
+  //  bytes per 32 values, 1.7x Q4_1's 20. The plans counted the file's bytes: xtronema's B580 (#88), a 27B with Q4_1
+  //  tensors, was planned with too few weights in host memory, overfilled the card, and the driver's eviction to
+  //  system RAM ran a 15.4 GiB PC out of memory. Other types: the file's bytes, as before)
+  static double stored_bytes(const GgufTensor& t) {
+    if ((t.type == GGML_Q4_1 || t.type == GGML_Q5_0 || t.type == GGML_Q8_1) && t.dims.size() >= 2 && t.dims[0] % 32 == 0)
+      return (double)t.nelements() / 32.0 * 34.0;
+    return (double)t.nbytes;
+  }
   // (one log line per type that has no GPU kernel and is requantized at load; the float types say nothing, as before)
   static void note_requant(uint32_t t) {
     if (t != GGML_Q4_1 && t != GGML_Q5_0 && t != GGML_Q8_1) return;

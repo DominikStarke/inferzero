@@ -15,6 +15,10 @@
 - **Fixed:** `runz` printed a far too low "measured" bandwidth (for example "12 GB/s" on an A770 with the 35B under
   Windows, #45) when the driver had put its test buffer in system memory. A figure that cannot be the card's own
   memory is no longer printed.
+- **Fixed:** files with Q4_1, Q5_0 or Q8_1 tensors were planned at their file size, but those tensors are stored on the
+  card as Q8_0 (1.7x a Q4_1's size). On a B580 with such a 27B and 15.4 GiB of RAM, too few weights went to host
+  memory, the card overfilled, and the driver's eviction into system RAM ran the PC out of memory (xtronema, #88). The
+  plans now count those tensors at their size on the card. Other files are planned as before.
 
 ## 2026-11-23: the A770 GEMM plan finished: the split DPAS by default on Arc A-series cards
 

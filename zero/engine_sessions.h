@@ -575,7 +575,7 @@
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight" &&
           (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0) && in_stage(t.name)) {
-        total += (double)t.nbytes;
+        total += stored_bytes(t);  // (Q4_1 / Q5_0 / Q8_1 at their Q8_0 size on the card, #88)
         double v = 1;
         for (const auto d : t.dims) v *= (double)d;
         cpu_copy += host_native_on() && t.type == GGML_IQ3_S ? (double)t.nbytes : 1.125 * v;
