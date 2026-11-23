@@ -30,6 +30,7 @@
 #ifndef _WIN32
 extern char** environ;  // (the ARC_* switches in the warm-up marker: Engine::warm_key_extra)
 #endif
+#include <mutex>
 
 struct GpuWeight {
   uint32_t type = 0;  // GGUF type of the raw rows (BF16/F16/F32 matrices are requantized to Q8_0)
@@ -45,6 +46,7 @@ struct GpuWeight {
   //  issue #4, 2026-11-21. g1k[q2_fuse_]; guk: gemv_gu's gate + up kernel, on the gate's weight. The same kernels)
   mutable cl_kernel g1k[2] = {nullptr, nullptr}, guk = nullptr;
   mutable int g1rows = 0, gurows = 0;
+  mutable int g1srows = 0, g1split = 1;  // (g1k[0]'s rows per sub-group and ARC_GEMV_SPLITK's sub-groups per row group)
   mutable bool g1vk = false, guvk = false;
 };
 
@@ -1424,6 +1426,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  12.62 -> 13.20 tok/s, +4.8 %; batched 21.40 -> 21.19, -0.6 %; issue #45)
     static const bool gvrows_env = getenv("ARC_GVROWS") != nullptr;
     if (vk && !gvrows_env && cl_.sg8 && cl_.xmx && !zrt::integrated() && zrt::batch_max() == 0) return 1;
+    // (ARC_GEMV_ROWS=n, a test: n rows per sub-group for gemv's single-token GEMVs of up to 65,536 rows, the rules
+    //  above and below off for them; bit-identical, a row's sums do not depend on its sub-group)
+    static const int force_rows = getenv("ARC_GEMV_ROWS") ? atoi(getenv("ARC_GEMV_ROWS")) : 0;
+    if (force_rows > 0 && !vk && w.N <= 65536) return force_rows;
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
@@ -1457,6 +1463,50 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     run("gemm_gate_up", k, 1, &g1, &l1);
     return true;
   }
+  // ARC_GEMV_SPLITK=1 (2026-11-18, PVC; off by default): gemv's rows per sub-group G and split S (decode.cl -DSPLITK:
+  // S sub-groups share a row group, each taking every S-th step of its rows; their sums added in a fixed order, so
+  // deterministic, but not bit-identical to the unsplit kernel). One sub-group walks its G rows' steps one after the
+  // other, which sets the GEMV's floor once a launch has few rows (a GPU's share of a split model, a long-row down
+  // projection), and a launch of just over one round of the GPU's T threads pays a second round. So: of G in {1, 2, 4}
+  // and S in {1, 2, 4, 8} (S at most the row's steps), the most sub-groups N / G x S that fit in one round of T; ties
+  // to the larger S, then the larger G. Where nothing fits (N > 4T) the default rows stay. Checked against every (G, S) with
+  // bench/gemv_bench (GB_TYPE, GB_N, GB_K) on a PVC stack for the matrices of a mixed-type 27B at the shares of 1, 2
+  // and 4 GPUs. gemv and gemv_v, one token, dense models (not MoE), not the output head, the fused two-pass GEMV or
+  // the probes; ARC_GEMV_ROWS overrides it
+  bool gemv_splitk(const GpuWeight& w, int& grows, int& split) const {
+    static const bool on = getenv("ARC_GEMV_SPLITK") && atoi(getenv("ARC_GEMV_SPLITK")) != 0;
+    const int t = on && !getenv("ARC_GEMV_ROWS") ? (int)zrt::hw_threads() : 0;
+    if (t <= 0 || w.N > 65536 || hp.n_expert > 0) return false;  // (MoE models: no gain measured, their dense parts small)
+    const int steps = (w.K / 256 + 1) / 2;
+    long best = -1;
+    int bg = 1, bs = 1;
+    for (int s = 1; s <= 8 && s <= steps; s *= 2)
+      for (int g = 1; g <= 4; g *= 2) {
+        const long sg = (long)(w.N + g - 1) / g * s;
+        if (sg > t) continue;
+        if (sg > best || (sg == best && (s > bs || (s == bs && g > bg)))) best = sg, bg = g, bs = s;
+      }
+    // (more rows than one round (N > 4T): the default rows kept (xe2_gemv_rows' 2 / 4). It forced G 1, S 1 here, so
+    //  every large GEMV lost its tuned rows with the switch on: the Researcher's review of #91; 2 x 2 was faster in
+    //  gemv_bench and lost in the model)
+    // (ARC_GEMV_SPLITK_FORCE=S, a test: every eligible GEMV split S ways at one row a sub-group, whatever the rule says:
+    //  the split kernel's numbers on a GPU where the rule never splits, the laptop's, where every N > 4T)
+    static const int force = getenv("ARC_GEMV_SPLITK_FORCE") ? atoi(getenv("ARC_GEMV_SPLITK_FORCE")) : 0;
+    if (force > 1 && force <= 8 && (force & (force - 1)) == 0 && force <= steps) best = 1, bg = 1, bs = force;
+    if (best < 0) return false;
+    grows = bg;
+    split = bs;
+    static const bool log = atoi(getenv("ARC_GEMV_SPLITK")) == 2;  // (=2: each shape's choice once in the log)
+    static std::mutex mu;
+    static std::set<std::pair<int, int>> seen;
+    if (log) {
+      std::lock_guard<std::mutex> lk(mu);
+      if (seen.insert({w.N, w.K}).second)
+        zlog::eprintf("inferzero: ARC_GEMV_SPLITK: %d x %d (type %d): %d rows a sub-group, split %d\n", w.N, w.K,
+                      (int)w.type, bg, bs);
+    }
+    return true;
+  }
   void matmul1(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int acc, bool act32) {
     int a = acc;
     if (cur_T_ == 1) {
@@ -1483,13 +1533,21 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         //  stand-in reads (stride 8 words across lanes) cost local-memory bank conflicts of their own: an upper bound)
         static const int gv_probe = getenv("ARC_GV_PROBE") ? atoi(getenv("ARC_GV_PROBE")) : 0;
         const std::string probe_def = gv_probe && !vk && &w != &lm_head_ ? " -DGV_PROBE=" + std::to_string(gv_probe) : std::string();
-        w.g1k[fz] = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(w.g1rows) +
-                                         head_defs(w) + probe_def + (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) +
+        // (ARC_GEMV_SPLITK: S sub-groups share a row group of G rows; not the fused two-pass GEMV, tiled IQ3_S, the
+        //  output head, the probes or ARC_GEMV_DEEP's ring, whose prefetch assumes the unsplit order of steps)
+        int grows = w.g1rows, split = 1;
+        if (!fz && !w.iq3t && probe_def.empty() && &w != &lm_head_ && xe2_gemv_pf().find("GEMV_DEEP") == std::string::npos &&
+            !gemv_splitk(w, grows, split))
+          grows = w.g1rows, split = 1;
+        if (!fz) w.g1srows = grows, w.g1split = split;
+        const std::string split_def = split > 1 ? " -DSPLITK=" + std::to_string(split) : std::string();
+        w.g1k[fz] = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) +
+                                         head_defs(w) + probe_def + split_def + (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) +
                                          (vk ? std::string() : xe2_gemv_pf()) + iq3t_def(w) + xe2_gv_sgn(),
                            vk ? "gemv_v" : "gemv");
       }
       const bool vk = w.g1vk;
-      const int grows = w.g1rows;
+      const int grows = fz ? w.g1rows : w.g1srows, split = fz ? 1 : w.g1split;
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
@@ -1497,7 +1555,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       q2_fused_ = q2_fuse_;
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);
       // (gemv_v stages its tables with the first 64 items of a work-group: it keeps 256)
-      const size_t sgs = (size_t)(N + grows - 1) / grows, l1 = vk ? 256 : xe2_gemv_wg(sgs);
+      const size_t sgs = (size_t)(N + grows - 1) / grows * split, l1 = vk || split > 1 ? 256 : xe2_gemv_wg(sgs);  // (S sub-groups of a row group in one work-group)
       size_t g1 = (sgs * 16 + l1 - 1) / l1 * l1;
       run(name, k, 1, &g1, &l1);
       return;
