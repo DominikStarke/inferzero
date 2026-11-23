@@ -889,7 +889,8 @@ inline const char* home_env() {
     if (s.empty()) {
       PWSTR w = nullptr;
       if (SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &w) == S_OK && w) {
-        s = std::filesystem::path(w).string();
+        // (a profile path outside the ANSI code page throws in string(): then none, rather than an exception here)
+        try { s = std::filesystem::path(w).string(); } catch (const std::exception&) { s.clear(); }
         home_fallback() = !s.empty();
       }
       if (w) CoTaskMemFree(w);
