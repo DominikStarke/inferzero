@@ -46,6 +46,8 @@ struct TpComm {
   bool p2p = false;
   bool p2p_prompt_only = false;  // (ARC_TP_P2P=prompt: the prompt chunks' reduce-scatter direct, the one-step sums of
                                  //  generated tokens through host memory; TpEngine::choose_sums)
+  bool p2p_tokens_only = false;  // (the opposite: ARC_TP_DEVSYNC=1 over a link check that chose host memory, 2026-11-24:
+                                 //  generated tokens' sums direct, the prompt chunks' reduce-scatter through host memory)
   std::vector<char*> inbox;
   size_t half_b = 0;
   std::vector<int> half;   // per shard: the half its next part goes to
@@ -545,7 +547,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   char* dev = (char*)tp_h_->ptr;
   // (direct, TpComm::p2p: block k's pieces straight to GPU k's inbox, this GPU's sums to every other GPU's; the
   //  kernels read their own inbox. The same offsets within a half as in host memory)
-  const bool p2p = c.p2p && !a.bg;
+  const bool p2p = c.p2p && !c.p2p_tokens_only && !a.bg;  // (p2p_tokens_only: the prompt's sums through host memory)
   auto put_to = [&](int k) { return p2p ? c.inbox[k] + (size_t)h * c.half_b + (size_t)r * stride * 2 : put; };
   auto res_to = [&](int k) { return p2p ? c.inbox[k] + (size_t)h * c.half_b + (size_t)N * stride * 2 : res; };
   cl_mem shared = p2p ? tp_in_ : tp_host_;
@@ -1261,6 +1263,7 @@ class TpEngine {
     comm_.devsync = false;
     comm_.p2p = false;
     comm_.p2p_prompt_only = false;
+    comm_.p2p_tokens_only = false;
     comm_.flags = nullptr;
     comm_.host = nullptr;
   }
@@ -1391,8 +1394,13 @@ class TpEngine {
     //  (#90). A generated token's sums are small and latency-bound, so set, they go direct where the GPUs can reach
     //  each other, whatever the bandwidth check says; ARC_TP_P2P=0 / =prompt still decide)
     const char* dsw = getenv("ARC_TP_DEVSYNC");
-    bool devsync_forced = false;
-    if (dsw && atoi(dsw) != 0 && want < 0 && peer && !sim && (!use || prompt_auto)) use = devsync_forced = true, prompt_auto = false;
+    // (a check that chose host memory for all keeps the prompt chunks there: generated tokens direct only,
+    //  p2p_tokens_only; one that chose the prompt-only split goes all direct, the prompt being direct already)
+    bool devsync_forced = false, tokens_only = false;
+    if (dsw && atoi(dsw) != 0 && want < 0 && peer && !sim && (!use || prompt_auto)) {
+      tokens_only = !use;
+      use = devsync_forced = true, prompt_auto = false;
+    }
     std::string why;
     char b[160];
     if (want == 0) why = "ARC_TP_P2P=0";
@@ -1428,6 +1436,7 @@ class TpEngine {
     }
     comm_.p2p = use;
     comm_.p2p_prompt_only = use && (prompt_only || prompt_auto);
+    comm_.p2p_tokens_only = use && tokens_only;
     if (use && prompt_only) why = "ARC_TP_P2P=prompt: generated tokens' sums through host memory";
     if (use && prompt_auto) {
       snprintf(b, sizeof b, "%.1f GB/s directly against %.1f through host memory: generated tokens' sums through host "
@@ -1435,7 +1444,9 @@ class TpEngine {
       why = b;
     }
     zlog::eprintf("inferzero: the GPUs' sums go %s (%s)\n",
-                  use ? (comm_.p2p_prompt_only ? "straight from GPU to GPU for prompt chunks" : "straight from GPU to GPU")
+                  use ? (comm_.p2p_prompt_only ? "straight from GPU to GPU for prompt chunks"
+                         : comm_.p2p_tokens_only ? "straight from GPU to GPU for generated tokens, prompt chunks through host memory"
+                                                 : "straight from GPU to GPU")
                       : "through host memory", why.c_str());
     // ARC_TP_DEVSYNC=1: a generated token's sums meet on the GPUs (TpComm::devsync). Direct sums on distinct GPUs only
     // (one GPU's lists waiting on each other can deadlock, tpo_wait). Off unless asked.
