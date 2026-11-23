@@ -292,6 +292,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   static uint64_t raw_bytes(const GpuWeight& w) { return (uint64_t)w.N * (w.K / 256) * gguf_sb_bytes(w.type); }
   std::map<std::string, double> prof_ms;
   std::map<std::string, int> prof_n;
+  // (runz's --prof on a tensor split: a shard's pending events into prof_ms, on its own GPU (zrt::cur set by the caller);
+  //  the shards' passes do not collect them themselves)
+  void collect_profile_pub() { collect_profile(); }
   size_t gpu_bytes = 0;
   double load_ms = 0;
 

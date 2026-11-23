@@ -160,10 +160,25 @@ static std::string peak_note(Engine& eng, double gbs) {
   return s;
 }
 
+// (--prof / --prof-gen on a split model, 2026-11-23: the split paths took no profile flags, so they printed nothing
+//  (MaineTim's B60 pair, #44; the dual A770, #45). One table per GPU (a layer split's stage, a tensor split's shard):
+//  its kernels' GPU time in the last profiled prompt pass or over the profiled generation steps)
+static void print_split_prof(Engine& e, const char* what, int r) {
+  double total = 0;
+  for (auto& [n, ms] : e.prof_ms) total += ms;
+  std::vector<std::pair<double, std::string>> rows;
+  for (auto& [n, ms] : e.prof_ms) rows.push_back({ms, n});
+  std::sort(rows.rbegin(), rows.rend());
+  printf("GPU time by kernel, %s %d: total %.1f ms\n", what, r, total);
+  for (auto& [ms, n] : rows) printf("  %-20s %8.2f ms  %5.1f%%  (%d launches)\n", n.c_str(), ms, total > 0 ? 100 * ms / total : 0.0, e.prof_n[n]);
+  e.prof_ms.clear();
+  e.prof_n.clear();
+}
 // --gpus N --split layer: the model's layers over N GPUs (zero/mgpu/engine_pp.h): the prompt (or --bench-pp N), then
 // greedy generation, as run_tp; --tensor-split a,b,...: each GPU's share of the layers
 static int run_pp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<double>& shares,
-                  const std::vector<int>& toks, int n_gen, int bench_pp, const std::string& dump_logits, bool show) {
+                  const std::vector<int>& toks, int n_gen, int bench_pp, const std::string& dump_logits, bool show,
+                  bool prof = false, bool prof_gen = false) {
   PpEngine pp(model, eo, gpus, shares);
   Engine& el = pp.last();
   Vocab vocab(el.gguf());
@@ -185,11 +200,19 @@ static int run_pp(const std::string& model, const EngineOptions& eo, int gpus, c
   std::vector<float> lg;
   for (int r = 0; r < runs; ++r) {
     if (bench_pp > 0) pp.reset();
+    for (int s = 0; s < pp.stages(); ++s) pp.stage(s).profile = prof && !prof_gen && r == runs - 1;
     const auto t0 = std::chrono::steady_clock::now();
     lg = pp.forward(prompt.data(), (int)prompt.size());
     const double ms = ms_since(t0);
-    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s\n", prompt.size(), r, ms, prompt.size() / ms * 1000.0);
+    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s%s\n", prompt.size(), r, ms, prompt.size() / ms * 1000.0,
+           prof && !prof_gen && r == runs - 1 ? " (profiled)" : "");
   }
+  if (prof && !prof_gen)
+    for (int s = 0; s < pp.stages(); ++s) {
+      pp.stage(s).profile = false;
+      print_split_prof(pp.stage(s), "prompt, stage", s);
+    }
+  for (int s = 0; s < pp.stages(); ++s) pp.stage(s).profile = prof_gen;  // (--prof-gen: the generation steps below)
   if (bench_pp <= 0) {
     std::vector<std::pair<int, float>> tk;
     top_k(lg, 10, tk);
@@ -223,16 +246,23 @@ static int run_pp(const std::string& model, const EngineOptions& eo, int gpus, c
   if (!step_ms.empty()) {
     std::vector<double> st = step_ms;
     std::sort(st.begin(), st.end());
-    printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms\n", step_ms.size(), gms,
-           step_ms.size() / gms * 1000.0, st.front(), st[st.size() / 2]);
+    printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms%s\n", step_ms.size(), gms,
+           step_ms.size() / gms * 1000.0, st.front(), st[st.size() / 2], prof_gen ? " (profiled: slower)" : "");
   }
+  if (prof_gen)
+    for (int s = 0; s < pp.stages(); ++s) {
+      pp.stage(s).profile = false;
+      printf("(over %zu generation steps)\n", step_ms.size());
+      print_split_prof(pp.stage(s), "generation, stage", s);
+    }
   if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
   return 0;
 }
 
 // --gpus N: the model split over N GPUs (zero/engine_tp.h): the prompt (or --bench-pp N), then greedy generation
 static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<int>& toks, int n_gen,
-                  int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref, int bench_batch) {
+                  int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref, int bench_batch,
+                  bool prof = false, bool prof_gen = false) {
   TpEngine tp(model, eo, gpus);
   Engine& e0 = tp.shard(0);
   Vocab vocab(e0.gguf());
@@ -371,8 +401,21 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
   tp.forward(prompt.data(), std::min((int)prompt.size(), 64));  // warm-up (kernels, page-in)
   const int runs = bench_pp > 0 ? 3 : 1;
   std::vector<float> lg;
+  // (--prof / --prof-gen on the tensor split: each shard's events, collected on its own GPU)
+  auto shard_prof = [&](bool on) { for (int r = 0; r < gpus; ++r) tp.shard(r).profile = on; };
+  auto shard_tables = [&](const char* what) {
+    zrt::Dev* const saved = zrt::cur;
+    for (int r = 0; r < gpus; ++r) {
+      zrt::cur = zrt::devs[r];
+      tp.shard(r).collect_profile_pub();
+      tp.shard(r).profile = false;
+      print_split_prof(tp.shard(r), what, r);
+    }
+    zrt::cur = saved;
+  };
   for (int r = 0; r < runs; ++r) {
     tp.reset();
+    shard_prof(prof && !prof_gen && r == runs - 1);
     const auto [w0, n0] = syncs();
     const auto t0 = std::chrono::steady_clock::now();
     lg = tp.forward(prompt.data(), (int)prompt.size());
@@ -381,6 +424,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s (sums: %lld, %.1f ms waiting)\n", prompt.size(), r, ms,
            prompt.size() / ms * 1000.0, (long long)(n1 - n0), w1 - w0);
   }
+  if (prof && !prof_gen) shard_tables("prompt, GPU");
+  shard_prof(prof_gen);  // (--prof-gen: the generation steps below)
   if (bench_pp <= 0) {
     std::vector<std::pair<int, float>> tk;
     top_k(lg, 10, tk);
@@ -422,6 +467,10 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
            (double)(n1 - n0) / step_ms.size(), (w1 - w0) / step_ms.size());
     const double gb = (read_bytes() - b0) / 1e9;
     printf("weights read: %.0f MB per token over %d GPUs, %.1f GB/s together\n", gb * 1000 / step_ms.size(), gpus, gb / gms * 1000);
+  }
+  if (prof_gen) {
+    printf("(over %zu generation steps, profiled: slower)\n", step_ms.size());
+    shard_tables("generation, GPU");
   }
   if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
   return 0;
@@ -718,11 +767,11 @@ static int run_main(int argc, char** argv) {
   warn_gpu_neighbours();
   if (gpus > 1 && split_mode == "layer") {
     if (eo.mtp) { zlog::eprintf("--split layer: no --mtp yet (drafting over the stages: QUEUE)\n"); return 1; }
-    return run_pp(model, eo, gpus, split_shares, toks, n_gen, bench_pp, dump_logits, show);
+    return run_pp(model, eo, gpus, split_shares, toks, n_gen, bench_pp, dump_logits, show, prof || prof_gen, prof_gen);
   }
   if (gpus > 1) {
     if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);  // (a split model's slots: made at load)
-    return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);
+    return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch, prof || prof_gen, prof_gen);
   }
   // (--bench-batch on one GPU: the engine sized for its slots at load, as the split model's above, so forward_batch's
   //  rows are not capped at 1 + drafts; add_slots below then finds them made. hibagus, #48, 2026-11-22)

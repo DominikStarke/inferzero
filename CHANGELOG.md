@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: `ARC_GEMM_XW_AG` removed; the long-context plan step measured
+
+- **Removed: `ARC_GEMM_XW_AG`.** On the A770 it was 23 % slower on the 27B's 4K prompt (1,716 -> 1,320 tok/s, #45). The
+  default was never changed.
+- **Measured:** the tight plan's 512 / 4K step on an A770's 27B at 92K: generation 11.4 -> 15.6 tok/s (+37 %), the prompt
+  676 -> 626 (-7 %), where weights had been left in RAM before.
+- **Fixed: `runz --prof` / `--prof-gen` with `--gpus N`** printed nothing on either split (MaineTim, #44). They now print one
+  table per GPU: each stage of a layer split, each shard of a tensor split.
+
 ## 2026-11-23: the fused norm reads its row once (opt-in)
 
 - **New, opt-in: `ARC_H8_NORM_ONCE=1`.** The norm before the prompt GEMMs (rmsnorm_h8r) reads each token's row from
