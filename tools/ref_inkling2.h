@@ -145,6 +145,15 @@ struct Model {
 
 // one layer in cache slot il of physical layer ip (llama's build_layer); msgs: [T][4][E] for a later loop pass, or
 // nullptr. cur: the stream in and out; blocks: the earlier streams (pushed to at a block's first layer)
+// (REF_INK_DUMP=DIR, debugging: each layer's stages of its first run as DIR/<stage>_<layer>.bin, f32; runz's
+//  ARC_INK_DUMP writes the same names from the engine, zero/engine_inkling.h)
+inline void ink_dump(const char* stage, int ip, const std::vector<float>& v) {
+  static const char* dir = getenv("REF_INK_DUMP");
+  if (!dir) return;
+  const std::string fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + ".bin";
+  if (FILE* f = fopen(fn.c_str(), "rb")) { fclose(f); return; }  // (a loop pass's later run: the first kept)
+  if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, v.size(), f); fclose(f); }
+}
 inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::vector<std::vector<float>>& blocks,
                   const std::vector<float>* msgs) {
   const int E = M.E, D = M.D;
@@ -234,6 +243,10 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
       rmsnorm(&Vc[((size_t)t * HKV + h) * D], D, nullptr, M.eps);
     }
   }
+  ink_dump("q", ip, Q);
+  ink_dump("r", ip, R);
+  ink_dump("kc", ip, Kc);
+  ink_dump("vc", ip, Vc);
   // attention: score = q . k / sqrt(D) + r . bias[distance] - sink (distance past the table: 0 - sink); causal, the
   // SWA layers within the window; a zero sink in the softmax: p_u = exp(s_u) / (1 + sum exp(s))
   std::vector<float> att((size_t)T * H * D);
@@ -266,9 +279,11 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
         att[((size_t)t * H + h) * D + i] = (float)(acc / z * sigm(G[((size_t)t * H + h) * D + i]));
       }
     }
+  ink_dump("att", ip, att);
   std::vector<float> ao;
   mm(p + "attn_output.weight", att, T, ao);
   ao = convolve(ao, T, E, vecf(p + "attn_post_conv.weight"), M.NC, nullptr);
+  ink_dump("ao", ip, ao);
   // a block's first layer starts a new stream (the old one joins the blocks); else the residual
   if (ip % M.BLOCK == 0) {
     blocks.push_back(inpSA);
@@ -291,8 +306,10 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
     const auto fn = vecf(p + "ffn_norm.weight");
     for (int t = 0; t < T; ++t) rmsnorm(&xm[(size_t)t * E], E, fn.data(), M.eps);
   }
+  ink_dump("xm", ip, xm);
   std::vector<float> rl;
   mm(p + "ffn_gate_inp.weight", xm, T, rl);
+  ink_dump("rl", ip, rl);
   const std::vector<float> pb = F->find(p + "exp_probs_b.bias") ? vecf(p + "exp_probs_b.bias") : std::vector<float>(M.NE, 0.0f);
   const GgufTensor& tgu = F->get(p + "ffn_gate_up_exps.weight");
   const GgufTensor& tdn = F->get(p + "ffn_down_exps.weight");
@@ -327,8 +344,10 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
       for (int i = 0; i < E; ++i) mo[(size_t)t * E + i] += (float)(w * de[i] * sdn[e]);
     }
   }
+  ink_dump("mo", ip, mo);
   mo = convolve(mo, T, E, vecf(p + "ffn_post_conv.weight"), M.NC, nullptr);
   for (size_t i = 0; i < cur.size(); ++i) cur[i] = ffn_inp[i] + mo[i];
+  ink_dump("out", ip, cur);
 }
 
 }  // namespace ref_inkling2
@@ -401,6 +420,7 @@ static void inkling2_layers(const std::vector<int>& toks, std::vector<float>& x)
   const auto q = vecf("output_res_query.weight");
   std::vector<float> m;
   mix(bp, x, q.data(), 1, T, E, m);
+  ink_dump("fin", 99, m);
   const auto on = vecf("output_norm.weight");
   for (int t = 0; t < T; ++t) rmsnorm(&m[(size_t)t * E], E, on.data(), M.eps);
   x = m;

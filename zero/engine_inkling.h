@@ -389,6 +389,17 @@
 
   // one layer in cache slot `slot` (llama's build_layer); msgs: a later loop pass (ink_msgs_ holds its messages);
   // ink_cur_ the stream in and out, nb the blocks (ink_blocks_), pushed to at a block's first layer
+  // (ARC_INK_DUMP=DIR, debugging: a layer's stages of its first run as DIR/<stage>_<layer>.bin, f32, the names of
+  //  ref_forward's REF_INK_DUMP, tools/ref_inkling2.h)
+  void ink_dump(const char* stage, int ip, cl_mem b, size_t n, int T) {
+    static const char* dir = getenv("ARC_INK_DUMP");
+    if (!dir) return;
+    const std::string fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + "_e" + std::to_string(T) + "p" + std::to_string(pos) + ".bin";
+    if (FILE* f = fopen(fn.c_str(), "rb")) { fclose(f); return; }
+    std::vector<float> v(n);
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, b, CL_TRUE, 0, n * 4, v.data(), 0, nullptr, nullptr));
+    if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, n, f); fclose(f); }
+  }
   void ink_layer(int slot, int T, int Mp, bool msgs, int& nb) {
     const InkSlot& S = inks_[slot];
     const int ip = S.ip;
@@ -459,6 +470,10 @@
       rows(ink_kc_, HKV, D, nullptr, k.qk_clip, 0, 0);
       rows(ink_vc_, HKV, D, nullptr, 0.0f, 0, 1);
     }
+    ink_dump("q", ip, ink_q_, (size_t)T * H * D, T);
+    ink_dump("r", ip, ink_r_, (size_t)T * H * k.nrel, T);
+    ink_dump("kc", ip, ink_kc_, (size_t)T * KG, T);
+    ink_dump("vc", ip, ink_vc_, (size_t)T * KG, T);
     {  // the slot's cache, then the attention over it (gated)
       cl_kernel ks = ink_k("ink_kv_store");
       int kg = KG, TT = T, p0 = pos, cap = S.cap;
@@ -469,8 +484,10 @@
       set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);
       ink_rung("ink_attn", ka, (size_t)T * H, (size_t)D);
     }
+    ink_dump("att", ip, ink_att_, (size_t)T * H * D, T);
     ink_mm("ink_o", L.o, ink_att_, ink_ao_, T, Mp);
     ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T);
+    ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
     // a block's first layer: the stream before it joins the blocks, the attention output starts a new one
     if (ip % k.block == 0) {
       ink_copy(ink_cur_, 0, ink_blocks_, (size_t)nb * max_chunk * rowE, rowE * T);
@@ -483,7 +500,9 @@
     ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
     if (msgs) ink_control(L, ink_xm_, 3, T, Mp);
     ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
+    ink_dump("xm", ip, ink_xm_, (size_t)T * E, T);
     ink_mm("ink_router", L.router, ink_xm_, ink_rl_, T, Mp);
+    ink_dump("rl", ip, ink_rl_, (size_t)T * hp.n_expert, T);
     {
       cl_kernel kr = ink_k("ink_route");
       int hb = L.probs_b ? 1 : 0, NE = hp.n_expert, NU = L.nu;
@@ -510,8 +529,10 @@
       set_args(kx, 0, ink_de_, ink_ids_, ink_w_, L.dn_scale ? L.dn_scale : ink_dummy_, hd, ink_mo_, EE, NU, TT);
       ink_run1("ink_expert_sum", kx, (size_t)E * T);
     }
+    ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
     ink_conv(ink_mo_, L.ffn_conv, nullptr, S.conv[3], ink_tmp_, E, T);
     ink_add(ink_cur_, ink_tmp_, ink_cur_, E * T);
+    ink_dump("out", ip, ink_cur_, (size_t)T * E, T);
   }
 
   // The whole chunk (run_layer's first layer runs it; x_ holds the embeddings, and on return the output mix's rows,
@@ -545,6 +566,7 @@
     for (int il = k.end; il < hp.n_layer; ++il) ink_layer(il, T, Mp, false, nb);
     // the output's mix, into x_ (head(): output_norm, the head, the softcap)
     ink_mix(ink_blocks_, nb, ink_cur_, ink_out_res_q_, 1, x_, T);
+    ink_dump("fin", 99, x_, (size_t)T * E, T);
   }
 
   // the tokens' count (vocab_size_unpadded): the logits that are tokens, the head's first rows (runz --kl-ref)
