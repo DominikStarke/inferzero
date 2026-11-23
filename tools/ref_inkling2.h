@@ -150,8 +150,13 @@ struct Model {
 inline void ink_dump(const char* stage, int ip, const std::vector<float>& v) {
   static const char* dir = getenv("REF_INK_DUMP");
   if (!dir) return;
-  const std::string fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + ".bin";
-  if (FILE* f = fopen(fn.c_str(), "rb")) { fclose(f); return; }  // (a loop pass's later run: the first kept)
+  std::string fn;
+  for (int k = 0;; ++k) {  // (each run of the layer its own file: _0 the first, a loop's later passes _1, _2)
+    fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + "_" + std::to_string(k) + ".bin";
+    FILE* f = fopen(fn.c_str(), "rb");
+    if (!f) break;
+    fclose(f);
+  }
   if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, v.size(), f); fclose(f); }
 }
 inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::vector<std::vector<float>>& blocks,

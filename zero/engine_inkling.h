@@ -394,8 +394,13 @@
   void ink_dump(const char* stage, int ip, cl_mem b, size_t n, int T) {
     static const char* dir = getenv("ARC_INK_DUMP");
     if (!dir) return;
-    const std::string fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + "_e" + std::to_string(T) + "p" + std::to_string(pos) + ".bin";
-    if (FILE* f = fopen(fn.c_str(), "rb")) { fclose(f); return; }
+    std::string fn;
+    for (int kk = 0;; ++kk) {  // (each run its own file: _0 the first, a loop's later passes _1, _2)
+      fn = std::string(dir) + "/" + stage + "_" + std::to_string(ip) + "_e" + std::to_string(T) + "p" + std::to_string(pos) + "_" + std::to_string(kk) + ".bin";
+      FILE* f = fopen(fn.c_str(), "rb");
+      if (!f) break;
+      fclose(f);
+    }
     std::vector<float> v(n);
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, b, CL_TRUE, 0, n * 4, v.data(), 0, nullptr, nullptr));
     if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, n, f); fclose(f); }

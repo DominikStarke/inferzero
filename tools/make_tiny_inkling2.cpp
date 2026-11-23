@@ -19,7 +19,7 @@
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -196,7 +196,7 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
@@ -208,6 +208,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-loop") loop = false;
     else if (a == "--nvfp4-equal") g_nvfp4_equal = true;
     else if (a == "--all-experts") NU = NE;
+    else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
     else { fprintf(stderr, "make_tiny_inkling2: unknown option %s\n", a.c_str()); return 2; }
   }
   try {
