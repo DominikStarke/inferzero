@@ -14,6 +14,8 @@
 //    (Unsloth's file: NVFP4 in 0-19, BF16 in 20-23); every other matrix BF16, norms and small tensors F32, the router F32;
 //  - a vocabulary of 500 padded to 512 rows (the real 200,058 / 201,024), tokenizer pre "inkling2".
 // --no-loop: architecture inkling2 (the same layers once, no loop keys or controllers).
+// --ggml-org: the types of ggml-org's Inkling-2-Mini-IQ4_NL.gguf: IQ4_NL experts in layers 0-5, Q8_0 ones in 6-7 (no
+// expert scales), the other matrices Q8_0, the loop controller F32.
 // --nvfp4-equal: every NVFP4 block's four scales equal (the per-32 fold then exact: zero/kernels/decode.cl QT 40).
 // --scale S: every matrix drawn S times its default size (S < 1: the router's sigmoids and the controllers' tanh in range,
 //   as a trained model's mostly are; the default saturates them, and int8 rounding is then amplified).
@@ -21,7 +23,7 @@
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N] [--scale S]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--all-experts] [--passes N] [--scale S]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -88,6 +90,7 @@ template <typename T> void put(std::vector<uint8_t>& o, T v) {
 }
 
 bool g_nvfp4_equal = false;
+int g_ggml_org = 0;  // (--ggml-org: the types of ggml-org's Inkling-2-Mini-IQ4_NL.gguf; 1 its 2D matrices, 2 its experts)
 
 // NVFP4 (ggml type 40): per 16 values a UE4M3 scale s (value = kvalues_mxfp4[code] x s, s = ggml_ue4m3_to_fp32),
 // chosen as the representable s nearest to amax / 12 (the largest code 12 then reaches about amax), the codes the
@@ -139,6 +142,34 @@ std::vector<uint8_t> encode(const F& x, uint32_t type) {
   } else if (type == GGML_NVFP4) {
     if (x.size() % 64) throw std::runtime_error("NVFP4 needs a multiple of 64 values");
     for (size_t b = 0; b < x.size() / 64; ++b) encode_nvfp4(&x[b * 64], o);
+  } else if (type == GGML_Q8_0 || type == GGML_IQ4_NL) {
+    // (--ggml-org: blocks of 32, an f16 scale then 32 int8 (Q8_0) or 16 bytes of 4-bit codes into kvalues_iq4nl, value j
+    //  in byte j's low nibble and value j + 16 in its high one (IQ4_NL); nearest values, the scale as stored)
+    if (x.size() % 32) throw std::runtime_error("Q8_0 / IQ4_NL need a multiple of 32 values");
+    for (size_t b = 0; b < x.size() / 32; ++b) {
+      const float* v = &x[b * 32];
+      float amax = 0;
+      for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(v[i]));
+      const uint16_t dh = f32_to_fp16(amax / 127.0f);
+      const float d = fp16_to_f32(dh);
+      put<uint16_t>(o, dh);
+      if (type == GGML_Q8_0) {
+        for (int i = 0; i < 32; ++i)
+          put<int8_t>(o, (int8_t)std::clamp((int)std::lround(d > 0 ? v[i] / d : 0.0f), -127, 127));
+      } else {
+        uint8_t q[32];
+        for (int i = 0; i < 32; ++i) {
+          int best = 0;
+          float bd = INFINITY;
+          for (int c = 0; c < 16; ++c) {
+            const float dd = std::fabs(v[i] - d * (float)kvalues_iq4nl[c]);
+            if (dd < bd) bd = dd, best = c;
+          }
+          q[i] = (uint8_t)best;
+        }
+        for (int j = 0; j < 16; ++j) put<uint8_t>(o, (uint8_t)(q[j] | (q[j + 16] << 4)));
+      }
+    }
   } else {
     throw std::runtime_error("encode: type " + std::to_string(type));
   }
@@ -163,6 +194,10 @@ struct Model {
   void arr(const std::string& k, uint32_t et, const GgufValue& v) { kv.push_back({k, 9, et, v}); }
   // data in row-major [.., ne1, ne0]; shape outermost first
   void tensor(const std::string& name, const F& data, uint32_t type, std::vector<uint64_t> shape) {
+    // (--ggml-org: its IQ4_NL file's types: every BF16 matrix Q8_0 where its rows are whole 32-blocks, the loop
+    //  controller F32)
+    if ((g_ggml_org & 1) && type == GGML_BF16 && name.find("_exps.") == std::string::npos)
+      type = name.find("loop_") != std::string::npos ? (uint32_t)GGML_F32 : shape.back() % 32 == 0 ? (uint32_t)GGML_Q8_0 : type;
     Tensor t;
     t.name = name;
     t.dims.assign(shape.rbegin(), shape.rend());
@@ -199,7 +234,7 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N] [--scale S]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--all-experts] [--passes N] [--scale S]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
@@ -210,6 +245,9 @@ int main(int argc, char** argv) {
     if (a == "--seed" && i + 1 < argc) seed = strtoull(argv[++i], nullptr, 10);
     else if (a == "--no-loop") loop = false;
     else if (a == "--nvfp4-equal") g_nvfp4_equal = true;
+    else if (a == "--ggml-org") g_ggml_org = 3;
+    else if (a == "--ggml-org-mats") g_ggml_org = 1;  // (tests: only its 2D matrices' types)
+    else if (a == "--ggml-org-exps") g_ggml_org = 2;  // (only its experts' types)
     else if (a == "--all-experts") NU = NE;
     else if (a == "--scale" && i + 1 < argc) g_init = std::max(0.01, atof(argv[++i]));
     else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
@@ -341,7 +379,9 @@ int main(int argc, char** argv) {
         w.tensor(b + "attn_v_inp_norm.weight", normw(E), F32, S{uE});
       }
       w.tensor(b + "attn_post_conv.weight", randn((size_t)E * NC, 0.3), F32, S{uE, (uint64_t)NC});
-      const uint32_t XT = il < NVFP4_LAYERS ? NVFP4 : BF16;
+      // (--ggml-org: IQ4_NL where the original has NVFP4, Q8_0 where it has MXFP8, no expert scales)
+      const uint32_t XT = (g_ggml_org & 2) ? (il < NVFP4_LAYERS ? (uint32_t)GGML_IQ4_NL : (uint32_t)GGML_Q8_0)
+                                     : il < NVFP4_LAYERS ? NVFP4 : BF16;
       const uint64_t nE = NE;
       w.tensor(b + "ffn_gate_up_exps.weight", randn((size_t)NE * 2 * FF * E, 3 / std::sqrt((double)E)), XT,
                S{nE, (uint64_t)2 * FF, uE});

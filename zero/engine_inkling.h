@@ -254,9 +254,14 @@
         if (t.dims.size() != 3 || (int)t.dims[0] != K || (int)t.dims[1] != N || (int)t.dims[2] != NE)
           throw std::runtime_error("unexpected expert tensor " + name);
         type = t.type;
-        if (type != GGML_NVFP4 && type != GGML_BF16 && type != GGML_Q8_0 && type != GGML_F32)
+        // (ggml-org's IQ4_NL file, 2026-11-24 (#83): IQ4_NL experts in layers 0-19, Q8_0 in 20-23. The streamed path,
+        //  the default, takes IQ4_NL as every MoE model's experts (the shared MoE kernels); ARC_INK_RESIDENT=1's exact
+        //  experts (ink_expert_mv) read NVFP4, BF16, Q8_0 and F32 only)
+        const bool exact_ok = type == GGML_NVFP4 || type == GGML_BF16 || type == GGML_Q8_0 || type == GGML_F32;
+        if (!exact_ok && !(ink_streamed_ && type == GGML_IQ4_NL))
           throw std::runtime_error("Inkling 2: expert type " + std::string(ggml_type_name(type)) + " (" + name +
-                                   ") not supported yet (NVFP4, BF16, Q8_0, F32)");
+                                   ") not supported yet (NVFP4, BF16, Q8_0, F32; IQ4_NL streamed" +
+                                   (ink_streamed_ ? std::string(")") : std::string(": not with ARC_INK_RESIDENT=1)")));
         if (!t.data) throw std::runtime_error("Inkling 2: " + name + " has no data in this file");
         rb = t.nbytes / ((uint64_t)NE * N);
         // (streamed, I1.7 step 5: no raw copy on the GPU; the expert file's records instead. Their bytes for the

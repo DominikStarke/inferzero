@@ -47,6 +47,12 @@ Developer cuts them.
   - experts in **NVFP4 (ggml type 40)** in layers 0-19 and BF16 in 20-23;
   - attention and the head in BF16;
   - norms in F32.
+- **ggml-org's files** (`ggml-org/Inkling-2-Mini-GGUF`, the conversion arcint uses, #83): the same architecture
+  name and tensor names; other types. IQ4_NL (17.6 GB): IQ4_NL experts in layers 0-19, Q8_0 in 20-23 and every other
+  matrix, the loop controller F32. Q8_0 (27.8 GB): everything Q8_0. BF16 (52.2 GB): the experts upcast to BF16. The
+  engine takes all three since 2026-11-24 (IQ4_NL experts on the streamed path, the default; `ARC_INK_RESIDENT=1`
+  refuses them). Checked on the tiny file with those types (`make_tiny_inkling2 --ggml-org`): KL against ref_forward
+  0.00020 on the prompt and the decode paths.
 - **NVFP4:** E2M1 codes with an E4M3 scale per 16, times the per-expert f32 scale. E2M1 x 2 are MXFP4's integer codes
   (`kvalues_mxfp4`), so the codes are int8 exactly; the scales are not (see I1.1: folded per 32, sometimes rounded).
 - **The accuracy reference:** llama.cpp master's `src/models/inkling2.cpp` and `src/models/inkling2-loop.cpp` (plus
