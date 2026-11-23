@@ -7,7 +7,9 @@
   (StealthDrifter's B580, #80). The new start-up check of the H8 GEMMs left a record behind that made one matrix look
   already prepared after it was made resident, so layer 0's first GEMM used unprepared weights. The check now leaves
   everything as it found it, and a resident copy keeps its own record of being prepared. Cards and models without
-  those resident copies (the A-series preset, MoE models, iGPUs) were not affected. Use 2026.11.23.19.
+  those resident copies (the A-series preset, MoE models, iGPUs) were not affected. Use 2026.11.23.19. (The fix's first
+  form, never released, prepared copies resident from load twice; checked both ways: resident from load and resident
+  after the check, with and without the check, give the same logits as before 2026.11.23.18.)
 
 ## 2026-11-23: a long-context accuracy check for the decode attention's switches
 

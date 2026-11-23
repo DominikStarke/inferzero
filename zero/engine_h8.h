@@ -412,10 +412,12 @@
       Engine* e;
       std::set<const GpuWeight*>& had;
       ~Restore() {
+        // (only the staged path's entries: a resident copy the replay rotated stays rotated in place, so its entry and
+        //  its mark in h8_res_rot_ stay too; erasing them rotated it a second time at the first prompt (the laptop's 4B,
+        //  W8 resident from load, H8 forced: f903415's first form))
         for (auto it = e->h8_col_.begin(); it != e->h8_col_.end();) {
-          if (had.count(it->first)) { ++it; continue; }
+          if (had.count(it->first) || e->h8_res_rot_.count(it->first)) { ++it; continue; }
           e->free_buf(it->second);
-          e->h8_res_rot_.erase(it->first);
           it = e->h8_col_.erase(it);
         }
         for (int r = 0; r < kRoles; ++r) e->stage_owner_[r] = nullptr, e->stage_h8_[r] = false;
