@@ -11,7 +11,11 @@
     const int E = hp.n_embd, F = hp.n_ff_exp, Fs = hp.n_ff_shexp, NR = hp.router_rows(), NU = hp.n_expert_used;
     const int Fp = hp.n_ff_exp_pad;  // (the experts' h rows and down input width: Flash Next 640 padded to 768)
     const bool g4 = hp.gemma;  // (Gemma 4: no shared expert; the router's input norm of its own, scaled experts)
-    if (g4) {  // (the router in f32: its input normed into gmoe_, free until the experts' sum)
+    // (Inkling 2, I1.7 step 4: ink_layer has quantized the MoE input into aq_ / asc_ and computed the f32 router into
+    //  ink_rl_ (stride NE); no shared expert; the combine goes into ink_mo_. engine_inkling.h)
+    const bool ink = hp.inkling;
+    if (ink) {
+    } else if (g4) {  // (the router in f32: its input normed into gmoe_, free until the experts' sum)
       {
         float eps = hp.eps;
         int r0 = 0, EE = E, MM = Mp, TT = T, wh = 1, a32 = 1;
@@ -53,9 +57,10 @@
     // over the stacked rows when the layer has them (router logits at rgu_out_[0], gate / up in rgu_gu_)
     // (two passes: no fused epilogue; DeepSeek-V4.1: none either, its SwiGLU is clamped in swiglu_quant)
     const int fused = cur_T_ > 8 && !q2mm_ && !h8_q2() && !hp.ds41 ? 1 : 0;  // (ARC_H8_Q2: two passes, no fused epilogue)
-    cl_mem rl = rl_, gu = big_;
-    if (g4) {
-      // (done above)
+    cl_mem rl = ink ? ink_rl_ : rl_, gu = big_;
+    const int ldl = ink ? hp.n_expert : NR;  // (the router rows' stride: Inkling's f32 logits have no gate column)
+    if (g4 || ink) {
+      // (done above; Inkling: by ink_layer)
     } else if (T == 1 && L.rgu.raw) {
       matmul("gemm_router_sh", L.rgu, Mp, rgu_out_, 0, 0, 0, true);
       rl = L.router_bf16 ? rl_ : rgu_out_;
@@ -102,22 +107,26 @@
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
                              (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "") +
-                             (hp.ds41 ? " -DROUTE_DS -DRSCALE=" + flt_def(ds_.wscale) : std::string());
-    const std::string hld = (Fp != F ? " -DHLD=" + std::to_string(Fp) : std::string()) + (g4 ? " -DMOE_GELU" : "");
+                             (hp.ds41 ? " -DROUTE_DS -DRSCALE=" + flt_def(ds_.wscale) : std::string()) +
+                             (ink ? ink_route_defs() : std::string());
+    const std::string hld = (Fp != F ? " -DHLD=" + std::to_string(Fp) : std::string()) + (g4 ? " -DMOE_GELU" : "") +
+                            (ink ? ink_situ_defs() : std::string());
     if (T == 1 && !q2g) {  // one token: its NU experts are the tiles
       cl_kernel k = kernel("moe", defs, "moe_route1");
       set_args(k, 0, rl, sgate_, mtiles_, stok_, swt_, minv_);
       if (g4) set_args(k, 6, L.escale);
       if (hp.ds41) set_args(k, 6, dsl_[L.il].ebias);
+      if (ink) set_args(k, 6, ink_esc_dn(L.il), ink_ebias(L.il));  // (-DESCALE then -DROUTE_SIG's bias)
       size_t g1 = 16, l1 = 16;
       run("moe_route", k, 1, &g1, &l1);
       if (tp_moe()) tp_moe_tiles1();  // (multi-GPU: this GPU's experts' tiles only, zero/mgpu/engine_tp_shard.h)
     } else {
       {
         cl_kernel k = kernel("moe", defs, "moe_route");
-        set_args(k, 0, rl_, NR, T, mids_, mwts_, sgate_, mcount_);
+        set_args(k, 0, ink ? ink_rl_ : rl_, ldl, T, mids_, mwts_, sgate_, mcount_);
         if (g4) set_args(k, 7, L.escale);
         if (hp.ds41) set_args(k, 7, dsl_[L.il].ebias);
+        if (ink) set_args(k, 7, ink_esc_dn(L.il), ink_ebias(L.il));
         size_t gws[2] = {16, (size_t)T}, lws[2] = {16, 1};
         run("moe_route", k, 2, gws, lws);
       }
@@ -242,6 +251,7 @@
       } else {
         set_args(k, 0, L.ex_q[0], L.ex_q[1], FF, K, tabs_, aq_, sc, M, tiles, stok_, mh_);
       }
+      if (ink) set_args(k, xc_ ? 16 : 13, ink_esc_gu(L.il));  // (-DMOE_SITU's gate-up scales: the last argument)
       size_t gws[2] = {((size_t)(F + grows - 1) / grows * 16 + 255) / 256 * 256, max_tiles}, lws[2] = {256, 1};
       run("moe_gateup", k, 2, gws, lws);
     };
@@ -424,7 +434,7 @@
     }
     if (xgpu) quant_h();
     // shared expert down: its quantized input replaces the FFN input in aq_ (the expert GEMM above has read it)
-    if (!g4) {
+    if (!g4 && !ink) {  // (Inkling: no shared expert)
       int a32 = 1, gelu = 0;
       set_args(k_swiglu_, 0, gu, Fs, Mp, T, aq_, asc_, absum_, a32, fused, gelu);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
@@ -452,7 +462,10 @@
       // (Flash Next, DeepSeek-V4.1: the block output alone, combined into the streams after)
       if (hp.hc || hp.ds41) fill(hco_, (size_t)T * E * 4);
       if (g4) fill(gmoe_, (size_t)T * E * 4);    // (Gemma 4: the experts' sum alone; msh_ stays zero)
-      set_args(k, 0, g4 ? gmoe_ : hp.hc || hp.ds41 ? hco_ : x_, msh_, sgate_, my_, minv_, E);
+      // (Inkling: the experts' sum alone into ink_mo_, zeroed; it is also the shared expert's input, read as 0 times
+      //  the zero gate before the same work-item writes it, so no stale buffer enters the sum)
+      if (ink) fill(ink_mo_, (size_t)T * E * 4);
+      set_args(k, 0, ink ? ink_mo_ : g4 ? gmoe_ : hp.hc || hp.ds41 ? hco_ : x_, ink ? ink_mo_ : msh_, sgate_, my_, minv_, E);
       size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};  // (moe_combine checks c < N)
       run("moe_combine", k, 2, gws, lws);
     }
@@ -537,7 +550,10 @@
     const std::string xd = xc_ ? " -DXCACHE" : "";
     for (int i = part; i < (part == 0 ? 2 : 3); ++i) {
       static const std::string imul = getenv("ARC_RG_IMUL") && atoi(getenv("ARC_RG_IMUL")) != 0 ? " -DRG_IMUL" : "";
-      const std::string rg_opts = "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd + imul;
+      // (Inkling, I1.7 step 4: the up pass, which applies the activation, with situ and the gate-up scales)
+      const bool ink_up = hp.inkling && i == 1;
+      const std::string rg_opts = "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd + imul +
+                                  (ink_up ? ink_situ_defs() : std::string());
       cl_kernel k = kernel("decode", rg_opts, "moe_rg");
       // (ARC_MOE_RG_XMX, zero/xe2/engine_moe_xw.h: the XMX form for this type; at its first use checked against k)
       const std::string xdefs = rgx_defs(L, i);
@@ -564,6 +580,7 @@
                      kv, xc_->xtab[L.il], xoff(L, i));
           else
             set_args(kk, 0, L.ex_q[i], N, K, tabs_, a, as, cc, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us, kv);
+          if (ink_up) set_args(kk, xc_ ? 21 : 19, ink_esc_gu(L.il));  // (-DMOE_SITU: the last argument)
           size_t gws[2] = {(size_t)N, ny}, lws[2] = {16, 1};
           run(i == 2 ? "moe_down" : "moe_gateup", kk, 2, gws, lws);
         };
@@ -603,7 +620,8 @@
           mems_.push_back(L.ex_sub[i].back());
         }
       }
-      cl_kernel k = moe_gemm_kernel(100 + w8_variant(L.ex_type[i]));
+      const bool ink_up = hp.inkling && i == 1;  // (Inkling: the up pass with situ and the gate-up scales)
+      cl_kernel k = moe_gemm_kernel(100 + w8_variant(L.ex_type[i]), -1, ink_up);
       // tile work-groups per launch: about the average tile count of a group (more loop over the tiles)
       // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
       //  sums in the same order whatever the shape)
@@ -625,6 +643,7 @@
             us = i == 2 ? 1 : 0;
         set_args(k, 0, moe_wq_, moe_wh_, i == 2 ? mhq_ : aq_, i == 2 ? mhsc_ : asc_, absum_, i == 2 ? my_ : mh_, M, NN,
                  KK, ldc, acc, mtiles_, mtstart_, e0, e1, stok_, um, swt_, us);
+        if (ink_up) set_args(k, 19, ink_esc_gu(L.il));  // (gemm.cl -DMOE_SITU: the last argument)
         size_t gws[2] = {(size_t)N, ny}, lws[2] = {16 * (size_t)cg, (size_t)mwy};
         run(i == 2 ? "moe_down" : "moe_gateup", k, 2, gws, lws);
       }

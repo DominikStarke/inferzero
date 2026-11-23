@@ -71,7 +71,8 @@ static int xcpu_threads() {
 // (this layer's experts all have CPU kernels, separate gate / up, a down width the activations' blocks divide)
 bool xcpu_layer_ok(const Layer& L) {
   // (DeepSeek-V4.1 since 2026-11-19: its MXFP4 / Q5_1 / Q8_0 experts and its SwiGLU clamp; Gemma 4 not: gate_up fused)
-  if (!xcpu_on() || !hp.moe_std || hp.gemma) return false;
+  // (Inkling 2: not yet; its situ, the gate-up scales and NVFP4's CPU dot come with I2, docs/inkling2.md)
+  if (!xcpu_on() || !hp.moe_std || hp.gemma || hp.inkling) return false;
   if (xcpu_l_.empty()) xcpu_l_.resize(hp.n_layer + 1);
   if (L.il < 0 || L.il >= (int)xcpu_l_.size()) return false;
   XcpuLayer& X = xcpu_l_[L.il];

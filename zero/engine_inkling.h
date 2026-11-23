@@ -52,6 +52,27 @@
   cl_mem ink_kv_ = nullptr, ink_dummy_ = nullptr;
   int ink_maxb_ = 0;  // (blocks the chunk buffer holds)
 
+  // ---- I1.7 step 4: Inkling's MoE through the engine's shared path (layer_moe, engine_moe.h), under hp.inkling.
+  // ink_layer quantizes its ffn_norm output (ink_xm_, f32) into aq_ / asc_ (quant_rows) and computes the f32 router
+  // into ink_rl_ (stride NE); layer_moe then routes with moe.cl -DROUTE_SIG, runs the experts with -DMOE_SITU and the
+  // gate-up scales, and combines into ink_mo_ (zeroed first) instead of adding into x_. ink_fast_moe_ stays false until
+  // step 5 gives the physical layers their expert fields (layers_[il].ex_*) and the streamed path; until then
+  // ink_layer keeps I1.5's exact experts
+  bool ink_fast_moe_ = false;
+  cl_mem ink_ones_ = nullptr, ink_zeros_ = nullptr;
+  cl_mem ink_esc_gu(int il) const { return inkl_[il].gu_scale ? inkl_[il].gu_scale : ink_ones_; }
+  cl_mem ink_esc_dn(int il) const { return inkl_[il].dn_scale ? inkl_[il].dn_scale : ink_ones_; }
+  cl_mem ink_ebias(int il) const { return inkl_[il].probs_b ? inkl_[il].probs_b : ink_zeros_; }
+  // the routing and expert kernels' extra build options for Inkling (moe.cl and the gate / up kernels)
+  std::string ink_route_defs() const {
+    // (expert_weights_scale 0 or 1: none, as ink_route)
+    const float ws = ink_.wscale != 0.0f ? ink_.wscale : 1.0f;
+    return " -DROUTE_SIG -DESCALE -DRSCALE=" + flt_def(ws);
+  }
+  std::string ink_situ_defs() const {
+    return " -DMOE_SITU -DSITU_B=" + flt_def(ink_.situ_b) + " -DSITU_LB=" + flt_def(ink_.situ_lb);
+  }
+
   int ink_layer_phys(int il) const {
     return il < hp.n_layer ? il : ink_.start + (il - hp.n_layer) % (ink_.end - ink_.start);
   }
@@ -297,6 +318,15 @@
     ink_bank_out_ = f(E);
     ink_prelude_ = f(E);
     ink_dummy_ = buf(64);
+    // (I1.7 step 4: the shared MoE kernels' tables where a layer's file has none: the gate-up / down scales 1, the
+    //  selection bias 0; NE floats each)
+    {
+      std::vector<float> one((size_t)NE, 1.0f), zero((size_t)NE, 0.0f);
+      ink_ones_ = buf((size_t)NE * 4);
+      ink_zeros_ = buf((size_t)NE * 4);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_ones_, CL_TRUE, 0, (size_t)NE * 4, one.data(), 0, nullptr, nullptr));
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_zeros_, CL_TRUE, 0, (size_t)NE * 4, zero.data(), 0, nullptr, nullptr));
+    }
   }
 
   // the conv states to zero (a new sequence; llama.cpp's recurrent state starts at zero)
@@ -508,7 +538,12 @@
     ink_dump("xm", ip, ink_xm_, (size_t)T * E, T);
     ink_mm("ink_router", L.router, ink_xm_, ink_rl_, T, Mp);
     ink_dump("rl", ip, ink_rl_, (size_t)T * hp.n_expert, T);
-    {
+    if (ink_fast_moe_) {
+      // (I1.7 step 4: the engine's shared MoE path, streamed experts and all: the input quantized per 32 into aq_ /
+      //  asc_ as every model's, the router's f32 logits in ink_rl_; layer_moe writes ink_mo_)
+      quant_rows(ink_xm_, E, Mp, T, 1);
+      layer_moe(layers_[ip], T, Mp);
+    } else {
       cl_kernel kr = ink_k("ink_route");
       int hb = L.probs_b ? 1 : 0, NE = hp.n_expert, NU = L.nu;
       float ws = k.wscale;

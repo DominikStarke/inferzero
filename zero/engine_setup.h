@@ -534,9 +534,11 @@
                   "gemm");
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
-  cl_kernel moe_gemm_kernel(int qtype, int xmx = -1) {
+  // (situ: Inkling 2's up pass, gemm.cl -DMOE_SITU with the gate-up scales as the last argument, I1.7 step 4)
+  cl_kernel moe_gemm_kernel(int qtype, int xmx = -1, bool situ = false) {
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
-                              ((xmx < 0 ? xmx_ : xmx != 0) && !cl_.sg8 ? xmx_defs() : ""),  // (8-lane GPUs: DP4a, gemm_x8 has no tiles)
+                              ((xmx < 0 ? xmx_ : xmx != 0) && !cl_.sg8 ? xmx_defs() : "") +  // (8-lane GPUs: DP4a, gemm_x8 has no tiles)
+                              (situ ? ink_situ_defs() : std::string()),
                   "gemm");
   }
   // XMX for the prompt GEMMs (gemm.cl -DXMX): taken only when the GPU offers 16-lane DPAS (ClRt::xmx) and the XMX
