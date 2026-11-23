@@ -673,6 +673,16 @@
   // (tests). Checked once per device and form at start against gdn_chunk on random data (2 heads, 100 tokens: three
   // chunks and a short one; gated and fused gates); outputs or states more than 1e-4 of their size apart: not used.
   std::string gdnx_src_;
+  // ARC_GDN_SPLIT=2 / 4 (2026-11-23, opt-in; the A770 plan's S2, #45): the prompt's DeltaNet steps by gdn_recur_split
+  // (kernels/gdn_split.cl), 2 or 4 work-items a state column: P times the threads in flight where one token's step
+  // is latency-bound. Another order of the sums than gdn_recur: KL-checked, not bit for bit. Any GPU with 8-lane
+  // sub-groups when set (the laptop for the KL); a verification pass and one-token steps keep gdn_recur
+  std::string gdns_src_;
+  static int gdn_split_env() {
+    static const int e = getenv("ARC_GDN_SPLIT") ? atoi(getenv("ARC_GDN_SPLIT")) : 0;
+    return e == 2 || e == 4 ? e : 0;
+  }
+  int gdn_split() const { return cl_.sg8 ? gdn_split_env() : 0; }
   bool gdnx_ = false;
   bool gdnx_wanted() const { return gdn_chunk_mode() == 3 && (cl_.xmx || gdn_xemu()); }
   bool gdnx_8() const { return gdn_xemu() == 8 || (gdn_xemu() != 16 && cl_.sg8); }

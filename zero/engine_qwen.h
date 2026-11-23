@@ -83,10 +83,17 @@
       } else {
         // (a T = 1 kernel with 4 lanes per state column and 128 GRF, bit-identical, was slower: 35B 248-341 vs 226-254
         //  ms per 96 tokens; removed 2026-10-22)
-        cl_kernel k = fuse ? k_gdn_recur_g_ : k_gdn_recur_;
+        // (ARC_GDN_SPLIT=2 / 4: a prompt's steps with 2 / 4 work-items a column, zero/xe2/engine_xe2.h; not a
+        //  verification pass, whose S_next / replay gdn_recur's form was made with, nor one token)
+        const int sp = !spec_ && Tq > 1 ? gdn_split() : 0;
+        // (256 registers, as gdn_recur: spill-free there, ocloc dg2-g10 / mtl; 2 / 4 times the sub-groups still fill
+        //  the GPU's threads at 4 a core, where gdn_recur's 768 sub-groups of the 27B did not)
+        cl_kernel k = sp ? kernel("gdns", "-cl-intel-256-GRF-per-thread -DGDN_P=" + std::to_string(sp) + (fuse ? " -DFUSE_GATES" : ""),
+                                  "gdn_recur_split")
+                         : fuse ? k_gdn_recur_g_ : k_gdn_recur_;
         set_args(k, 0, cq, C, gq, nk, nv, L.S, Tq, oq, spec_ ? L.S_next : L.S);
         if (fuse) set_args(k, 9, L.dt_bias, L.ssm_a);
-        size_t g1 = (size_t)nv * 128, l1 = 64;
+        size_t g1 = (size_t)nv * 128 * (sp ? sp : 1), l1 = 64;
         run("gdn_recur", k, 1, &g1, &l1);
       }
     };

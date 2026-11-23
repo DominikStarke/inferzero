@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: the DeltaNet's prompt steps over 2 or 4 work-items a column (opt-in, to measure on an A770)
+
+- **New, opt-in: `ARC_GDN_SPLIT=2` / `4`.** The prompt's DeltaNet (`gdn_recur`) runs with 2 or 4 work-items per
+  state column instead of one: more threads in flight where one token's step is bound by latency. On the A770 it
+  is 343 ms of a 27B 4K prompt, ~1.2x a B60's (#45).
+- **Bit for bit:** each work-item owns whole sum chains of the default and adds them in its order. On the laptop's
+  4B: the logits the same (480 tokens, and 1,020 scored tokens of USAGE.md, KL exactly 0). On the laptop itself it is
+  slower (12.0 against 10.5 s), so it stays off unless set; one-token steps and verification passes keep `gdn_recur`.
+
 ## 2026-11-23: an opt-in tile setting refused where it gave wrong logits
 
 - `ARC_GEMM_XW_SLM_WG_ROLES` (an opt-in test of the A770's per-GEMM tile shapes): a `dn` or `attn` entry with a
