@@ -40,6 +40,31 @@ inline double sigm(double v) { return 1.0 / (1.0 + std::exp(-v)); }
 //  per 32 values with src/quants.h quantize_act_cpu, then taken back to floats; the weights as before. The engine's
 //  rule (zero/engine_inkling.h ink_mat): int8 unless the router, N % 16 or K % 256. The engine's int8 drift then
 //  leaves the comparison, and a stage that still parts shows a bug, not a rounding)
+// (REF_INK_W8=1: a float matrix the engine keeps as Q8_0 rows (ink_mat: not the router, N % 16 == 0, K % 256 == 0)
+//  multiplied with those rows, made by the engine's own requant_rows_q8_0; otherwise ref_forward's matmul)
+inline void mm_rows(const std::string& name, const std::vector<float>& X, int T, std::vector<float>& Y, bool router) {
+  static const bool w8 = getenv("REF_INK_W8") && atoi(getenv("REF_INK_W8")) != 0;
+  const GgufTensor& t = F->get(name);
+  const int K = (int)t.dims[0], N = t.dims.size() > 1 ? (int)t.dims[1] : 1;
+  const bool flt = t.type == GGML_BF16 || t.type == GGML_F16 || t.type == GGML_F32;
+  if (!(w8 && flt && !router && N % 16 == 0 && K % 256 == 0)) return matmul(name, X, T, Y);
+  const size_t rb = t.nbytes / (size_t)N;
+  Y.assign((size_t)T * N, 0.0f);
+#pragma omp parallel
+  {
+    std::vector<float> w(K);
+#pragma omp for schedule(dynamic, 16)
+    for (int n = 0; n < N; ++n) {
+      const std::vector<uint8_t> q = requant_rows_q8_0(t.type, t.data + (size_t)n * rb, rb, 1, K);
+      dequant_row(GGML_Q8_0, q.data(), K, w.data());
+      for (int i = 0; i < T; ++i) {
+        double acc = 0;
+        for (int k = 0; k < K; ++k) acc += (double)w[k] * X[(size_t)i * K + k];
+        Y[(size_t)i * N + n] = (float)acc;
+      }
+    }
+  }
+}
 inline void mm(const std::string& name, const std::vector<float>& X, int T, std::vector<float>& Y) {
   static const bool q8 = getenv("REF_INK_Q8") && atoi(getenv("REF_INK_Q8")) != 0;
   const GgufTensor& wt = F->get(name);
@@ -53,9 +78,9 @@ inline void mm(const std::string& name, const std::vector<float>& X, int T, std:
     quantize_act_cpu(X.data(), T, K, aq.data(), asc.data(), ab.data(), true);
     for (int t = 0; t < T; ++t)
       for (int k = 0; k < K; ++k) xq[(size_t)t * K + k] = (float)aq[(size_t)t * K + k] * asc[(size_t)(k / 32) * T + t];
-    matmul(name, xq, T, Y);
+    mm_rows(name, xq, T, Y, router);
   } else {
-    matmul(name, X, T, Y);
+    mm_rows(name, X, T, Y, router);
   }
   const std::string sn = name.substr(0, name.size() - 7) + ".scale";  // (name ends in ".weight")
   if (const GgufTensor* s = F->find(sn)) {
@@ -65,12 +90,26 @@ inline void mm(const std::string& name, const std::vector<float>& X, int T, std:
   }
 }
 
+// (REF_INK_W8=1, a check of the engine: a float weight row the engine keeps as Q8_0 (load_w's float matrices, the
+//  streamed experts' float records) rounded the same way, with the engine's own requant_rows_q8_0)
+inline bool ink_w8() {
+  static const bool on = getenv("REF_INK_W8") && atoi(getenv("REF_INK_W8")) != 0;
+  return on;
+}
+inline void row_w8(uint32_t type, const uint8_t* row, size_t rb, int K, float* w) {
+  if (ink_w8() && (type == GGML_BF16 || type == GGML_F16 || type == GGML_F32) && K % 32 == 0) {
+    const std::vector<uint8_t> q = requant_rows_q8_0(type, row, rb, 1, K);
+    dequant_row(GGML_Q8_0, q.data(), K, w);
+  } else {
+    dequant_row(type, row, K, w);
+  }
+}
 // rows of a [K][N][n_expert] tensor: expert e's N x K matrix times x
 inline void expert_rows(const GgufTensor& t, int e, int N, int K, const float* x, float* y) {
   const size_t rb = t.nbytes / ((size_t)t.dims[2] * N);
   std::vector<float> w(K);
   for (int n = 0; n < N; ++n) {
-    dequant_row(t.type, t.data + ((size_t)e * N + n) * rb, K, w.data());
+    row_w8(t.type, t.data + ((size_t)e * N + n) * rb, rb, K, w.data());
     double acc = 0;
     for (int k = 0; k < K; ++k) acc += (double)w[k] * x[k];
     y[n] = (float)acc;
@@ -353,18 +392,31 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
     double sum = 0;
     for (int k = 0; k < NU; ++k) sum += prob[id[k]];
     std::vector<float> gu(2 * FF), act(FF), de(E);
+    // (REF_INK_Q8=2: the experts' inputs rounded too, per 32 values as moe_quant does: the engine's int8 drift in full)
+    static const bool q8x = getenv("REF_INK_Q8") && atoi(getenv("REF_INK_Q8")) >= 2;
+    auto q8r = [](const float* x, int K, std::vector<float>& o) {
+      std::vector<int8_t> aq((size_t)K);
+      std::vector<float> asc((size_t)K / 32);
+      std::vector<uint16_t> ab((size_t)K / 16);
+      quantize_act_cpu(x, 1, K, aq.data(), asc.data(), ab.data(), true);
+      o.resize((size_t)K);
+      for (int k = 0; k < K; ++k) o[(size_t)k] = (float)aq[(size_t)k] * asc[(size_t)k / 32];
+    };
+    std::vector<float> xin, ain;
+    if (q8x && E % 32 == 0) q8r(&xm[(size_t)t * E], E, xin);
     for (int k = 0; k < NU; ++k) {
       const int e = id[k];
       double w = prob[e] / (sum + 1e-20);
       if (M.wscale != 0.0f && M.wscale != 1.0f) w *= M.wscale;
-      expert_rows(tgu, e, 2 * FF, E, &xm[(size_t)t * E], gu.data());
+      expert_rows(tgu, e, 2 * FF, E, xin.empty() ? &xm[(size_t)t * E] : xin.data(), gu.data());
       for (int i = 0; i < FF; ++i) {
         const double g = (double)gu[i] * sgu[e], u = (double)gu[FF + i] * sgu[e];
         // situ(gate, up) = beta tanh(gate / beta) sigmoid(gate) * lb tanh(up / lb)
         const double a = M.situ_b * std::tanh(g / M.situ_b) * sigm(g);
         act[i] = (float)(a * (M.situ_lb > 0 ? M.situ_lb * std::tanh(u / M.situ_lb) : u));
       }
-      expert_rows(tdn, e, E, FF, act.data(), de.data());
+      if (q8x && FF % 32 == 0) q8r(act.data(), FF, ain);
+      expert_rows(tdn, e, E, FF, ain.empty() ? act.data() : ain.data(), de.data());
       for (int i = 0; i < E; ++i) mo[(size_t)t * E + i] += (float)(w * de[i] * sdn[e]);
     }
   }
