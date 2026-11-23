@@ -1412,7 +1412,7 @@ static int server_main(int argc, char** argv) {
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes).\n"
             "  Discrete cards also: prompt attention as flash attention on XMX (ARC_ATTN_FX=0: off; iGPUs with 16-lane\n"
-            "  XMX too; the A770 / A750 and the Arc 140T opt-in: ARC_ATTN_X8=1), the H8 GEMM in work-groups of 4 (ARC_GEMM_XW_WGX=1: of 1) with 2D block loads\n"
+            "  XMX too), the H8 GEMM in work-groups of 4 (ARC_GEMM_XW_WGX=1: of 1) with 2D block loads\n"
             "  (ARC_GEMM_XW_2D=0: off), dense models' GEMV reading one window ahead (ARC_GEMV_DB=0: off), GEMV rows\n"
             "  from the GPU's thread count (ARC_GEMV_WAVE=0: off), resident decoded weights in the room the context\n"
             "  leaves (ARC_W8_PARTIAL_GB=0: off, N: N GB; an iGPU: only N, or up to 16 GB with 16-lane XMX and a GPU\n"

@@ -496,60 +496,29 @@
   // =1 forces it, =2 without the check (the kernel's timing ablations); ARC_ATTN_FX_WG="NT,NH": token groups of 8 x q
   // heads per work-group; ARC_ATTN_FX_PF=0: no L1 prefetch; ARC_ATTN_FX_DEFS: further -D options (tests)
   //
-  // attn_x8 (QUEUE A6 / T4, 2026-11-20; zero/kernels/attn_x8.cl): the same flash attention for GPUs whose DPAS takes
-  // 8-lane sub-groups (Alchemist A770 / A750, the Arc 140T), whose prompts ran attn_q8 on DP4a. Opt-in until owners
-  // measure it: ARC_ATTN_X8=1 where the driver offers XMX, =2 with the DPAS emulated by DP4a dot products on any GPU
-  // with 8-lane sub-groups (tests: the 125H). The same start-up check against attn_q8; ARC_ATTN_X8_WG="NT,NH" (heads of
-  // more than 128 dims take two sub-groups a token group: at most 32 sub-groups in all); ARC_ATTN_FX_PF and
-  // ARC_ATTN_FX_DEFS apply to it too
-  std::string attnfx_src_, attnx8_src_;
+  // (attn_x8, the same flash attention on 8-lane XMX (ARC_ATTN_X8, _WG, _PSH, _LAZY; zero/kernels/attn_x8.cl), was
+  //  removed on 2026-11-23: slower on both 8-lane GPUs, the A770 1.4-1.6x, PascalSoftwares' 140T 395 -> 382 tok/s at
+  //  4K (#5). 8-lane GPUs keep attn_q8)
+  std::string attnfx_src_;
   cl_kernel k_attn_fx_ = nullptr;
   int fx_nt_ = 0, fx_nh_ = 0;
-  bool fx_x8_ = false;  // (k_attn_fx_ is attn_x8)
-  static int attnx8_mode() {
-    static const int e = getenv("ARC_ATTN_X8") ? atoi(getenv("ARC_ATTN_X8")) : 0;
-    return e == 1 || e == 2 ? e : 0;
-  }
-  // (=1 on an iGPU only where XMX passed its start-time checks (xmx_), as attnfx_wanted: a 140T whose check failed,
-  //  e.g. with an old driver, keeps attn_q8; the Researcher's audit half, 2026-11-21. =2: DPAS emulated, tests)
-  bool attnfx8_on() const {
-    return cl_.sg8 && (attnx8_mode() == 2 || (attnx8_mode() == 1 && cl_.xmx && (xmx_ || !zrt::integrated())));
-  }
   bool attnfx_wanted() const {
     static const int e = getenv("ARC_ATTN_FX") ? (atoi(getenv("ARC_ATTN_FX")) != 0 ? 1 : 0) : -1;
     // (on by default on discrete cards, and on iGPUs with 16-lane XMX since 2026-11-17: a B390's 27B 4K prompt attention
-    //  377 -> 160 ms, issue #1; GPUs with 8-lane DPAS only through ARC_ATTN_X8, attn_x8)
+    //  377 -> 160 ms, issue #1; not on GPUs with 8-lane DPAS)
     // (an iGPU only where XMX passed its start-time checks, speed included (xmx_): one whose check kept DP4a runs the
     //  GPU's own defaults; audit 2026-11-17)
     const bool on = e < 0 ? (!zrt::integrated() || (cl_.xmx && !cl_.sg8 && xmx_)) : e == 1;
     const int hd = hp.qwen3 ? hp.head_dim : 256;
     const bool model = !hp.gemma && !hp.swa_rings && hd % 32 == 0 && hd <= 256 && !attn_q8_defs_.empty();
-    if (cl_.sg8) return e != 0 && attnfx8_on() && model;
+    if (cl_.sg8) return false;
     return on && cl_.xmx && model;
-  }
-  // ARC_ATTN_X8_PSH=1 (2026-11-22, opt-in; the A770 plan's attention step): attn_x8.cl -DX8_PSH -DX8_LEAN. ocloc
-  // dg2-g10 put the span loop at 1,460 instructions for 36 DPAS, nearly all of them float work: the 27B's heads of
-  // 256 dims run on two sub-groups, and each made the whole softmax of the same 8 tokens. With PSH the pair's first
-  // sub-group sums the scores over all 256 dims and makes the softmax once; P and the per-token factors go to the
-  // second through local memory (one barrier a span instead of two). LEAN keeps the span's block indices as ring
-  // counters (no division a span). The same sums and the same P: bit for bit attn_x8 (laptop, DPAS emulated)
-  static bool x8_psh_env() {
-    static const bool on = getenv("ARC_ATTN_X8_PSH") && atoi(getenv("ARC_ATTN_X8_PSH")) != 0;
-    return on;
-  }
-  // ARC_ATTN_X8_LAZY=1 (2026-11-22, opt-in): attn_x8.cl -DX8_LAZY, where no token's maximum moved in a span the P . V
-  // update as one fused multiply-add (o + acc x pr rounded once, not twice): ocloc dg2-g10, 128 of a sub-group's ~1,000
-  // instructions a span fewer. Not bit for bit: KL in docs/before-after.md
-  static bool x8_lazy_env() {
-    static const bool on = getenv("ARC_ATTN_X8_LAZY") && atoi(getenv("ARC_ATTN_X8_LAZY")) != 0;
-    return on;
   }
   std::string attnfx_defs() const {
     const int hd = hp.qwen3 ? hp.head_dim : 256, hpg = hp.n_head / hp.n_head_kv;
     static const bool pf = !getenv("ARC_ATTN_FX_PF") || atoi(getenv("ARC_ATTN_FX_PF")) != 0;
     // (ARC_ATTN_FX_DEFS: further -D options for the kernel's variants, tests. Read each call: as a function-local
-    //  static it came out empty, so the options never reached the build, ablations on the A770s included; found
-    //  2026-11-22)
+    //  static it came out empty, so the options never reached the build; found 2026-11-22)
     const char* xd = getenv("ARC_ATTN_FX_DEFS");
     const std::string extra = xd ? std::string(" ") + xd : std::string();
     // (2026-11-23, knobs for the Max 1550's sweep (attn_fx at a third of a B70's rate there, 86.8 % of its 262K prompt;
@@ -558,27 +527,20 @@
     //  same results: the start-up check runs on each form, as for ARC_ATTN_FX_WG)
     static const int pfd_n = getenv("ARC_ATTN_FX_PFD") ? std::clamp(atoi(getenv("ARC_ATTN_FX_PFD")), 1, 4) : 1;
     static const bool grf128 = getenv("ARC_ATTN_FX_GRF") && std::string(getenv("ARC_ATTN_FX_GRF")) == "128";
-    const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "") +
-                                         (x8_psh_env() ? " -DX8_LEAN -DX8_PSH" : "") + (x8_lazy_env() ? " -DX8_LAZY" : "")
-                                   : (pf ? " -DFX_PF" : "") + (pfd_n != 1 ? " -DFX_PFD=" + std::to_string(pfd_n) : std::string());
-    return std::string(grf128 && !fx_x8_ ? "" : "-cl-intel-256-GRF-per-thread ") + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
+    const std::string pfd = (pf ? " -DFX_PF" : "") + (pfd_n != 1 ? " -DFX_PFD=" + std::to_string(pfd_n) : std::string());
+    return std::string(grf128 ? "" : "-cl-intel-256-GRF-per-thread ") + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
            " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;
   }
-  const char* attnfx_which() const { return fx_x8_ ? "attnx8" : "attnfx"; }
-  const char* attnfx_name() const { return fx_x8_ ? "attn_x8" : "attn_fx"; }
+  const char* attnfx_which() const { return "attnfx"; }
+  const char* attnfx_name() const { return "attn_fx"; }
   void attnfx_init() {
     if (!attnfx_wanted()) return;
     const int hpg = hp.n_head / hp.n_head_kv;
-    fx_x8_ = cl_.sg8;
-    // (attn_x8: two sub-groups a token group for heads of more than 128 dims)
-    const int ds = fx_x8_ && (hp.qwen3 ? hp.head_dim : 256) > 128 ? 2 : 1;
-    // (attn_fx: 32 sub-groups, every thread slot of an Xe-core with 256 registers; two q heads where the GQA ratio is
-    //  even: a B70's 27B 16K prompt, attention 965 ms at 4 x 6, 772 at 5 x 6, 707 at 16 x 2, 710 at 32 x 1.
-    //  attn_x8, not measured yet: all q heads of a KV head in one work-group (with two sub-groups a token group they
-    //  run in step, and token groups added run the last one's spans), 16 sub-groups)
-    const int cap = 32 / ds;
-    int nh = fx_x8_ ? hpg : hpg % 2 == 0 ? 2 : 1, nt = fx_x8_ ? std::max(1, 16 / (nh * ds)) : 32 / nh;
-    if (const char* e = getenv(fx_x8_ ? "ARC_ATTN_X8_WG" : "ARC_ATTN_FX_WG")) sscanf(e, "%d,%d", &nt, &nh);
+    // (32 sub-groups, every thread slot of an Xe-core with 256 registers; two q heads where the GQA ratio is even: a
+    //  B70's 27B 16K prompt, attention 965 ms at 4 x 6, 772 at 5 x 6, 707 at 16 x 2, 710 at 32 x 1)
+    const int cap = 32;
+    int nh = hpg % 2 == 0 ? 2 : 1, nt = 32 / nh;
+    if (const char* e = getenv("ARC_ATTN_FX_WG")) sscanf(e, "%d,%d", &nt, &nh);
     if (nh < 1 || hpg % nh) nh = hpg;
     while (nh > 1 && nt * nh > cap) {  // (at most 32 sub-groups: the largest divisor of the GQA ratio that fits)
       int d = nh - 1;
@@ -598,16 +560,14 @@
       const double d = nocheck ? 0.0 : attnfx_check();
       it = known.emplace(key, d).first;
       if (d >= 0)
-        zlog::eprintf("inferzero: prompt attention as flash attention on XMX (%s%s, %d x 8 tokens x %d heads a work-group; "
-                      "against attn_q8: max difference %.1e of the output range)\n", attnfx_name(),
-                      fx_x8_ && attnx8_mode() == 2 ? ", DPAS emulated: tests" : "", nt, nh, d);
+        zlog::eprintf("inferzero: prompt attention as flash attention on XMX (%s, %d x 8 tokens x %d heads a work-group; "
+                      "against attn_q8: max difference %.1e of the output range)\n", attnfx_name(), nt, nh, d);
     }
     if (it->second >= 0) k_attn_fx_ = kernel(attnfx_which(), attnfx_defs(), attnfx_name());
   }
-  // gws / lws of attn_fx (attn_x8) for T tokens and nkv KV heads
+  // gws / lws of attn_fx for T tokens and nkv KV heads
   void attnfx_grid(int T, int nkv, size_t gws[2], size_t lws[2]) const {
-    const int hd = hp.qwen3 ? hp.head_dim : 256, ds = fx_x8_ && hd > 128 ? 2 : 1;
-    const int hpg = hp.n_head / hp.n_head_kv, tq = 8 * fx_nt_, lsz = (fx_x8_ ? 8 * ds : 16) * fx_nt_ * fx_nh_;
+    const int hpg = hp.n_head / hp.n_head_kv, tq = 8 * fx_nt_, lsz = 16 * fx_nt_ * fx_nh_;
     gws[0] = (size_t)(T + tq - 1) / tq * lsz, gws[1] = (size_t)nkv * (hpg / fx_nh_);
     lws[0] = (size_t)lsz, lws[1] = 1;
   }
@@ -625,9 +585,8 @@
     cl_.soft_fail = true;
     double worst = 0;
     try {
-      // (attn_x8 also a third: 77 tokens at 150 over 256 slots, token groups of a work-group past M_valid)
-      const struct { int M, p0, cap; } cases[3] = {{40, 0, 48}, {45, 27, 80}, {77, 150, 256}};
-      for (int ci = 0; ci < (fx_x8_ ? 3 : 2); ++ci) {
+      const struct { int M, p0, cap; } cases[2] = {{40, 0, 48}, {45, 27, 80}};
+      for (int ci = 0; ci < 2; ++ci) {
         const auto& c = cases[ci];
         const int nbc = c.cap / 16, blk_u = 4 * hd;
         std::vector<uint32_t> qi((size_t)c.M * nh * hd / 4), kq((size_t)nbc * blk_u), vq((size_t)nbc * blk_u);

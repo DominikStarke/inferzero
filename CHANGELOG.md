@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: attn_x8 removed
+
+- **Removed:** `ARC_ATTN_X8` (and `_WG`, `_PSH`, `_LAZY`), the prompt attention as flash attention on 8-lane XMX. It was slower on both GPUs it was for: the A770 1.4-1.6x, PascalSoftwares' Arc 140T -3 % at 4K (#5). Those GPUs keep their default attention; nothing changes for anyone who did not set the switch.
+
 ## 2026-11-23: a warning when part of the expert cache lands in system memory
 
 - **New: a check of where the expert cache was placed** (discrete cards). A card nearly full of buffers can get part of a large allocation put in system memory by the driver without an error; its experts are then read over PCIe, and generation can run at half speed in some runs and not others (hansong80's A770 with the 35B, #45: 43.7 against 23.2 tok/s with the same load lines). After the cache is filled, each 1 GiB piece is read once and timed; a piece slower than the card's own memory gets a warning with how much is affected and a smaller `--expert-cache-gb` that keeps the cache on the card. About 1 ms a GiB; `ARC_XPLACE=0` skips it, `=2` prints each piece's rate.

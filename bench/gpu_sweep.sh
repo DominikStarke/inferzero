@@ -147,7 +147,6 @@ PP=(
   "ARC_H8_FUSE|0 1|0 1"
   "ARC_ATTN_XMX|0 1|0 1"
   "ARC_ATTN_FX|0 1|0 1"                    # flash attention on 16-lane XMX
-  "ARC_ATTN_X8|0 1|0 1"                    # flash attention on 8-lane XMX
   "ARC_GDN_L1PF|0 1 2 4 8 16|0 2 8"        # DeltaNet prefetch distance
   "ARC_GDN_PF|0 2|0 2"                     # DeltaNet operands in registers
   "ARC_GDN_CHUNK|0 1 2 3|0 3"              # chunked DeltaNet (changes the sums: KL)
