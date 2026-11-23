@@ -21,6 +21,9 @@
 #include <windows.h>
 #include <io.h>  // (_get_osfhandle)
 #include <shlobj.h>  // (SHGetKnownFolderPath: home_env's fallback)
+#ifdef small
+#undef small  // (rpcndr.h's #define small char, via shlobj.h: a variable named small in mgpu_probe broke the build)
+#endif
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #else
