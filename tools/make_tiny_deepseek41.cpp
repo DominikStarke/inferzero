@@ -180,6 +180,42 @@ std::vector<uint8_t> encode(const F& x, uint32_t type) {
       put<uint16_t>(o, mh);
       put<uint32_t>(o, qh);
       for (int i = 0; i < 16; ++i) put<uint8_t>(o, (uint8_t)(ql[i] | (ql[i + 16] << 4)));
+    } else if (type == GGML_Q4_1) {  // (as ggml: d = (max - min) / 15, m = min, q = (x - min) / d + 0.5 truncated, at most 15)
+      float lo = v[0], hi = v[0];
+      for (int i = 1; i < 32; ++i) lo = std::min(lo, v[i]), hi = std::max(hi, v[i]);
+      const float d = (hi - lo) / 15.0f, id = d != 0 ? 1.0f / d : 0.0f;
+      put<uint16_t>(o, f32_to_fp16(d));
+      put<uint16_t>(o, f32_to_fp16(lo));
+      uint8_t q[32];
+      for (int i = 0; i < 32; ++i) q[i] = (uint8_t)std::min(15, (int)((v[i] - lo) * id + 0.5f));
+      for (int i = 0; i < 16; ++i) put<uint8_t>(o, (uint8_t)(q[i] | (q[i + 16] << 4)));
+    } else if (type == GGML_Q5_0) {  // (as ggml: d = the value of largest magnitude / -16, q = x / d + 16.5 truncated, at most 31)
+      int im = 0;
+      for (int i = 1; i < 32; ++i)
+        if (std::fabs(v[i]) > std::fabs(v[im])) im = i;
+      const float d = v[im] / -16.0f, id = d != 0 ? 1.0f / d : 0.0f;
+      put<uint16_t>(o, f32_to_fp16(d));
+      uint32_t qh = 0;
+      uint8_t ql[32];
+      for (int i = 0; i < 32; ++i) {
+        const int q = std::min(31, (int)(v[i] * id + 16.5f));
+        qh |= (uint32_t)((q >> 4) & 1) << i;
+        ql[i] = (uint8_t)(q & 15);
+      }
+      put<uint32_t>(o, qh);
+      for (int i = 0; i < 16; ++i) put<uint8_t>(o, (uint8_t)(ql[i] | (ql[i + 16] << 4)));
+    } else if (type == GGML_Q8_1) {  // (d = amax / 127, q = round(x / d), s = d x the sum of q; d and q exactly as the
+                                     //  Q8_0 branch makes them, so a Q8_1 file holds a Q8_0 file's values: the GPU test)
+      float amax = 0;
+      for (int i = 0; i < 32; ++i) amax = std::max(amax, std::fabs(v[i]));
+      const uint16_t dh = f32_to_fp16(amax / 127.0f);
+      const float df = fp16_to_f32(dh), inv = df > 0 ? 1.0f / df : 0.0f;
+      int8_t q[32];
+      int sum = 0;
+      for (int i = 0; i < 32; ++i) q[i] = (int8_t)std::max(-127.0f, std::min(127.0f, std::nearbyint(v[i] * inv))), sum += q[i];
+      put<uint16_t>(o, dh);
+      put<uint16_t>(o, f32_to_fp16(df * (float)sum));
+      for (int i = 0; i < 32; ++i) put<int8_t>(o, q[i]);
     } else if (type == GGML_MXFP4) {  // (scale 2^(e - 128) so that the largest magnitude is at most 6; nearest code)
       double amax = 0;
       for (int i = 0; i < 32; ++i) amax = std::max(amax, (double)std::fabs(v[i]));
@@ -239,6 +275,9 @@ uint64_t type_bytes(uint64_t n, uint32_t t) {
     case GGML_MXFP4: return n / 32 * 17;
     case GGML_MXFP8: return n / 32 * 33;
     case GGML_Q5_1: return n / 32 * 24;
+    case GGML_Q4_1: return n / 32 * 20;
+    case GGML_Q5_0: return n / 32 * 22;
+    case GGML_Q8_1: return n / 32 * 36;
   }
   throw std::runtime_error("type_bytes: type " + std::to_string(t));
 }
@@ -323,12 +362,14 @@ std::vector<int64_t> primes_from(int64_t start, int n, std::set<int64_t>& used) 
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_deepseek41 OUT.gguf [--seed N] [--nu N] [--heads N] [--real] [--unsloth] [--q5_1-down]\n");
+    printf("usage: make_tiny_deepseek41 OUT.gguf [--seed N] [--nu N] [--heads N] [--real] [--unsloth] [--q5_1-down]\n"
+           "       [--exps-type q4_1|q5_0|q8_1|q5_1]  (every expert matrix in that type: the GPU decode's tests, #88)\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
   uint64_t seed = 41;
   bool real = false, uns = false, q51 = false;
+  uint32_t xt = 0;  // (--exps-type: the experts' type, 0: as before)
   int heads = -1, nu = -1;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
@@ -342,6 +383,11 @@ int main(int argc, char** argv) {
     else if (a == "--nu") nu = atoi(next());  // (experts per token; --nu 16 = every expert, no selection to flip on near-ties)
     else if (a == "--unsloth") uns = true;
     else if (a == "--q5_1-down") q51 = true;
+    else if (a == "--exps-type") {
+      const std::string t = next();
+      xt = t == "q4_1" ? GGML_Q4_1 : t == "q5_0" ? GGML_Q5_0 : t == "q8_1" ? GGML_Q8_1 : t == "q5_1" ? GGML_Q5_1 : 0;
+      if (!xt) { fprintf(stderr, "make_tiny_deepseek41: --exps-type q4_1, q5_0, q8_1 or q5_1\n"); return 2; }
+    }
     else { fprintf(stderr, "make_tiny_deepseek41: unknown option %s\n", a.c_str()); return 2; }
   }
   if (real) real_config();
@@ -512,7 +558,7 @@ int main(int argc, char** argv) {
         gen_exps(b + "ffn_up_exps.weight", FF, E, 3.0, sd + 1);
         gen_exps(b + "ffn_down_exps.weight", E, FF, 1.0, sd + 2);
       } else {
-        const uint32_t XQ = uns ? GGML_MXFP4 : Q8;
+        const uint32_t XQ = xt ? xt : uns ? GGML_MXFP4 : Q8;
         const uint64_t n3 = (uint64_t)NE * FF * E;
         w.tensor(b + "ffn_gate_exps.weight", randn(n3, 3 / std::sqrt((double)E)), XQ, S{(uint64_t)NE, (uint64_t)FF, uE});
         w.tensor(b + "ffn_up_exps.weight", randn(n3, 3 / std::sqrt((double)E)), XQ, S{(uint64_t)NE, (uint64_t)FF, uE});
