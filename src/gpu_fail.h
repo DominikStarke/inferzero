@@ -143,6 +143,17 @@ inline bool clear_marker() {
   return true;
 }
 
+// a marker that check_marker would refuse on (this boot, under 12 hours old, ARC_IGNORE_HANG not set): the server's
+// log is then not rotated, so the run the marker names is kept (src/server_log.h; a refused start under systemd's
+// restarts rotated it out after 10 tries)
+inline bool marker_live() {
+  std::map<std::string, std::string> kv;
+  if (!read_marker(kv) || !kv.count("boot") || !kv.count("kind") || !same_boot(kv["boot"], boot_id())) return false;
+  const char* ign = getenv("ARC_IGNORE_HANG");
+  if (ign && atoi(ign) != 0) return false;
+  const long long at = parse_utc(kv["time"]);
+  return !(at > 0 && (long long)std::time(nullptr) - at > kStaleS);
+}
 // Before a program starts the GPU: a marker from this boot ends it with code 3 (ARC_IGNORE_HANG=1: a warning only);
 // one from an older boot is deleted with an info line; one that cannot be read is ignored with a warning
 inline void check_marker() {
@@ -187,8 +198,9 @@ inline void check_marker() {
 //  nothing, quietly. A child process, no GPU call)
 inline void kernel_lines() {
 #ifndef _WIN32
-  FILE* p = popen("{ timeout 5 journalctl -k -n 30 --no-pager -q 2>/dev/null || timeout 5 dmesg 2>/dev/null | tail -n 30; } "
-                  "2>/dev/null", "r");
+  // (journalctl gives an unprivileged user nothing with exit code 0: dmesg then)
+  FILE* p = popen("{ o=$(timeout 5 journalctl -k -n 30 --no-pager -q 2>/dev/null); if [ -n \"$o\" ]; then printf '%s\\n' \"$o\"; "
+                  "else timeout 5 dmesg 2>/dev/null | tail -n 30; fi; } 2>/dev/null", "r");
   if (!p) return;
   char line[512];
   int n = 0;

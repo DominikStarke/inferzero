@@ -131,6 +131,15 @@ opens them.
 - `zero-server` rotates before it starts serverz and sends serverz's stderr into `server.log`. serverz sees that and
   leaves the file alone. Started any other way (`zero-launcher.sh`, systemd, docker, by hand), serverz rotates and
   opens the file itself.
+- **One server per logs folder owns `server.log`:** it holds `server.lock` there for its whole run. A second server
+  in the same folder (started twice, or by hand next to `zero-server` or a service) rotates nothing. It writes
+  `server_pid<N>.log` and says so in a `W` line. A `server.log` that cannot be moved (open in another program) is
+  never truncated: that run writes `server_pid<N>.log` too.
+- **A long run rolls over at 256 MB:** `server.log` becomes an earlier run and starts anew, so a service at `-lv 3`
+  doesn't grow one file without end.
+- **After a GPU hang,** while the hang marker refuses starts, nothing is rotated, so the run the marker names stays.
+- `zero-server -LogDir D` is kept (in `log-dir.txt`) for later starts, `logs` and `doctor`; `-LogDir default` forgets it.
+  A relative folder is made absolute.
 - Before 2026-11-23 the current log was `%USERPROFILE%\.inferzero\server.log`, at the folder's top. The first start
   after the update moves it into `logs` as an earlier run.
 

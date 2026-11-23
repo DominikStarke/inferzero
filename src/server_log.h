@@ -25,6 +25,11 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace slog {
 namespace fs = std::filesystem;
@@ -61,35 +66,44 @@ inline std::string stamp_of(const fs::path& f, std::time_t* t = nullptr) {
   return b;
 }
 
-inline uint32_t crc32(const unsigned char* p, size_t n) {
-  static uint32_t tab[256];
-  static bool made = false;
-  if (!made) {
+// CRC-32 (zip's) in pieces: state 0xFFFFFFFF first, each piece through crc32_update, the result state ^ 0xFFFFFFFF
+inline uint32_t crc32_update(uint32_t c, const unsigned char* p, size_t n) {
+  static const auto tab = [] {
+    std::vector<uint32_t> t(256);
     for (uint32_t i = 0; i < 256; ++i) {
-      uint32_t c = i;
-      for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-      tab[i] = c;
+      uint32_t v = i;
+      for (int k = 0; k < 8; ++k) v = v & 1 ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+      t[i] = v;
     }
-    made = true;
-  }
-  uint32_t c = 0xFFFFFFFFu;
+    return t;
+  }();
   for (size_t i = 0; i < n; ++i) c = tab[(c ^ p[i]) & 0xFF] ^ (c >> 8);
-  return c ^ 0xFFFFFFFFu;
+  return c;
 }
 
 // src in a zip of its own (one entry, stored: no compression), written to a temporary file and then put in place,
-// with src's time; false (and nothing left behind) on failure
+// with src's time; false (and nothing left behind) on failure. Streamed in pieces of 1 MiB (the CRC in a first pass):
+// a log of hundreds of MB is never held in RAM
 inline bool zip_one(const fs::path& src, const fs::path& dst) {
   std::error_code ec;
   const uintmax_t sz = fs::file_size(src, ec);
   if (ec || sz >= 0xFFFFFFFFull) return false;  // (no zip64: such a log stays a .log)
-  std::vector<unsigned char> data((size_t)sz);
+  std::vector<unsigned char> buf(1 << 20);
+  uint32_t crc = 0;
   {
     FILE* in = plat::fopen_path(src, "rb");
     if (!in) return false;
-    const size_t got = data.empty() ? 0 : fread(data.data(), 1, data.size(), in);
+    uint32_t c = 0xFFFFFFFFu;
+    uintmax_t left = sz;
+    while (left) {
+      const size_t n = fread(buf.data(), 1, (size_t)std::min<uintmax_t>(left, buf.size()), in);
+      if (!n) break;
+      c = crc32_update(c, buf.data(), n);
+      left -= n;
+    }
     fclose(in);
-    if (got != data.size()) return false;
+    if (left) return false;
+    crc = c ^ 0xFFFFFFFFu;
   }
   std::time_t t = 0;
   stamp_of(src, &t);
@@ -97,7 +111,6 @@ inline bool zip_one(const fs::path& src, const fs::path& dst) {
   plat::local_time(t, tm);
   const uint16_t dtime = (uint16_t)((tm.tm_hour << 11) | (tm.tm_min << 5) | (tm.tm_sec / 2));
   const uint16_t ddate = (uint16_t)((std::max(0, tm.tm_year + 1900 - 1980) << 9) | ((tm.tm_mon + 1) << 5) | tm.tm_mday);
-  const uint32_t crc = crc32(data.data(), data.size());
   const std::string name = src.filename().string();
   std::vector<unsigned char> o;
   auto u16 = [&](uint32_t v) { o.push_back((unsigned char)(v & 0xFF)), o.push_back((unsigned char)((v >> 8) & 0xFF)); };
@@ -111,19 +124,29 @@ inline bool zip_one(const fs::path& src, const fs::path& dst) {
     o.insert(o.end(), name.begin(), name.end());
   };
   header(false, 0);
-  const size_t data_at = o.size();
-  const size_t cd_at = data_at + data.size();
-  std::vector<unsigned char> head(o);
+  const std::vector<unsigned char> head(o);
+  const uintmax_t cd_at = head.size() + sz;
   o.clear();
   header(true, 0);
   const size_t cd_size = o.size();
   u32(0x06054b50u), u16(0), u16(0), u16(1), u16(1), u32((uint32_t)cd_size), u32((uint32_t)cd_at), u16(0);
+  if (cd_at >= 0xFFFFFFFFull) return false;
   const fs::path tmp = dst.string() + ".tmp";
   FILE* out = plat::fopen_path(tmp, "wb");
   if (!out) return false;
-  bool ok = fwrite(head.data(), 1, head.size(), out) == head.size() &&
-            (data.empty() || fwrite(data.data(), 1, data.size(), out) == data.size()) &&
-            fwrite(o.data(), 1, o.size(), out) == o.size();
+  bool ok = fwrite(head.data(), 1, head.size(), out) == head.size();
+  if (FILE* in = ok ? plat::fopen_path(src, "rb") : nullptr) {
+    uintmax_t left = sz;
+    while (ok && left) {
+      const size_t n = fread(buf.data(), 1, (size_t)std::min<uintmax_t>(left, buf.size()), in);
+      ok = n > 0 && fwrite(buf.data(), 1, n, out) == n;
+      left -= n;
+    }
+    fclose(in);
+  } else {
+    ok = false;
+  }
+  ok = ok && fwrite(o.data(), 1, o.size(), out) == o.size();
   ok = fclose(out) == 0 && ok;
   if (ok) {
     fs::rename(tmp, dst, ec);
@@ -138,7 +161,8 @@ inline bool zip_one(const fs::path& src, const fs::path& dst) {
   return true;
 }
 
-// an earlier run's log moved into dir as server_<its time>.log; false if it could not be moved
+// an earlier run's log moved into dir as server_<its time>.log; false if it could not be moved (in use: a file another
+// process holds open, which Windows will not rename or remove; nothing changed then, a copy made on the way removed)
 inline bool keep_earlier(const fs::path& dir, const fs::path& log) {
   std::error_code ec;
   const std::string st = stamp_of(log);
@@ -151,7 +175,11 @@ inline bool keep_earlier(const fs::path& dir, const fs::path& log) {
     if (ec) return false;
     const auto ft = fs::last_write_time(log, ec);
     if (!ec) fs::last_write_time(dest, ft, ec);
-    fs::remove(log, ec);
+    ec.clear();
+    if (!fs::remove(log, ec) || ec) {  // (still there: in use. The review of ba6b107: this was taken as moved)
+      fs::remove(dest, ec);
+      return false;
+    }
   }
   gpufail::marker_log_moved(log.string(), dest.string());  // (a GPU fault's marker names the log of its run)
   return true;
@@ -187,6 +215,70 @@ inline void prune(const fs::path& dir) {
   }
 }
 
+// The logs folder's lock, logs/server.lock, held for the whole run: one serverz owns server.log and its rotation. A
+// second one (started twice, or by hand next to zero-server / a systemd service) used to rotate the first one's live
+// log away before failing on the port: on Windows the copy was taken as moved and the live file truncated ("wb"), on
+// Linux the live server went on writing into the renamed file (the review of ba6b107). Windows: the file opened
+// without write sharing; Linux: flock, not inherited by children (the terminal tool, MCP servers). Freed by the
+// system when the process ends, however it ends. True: this process holds it; pid: the holder's, when known.
+inline bool take_lock(const fs::path& dir, unsigned long* pid) {
+  const fs::path p = dir / "server.lock";
+  const std::string me = std::to_string(plat::process_id()) + "\n";
+#ifdef _WIN32
+  HANDLE h = CreateFileW(p.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    if (pid) {
+      *pid = 0;
+      if (FILE* f = plat::fopen_path(p, "rb")) {
+        if (fscanf(f, "%lu", pid) != 1) *pid = 0;
+        fclose(f);
+      }
+    }
+    return false;
+  }
+  SetEndOfFile(h);
+  DWORD w = 0;
+  WriteFile(h, me.data(), (DWORD)me.size(), &w, nullptr);
+  FlushFileBuffers(h);
+  // (h kept open until the process ends: that is the lock)
+  return true;
+#else
+  const int fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) return true;  // (no lock file possible: as before, without the guard)
+  if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    if (pid) {
+      char b[32] = {};
+      *pid = ::read(fd, b, sizeof b - 1) > 0 ? strtoul(b, nullptr, 10) : 0;
+    }
+    ::close(fd);
+    return false;
+  }
+  if (ftruncate(fd, 0) == 0) {
+    const ssize_t w = ::write(fd, me.data(), me.size());
+    (void)w;
+  }
+  // (fd kept open until the process ends: that is the lock)
+  return true;
+#endif
+}
+
+// (the 256 MB roll within a run: a long service at -lv 3 grew one file without end. The log's mutex is held here, so
+//  nothing in it logs: the move, the prune and the reopen only. On a failure the file is kept open as it is)
+inline fs::path& roll_log() { static fs::path p; return p; }
+inline void roll_now() {
+  zlog::Config& c = zlog::cfg();
+  const fs::path& log = roll_log();
+  if (!c.dfile || log.empty()) return;
+  fclose(c.dfile);
+  c.dfile = nullptr;
+  const bool moved = keep_earlier(log.parent_path(), log);
+  if (moved) prune(log.parent_path());
+  c.dfile = plat::fopen_path(log, moved ? "wb" : "ab");
+  c.dfile_bytes = 0;
+  if (!moved) c.dfile_cap *= 2;  // (not again at once)
+}
+constexpr size_t kRollBytes = 256ull << 20;
+
 // The server's log at its start (see the top): cli_dir is --log-dir's value or "". Sets zlog's dfile and its path.
 inline void open_default(const std::string& cli_dir) {
   zlog::Config& c = zlog::cfg();
@@ -206,12 +298,30 @@ inline void open_default(const std::string& cli_dir) {
     }
   }
   const fs::path log = dir / "server.log";
+  // (a file of this run's own: server_pid<N>.log, an earlier run's name, so the rotation keeps and prunes it later)
+  auto own_file = [&](const char* why) {
+    const fs::path mine = dir / ("server_pid" + std::to_string(plat::process_id()) + ".log");
+    c.dfile = plat::fopen_path(mine, "wb");
+    if (c.dfile) snprintf(c.dfile_path, sizeof c.dfile_path, "%s", mine.string().c_str());
+    LOG_WRN("inferzero: %s: this run's log is %s\n", why, c.dfile ? mine.string().c_str() : "on stderr only");
+  };
+  unsigned long holder = 0;
+  if (!take_lock(dir, &holder)) {  // (another serverz owns this folder's server.log: it is left alone)
+    const std::string why = "another server (process " + std::to_string(holder) + ") writes " + log.string();
+    own_file(why.c_str());
+    return;
+  }
   snprintf(c.dfile_path, sizeof c.dfile_path, "%s", log.string().c_str());
   // (stderr already that file: zero-server.ps1 rotated it and redirects every line there)
   if (FILE* f = plat::fopen_path(log, "rb")) {
     const bool same = plat::same_file(stderr, f);
     fclose(f);
     if (same) return;
+  }
+  // (a GPU hang marker this start will refuse on: nothing rotated, so the run it names stays; the refusal follows)
+  if (gpufail::marker_live()) {
+    c.dfile_path[0] = 0;
+    return;
   }
   std::error_code ec;
   // (the place before 2026-11-23: the data folder's top, zero-server.ps1's server.log there; an earlier run now)
@@ -224,8 +334,10 @@ inline void open_default(const std::string& cli_dir) {
     }
     if (!same) keep_earlier(dir, top);
   }
-  if (fs::exists(log, ec) && !keep_earlier(dir, log))
-    LOG_WRN("inferzero: the last run's log %s could not be kept (in use?): written anew\n", log.string().c_str());
+  if (fs::exists(log, ec) && !keep_earlier(dir, log)) {  // (in use: never truncated)
+    own_file(("the last run's log " + log.string() + " is in use").c_str());
+    return;
+  }
   prune(dir);
   c.dfile = plat::fopen_path(log, "wb");
   if (!c.dfile) {
@@ -233,6 +345,10 @@ inline void open_default(const std::string& cli_dir) {
     c.dfile_path[0] = 0;
     return;
   }
+  roll_log() = log;
+  c.dfile_cap = kRollBytes;
+  if (const char* e = getenv("ARC_LOG_ROLL_KB")) c.dfile_cap = (size_t)(std::max(0.1, atof(e)) * 1024);  // (tests)
+  c.dfile_roll = roll_now;
   LOG_INF("inferzero: log file %s (earlier runs' next to it)\n", log.string().c_str());
 }
 }  // namespace slog

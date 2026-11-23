@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-23: the server log: a second server no longer damages the first one's
+
+- **Fixed:** a second serverz on the same logs folder rotated the running server's log before it stopped on the
+  busy port. On Windows that truncated the live `server.log`, leaving NUL bytes and two servers' lines in one file.
+  On Linux the running server went on writing into the renamed file.
+  - The first server now holds `logs/server.lock` for its whole run. A second one rotates nothing and writes
+    `server_pid<N>.log`, with a warning.
+  - A `server.log` that cannot be moved is never truncated.
+- **A long run's log rolls over at 256 MB** instead of growing without end, and old logs are zipped in pieces, not
+  read into memory whole.
+- **A start refused by the GPU hang marker rotates nothing,** so the log of the run that hung is kept. Under a
+  service's restarts it used to be zipped and deleted after ten tries.
+- `zero-server -LogDir` is made absolute and kept for later starts (`-LogDir default` forgets it).
+- On Linux, after a GPU fault, `dmesg` is read when `journalctl -k` gives nothing (an unprivileged user).
+
 ## 2026-11-23: model folders from the window and the command line; runz's BOS; clearer start-up lines
 
 - **New: model folders without editing a file (#81).** A folder of models elsewhere, e.g. `D:\ai\models`, was found

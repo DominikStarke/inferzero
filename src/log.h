@@ -43,6 +43,10 @@ struct Config {
   //  stderr already goes there (zero-server.ps1) or --log-disable; its path for the failsafe's messages)
   FILE* dfile = nullptr;
   char dfile_path[1024] = "";
+  // (its bytes this run, and past dfile_cap dfile_roll moves it to an earlier run and starts it anew; called with the
+  //  log's mutex held, so it logs nothing itself: src/server_log.h roll_now)
+  size_t dfile_bytes = 0, dfile_cap = 0;
+  void (*dfile_roll)() = nullptr;
 };
 // the log file the server writes by default, or "" (src/gpu_fail.h names it in the marker and the refusal)
 inline const char* default_log_path();
@@ -104,8 +108,10 @@ inline void emit(int lvl, const char* s, size_t n) noexcept {
     fflush(c.file);
   }
   if (c.dfile) {
-    fprintf(c.dfile, "%s%.*s\n", pre, len, s);
+    const int w = fprintf(c.dfile, "%s%.*s\n", pre, len, s);
     fflush(c.dfile);
+    c.dfile_bytes += w > 0 ? (size_t)w : 0;
+    if (c.dfile_cap && c.dfile_bytes > c.dfile_cap && c.dfile_roll) c.dfile_roll();
   }
   if (locked) mu().unlock();
 }
@@ -225,8 +231,10 @@ inline void raw(const char* fmt, ...) noexcept {
     fflush(c.file);
   }
   if (c.on && c.dfile) {  // (as zero-server.ps1's redirect had them: the server log holds stderr's every line)
-    vfprintf(c.dfile, fmt, a3);
+    const int w = vfprintf(c.dfile, fmt, a3);
     fflush(c.dfile);
+    c.dfile_bytes += w > 0 ? (size_t)w : 0;
+    if (c.dfile_cap && c.dfile_bytes > c.dfile_cap && c.dfile_roll) c.dfile_roll();
   }
   if (locked) mu().unlock();
   va_end(a3);

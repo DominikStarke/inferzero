@@ -91,7 +91,7 @@ param(
   [switch]$Quiet,
   # (added last: the positions of the options above stay as they were)
   [string]$Preset = "",   # start / restart: the options of a saved preset; save-preset: its name
-  [string]$LogDir = "",   # the logs folder (default %USERPROFILE%\.inferzero\logs; also ARC_LOG_DIR)
+  [string]$LogDir = "",   # the logs folder (default %USERPROFILE%\.inferzero\logs; also ARC_LOG_DIR); kept; "default" forgets it
   [string]$Add = "",      # model-dirs: a model folder to add
   [string]$Remove = "",   # model-dirs: a model folder to remove
   [switch]$DryRun,        # start / restart: print the command and the memory estimate, start nothing
@@ -312,7 +312,19 @@ function Engine-Text([string]$e, [bool]$moe = $false) {
 $exe = Join-Path $root "bin\serverz.exe"
 # (every log in one folder since 2026-11-23, the user: "it's under the logs folder": logs\server.log this run's,
 #  logs\server_<date>_<time>.log earlier ones; -LogDir / ARC_LOG_DIR another folder, src/server_log.h's scheme)
-$logsDir = if ($LogDir) { $LogDir } elseif ($env:ARC_LOG_DIR) { $env:ARC_LOG_DIR } else { Join-Path $stateDir "logs" }
+# (-LogDir kept in log-dir.txt for later starts, `logs` and doctor; -LogDir default forgets it. Made absolute: serverz
+#  runs in the package folder and would take a relative folder as another one, the review of ba6b107)
+$logDirFile = Join-Path $stateDir "log-dir.txt"
+function Abs-Dir([string]$p) { if ([IO.Path]::IsPathRooted($p)) { [IO.Path]::GetFullPath($p) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $p)) } }
+if ($LogDir -eq "default") {
+  Remove-Item -LiteralPath $logDirFile -Force -ErrorAction SilentlyContinue
+  $LogDir = ""
+} elseif ($LogDir) {
+  $LogDir = Abs-Dir $LogDir
+  if (-not $DryRun) { try { New-Item -ItemType Directory -Force $stateDir | Out-Null; [IO.File]::WriteAllText($logDirFile, "$LogDir`n", (New-Object Text.UTF8Encoding $false)) } catch {} }
+}
+$savedLogDir = if (Test-Path -LiteralPath $logDirFile) { (Get-Content -Encoding UTF8 -LiteralPath $logDirFile -TotalCount 1).Trim() } else { "" }
+$logsDir = if ($LogDir) { $LogDir } elseif ($env:ARC_LOG_DIR) { Abs-Dir $env:ARC_LOG_DIR } elseif ($savedLogDir) { $savedLogDir } else { Join-Path $stateDir "logs" }
 $log = Join-Path $logsDir "server.log"
 $stateFile = Join-Path $stateDir "server.json"
 $base = "http://127.0.0.1:$Port"
