@@ -441,9 +441,19 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
   (B390, 140T, the laptop's 125H: 75-120 GB/s) 20-33.
 - **Launches:** the I1.5 graph runs ~25 small kernels a layer pass, ~1,200 a token. At ~5 us each that alone is ~6 ms,
   a ceiling of ~165 tok/s on any card. **Fewer launches is a lever on every card**, before any kernel gets faster.
+  **So fusion gates 130 on the B70 too**, not only on the slower cards: its launch ceiling is below its bandwidth
+  ceiling. The launch cost is measured per family with `--prof-gen` first (Alchemist's command lists make it cheaper).
 - **The prompt:** ~10 int8 GOP a token, ~75 % of it in the experts (8 routed experts against ~20 M dense weights a
   pass). 6,000 tok/s is ~60 int8 TOPS of useful work: ~16 % of a B70's XMX peak (~367 TOPS), ~26 % of an A770's
   measured 232. Attention is cheap at 4K: 40 of the 48 slots are sliding windows of 1,024.
+  - **The B70: reachable, but demanding.** Its 35B prompt reached 5,177-5,647 tok/s (4K / 8K), ~34 TOPS at ~6 GOP a
+    token, ~9 % of its peak; Inkling needs ~1.8x that. In its favour: 8 of 128 experts (the 35B: 8 of 256), so each
+    expert gets ~512 rows at chunk 8,192 and the XMX tiles fill better, and NVFP4 decodes more cheaply than IQ4_XS.
+    6,000 needs the expert GEMM near the dense GEMMs' efficiency at chunk 8,192; the 35B-like baseline is measured first.
+  - **The A770: 6,000 is a stretch; ~3,500-4,500 is the realistic estimate** with the 8-lane XMX expert GEMM (the
+    Researcher, 2026-11-23). Its 35B runs 2,538 tok/s at 4K, ~15 TOPS (6.6 % of its peak) with DP4a experts, and its
+    whole dense 27B prompt is ~41 % of peak. 26 % for Inkling needs the expert GEMM close to the big tile's efficiency,
+    no decode_w8 pass (12-15 % of the 35B's prompt today), and the routing, scatter and combine kept small.
 
 **The steps, for every card unless a card is named** (each its own commit and before-after row):
 1. **Fused layer kernels (generation first).** The controller (`ink_rms2` + `ink_ctrl_apply`), the K / V rows and
@@ -483,9 +493,23 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
 | B390 (Panther Lake) | shared RAM, ~120 GB/s | the cache is the RAM share | 16-lane XMX (where its checks pass) | DSpark | 2D loads off (as under Windows) |
 | Arc 140T (Arrow Lake H) | shared RAM, ~120 GB/s | as the B390 | 8-lane XMX expert GEMM (no dpasw: an iGPU, unmeasured) | DSpark | the 140T preset's other rules |
 | The laptop's 125H (Xe-LPG) | shared RAM, 75 GB/s | ~14 GiB cache, ~95 % of the experts | DP4a (no XMX) | DSpark | the correctness host: every step's KL runs here first |
+| 2 x A770 (layer split) | 2 x 16 GB | every expert on a card, its layers' share: no RAM tier | 8-lane XMX expert GEMM on each | DSpark | the likeliest way the A770 family nears 130: hansong80's dual-A770 35B on a layer split ran 2.9-3.4x the prompt and 1.7x the generation of one card (#45) |
+| 2-4 x Pro B60 (layer split) | 2-4 x 24 GB | every expert in VRAM with room for long contexts | 16-lane XMX tiles | DSpark | experts per card halve or quarter |
+
+- **A ~3-bit expert file for the A770 (opt-in, its own KL run first):** at ~88 % cached a few percent of the experts
+  miss; at ~1.7 GB of experts a token, a 3-5 % miss rate is 50-85 MB a token over PCIe (~20-25 GB/s), 2-4 ms against a
+  ~7.7 ms token at 130 tok/s, and drafting touches more experts. A ~3-bit file (~11 GiB) fits whole and reads ~1.1 GB a
+  token, raising the ceiling from ~112 to ~140. Requantizing NVFP4 lower may well break KL 0.015, so the KL decides;
+  the RAM tier stays the default.
+- **Multi-GPU:** Inkling's layer split is refused today (I1.7). The 2 x A770 and B60 rows need it: whole cache slots
+  move with their physical layer's experts, and the loop's three passes over layers 6-17 stay on the card that holds
+  them.
 
 **Order:** I1.7 steps 2-6 first (the streamed path, the base of every row above), then 1 (launches, all cards), then 3
 (the 8-lane XMX expert GEMM, shared with the 35B) and 6 (DSpark), then 2, 4 and 5 by what the cards' profiles show.
+**Checks for every step:** its KL on the laptop first, and the tiny file's 3-pass loop against ref_forward (I1.5's
+check: `make_tiny_inkling2 --scale 0.3 --all-experts`, 200 positions token by token, KL 0.00017 mean / 0.00089 max) as a
+regression test, since the loop is where errors grow.
 **What each card is asked for:** `runz --bench-pp 4096 --prof` and `--n 128 --prof-gen` on the real file,
 then the A / B of each step against the default; the B70 and A770 owners first (#83).
 
