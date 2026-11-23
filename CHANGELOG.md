@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: bench/stray_words.ps1 counts the answer, not the thinking
+
+- **Fixed:** the Latin and other-script columns counted the whole saved file, thinking included. A thinking part in
+  English with Japanese quotes made ~10 stray words per 1,000 characters in every answer, where only a few answers had
+  any (manoreken2, #4: 9.39 -> 0.13 on his 13 answers). Every column now counts the answer part, and `script_think` /
+  `latin_think` count the thinking part apart, as `simp_think` already did.
+- **New column `romanized`:** a romanization in parentheses right after Han text, such as a name followed by (Zhao), is
+  counted there and not as a stray Latin word.
+
 ## 2026-11-23: pruned Flash Next files load again; MoE errors name the dimensions
 
 - **Fixed (a regression since 2026-11-20):** an expert-pruned Flash Next, such as ISTA-DASLab's
