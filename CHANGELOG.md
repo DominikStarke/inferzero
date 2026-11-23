@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: wider K reads in the one-token attention (opt-in)
+
+- **New, opt-in: `ARC_ATTN_DEC_KW8=1`.** The attention of each generated token reads the cached keys in larger blocks (half
+  the read messages on an A770). At 92K on an A770 this attention was ~15 ms of a ~71 ms token, at about half the
+  memory speed it needs (#45). The results are the same bit for bit. Not measured on a card yet.
+
 ## 2026-11-23: `ARC_GEMM_XW_AG` removed; the long-context plan step measured
 
 - **Removed: `ARC_GEMM_XW_AG`.** On the A770 it was 23 % slower on the 27B's 4K prompt (1,716 -> 1,320 tok/s, #45). The

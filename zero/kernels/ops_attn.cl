@@ -944,6 +944,32 @@ __kernel void attn_split(__global const char* qi, __global const float* qsc, __g
 // split share its K/V reads through L1.
 // part: [nsplit][nh][HD + 2] = (max, sum, o[HD]). slen: multiple of 16; kstart: multiple of slen at or below the
 // window start.
+// -DDEC_KW8 (2026-11-23, ARC_ATTN_DEC_KW8=1, opt-in; the A770's decode attention at 92K, #45: ~15 ms of a ~71 ms token
+// at ~50 % of the bandwidth): a 16-key tile's K read as two 8-word block reads a 64-dim chunk, not sixteen 1-word
+// ones (the users' ocloc 26.40, dg2-g10, the 27B's form: 64 loads of 64 bytes a tile for K, 16 for V). The same
+// words to the same DP4a in the same order, the two chains as QK_TILE's SB 1 form: bit for bit. Only there (SB 1,
+// HS <= 3: the Qwen 27B / 9B / 4B shapes); elsewhere QK_TILE as before
+#if defined(DEC_KW8) && SB == 1 && HS < 4
+#define QK_TILE_DEC(KBASE, sob)                                                         \
+  {                                                                                     \
+    int acc[HS], acc1[HS];                                                              \
+    _Pragma("unroll") for (int r = 0; r < HS; ++r) acc[r] = acc1[r] = 0;                \
+    _Pragma("unroll") for (int c = 0; c < KC; ++c) {                                    \
+      const uint8 ka_ = intel_sub_group_block_read8((KBASE) + c * 256);                 \
+      const uint8 kb_ = intel_sub_group_block_read8((KBASE) + c * 256 + 128);           \
+      const uint kt_[16] = {ka_.s0, ka_.s1, ka_.s2, ka_.s3, ka_.s4, ka_.s5, ka_.s6, ka_.s7,   \
+                            kb_.s0, kb_.s1, kb_.s2, kb_.s3, kb_.s4, kb_.s5, kb_.s6, kb_.s7};  \
+      _Pragma("unroll") for (int w = 0; w < 16; w += 2) {                               \
+        _Pragma("unroll") for (int r = 0; r < HS; ++r)                                  \
+          acc[r] += dot_4x8packed_ss_int(intel_sub_group_shuffle(qw[r][c], w), kt_[w]); \
+        _Pragma("unroll") for (int r = 0; r < HS; ++r)                                  \
+          acc1[r] += dot_4x8packed_ss_int(intel_sub_group_shuffle(qw[r][c], w + 1), kt_[w + 1]); \
+      }                                                                                 \
+    }                                                                                   \
+    const float ks = ksc[sob];                                                          \
+    _Pragma("unroll") for (int r = 0; r < HS; ++r) sacc[r] = (float)(acc[r] + acc1[r]) * qs[r][0] * ks; \
+  }
+#endif
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_decode(__global const char* qi, __global const float* qsc, __global const uint* kq,
                           __global const float* ksc, __global const uint4* vq, __global const float* vsc, int cap,
@@ -984,7 +1010,11 @@ __kernel void attn_decode(__global const char* qi, __global const float* qsc, __
 #else
     const bool valid = key < k1 && key >= lo;
 #endif
+#if defined(DEC_KW8) && SB == 1 && HS < 4
+    QK_TILE_DEC(kq + b * KW * 16, sob)
+#else
     QK_TILE(intel_sub_group_block_read(kq + (b * KW + c * 16 + w) * 16), sob)
+#endif
 #pragma unroll
     for (int r = 0; r < HS; ++r) {
       const float sv = valid ? sacc[r] : -INFINITY;

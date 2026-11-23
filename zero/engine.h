@@ -1816,8 +1816,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const std::string dec_grf = dec_small ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
     static const int dec_sg = getenv("ARC_ATTN_DEC_SG") ? std::clamp(atoi(getenv("ARC_ATTN_DEC_SG")), 1, 512) : 512;  // (at most 512: apart_ holds that many splits a row, audit 2026-11-18)
     static const int dec_smax = getenv("ARC_ATTN_DEC_SMAX") ? (std::max(1, atoi(getenv("ARC_ATTN_DEC_SMAX"))) + 15) / 16 * 16 : 256;  // (keys per split, most)
+    // (ARC_ATTN_DEC_KW8=1, 2026-11-23, opt-in: attn_decode's K tile in 8-word block reads, ops_attn.cl -DDEC_KW8, bit
+    //  for bit; the Qwen shapes with one scale a row and up to 3 q heads a sub-group)
+    static const bool dec_kw8 = getenv("ARC_ATTN_DEC_KW8") && atoi(getenv("ARC_ATTN_DEC_KW8")) != 0;
     auto opts = [&](int tpw) {
-      return dec_grf + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
+      return dec_grf + (dec_kw8 ? "-DDEC_KW8 " : "") + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
              " -DHS=" + std::to_string(hs) + " -DTPW=" + std::to_string(tpw) + sb_opt(hd);
     };
     // split length: the longest (fewest partials to combine, up to smax) that still gives `target` sub-groups
