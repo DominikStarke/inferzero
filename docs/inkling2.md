@@ -529,6 +529,7 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    drafter's own architecture. Each verified token costs one main pass for several tokens, so it is the lever where
    bandwidth caps: the A770 (130 needs ~1.2 tokens a pass at 100 % of its bandwidth, ~1.6 at a realistic 75 %), the
    B60 / B580, the iGPUs. The drafts a step per family as `xe2_mtp_drafts` does for MTP (Alchemist 4).
+   **The design (2026-11-24, for review before code): see "DSpark drafting: design" below.**
 7. **The memory tiers per card** (I1.7's design, sized by the plan):
 
 | Card | Memory, bandwidth | Experts (14.7 GiB of records) | Prompt experts | Drafting | Notes |
@@ -559,6 +560,135 @@ check: `make_tiny_inkling2 --scale 0.3 --all-experts`, 200 positions token by to
 regression test, since the loop is where errors grow.
 **What each card is asked for:** `runz --bench-pp 4096 --prof` and `--n 128 --prof-gen` on the real file,
 then the A / B of each step against the default; the B70 and A770 owners first (#83).
+
+## DSpark drafting: design (I2 step 6, 2026-11-24, for review before code)
+
+**The file.** `dspark-Inkling-2-Mini-Q8_0.gguf` is in the HF cache next to the Q8_K_XL (unsloth/Inkling-2-Mini-GGUF,
+384 MB, 54 tensors, `general.architecture = dflash`). Nothing needs downloading. It has no token embedding and no head:
+it borrows the target's. Unsloth's README calls it the converted form of the model's own 3-layer block drafter
+(`mtp.safetensors`, block size 8). This is the "padded-vocab" layout (`markov_w1` [256 x 201,024]); llama.cpp master's
+DSpark (PR #32218's newer format: an explicit `markov_w2`, unpadded vocabulary, no `dflare_norm`) refuses it, and
+master's `src/models/dspark.cpp` does not use this file's names.
+
+**The reference.** The graph below is read from ollama's `mlxrunner/model/inkling2/draft.go` and `model.go` (MIT;
+fetched 2026-11-24). Its tensor names map one for one onto this file's. vLLM's `vllm/models/inkling2/nvidia/dspark.py`
+(Apache-2.0) and SGLang's `inkling2_mtp.py` use the same names and are the cross-checks. Ideas only, written anew; if
+the engine follows that file's structure closely, NOTICE gets an ollama credit.
+
+| this file | ollama / HF | shape |
+|---|---|---|
+| `dspark_fuse.weight` | `fuse_weight` | [layers + 1 = 4 rows, 4 taps], each row softmaxed once at load |
+| `mask_embd.weight` | `mask_embed` | [2304] |
+| `output_norm.weight` | `norm` | [2304] |
+| `dspark_norm.weight` | `markov_head.dflare_norm` | [2304] |
+| `markov_w1.weight` | `markov_head.markov_w1` | an embedding, a 256-row per token, 201,024 tokens |
+| `joint_proj.weight` + `.bias` | `markov_head.rnn_proj` | 2 (256 + 2304) = 5,120 in, 3 x 256 out |
+| `dspark_hidden_out.weight` + `.bias` | `markov_head.hidden_out` | 256 in, 2304 out |
+| `blk.i.attn_norm` / `ffn_norm` | `input_layernorm` / `post_attention_layernorm` | |
+| `blk.i.dflare_norm` | `layers.i.dflare_norm` | the context features' norm, per layer |
+| `blk.i.attn_q / k / v / output`, `attn_q_norm`, `attn_k_norm` | `q_proj`, `k_proj`, `v_proj`, `o_proj`, `q_norm`, `k_norm` | 24 q heads, 8 KV heads, 128 |
+| `blk.i.attn_k_ctx / attn_v_ctx`, `attn_k_ctx_norm` | `k_proj_ctx`, `v_proj_ctx`, `k_norm_ctx` | the context's own K / V projections |
+| `blk.i.ffn_gate / up / down` | `mlp.*` | SwiGLU, 9,216 |
+
+**What the target gives** (ollama `targetModel.Forward`):
+- `dflash.target_layers = [5, 23, 41, 48]` counts the 48 layer visits (layers 0-5, the loop's 6-17 three times,
+  18-23).
+- Tap t < 48 is the stream's partial sum (our `ink_cur_`) as visit t starts, after a loop pass's restore from the
+  prelude. So 5 is layer 5, 23 is layer 11 on pass 1, and 41 is layer 17 on pass 2.
+- Tap 48 is the final hidden state: the output mix, then the output norm, the head's input (our `x_`).
+- So per committed token the target keeps 4 rows of 2304: three `ink_cur_` copies inside `ink_forward` and `x_`. That
+  is 36 KB a token; a verify step of 8 rows is 295 KB.
+
+**The drafter's context** (each committed token, after verification):
+- Per drafter layer i: `ctx_i = RMS(sum_t softmax(fuse[i])_t * tap_t, blk.i.dflare_norm)`.
+- Then `K_ctx = rope(RMS_head(attn_k_ctx ctx_i), pos)` and `V_ctx = attn_v_ctx ctx_i`, appended to layer i's cache at
+  the token's position. The block's own K / V never stay in the cache.
+- Plus one "feature" row: `f = RMS(sum_t softmax(fuse[3])_t * tap_t, dspark_norm)` of the latest committed token only.
+- Layers 0 and 2 are sliding (`sliding_window_pattern [1, 0, 1]`, window 1,024: a ring of 1,025), layer 1 is global.
+
+**A draft** (one block of 8 rows at positions pos + 1 .. pos + 8 after the context):
+- Inputs:
+  - row 0 is the anchor, the last committed token, embedded as the target embeds it: `RMS(token_embd[id],
+    token_embd_norm)`;
+  - rows 1-7 are `mask_embd`.
+- Each of the 3 layers:
+  - `xn = RMS(x, attn_norm)`;
+  - `q = rope(RMS_head(Wq xn))`, `k = rope(RMS_head(Wk xn))`, `v = Wv xn`;
+  - the keys are the layer's context K / V plus the block's 8; a sliding layer keeps the last 1,024 + 8;
+  - attention is not causal inside the block (every row sees all 8), with the scale 1 / sqrt(128);
+  - then `x += Wo att` and `x += down(silu(gate(RMS(x, ffn_norm))) * up(...))`.
+- Then `h = RMS(x, output_norm)`.
+- ollama rounds the residual to BF16 before each add (SGLang's draft does). f32 here: a draft's numbers never reach the
+  output, only its acceptance.
+- **The Markov head**, greedy, over the 7 mask rows (`sample_from_anchor false`):
+  - start with `state = 0`, `last = anchor`;
+  - per row i: `g = joint_proj [state, markov_w1[last], h_i, f] + b`;
+  - then `keep = sigmoid(g0)`, `upd = tanh(g1)`, `lat = tanh(g2)`;
+  - then `state = keep state + (1 - keep) upd`;
+  - the row's logits are `lm_head h_i + lm_head (hidden_out lat + b_h)` (ollama folds `lm_head hidden_out` into one
+    matrix at load), then softcap 30;
+  - `last = argmax`, which is draft token i.
+- Up to 7 drafts a step; Unsloth's README runs it with `--spec-draft-n-max 3`.
+
+**Two costs that shape the engine's form:**
+- **The head per draft token.** Each row needs the full-vocabulary product `lm_head (h_i + hidden_out lat_i + b_h)`
+  (one matrix by linearity), and row i + 1's input depends on row i's argmax. Done exactly, that is one 0.49 GB head read
+  per draft token (Q8_0): 7 drafts read as much as two whole target tokens. The engine's form:
+  - one 8-row GEMM of `lm_head h` (one head read for the block);
+  - each row's top-K candidates (K = 64, `ARC_DSP_TOPK`);
+  - the correction `lm_head[c] (hidden_out lat_i + b_h)` for those K rows only (K x 2304 a row, read from the head);
+  - the argmax among them.
+
+  A token outside a row's base top-K that the correction alone would lift is missed, so a draft can differ from the
+  exact chain. Verification keeps the output exact either way: only acceptance can drop, and it is measured
+  (`ARC_DSP_TOPK=0`: the exact full-vocabulary chain, to compare).
+- **Verification on a MoE model reads more experts.** 8 rows of top-8 of 128 touch about 52 distinct experts a layer
+  (if independent; consecutive tokens share more), up to ~6x a token's 1.7 GB of experts. 4 rows touch ~29.
+  - So the drafts a step stay small by default (3, as Unsloth's README), per family as `xe2_mtp_drafts`.
+  - A step costs ~1.9 GB of dense weights + the distinct experts. That is ~2.2x a token at 3 drafts, if independent.
+  - It pays when more than ~2.2 tokens are kept a step. The per-family default is measured (`ARC_DSP_DRAFTS=1..7`)
+    and lowered while acceptance is low; the 35B's MTP numbers show consecutive tokens' experts overlap well.
+
+**What the engine needs:**
+1. **Loading** (`zero/engine_drafters.h`, a `dsp_` part next to DFlash2's `dfl_`): this GGUF (arch `dflash` with
+   `dflash.dspark.markov_rank`), checked against the target (n_embd 2304, vocabulary 201,024 padded, target_layers
+   within 0..48). Weights Q8_0 as they are, `markov_w1` and `joint_proj` / `hidden_out` (BF16) as Q8_0 or f32 (KL does
+   not apply: drafts only); the fuse rows softmaxed once.
+2. **The taps in `ink_forward`:** copies of `ink_cur_` at the entry of the listed visits, plus `x_`, into a [rows x 4 x
+   2304] buffer, only while drafting is on. Prompt chunks fill the context for every prompt token (the drafter's K /
+   V of the whole prompt, as DFlash2's `dfl_acc_`).
+3. **The drafter's caches:** per layer, f16 K / V of 1,024 + 8 rows (sliding) or the context (global), sized in the
+   memory plan. ~4 KB a token for the global layer.
+4. **Verification as an 8-row chunk** through `ink_forward` (T = anchor + drafts), then **the rollback of Inkling's
+   recurrent state.** The KV rows past the accepted ones are rewritten later; the ring keeps room (`swa_ring_cap` counts
+   a chunk). But every layer visit's 4 short-conv states (k, v, the attention output, the FFN output) moved on by all
+   rows.
+   - The verify chunk keeps each visit's conv inputs (48 visits x 4 x 8 rows; ~5 MB).
+   - After acceptance, a kernel sets each state to the last 3 inputs of (old state ++ accepted rows).
+   - The depth-mix blocks are per chunk and need nothing.
+5. **The greedy check:** bit for bit, the generated text with drafting on equals drafting off (as MTP's and DFlash2's
+   tests). The drafts never touch the target's numbers.
+6. **The drafts a step per family:** `ARC_DSP_DRAFTS`. Default 3 until measured, as Unsloth runs it. The per-family
+   rule follows `xe2_mtp_drafts` once the owners' runs say where acceptance pays: the A770 first, where 130 needs it.
+7. **The server:** Inkling is runz-only today (the server refuses it); drafting comes to runz first (`--draft dspark`,
+   found next to the model as the DFlash2 drafters are), the server after Inkling's server support.
+
+**On a split model** (once Inkling runs split; it does not yet):
+- The drafter is small (0.36 GB) and runs on the stage that holds the head, the last one: it needs `lm_head`, and the
+  embedding is on the host.
+- Taps from visits on earlier stages travel with the stage's activations: 4 x 2304 floats a row, copied to the last
+  stage with the stream at the boundary that passes them.
+- Verification is the split's normal 8-row chunk. The conv-state rollback runs on each stage for its own visits, with
+  the accepted count sent to every stage (as the split's MTP plan, "MTP / drafting is not used on a split model yet",
+  needs anyway).
+
+**What stays open until code or a run:**
+- ollama's draft rows come from a runner that passes the block's logits for the 7 mask rows (`Unembed` of rows with
+  `Dim(1) == 7`). The anchor row's own output is not used (sample_from_anchor false); confirmed against vLLM's file
+  before code.
+- The rope of the context keys uses each committed token's position, the block's rows the 8 after it: ollama's offsets.
+  Checked the same way.
+- The acceptance on real text: the user's go for the real file comes first.
 
 ## Runs waiting for the user's go (none run yet)
 
