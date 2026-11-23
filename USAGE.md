@@ -299,7 +299,8 @@ tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts:
 precise one; up to 262,144 with `--ctx`. Since 2026-11-22 it runs in its precise mode by default: KL against the CPU
 reference 0.0033 on 480 tokens of markdown and 0.0073 on 3,584 of prose, under the 0.015 limit, with prompts at about
 60 % of the fast mode's speed (the laptop, 3,584 tokens: 74.8 against 127.7 tokens/s). In precise mode the
-system-prompt cache and saved conversations are off. Its fast mode is for text work such as summaries, where it does
+system-prompt cache and saved conversations are off (how precise mode was repaired:
+[docs/flash-precise-repair-2026-11-13.md](docs/flash-precise-repair-2026-11-13.md)). Its fast mode is for text work such as summaries, where it does
 not change what is said (0.0109 on the prose), but it is less exact on code and tables (0.0415 on the markdown):
 `zero-server start -Model flash -Fast` (`zero-pi flash --fast`, the model `flash-fast`, the launcher's "Precise mode"
 switch off; kept on a restart and a model switch like `-Npu`, `-Precise` goes back; the server's own option

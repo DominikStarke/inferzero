@@ -168,3 +168,7 @@ These run only with the user's go-ahead, with the user at the machine.
 5. `--edge` in attn_bench and xw_peak (section 6). Then R3 again.
 
 The steps come in one or two commits, with a CHANGELOG entry, a note in `docs/lessons-intel-arc-igpu.md` (what happened, what the failsafe does), and `docs/logging.md` for the new messages.
+
+## See also
+
+- [docs/device-lost-recording.md](device-lost-recording.md): an earlier "device lost" case (2026-11-10, recording a meeting with Qwen3-ASR). There the crashes were Windows' TDR resets and a freed allocation in the argument cache, and what `ARC_ZE_SYNC_EACH` / `ARC_ZE_WATCH` show.
