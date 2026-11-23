@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: fixed, wrong prompt results on discrete cards in 2026.11.23.16
+
+- **Fixed (a regression in 2026.11.23.16, commit 326febb):** on cards where the prompt GEMMs run in H8 (discrete Arc cards
+  by default: A770, B-series), most prompt GEMMs read a stale input. An edit that removed a switch merged the call that
+  prepares their input into a comment, so the prompt's logits were wrong. Generation from a correct prompt was not
+  affected, but the prompt's state was. The laptop's iGPU, which runs without H8 by default, did not show it. Use
+  2026.11.23.17; .16 is marked broken.
+
 ## 2026-11-23: `ARC_H8_NORM_ONCE` removed
 
 - **Removed: `ARC_H8_NORM_ONCE`.** On the A770 it gained nothing (rmsnorm_h8r 88.1 -> 86.3 ms, the 4K prompt within
