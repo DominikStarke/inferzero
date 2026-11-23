@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: weights in host memory: one read of the input for the matrices that share it
+
+- **Faster (to be measured on a card):** the CPU's matrices of one input in host memory (gate and up; qkv, z and
+  ab) read the input from the GPU once, not once each. skipzx-lab's A770 at 92K paid ~1.4 ms of fixed cost per
+  such matrix (#45). The same values, so the same results bit for bit (the 4B on the laptop with 0.5 GiB forced
+  into host memory: the logits equal).
+- **New:** `ARC_HOST_CPU_THREADS=N` sets the threads of the CPU's matrix loop, for an A / B of cores against
+  hyperthreads. Unset: as before.
+
 ## 2026-11-23: a check on the memory plan's KV estimate
 
 - After a model that cannot fit the card loads, the plan's KV estimate is compared with what was allocated. Past

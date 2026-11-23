@@ -24,6 +24,9 @@ std::vector<int8_t> hcpu_q_;
 std::vector<float> hcpu_y_, hcpu_sc_;
 uint64_t hcpu_n_ = 0;
 double hcpu_ms_ = 0, hcpu_last_ms_ = 0;
+// (the input copy's shape and the zrt::gpu_writes count after the last host matrix: host_cpu_gemv's one read per input)
+uint64_t hcpu_seen_ = ~0ull, hcpu_reused_ = 0;
+int hcpu_inK_ = -1, hcpu_inM_ = -1;
 
 // (on by default on discrete cards since 2026-11-19: d-dorok's B580 (PCIe 3.0, i9-9900KF), the 27B, two rounds each:
 //  0.49 GiB in RAM (ARC_HOST_KEEP_GB=0.75) 7.11 -> 13.70 tok/s (a step 140.6 -> 72.6 ms), the default 0.85 GiB 4.54 ->
@@ -116,13 +119,22 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   const HostMat& h = it->second;
   const int N = w.N, K = w.K, nb = K / 32;
   if (N <= 0 || K % 32 || h.q.size() != (size_t)N * K) return false;
-  hcpu_q_.resize(K);
-  hcpu_sc_.resize((size_t)nb * M);
   hcpu_y_.resize(N);
   // (the activations: int8 values, then one scale per 32 values at stride M (quant_store16, act32); the blocking
-  //  read last, so the queue has run up to here)
-  CL_CHECK(clEnqueueReadBuffer(cl_.queue, aq_, CL_FALSE, 0, (size_t)K, hcpu_q_.data(), 0, nullptr, nullptr));
-  CL_CHECK(clEnqueueReadBuffer(cl_.queue, asc_, CL_TRUE, 0, hcpu_sc_.size() * 4, hcpu_sc_.data(), 0, nullptr, nullptr));
+  //  read last, so the queue has run up to here. One read per input since 2026-11-23: where nothing that can write a
+  //  GPU buffer was enqueued since the last read of this shape (zrt::gpu_writes), the copy is the same input. The
+  //  matrices of one input in host memory one after another (gate and up; qkv, z and ab) read it once: skipzx-lab's
+  //  A770 at 92K, #45, ~1.4 ms a matrix of fixed cost, the read and the queue's drain part of it)
+  const bool same_in = hcpu_seen_ == zrt::gpu_writes.load(std::memory_order_relaxed) && hcpu_inK_ == K && hcpu_inM_ == M;
+  if (!same_in) {
+    hcpu_q_.resize(K);
+    hcpu_sc_.resize((size_t)nb * M);
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, aq_, CL_FALSE, 0, (size_t)K, hcpu_q_.data(), 0, nullptr, nullptr));
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, asc_, CL_TRUE, 0, hcpu_sc_.size() * 4, hcpu_sc_.data(), 0, nullptr, nullptr));
+    hcpu_inK_ = K, hcpu_inM_ = M;
+  } else {
+    ++hcpu_reused_;
+  }
   if (acc) CL_CHECK(clEnqueueReadBuffer(cl_.queue, C, CL_TRUE, (size_t)c_off * 4, (size_t)N * 4, hcpu_y_.data(), 0, nullptr, nullptr));
   // (timed from here: the blocking reads above also waited for the GPU's earlier work, which the profile counts
   //  under its own kernels)
@@ -131,12 +143,24 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   for (int b = 0; b < nb; ++b) ad[b] = hcpu_sc_[(size_t)b * M];
   float* y = hcpu_y_.data();
   const int8_t* a = hcpu_q_.data();
-#pragma omp parallel for schedule(static)
-  for (int n = 0; n < N; ++n) {
+  // (ARC_HOST_CPU_THREADS=N: the threads of this loop, for an A / B of cores against hyperthreads (skipzx-lab's Xeon,
+  //  #45: ~19 GB/s of the int8 copy against ~60 the RAM gives); unset: OpenMP's default, every logical processor)
+  static const int nthr = getenv("ARC_HOST_CPU_THREADS") ? std::max(0, atoi(getenv("ARC_HOST_CPU_THREADS"))) : 0;
+  auto row = [&](int n) {
     const float s = host_dot(h.q.data() + (size_t)n * K, h.d.data() + (size_t)n * nb, a, ad.data(), nb);
     y[n] = acc ? y[n] + s : s;
+  };
+  if (nthr > 0) {
+#pragma omp parallel for schedule(static) num_threads(nthr)
+    for (int n = 0; n < N; ++n) row(n);
+  } else {
+#pragma omp parallel for schedule(static)
+    for (int n = 0; n < N; ++n) row(n);
   }
   CL_CHECK(clEnqueueWriteBuffer(cl_.queue, C, CL_TRUE, (size_t)c_off * 4, (size_t)N * 4, y, 0, nullptr, nullptr));
+  // (after our own write, which counts: the next host matrix of this input finds the count unchanged. C is never the
+  //  input buffer aq_ / asc_, so this write leaves the copy valid)
+  hcpu_seen_ = zrt::gpu_writes.load(std::memory_order_relaxed);
   ++hcpu_n_;
   hcpu_last_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   hcpu_ms_ += hcpu_last_ms_;

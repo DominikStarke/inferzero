@@ -936,8 +936,14 @@ inline bool device_for(const char* want_name, uint32_t want_id, void*& d, void*&
 // ---- the OpenCL calls of the engine
 inline cl_int clFinish(cl_command_queue) { zrt::sync(); return CL_SUCCESS; }
 inline cl_int clFlush(cl_command_queue) { return CL_SUCCESS; }
+namespace zrt {
+// (counts the enqueued commands that can write a GPU buffer: a kernel, a write, a copy, a fill, an unmap; the host CPU
+//  path reuses its copy of the activations while it has not moved, zero/xe2/engine_hostcpu.h)
+inline std::atomic<uint64_t> gpu_writes{0};
+}  // namespace zrt
 inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size_t so, size_t doff, size_t n, cl_uint,
                                   const cl_event*, cl_event* ev) {
+  zrt::gpu_writes.fetch_add(1, std::memory_order_relaxed);  // (a GPU buffer may change: the host CPU path's input copy is stale, engine_hostcpu.h)
   if (ev) *ev = nullptr;
   if (!n) return CL_SUCCESS;
   if (so + n > src->size || doff + n > dst->size) {  // (refused as OpenCL does, not copied over what follows)
@@ -966,6 +972,7 @@ inline cl_int clEnqueueReadBuffer(cl_command_queue, cl_mem b, cl_bool, size_t of
 }
 inline cl_int clEnqueueWriteBuffer(cl_command_queue, cl_mem b, cl_bool, size_t off, size_t n, const void* host, cl_uint,
                                    const cl_event*, cl_event* ev) {
+  zrt::gpu_writes.fetch_add(1, std::memory_order_relaxed);  // (a GPU buffer may change: the host CPU path's input copy is stale, engine_hostcpu.h)
   if (ev) *ev = nullptr;
   if (out_of_bounds("write", b, off, n)) return -30;
   char* s = zrt::staging(n);
@@ -977,6 +984,7 @@ inline cl_int clEnqueueWriteBuffer(cl_command_queue, cl_mem b, cl_bool, size_t o
 }
 inline cl_int clEnqueueFillBuffer(cl_command_queue, cl_mem b, const void* pattern, size_t ps, size_t off, size_t n,
                                   cl_uint, const cl_event*, cl_event* ev) {
+  zrt::gpu_writes.fetch_add(1, std::memory_order_relaxed);  // (a GPU buffer may change: the host CPU path's input copy is stale, engine_hostcpu.h)
   if (ev) *ev = nullptr;
   if (out_of_bounds("fill", b, off, n)) return -30;
   ZE_CHECK(zeCommandListAppendMemoryFill(zrt::imm(), b->ptr + off, pattern, ps, n, nullptr, 0, nullptr));
@@ -1001,6 +1009,7 @@ inline void* clEnqueueMapBuffer(cl_command_queue, cl_mem b, cl_bool, cl_map_flag
   return h;
 }
 inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_uint, const cl_event*, cl_event* ev) {
+  zrt::gpu_writes.fetch_add(1, std::memory_order_relaxed);  // (a GPU buffer may change: the host CPU path's input copy is stale, engine_hostcpu.h)
   if (ev) *ev = nullptr;
   for (size_t i = 0; i < zrt::maps().size(); ++i)
     if (zrt::maps()[i].host == p && zrt::maps()[i].m == b) {
@@ -1224,6 +1233,7 @@ inline void print_last_launch() {
 }  // namespace zrt
 inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim, const size_t*, const size_t* g,
                                      const size_t* l, cl_uint, const cl_event*, cl_event* ev) {
+  zrt::gpu_writes.fetch_add(1, std::memory_order_relaxed);  // (a GPU buffer may change: the host CPU path's input copy is stale, engine_hostcpu.h)
   zrt::LaunchTimer lt{zrt::launch_ns};
   if (zrt::launch_stats) ++zrt::launch_n;
   if (ev) *ev = nullptr;
