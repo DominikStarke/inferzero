@@ -544,8 +544,16 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    1, ..., all; 28 / 60 at 3 drafts, 35 / 91 at 7); `ARC_DSP_CHECK=1` compared the conv arena after every rollback with
    `ink_conv_state` over the same inputs: the same bit for bit in all 33 verifications. Not known until the real file
    runs: the acceptance (the tiny drafter's weights are random), so the drafter's own arithmetic is checked there first.
-   Left: the top-K and the chain on the GPU (drafting costs 4-8 ms a step on the laptop, most of it host waits), the
-   drafter's memory in the plan, sampled decoding (greedy only: the server does not take Inkling yet).
+   **The chain on the GPU (2026-11-24):** the head folded into hidden_out at load (`F = lm_head hidden_out`, V x R f16,
+   and `fb = lm_head b_h`, through R / 8 passes of the head itself), markov_w1 in f16 on the GPU, the rows' top-K in one
+   launch (`dsp_topk`), then per row the gates and `dsp_select` (the candidates' corrections `F[c] . latent + fb[c]`,
+   their argmax, the next row's markov_w1 row): no host wait until the drafts' ids, read once. +2 V R x 2 bytes (~206 MB
+   on Inkling 2 Mini), with `--dspark` only. The tiny file, marginal cost a step (96 against 48 tokens): 0.87 -> 0.63 ms;
+   the first draft pays ~150-200 ms once (the kernels created). **Correction:** the "4-8 ms a step" written above (the
+   first form) divided that one-time cost by the steps; the steady cost was ~0.9 ms. On the real model the host chain
+   would also read 7 x 201,024 logits a step, which the GPU chain does not. Its drafts agree with the host chain's (exact
+   dot products from the file's head rows) on 145 of 146 (`ARC_DSP_CMP=1`: the f16 fold rounds differently).
+   Left: the drafter's memory in the plan, sampled decoding (greedy only: the server does not take Inkling yet).
 7. **The memory tiers per card** (I1.7's design, sized by the plan):
 
 | Card | Memory, bandwidth | Experts (14.7 GiB of records) | Prompt experts | Drafting | Notes |

@@ -58,6 +58,9 @@
   cl_mem dsp_save_arena_ = nullptr, dsp_tab_ = nullptr, dsp_logits_ = nullptr;  // (dsp_logits_: the 7 rows' head)
   int dsp_ntab_ = 0, dsp_maxc_ = 0;
   int dsp_cn_ = 0;  // (the context positions the drafter's caches hold: 0 .. dsp_cn_ - 1)
+  // (the chain on the GPU: F = lm_head hidden_out [V][R] f16, fb = lm_head b_h [V], markov_w1 [V][R] f16; the top-K
+  //  candidates and values of the rows, the drafts' ids)
+  cl_mem dsp_Fh_ = nullptr, dsp_fb_ = nullptr, dsp_w1g_ = nullptr, dsp_cidx_ = nullptr, dsp_cval_ = nullptr, dsp_ids_ = nullptr;
   std::vector<float> dsp_lg_, dsp_hrow_host_, dsp_u_host_, dsp_w1_host_;
   std::vector<int> dsp_idx_;
 
@@ -218,11 +221,65 @@
     dsp_ntab_ = (int)tab.size() / 3;
     dsp_tab_ = buf(tab.size() * 4, tab.data());
     dsp_lg_.resize((size_t)(B - 1) * n_logits());
-    dsp_logits_ = buf((size_t)(B - 1) * n_logits() * 4);
+    dsp_logits_ = buf((size_t)8 * n_logits() * 4);  // (7 rows of the block's head; 8 for the fold's passes)
     dsp_hrow_host_.resize(E);
     dsp_u_host_.resize(E);
     dsp_w1_host_.resize(dsp_R_);
     dsp_idx_.resize(std::max(1, dsp_topk()));
+    if (dsp_topk() > 0 && dsp_topk() <= 64 && !opt.dry) dsp_fold();
+  }
+  // (the chain on the GPU, 2026-11-24) F = lm_head hidden_out, a row of R per token (f16), as ollama folds it at load,
+  // through the head itself: hidden_out's R columns as 8 "token" rows a pass (R / 8 head passes, the head's softcap left
+  // out: a copy of the head, so not lm_head_); fb = lm_head b_h; markov_w1 to f16. With them a candidate's correction
+  // is R multiply-adds. ~2 V R bytes + 2 V R bytes (Inkling: ~206 MB, with --dspark only)
+  void dsp_fold() {
+    const int E = hp.n_embd, R = dsp_R_, V = n_logits(), saved = cur_T_;
+    dsp_Fh_ = buf((size_t)V * R * 2);
+    dsp_fb_ = buf((size_t)V * 4);
+    dsp_w1g_ = buf((size_t)V * R * 2);
+    dsp_cidx_ = buf((size_t)8 * 64 * 4);
+    dsp_cval_ = buf((size_t)8 * 64 * 4);
+    dsp_ids_ = buf(8 * 4);
+    GpuWeight head = lm_head_;  // (not &lm_head_: head_defs adds no softcap)
+    std::vector<float> wt((size_t)R * E);  // (hidden_out's columns as rows: [R][E]; the tensor is [E][R], R fastest)
+    {
+      const GgufTensor& t = dsp_f_->get("dspark_hidden_out.weight");
+      std::vector<float> w(t.nelements());
+      dequant_row(t.type, t.data, (int)w.size(), w.data());
+      for (int e = 0; e < E; ++e)
+        for (int r = 0; r < R; ++r) wt[(size_t)r * E + e] = w[(size_t)e * R + r];
+    }
+    cl_mem rows = buf((size_t)8 * E * 4);
+    cl_kernel kf = ink_k("dsp_fold");
+    for (int r0 = 0; r0 < R; r0 += 8) {
+      const int m = std::min(8, R - r0);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, rows, CL_TRUE, 0, (size_t)m * E * 4, &wt[(size_t)r0 * E], 0, nullptr, nullptr));
+      cur_T_ = m;
+      quant_rows(rows, E, 16, m, 1);
+      matmul("dsp_fold_head", head, 16, dsp_logits_, V, 0, 0, true);
+      int nl = V, rr = r0, mm = m, RR = R, VV = V;
+      set_args(kf, 0, dsp_logits_, nl, rr, mm, dsp_Fh_, RR, VV);
+      ink_run1("dsp_fold", kf, (size_t)V * m);
+    }
+    cur_T_ = 1;
+    quant_rows(dsp_hout_b_, E, 16, 1, 1);
+    matmul("dsp_fold_bias", head, 16, dsp_fb_, V, 0, 0, true);
+    cur_T_ = saved;
+    free_buf(rows);
+    {  // markov_w1 to f16, in row blocks
+      const size_t rb = dsp_w1_->nbytes / hp.n_vocab;
+      std::vector<float> f((size_t)R);
+      std::vector<uint16_t> h((size_t)4096 * R);
+      for (int c0 = 0; c0 < hp.n_vocab; c0 += 4096) {
+        const int n = std::min(4096, hp.n_vocab - c0);
+        for (int c = 0; c < n; ++c) {
+          dequant_row(dsp_w1_->type, dsp_w1_->data + (size_t)(c0 + c) * rb, R, f.data());
+          for (int r = 0; r < R; ++r) h[(size_t)c * R + r] = f32_to_fp16(f[r]);
+        }
+        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_w1g_, CL_TRUE, (size_t)c0 * R * 2, (size_t)n * R * 2, h.data(), 0, nullptr, nullptr));
+      }
+    }
+    clFinish(cl_.queue);
   }
 
   // (ink_conv's save buffer: during a verification pass)
@@ -329,11 +386,44 @@
     cur_T_ = nd;
     quant_rows(dsp_hmask_, E, 16, nd, 1);
     matmul("dsp_head", lm_head_, 16, dsp_logits_, nl, 0, 0, true);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_logits_, CL_TRUE, 0, (size_t)nd * nl * 4, dsp_lg_.data(), 0, nullptr, nullptr));
     const float cap = hp.softcap;
-    // the chain
     fill(dsp_state_, (size_t)R * 4);
     const int K = std::min(dsp_topk(), nv);
+    if (dsp_Fh_ && K > 0 && K <= 64) {
+      // (the chain on the GPU: the rows' top-K, then per row the gates and the candidates' argmax, which fetches the
+      //  next row's markov_w1; one read of the drafts at the end)
+      cl_kernel kt = ink_k("dsp_topk"), kc = ink_k("dsp_cat"), kg = ink_k("dsp_gate"), ks = ink_k("dsp_select"),
+                kw = ink_k("dsp_w1_gather");
+      int NL = nl, NV = nv, KK = K, RR = R, EE = E, tk = tok;
+      float cp = cap;
+      set_args(kt, 0, dsp_logits_, NL, NV, cp, KK, dsp_cidx_, dsp_cval_);
+      ink_rung("dsp_topk", kt, max_drafts, 256);
+      set_args(kw, 0, tk, dsp_w1g_, dsp_w1row_, RR);
+      ink_run1("dsp_w1_gather", kw, R);
+      for (int i = 0; i < max_drafts; ++i) {
+        set_args(kc, 0, dsp_z_, dsp_state_, dsp_w1row_, dsp_hrow_[i + 1], dsp_feat_, RR, EE);
+        ink_run1("dsp_cat", kc, (size_t)2 * (R + E));
+        dsp_mv("dsp_joint", dsp_joint_, dsp_z_, dsp_g_, 3 * R, 2 * (R + E));
+        set_args(kg, 0, dsp_g_, dsp_joint_b_, dsp_state_, dsp_lat_, RR);
+        ink_run1("dsp_gate", kg, R);
+        int row = i;
+        set_args(ks, 0, dsp_cidx_, dsp_cval_, row, KK, dsp_Fh_, RR, dsp_fb_, dsp_lat_, dsp_ids_, dsp_w1g_, dsp_w1row_);
+        ink_rung("dsp_select", ks, 1, 64);
+      }
+      std::vector<int> drafts((size_t)max_drafts);
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_ids_, CL_TRUE, 0, (size_t)max_drafts * 4, drafts.data(), 0, nullptr, nullptr));
+      static const bool cmp = getenv("ARC_DSP_CMP") && atoi(getenv("ARC_DSP_CMP")) != 0;
+      if (!cmp) {
+        cur_T_ = saved;
+        dsp_oracle(drafts);
+        collect_profile();
+        return drafts;
+      }
+      dsp_cmp_gpu_ = drafts;  // (tests, ARC_DSP_CMP=1: the host's chain below as well, the drafts compared)
+      fill(dsp_state_, (size_t)R * 4);
+    }
+    // (the host's chain: the exact one, ARC_DSP_TOPK=0, or more than 64 candidates)
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_logits_, CL_TRUE, 0, (size_t)nd * nl * 4, dsp_lg_.data(), 0, nullptr, nullptr));
     const size_t hrb = dsp_head_t_->nbytes / hp.n_vocab, w1b = dsp_w1_->nbytes / hp.n_vocab;
     cl_kernel kc = ink_k("dsp_cat"), kg = ink_k("dsp_gate"), kb = ink_k("dsp_addb");
     std::vector<int> drafts;
@@ -385,6 +475,15 @@
       last = best;
     }
     cur_T_ = saved;
+    if (!dsp_cmp_gpu_.empty()) {
+      // (the chain's drafts the same as the host's: row by row until the first that differs, as acceptance would)
+      for (size_t i = 0; i < drafts.size() && i < dsp_cmp_gpu_.size(); ++i) {
+        ++dsp_cmp_n_;
+        if (drafts[i] != dsp_cmp_gpu_[i]) break;
+        ++dsp_cmp_same_;
+      }
+      dsp_cmp_gpu_.clear();
+    }
     dsp_oracle(drafts);
     collect_profile();
     return drafts;
@@ -435,8 +534,9 @@
     CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_conv_arena_, CL_TRUE, 0, bytes, got.data(), 0, nullptr, nullptr));
   }
   std::vector<uint8_t> dsp_check_before_;
+  std::vector<int> dsp_cmp_gpu_;
  public:
-  uint64_t dsp_checks_ = 0, dsp_check_bad_ = 0;
+  uint64_t dsp_checks_ = 0, dsp_check_bad_ = 0, dsp_cmp_n_ = 0, dsp_cmp_same_ = 0;
  private:
 
   // the target's pass over [tok, drafts...] (as verify): the conv states kept and their inputs saved (spec_)

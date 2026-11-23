@@ -1728,6 +1728,9 @@ static int run_main(int argc, char** argv) {
     if (steps)
       printf("MTP time: drafting %.1f ms, verification %.1f ms (%.1f ms a pass), verify_done %.1f ms\n", mtp_draft_ms,
              mtp_verify_ms, mtp_verify_ms / steps, mtp_done_ms);
+    if (eng.dsp_on() && eng.dsp_cmp_n_)  // (ARC_DSP_CMP=1: the GPU chain's drafts against the host's)
+      printf("DSpark compare: %llu of %llu drafts the same on the GPU chain as on the host's (up to the first that differs)\n",
+             (unsigned long long)eng.dsp_cmp_same_, (unsigned long long)eng.dsp_cmp_n_);
     if (eng.dsp_on() && eng.dsp_checks_)  // (ARC_DSP_CHECK=1: the conv-state rollback against ink_conv_state)
       printf("DSpark check: %llu verifications, the conv states %s\n", (unsigned long long)eng.dsp_checks_,
              eng.dsp_check_bad_ ? ("DIFFER in " + std::to_string(eng.dsp_check_bad_)).c_str() : "the same bit for bit every time");

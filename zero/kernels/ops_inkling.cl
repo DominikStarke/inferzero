@@ -737,6 +737,99 @@ __kernel void dsp_gate(__global const float* g, __global const float* b, __globa
   lat[i] = tanh(g[2 * R + i] + b[2 * R + i]);
   state[i] = keep * state[i] + (1.0f - keep) * upd;
 }
+// ---- the chain on the GPU (2026-11-24): the head folded into hidden_out at load (F = lm_head hidden_out, V x R f16;
+//  fb = lm_head b_h), each row's top-K candidates of its base logits, then per row the candidates' corrections
+//  F[c] . latent + fb[c] and their argmax, which also fetches markov_w1[argmax] for the next row: no host wait a row
+
+// F[c][r0 + j] = rows[j][c] (the head's outputs for columns r0 .. r0 + m - 1 of hidden_out), f16
+__kernel void dsp_fold(__global const float* rows, int nl, int r0, int m, __global half* F, int R, int V) {
+  const int i = get_global_id(0);
+  if (i >= V * m) return;
+  const int c = i / m, j = i % m;
+  vstore_half(rows[(size_t)j * nl + c], (size_t)c * R + r0 + j, F);
+}
+// markov_w1[tok] (f16 rows of R) into w1row (f32)
+__kernel void dsp_w1_gather(int tok, __global const half* w1, __global float* w1row, int R) {
+  const int r = get_global_id(0);
+  if (r < R) w1row[r] = vload_half((size_t)tok * R + r, w1);
+}
+// each row's K largest logits among the first nv (one work-group of 256 a row): every lane its DSP_TL largest of a
+// strided share, then a bitonic sort of the 256 DSP_TL in local memory; values un-capped (cap tanh(x / cap) is the
+// head's softcap: x = cap atanh(v / cap)), indices -1 past the candidates found. A candidate list, not exact: a lane
+// holding more than DSP_TL of a row's top K would lose some (drafts only)
+#define DSP_TL 8
+#define DSP_TN (256 * DSP_TL)
+__kernel void dsp_topk(__global const float* lg, int nl, int nv, float cap, int K, __global int* idx,
+                       __global float* val) {
+  __local float sv[DSP_TN];
+  __local int si[DSP_TN];
+  const int row = get_group_id(0), l = get_local_id(0);
+  __global const float* x = lg + (size_t)row * nl;
+  float tv[DSP_TL];
+  int ti[DSP_TL];
+  for (int k = 0; k < DSP_TL; ++k) tv[k] = -INFINITY, ti[k] = -1;
+  for (int c = l; c < nv; c += 256) {
+    const float v = x[c];
+    if (!(v > tv[DSP_TL - 1])) continue;
+    int k = DSP_TL - 1;
+    while (k > 0 && tv[k - 1] < v) { tv[k] = tv[k - 1]; ti[k] = ti[k - 1]; --k; }
+    tv[k] = v;
+    ti[k] = c;
+  }
+  for (int k = 0; k < DSP_TL; ++k) sv[l * DSP_TL + k] = tv[k], si[l * DSP_TL + k] = ti[k];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int size = 2; size <= DSP_TN; size <<= 1)
+    for (int stride = size >> 1; stride > 0; stride >>= 1) {
+      for (int t = l; t < DSP_TN / 2; t += 256) {
+        const int i = 2 * stride * (t / stride) + t % stride, j = i + stride;
+        const bool up = (i & size) == 0;  // (the last pass: every pair up, so the whole list descending)
+        const float a = sv[i], b = sv[j];
+        if (up ? a < b : a > b) {
+          sv[i] = b, sv[j] = a;
+          const int q = si[i];
+          si[i] = si[j], si[j] = q;
+        }
+      }
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+  for (int k = l; k < K; k += 256) {
+    const float v = sv[k];
+    val[(size_t)row * K + k] = cap > 0.0f && v > -INFINITY ? cap * atanh(clamp(v / cap, -0.999999f, 0.999999f)) : v;
+    idx[(size_t)row * K + k] = si[k];
+  }
+}
+// row `row`'s draft: its K candidates' corrected logits (base + F[c] . lat + fb[c]), the argmax (the lowest k on a tie,
+// the larger base logit), written to ids[row], and markov_w1[that token] into w1row. One work-group of 64 (K <= 64)
+__kernel void dsp_select(__global const int* idx, __global const float* val, int row, int K, __global const half* F,
+                         int R, __global const float* fb, __global const float* lat, __global int* ids,
+                         __global const half* w1, __global float* w1row) {
+  __local float bv[64];
+  __local int bc[64], bk[64];
+  const int k = get_local_id(0);
+  float v = -INFINITY;
+  int c = -1;
+  if (k < K) {
+    c = idx[(size_t)row * K + k];
+    if (c >= 0) {
+      float s = val[(size_t)row * K + k] + fb[c];
+      for (int r = 0; r < R; ++r) s += vload_half((size_t)c * R + r, F) * lat[r];
+      v = s;
+    }
+  }
+  bv[k] = v, bc[k] = c, bk[k] = k;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int s = 32; s > 0; s >>= 1) {
+    if (k < s) {
+      const bool take = bv[k + s] > bv[k] || (bv[k + s] == bv[k] && bk[k + s] < bk[k]);
+      if (take) bv[k] = bv[k + s], bc[k] = bc[k + s], bk[k] = bk[k + s];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  const int best = bc[0] < 0 ? 0 : bc[0];
+  if (k == 0) ids[row] = best;
+  for (int r = k; r < R; r += 64) w1row[r] = vload_half((size_t)best * R + r, w1);
+}
+
 // u = u + b (+ h where has_h): the correction's vector, hidden_out lat + its bias (+ the row's own h: the exact chain)
 __kernel void dsp_addb(__global float* u, __global const float* b, __global const float* h, int has_h, int E) {
   const int i = get_global_id(0);
