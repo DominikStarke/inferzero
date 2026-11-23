@@ -820,18 +820,34 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
   for ((e = 0; e < ${#TUI_KEYS[@]}; e++)); do [ "${TUI_KEYS[$e]}" = "$lp" ] && TUI_SEL=$e; done
   saved=$(stty -g 2>/dev/null)
   trap 'stty "$saved" 2>/dev/null; printf "\033[?25h"' EXIT
-  # (a resized window: its size again, and a full redraw at the next key)
-  trap 'TUI_W=$(tput cols 2>/dev/null || echo 80); TUI_H=$(tput lines 2>/dev/null || echo 24); printf "\033[H\033[J"' WINCH
+  # (a resized window: the trap takes its size and asks for a full redraw. Bash 5.2 holds a WINCH that arrives during
+  #  read until the read returns, so the key read waits a second at a time (read -t 1), and at each timeout a resize
+  #  that came is drawn; a shell whose read a signal interrupts returns above 128 the same way. Neither leaves the menu
+  #  (the Researcher's review of e4b395e))
+  TUI_RESIZED=0
+  trap 'TUI_W=$(tput cols 2>/dev/null || echo 80); TUI_H=$(tput lines 2>/dev/null || echo 24); TUI_RESIZED=1' WINCH
   TUI_BOLD=$(tput bold 2>/dev/null || true); TUI_NORM=$(tput sgr0 2>/dev/null || true)
   stty -echo -icanon 2>/dev/null
   printf '\033[?25l\033[H\033[J'
   tui_cache
   tui_mem_load
+  local rc need=1
   while :; do
     # (keys already waiting, a held arrow key or a paste: handled first, one redraw after them; #81)
-    read -t 0 2>/dev/null || tui_draw
-    IFS= read -rsn1 key || break
-    if [ "$key" = $'\e' ]; then IFS= read -rsn2 -t 0.05 rest || rest=""; key="ESC$rest"; fi
+    if [ $need = 1 ]; then
+      if [ "$TUI_RESIZED" = 1 ]; then TUI_RESIZED=0; printf '\033[H\033[J'; fi
+      read -t 0 2>/dev/null || { tui_draw; need=0; }
+    fi
+    IFS= read -rsn1 -t 1 key; rc=$?
+    if [ $rc -gt 128 ]; then [ "$TUI_RESIZED" = 1 ] && need=1; continue; fi  # (a timeout or a signal: no key)
+    [ $rc -ne 0 ] && break  # (the end of the input)
+    need=1
+    if [ "$key" = $'\e' ]; then
+      IFS= read -rsn2 -t 0.05 rest; rc=$?
+      [ $rc -gt 128 ] && { IFS= read -rsn2 -t 0.05 rest; rc=$?; }  # (a resize inside the escape sequence: once more)
+      [ $rc -eq 0 ] || rest=""
+      key="ESC$rest"
+    fi
     case "$key" in
       'ESC[A') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -gt 0 ] && TUI_SEL=$((TUI_SEL - 1)); TUI_FOC=0; else [ $TUI_FOC -gt 0 ] && TUI_FOC=$((TUI_FOC - 1)); fi;;
       'ESC[B') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -lt $((${#TUI_KEYS[@]} - 1)) ] && TUI_SEL=$((TUI_SEL + 1)); TUI_FOC=0; else [ $TUI_FOC -lt $((${#TUI_ITEMS[@]} - 1)) ] && TUI_FOC=$((TUI_FOC + 1)); fi;;
