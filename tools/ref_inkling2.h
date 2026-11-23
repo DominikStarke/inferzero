@@ -33,6 +33,19 @@ inline int per_layer(const std::string& key, int il, int def = -1) {
 inline float fkey(const std::string& key, double def) { return (float)F->get_float(A + "." + key, def); }
 inline double sigm(double v) { return 1.0 / (1.0 + std::exp(-v)); }
 
+// llama's build_lora_mm: a 2D weight W may come with W.scale (one f32, shape {1}) multiplying its output, as an
+// NVFP4-everywhere file would have (the Q8_K_XL has none on 2D weights). Activation scales (.input_scale, for FP8
+// activations) are refused at the start (inkling2_layers).
+inline void mm(const std::string& name, const std::vector<float>& X, int T, std::vector<float>& Y) {
+  matmul(name, X, T, Y);
+  const std::string sn = name.substr(0, name.size() - 7) + ".scale";  // (name ends in ".weight")
+  if (const GgufTensor* s = F->find(sn)) {
+    if (s->nelements() != 1) { zlog::eprintf("inkling2: %s is not one value\n", sn.c_str()); exit(1); }
+    const float c = vecf(sn)[0];
+    for (auto& y : Y) y *= c;
+  }
+}
+
 // rows of a [K][N][n_expert] tensor: expert e's N x K matrix times x
 inline void expert_rows(const GgufTensor& t, int e, int N, int K, const float* x, float* y) {
   const size_t rb = t.nbytes / ((size_t)t.dims[2] * N);
@@ -140,6 +153,7 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
   const int H = per_layer("attention.head_count", ip), HKV = per_layer("attention.head_count_kv", ip);
   const int KG = HKV * D;
   const int FF = per_layer("expert_feed_forward_length", ip);
+  const int NU = per_layer("expert_used_count", ip, M.NU);  // (llama reads it per layer)
   std::vector<const std::vector<float>*> bp;
   for (const auto& b : blocks) bp.push_back(&b);
   const std::vector<float> inpSA = cur;
@@ -165,9 +179,9 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
       rmsnorm(&g[(size_t)t * 2 * E + E], E, nullptr, 1e-6f);
     }
     const std::string lp = p + "loop_" + kCtrl[c] + "_ctrl_";
-    matmul(lp + "down.weight", g, T, lo);
-    matmul(lp + "gain.weight", lo, T, gain);
-    matmul(lp + "forget.weight", lo, T, forget);
+    mm(lp + "down.weight", g, T, lo);
+    mm(lp + "gain.weight", lo, T, gain);
+    mm(lp + "forget.weight", lo, T, forget);
     for (size_t i = 0; i < x.size(); ++i)
       x[i] = (float)(x[i] - std::tanh((double)forget[i]) * x[i] + std::tanh((double)gain[i]) * msg[i]);
   };
@@ -188,15 +202,15 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
 
   // projections; K and V through their convolutions (global: with the input-dependent taps)
   std::vector<float> Q, K0, V0, R, S, G, kd, vd;
-  matmul(p + "attn_q.weight", in[0], T, Q);
-  matmul(p + "attn_k.weight", in[1], T, K0);
-  matmul(p + "attn_v.weight", in[2], T, V0);
-  matmul(p + "attn_rel.weight", in[0], T, R);
-  matmul(p + "attn_sink_proj.weight", in[0], T, S);
-  matmul(p + "attn_gate.weight", in[0], T, G);
+  mm(p + "attn_q.weight", in[0], T, Q);
+  mm(p + "attn_k.weight", in[1], T, K0);
+  mm(p + "attn_v.weight", in[2], T, V0);
+  mm(p + "attn_rel.weight", in[0], T, R);
+  mm(p + "attn_sink_proj.weight", in[0], T, S);
+  mm(p + "attn_gate.weight", in[0], T, G);
   if (!is_swa) {
-    matmul(p + "attn_k_conv_proj.weight", in[1], T, kd);
-    matmul(p + "attn_v_conv_proj.weight", in[2], T, vd);
+    mm(p + "attn_k_conv_proj.weight", in[1], T, kd);
+    mm(p + "attn_v_conv_proj.weight", in[2], T, vd);
   }
   std::vector<float> Kc = convolve(K0, T, KG, vecf(p + "attn_k_conv.weight"), M.NC, is_swa ? nullptr : &kd);
   std::vector<float> Vc = convolve(V0, T, KG, vecf(p + "attn_v_conv.weight"), M.NC, is_swa ? nullptr : &vd);
@@ -253,7 +267,7 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
       }
     }
   std::vector<float> ao;
-  matmul(p + "attn_output.weight", att, T, ao);
+  mm(p + "attn_output.weight", att, T, ao);
   ao = convolve(ao, T, E, vecf(p + "attn_post_conv.weight"), M.NC, nullptr);
   // a block's first layer starts a new stream (the old one joins the blocks); else the residual
   if (ip % M.BLOCK == 0) {
@@ -278,7 +292,7 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
     for (int t = 0; t < T; ++t) rmsnorm(&xm[(size_t)t * E], E, fn.data(), M.eps);
   }
   std::vector<float> rl;
-  matmul(p + "ffn_gate_inp.weight", xm, T, rl);
+  mm(p + "ffn_gate_inp.weight", xm, T, rl);
   const std::vector<float> pb = F->find(p + "exp_probs_b.bias") ? vecf(p + "exp_probs_b.bias") : std::vector<float>(M.NE, 0.0f);
   const GgufTensor& tgu = F->get(p + "ffn_gate_up_exps.weight");
   const GgufTensor& tdn = F->get(p + "ffn_down_exps.weight");
@@ -296,9 +310,9 @@ inline void layer(const Model& M, int ip, int T, std::vector<float>& cur, std::v
     for (int e = 0; e < M.NE; ++e) id[e] = e;
     std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return sel[a] > sel[b]; });
     double sum = 0;
-    for (int k = 0; k < M.NU; ++k) sum += prob[id[k]];
+    for (int k = 0; k < NU; ++k) sum += prob[id[k]];
     std::vector<float> gu(2 * FF), act(FF), de(E);
-    for (int k = 0; k < M.NU; ++k) {
+    for (int k = 0; k < NU; ++k) {
       const int e = id[k];
       double w = prob[e] / (sum + 1e-20);
       if (M.wscale != 0.0f && M.wscale != 1.0f) w *= M.wscale;
@@ -332,6 +346,11 @@ static void inkling2_layers(const std::vector<int>& toks, std::vector<float>& x)
   M.log_alpha = fkey("attention.log_scale_alpha", 0); M.wscale = fkey("expert_weights_scale", 0);
   M.situ_b = fkey("activation.situ_beta", 1); M.situ_lb = fkey("activation.situ_linear_beta", 0);
   if (const auto* v = F->get_ints(A + ".attention.sliding_window_pattern")) M.swa = *v;
+  for (const GgufTensor& t : F->tensors)  // (activation scales: FP8 activations, which this reference does not model)
+    if (t.name.size() > 12 && t.name.compare(t.name.size() - 12, 12, ".input_scale") == 0) {
+      zlog::eprintf("inkling2: %s: activation scales are not supported\n", t.name.c_str());
+      exit(1);
+    }
   const bool loop = A == "inkling2_loop";
   M.start = loop ? hp("loop.start") : M.nl;
   M.end = loop ? hp("loop.end") : M.nl;

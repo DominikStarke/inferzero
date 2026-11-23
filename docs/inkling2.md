@@ -49,8 +49,31 @@ Developer cuts them.
   - norms in F32.
 - **NVFP4:** E2M1 codes with an E4M3 scale per 16, times the per-expert f32 scale. E2M1 x 2 are MXFP4's integer codes
   (`kvalues_mxfp4`), so the codes are int8 exactly; the scales are not (see I1.1: folded per 32, sometimes rounded).
-- **The accuracy reference:** llama.cpp with **PR #32704** (Unsloth's perplexity 7.653 on Q8_K_XL). Read its code for
-  every operation's exact order and constants; the engine must match it, not this summary.
+- **The accuracy reference:** llama.cpp master's `src/models/inkling2.cpp` and `src/models/inkling2-loop.cpp` (plus
+  `llama-graph.cpp`, `llama-model.cpp`, `llama-kv-cache.cpp` for the shared parts). PR #32704 itself only re-shares
+  the loop's layers after the scale pass. Mirrored here: master `44d5087` (2026-11-23), where inkling2.cpp last
+  changed in `19bc41d` and inkling2-loop.cpp in `690b87d` (#32704). The KL runs use a llama.cpp build at or after
+  that commit (Unsloth's perplexity 7.653 on Q8_K_XL). Read its code for every operation's exact order and constants;
+  the engine must match it, not this summary.
+
+## Accuracy: what differs from the f32 reference by design
+
+- **The NVFP4 per-32 fold (GPU only):**
+  - The engine's int8 form has one scale per 32 values, while NVFP4 has one per 16.
+  - Where a 32-block's two scales differ by other than a power of two up to 8, the smaller half is rounded, by at
+    most d / 2 (1/192 of the block's largest possible value). Elsewhere it is exact.
+  - `tools/nvfp4_stats` counts the share of exact blocks in a file from its scale bytes alone.
+  - The real file's KL against llama.cpp includes the fold. If it costs too much, the experts' prompt path can decode
+    per 16 instead.
+  - The I1.5 correctness path (`ink_expert_mv`) reads NVFP4 exactly, so it isolates the graph from the fold.
+- **The K / V cache in f16**, as Gemma's V.
+- **The BF16 matrices requantized to Q8_0** (the engine's default for float weights), as for every other model.
+- **2D weight `.scale` tensors:** llama's `build_lora_mm` multiplies a 2D weight's output by its `<name>.scale` (one
+  value) where the file has one. The Q8_K_XL has none on 2D weights (only the experts' per-expert scales), but an
+  NVFP4-everywhere file could.
+  - ref_forward applies them (`ref_inkling2.h` `mm`, and `output.scale` in `head()`).
+  - The engine's loader must too, or refuse the file (I1.5).
+  - Activation scales (`.input_scale`) are refused.
 
 ## Steps
 
@@ -179,6 +202,20 @@ Developer cuts them.
 **I2-I4. Speed, later, each needs cards** (from the analysis): tg on a B70 at ~83 % of its bandwidth, then DSpark
 drafting; prompt with NVFP4 read straight in the expert GEMM and chunk 8,192; the A770 needs DSpark and a ~3-bit file or
 the RAM tier, since the Q8 file doesn't fit 16 GB.
+
+## Runs waiting for the user's go (none run yet)
+
+| Step | Run | Where | Checks |
+|---|---|---|---|
+| I1.1 | `bin\test_quant_rows.exe --self-test` | CPU, 1 s | NVFP4 dequant against ggml's formula, the fold's bound |
+| I1.1 | `bin\nvfp4_stats.exe <Inkling Q8_K_XL>` | CPU, reads 11 GB of expert bytes | the share of 32-blocks the fold keeps exact |
+| I1.2 | `bin\test_inkling_chat.exe` | CPU, 1 s | the split (incl. 200 KB runs of one class), the rendering, the parser (incl. a stream stopped inside a call) |
+| I1.2 | token ids against `llama-tokenize` on a few texts | CPU | English, code, CJK, emoji, numbers, contractions, runs of spaces / newlines |
+| I1.2 | one conversation against llama-server's `/apply-template` | CPU | the native rendering = llama.cpp's Jinja |
+| I1.3 | `ref_forward` on the real file vs llama.cpp (a build with #32704) | CPU, minutes | top 10 and KL on a short prompt |
+| I1.4 | `make_tiny_inkling2` + `ref_forward` on it; llama.cpp on it | CPU, seconds | the tiny file loads in llama.cpp, the same top token |
+| I1.5 | the engine on the tiny file vs ref_forward, through `bench\gpu_guard.ps1` | laptop iGPU | KL, top token over a few hundred positions; with and without `--nvfp4-equal` |
+| I1.5 | the engine on the real file vs ref_forward / llama.cpp | a 32 GB card (B70, B65) | KL <= 0.015 token by token |
 
 ## Done for this phase
 

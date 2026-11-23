@@ -35,6 +35,21 @@ int main() {
   split("\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E", {"\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"});
   split("end.\n", {"end", ".\n"});            // (punctuation takes its trailing newline)
 
+  // long runs of one class (200 KB): each must split in linear time (a quadratic case in the U* backtrack would take
+  // minutes here), and as the regex does
+  {
+    const size_t L = 200000;
+    const auto sp = Tokenizer::split_gpt4o(std::string(L, ' '));
+    check(sp.size() == 1 && sp[0].size() == L, "split: 200 KB of spaces is one word");
+    const auto dg = Tokenizer::split_gpt4o(std::string(L - 1, '7'));  // (199,999: 66,666 groups of 3, then 1)
+    check(dg.size() == (L - 1 + 2) / 3 && dg.back().size() == 1, "split: 200 KB of digits in groups of 3");
+    const auto up = Tokenizer::split_gpt4o(std::string(L, 'A'));
+    check(up.size() == 1, "split: 200 KB of capitals is one word");
+    std::string mixed;
+    for (size_t i = 0; i < L / 4; ++i) mixed += "AB c";
+    check(Tokenizer::split_gpt4o(mixed).size() == L / 2, "split: 200 KB of \"AB c\" is two words per repeat");
+  }
+
   // the chat format
   Json msgs = Json::parse(R"([{"role":"system","content":"S"},{"role":"user","content":"Hi"},
     {"role":"assistant","content":"Hello","reasoning_content":"think"},{"role":"user","content":"Q"}])");
@@ -86,6 +101,16 @@ int main() {
         "parse: a tool call");
   const auto r = inkling::parse("<|message_model|><|content_text|>part");
   check(r.content == "part" && !r.ended, "parse: an unfinished message");
+  bool ok = true;
+  inkling::Parsed s;
+  try {  // (a stream stopped inside a call: the partial JSON kept as content, no exception)
+    s = inkling::parse("<|message_model|><|content_thinking|>T<|end_message|><|message_model|>get"
+                       "<|content_invoke_tool_json|>{\"name\":\"get\",\"args\":{\"a\"");
+  } catch (...) { ok = false; }
+  check(ok && s.reasoning == "T" && s.tool_calls.empty() && s.content == "{\"name\":\"get\",\"args\":{\"a\"" && !s.ended,
+        "parse: a stream stopped inside a tool call");
+  const auto u = inkling::parse("<|message_model|>get<|content_invo");
+  check(u.content.empty() && u.tool_calls.empty(), "parse: a stream stopped inside a header");
 
   if (fails) { std::printf("test_inkling_chat: %d failed\n", fails); return 1; }
   std::printf("test_inkling_chat: all passed\n");

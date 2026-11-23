@@ -1560,9 +1560,14 @@ static void softcap(std::vector<float>& l) {
 // vocabulary (vocab_size, padded); llama.cpp drops the padding, and so does this. Other models: V = its rows, as is.
 static void head(const std::vector<float>& xs, int n, int V, std::vector<float>& out) {
   matmul(F->find("output.weight") ? "output.weight" : "token_embd.weight", xs, n, out);
+  if (const GgufTensor* s = F->find("output.scale"); s && (A == "inkling2" || A == "inkling2_loop")) {
+    const float c = vecf("output.scale")[0];  // (llama's build_lora_mm: a 2D weight's .scale on its output)
+    for (auto& y : out) y *= c;
+  }
   softcap(out);
   const int N = (int)(out.size() / n);
   if (N == V) return;
+  if (N < V) { zlog::eprintf("ref_forward: the output head has %d rows for a vocabulary of %d\n", N, V); exit(1); }
   for (int r = 1; r < n; ++r) memmove(&out[(size_t)r * V], &out[(size_t)r * N], (size_t)V * 4);
   out.resize((size_t)n * V);
 }
