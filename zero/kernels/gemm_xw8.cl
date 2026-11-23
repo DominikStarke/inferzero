@@ -281,6 +281,15 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     d_[0] = v_.s0, d_[8] = v_.s1, d_[16] = v_.s2, d_[24] = v_.s3, d_[32] = v_.s4, d_[40] = v_.s5;           \
     d_[48] = v_.s6, d_[56] = v_.s7;                                                                         \
   }
+#elif defined(XS_UL)
+// -DXS_UL (2026-11-23, the A770 GEMM plan from oneDNN's kernel, step 1; ARC_GEMM_XW_UL): the local reads and writes as
+// 64-bit block messages, a lane's 8 words as 4 ulongs. The users' ocloc 26.40 (dg2-g10) makes the 32-bit read8 two
+// 128-B messages (load.slm.d32x32t, 32 of them for 32 DPAS) and the write one 256-B one (store.slm.d64x32t); oneDNN
+// reads its operands in 256-B messages (block_oword(16)), 7 per 24 DPAS. A 64-bit block message puts a different word
+// pair of a 256-B unit in each lane than the 32-bit one, so the stores use it too: every lane reads back the same
+// 8 words it would have had (the unit's layout in local memory changes, never what a lane holds): bit for bit
+#define XS_RD(p) as_int8(intel_sub_group_block_read_ul4((__local const ulong*)(p)))
+#define XS_WR(p, x) intel_sub_group_block_write_ul4((__local ulong*)(p), as_ulong4(x))
 #else  // (one block message each: component w of lane l = word 8 w + l, as the global block reads)
 #define XS_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
 #define XS_WR(p, x) intel_sub_group_block_write8((__local uint*)(p), as_uint8(x))

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: the A770 GEMM plan, step 1: 256-byte local-memory reads (opt-in)
+
+- **New, opt-in: `ARC_GEMM_XW_UL=1`** (8-lane discrete cards, the big prompt tile). The tile reads its operands from local
+  memory in 256-byte messages, half as many, as oneDNN's A770 kernel does. The results are the same bit for bit; its
+  speed is for the A770 to measure (#45). `xw_peak` also has a row with consecutive matrix operations sharing their weights.
+
 ## 2026-11-23: fixed, wrong prompt results on discrete cards in 2026.11.23.16
 
 - **Fixed (a regression in 2026.11.23.16, commit 326febb):** on cards where the prompt GEMMs run in H8 (discrete Arc cards

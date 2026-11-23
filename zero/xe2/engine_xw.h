@@ -501,7 +501,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt();
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_ul_opt();
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -590,6 +590,15 @@
   // A770's GEMM question (xw_peak --probe's local-memory rows; xw_peak "slm 32x32 4x4 e2 p wgl bg"). The same words in
   // the same order: bit for bit, checked at start (xw_check's forms 27 / 31, xw_gu_check8); a difference turns off
   // only this. Pack bit 16, only where the weights are in the work-group order (bit 8)
+  // ARC_GEMM_XW_UL=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 1): the big tile's
+  // local-memory reads and writes as 64-bit block messages (gemm_xw8.cl -DXS_UL, with XS_LATE): the users' ocloc 26.40
+  // (dg2-g10) makes the 32-bit read8 two 128-B messages (32 for 32 DPAS) and these one 256-B message (16), as oneDNN's
+  // block_oword(16) reads. The cost: ~176 moves more in the kernel (a lane's 4 ulongs into DPAS's word layout). No spill
+  // there, with the fused gate / up too. Bit for bit, checked at start (the build options are the check's own)
+  static std::string xw_ul_opt() {
+    static const bool on = getenv("ARC_GEMM_XW_UL") && atoi(getenv("ARC_GEMM_XW_UL")) != 0;
+    return on ? " -DXS_UL -DXS_LATE" : std::string();
+  }
   // ARC_GEMM_XW_LSC=N (2026-11-23, opt-in; the A770's cache question, #45: with the removed ARC_GEMM_XW_AG, which kept
   // less in L3, gdn_recur fell 342 -> 306 ms and attention 133 -> 118 though neither changed): the big tile's loads
   // built with the compiler's load cache policy N (-igc_opts 'LscLoadCacheControlOverride=N'; the users' ocloc 26.40,
@@ -684,7 +693,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt();
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_ul_opt();
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -1035,7 +1044,7 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_ul_opt().empty() ? "" : "|ul") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -1095,6 +1104,8 @@
         zlog::eprintf(wglk[key] ? "inferzero: gemm_xw8: the big tile's operands in its work-group order (ARC_GEMM_XW_WGL, results "
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
+      if (ok && !xw_ul_opt().empty() && xw_big_on())
+        zlog::eprintf("inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
       if (ok && !xw_lsc_opt().empty() && xw_big_on())
         zlog::eprintf("inferzero: gemm_xw8: the big tile's loads with the compiler's cache policy %s (ARC_GEMM_XW_LSC)\n",
                       getenv("ARC_GEMM_XW_LSC"));

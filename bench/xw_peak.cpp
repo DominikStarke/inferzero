@@ -573,6 +573,12 @@ int main(int argc, char** argv) {
       // (" split": the stage barrier split in arrive and wait, gemm_xw8.cl -DXS_SPLIT)
       {"slm 32x32 4x4 e2 p wgl split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT", 32, 2, true, true, 4, false, 4, true},
       {"slm 32x32 4x8 e2 p wgl split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT", 32, 2, true, true, 4, false, 8, true},
+      // (2026-11-23, the A770 GEMM plan after oneDNN's kernel: " ul", the local reads in 256-B messages, gemm_xw8.cl -DXS_UL;
+      //  " hb2", B a column group and a k-half at a time, so consecutive DPAS share the weight operand (26.40: 26 of 37 DPAS
+      //  chained with {Atomic} against 16 of 33))
+      {"slm 32x32 4x8 e2 p wgl split ul", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_UL -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
+      {"slm 32x32 4x8 e2 p wgl split hb2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXW_HB=2 -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
+      {"slm 32x32 4x8 e2 p wgl split ul hb2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_UL -DXW_HB=2 -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
   };
   // (2026-11-22) "slm 32x48 8x4 e2 p": the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), 8 column x 4 token
   // sub-groups, a work-group 128 tokens x 384 columns (oneDNN's 256 x 192, 4 x 8 here, spills in the K loop at 256

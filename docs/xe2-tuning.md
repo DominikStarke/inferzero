@@ -1147,6 +1147,12 @@ a time, so when a loop has many more instructions than that per DPAS, issuing th
 | gdn_recur, A770 (dg2-g10) | 676 | - | 12 | - |
 
 What it shows:
+- **Corrected 2026-11-23 (the oneDNN study):** the ~8 cycles a DPAS used below is too low for DG2. The A770's measured
+  232 TOPS on 32 Xe-cores at ~2.0-2.4 GHz is ~0.74-0.88 DPAS (8 x 8 x 32) a clock a Xe-core, ~16-21 EU clocks each, so
+  at 5.6 instructions a DPAS (since XW_PTR) issuing is no longer the limit. The limit is local-memory traffic: ours
+  moves ~152 bytes a DPAS (oneDNN's kernel 93), and skipzx-lab's probe measured 77-99 B a clock a Xe-core of local reads,
+  which caps the big tile near 70-83 % of peak before barriers and latency (#45). The plan: 256-B local messages
+  (`ARC_GEMM_XW_UL`), the split-matrix DPAS (`dpasw`), 32 x 48 without spills, k32 stages in 4 buffers.
 - **The A770's GEMM is bound by issuing its own loop.** 12.4 instructions a DPAS against ~8 cycles of XMX work caps
   it near 8 / 12.4 = 65 % of peak. That is what hansong80's `xw_peak --probe` measured with the data in cache
   (~65 %, issue #45). The 64 % of the prompt the GEMMs take, at 48 % of peak, is this ceiling plus memory stalls.
@@ -1241,6 +1247,7 @@ user's log could not show whether it ran).
 | `ARC_TIGHT_SMALL=0` | a small spill to RAM kept as weights in RAM, not traded for 512-token chunks (the tight plan, 2026-11-23) |
 | `ARC_HOST_CPU_THREADS=N` | the threads of the CPU's matrix loop for weights in host memory (unset: the CPU's physical cores since 2026-11-23; 0: OpenMP's default) |
 | `ARC_HOST_CPU_NATIVE=1` | the CPU's IQ3_S matrices in host memory kept as the file's own blocks and decoded in its dot loop (0.43 bytes a weight), not an int8 copy (1.125); KL-checked; other types keep the copy |
+| `ARC_GEMM_XW_UL=1` | the big tile's (8 lanes) local-memory reads and writes as 64-bit block messages: 256 B a read, half the messages (the users' ocloc 26.40, dg2-g10: 16 `load.slm.d64x32t` against 32 `d32x32t` for 32 DPAS), ~176 moves more in the kernel; with XS_LATE, no spill; bit for bit, checked at start |
 | `ARC_GEMM_XW_LSC=N` | the big tile's loads built with the compiler's load cache policy N (1-7, `-igc_opts 'LscLoadCacheControlOverride=N'`), A and B alike; bit for bit |
 | `ARC_ATTN_DEC_KW8=1` | the one-token attention (attn_decode) reads a 16-key tile's K in 8-word block reads, not 1-word ones (the Qwen shapes with one scale a row); bit for bit |
 | `ARC_GPU_WAIT_S=s` / `ARC_WAIT_STATS=1` / `ARC_GPU_FAULT_TEST=hang\|lost` / `ARC_IGNORE_HANG=1` | the GPU failsafe's wait limit, longest-wait report, fault test and marker override ([gpu-failsafe.md](gpu-failsafe.md)) |
