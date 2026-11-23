@@ -224,6 +224,16 @@ Developer cuts them.
      the head (Q8_0) and the softcap; `ink_mask_logits` sets the padded vocabulary's logits to -inf.
      `runz --kl-ref` compares the unpadded 200,058. The chunk is 512.
    - **Refused:** slots, MTP / DFlash, several GPUs, snapshots (`snapshot()` throws, `restore()` returns false).
+     After the Researcher's review of 0741c07:
+     - `serverz` refuses an Inkling file before any GPU memory is taken. The server snapshots after every prompt, and
+       its host snapshot would have let a new conversation continue on another one's conv states and rings.
+     - `snapshot_host` keeps nothing and `restore_host` returns false for Inkling.
+     - `save_state` / `load_state` and a cancelled chunk's rewind (which must `reset()`, since the whole graph runs
+       from layer 0) are in engine_sessions.h; the Developer guards them.
+     - `runz`'s one-GPU KL paths (`--kl-ref`, `--kl-decode`, the reference-size test) compare the unpadded vocabulary.
+     - Loading also refuses an `output.scale`, more than 256 relative buckets, or an expert FFN not a multiple of 64.
+     - `attn_res_query`'s queries now come from its size.
+     - tau applies to the global layers whatever `log_alpha`'s sign, as in the reference.
    - **Hooks**, each under `hp.inkling`:
      - engine_setup.h `load_hparams`; engine_load.h `build_kernels` / `load_weights`; engine_alloc.h;
      - engine.h `forward` (no layer-major), `run_layer`, `head_rows`, `reset`, `snapshot` / `restore`, `max_chunk`;
@@ -279,6 +289,7 @@ the RAM tier, since the Q8 file doesn't fit 16 GB.
 | I1.3 | `ref_forward` on the real file vs llama.cpp (a build with #32704) | CPU, minutes | top 10 and KL on a short prompt |
 | I1.4 | `make_tiny_inkling2` + `ref_forward` on it; llama.cpp on it | CPU, seconds | the tiny file loads in llama.cpp, the same top token |
 | I1.5 | the engine on the tiny file vs ref_forward, through `bench\gpu_guard.ps1` | laptop iGPU | KL, top token over a few hundred positions; with and without `--nvfp4-equal` |
+| I1.5 | `runz --dump-logits` on the 4B and the 35B, before and after these commits | laptop iGPU | the other models bit for bit (the warm-up marker hashes the ops source, so each model warms up once after this update: time only, no output change) |
 | I1.5 | the engine on the real file vs ref_forward / llama.cpp | a 32 GB card (B70, B65) | KL <= 0.015 token by token |
 
 ## Done for this phase

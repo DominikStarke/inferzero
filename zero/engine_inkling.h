@@ -129,6 +129,8 @@
       throw std::runtime_error("inkling2: unsupported dimensions (head size 128, the embedding a multiple of 256, at most "
                                "256 experts)");
     if (std::max(k.swa, k.ext) > 1024) throw std::runtime_error("inkling2: a relative-bias table over 1024 rows");
+    if (k.nrel > 256) throw std::runtime_error("inkling2: more than 256 relative buckets (ink_rows' work-group)");
+    if (hp.n_ff_exp % 64) throw std::runtime_error("inkling2: an expert FFN width not a multiple of 64 (NVFP4 blocks)");
     if (k.loop && (k.passes < 2 || k.rank < 1 || k.start < 1 || k.start >= k.end || k.end > hp.n_layer ||
                    k.start % k.block || k.end % k.block))
       throw std::runtime_error("inkling2: invalid loop core");
@@ -181,8 +183,11 @@
       } else {
         L.an = load_vec(p + "attn_norm.weight", E);
       }
-      if (il > 0) {
-        L.nq = L.glob ? 3 : 1;
+      if (il > 0) {  // (its queries from the tensor's size, as llama.cpp and the reference: 1 or 3)
+        const uint64_t n = f_.get(p + "attn_res_query.weight").nelements();
+        L.nq = (int)(n / E);
+        if (n % E || (L.nq != 1 && L.nq != 3) || (L.nq == 3 && !L.glob))
+          throw std::runtime_error("unexpected tensor shape: " + p + "attn_res_query.weight");
         L.res_q = load_vec(p + "attn_res_query.weight", L.nq * E);
       }
       L.ffn_res_q = load_vec(p + "ffn_res_query.weight", E);
@@ -225,6 +230,7 @@
       }
       clFinish(cl_.queue);
     }
+    if (f_.find("output.scale")) throw std::runtime_error("Inkling 2: a scale on the output head is not supported yet");
     ink_tok_norm_ = load_vec("token_embd_norm.weight", E);
     ink_out_res_q_ = load_vec("output_res_query.weight", E);
     static const int8_t kv[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
@@ -436,17 +442,17 @@
     // clips (q, r: per-head scales; global: the log-length factor), K's clip, V's RMS norm
     {
       cl_kernel kr = ink_k("ink_rows");
-      const float la = L.glob ? k.log_alpha : 0.0f;
-      auto rows = [&](cl_mem x, int nrow, int n, cl_mem sc, float thr, float alpha, int mode) {
-        int nr = nrow, nn = n, hs = sc ? 1 : 0, p0 = pos, md = mode;
-        float th = thr, al = alpha, lf = k.log_floor, eps = hp.eps;
-        set_args(kr, 0, x, nr, nn, sc ? sc : ink_dummy_, hs, th, al, lf, p0, md, eps);
+      const int gt = L.glob ? 1 : 0;  // (llama: tau on q and r of the global layers, whatever alpha's sign)
+      auto rows = [&](cl_mem x, int nrow, int n, cl_mem sc, float thr, int tau, int mode) {
+        int nr = nrow, nn = n, hs = sc ? 1 : 0, p0 = pos, md = mode, ut = tau;
+        float th = thr, al = k.log_alpha, lf = k.log_floor, eps = hp.eps;
+        set_args(kr, 0, x, nr, nn, sc ? sc : ink_dummy_, hs, th, ut, al, lf, p0, md, eps);
         ink_rung("ink_rows", kr, (size_t)T * nrow, 256);
       };
-      rows(ink_q_, H, D, L.q_clip, k.qk_clip, la, 0);
-      rows(ink_r_, H, k.nrel, L.rel_clip, k.rel_clip, la, 0);
-      rows(ink_kc_, HKV, D, nullptr, k.qk_clip, 0.0f, 0);
-      rows(ink_vc_, HKV, D, nullptr, 0.0f, 0.0f, 1);
+      rows(ink_q_, H, D, L.q_clip, k.qk_clip, gt, 0);
+      rows(ink_r_, H, k.nrel, L.rel_clip, k.rel_clip, gt, 0);
+      rows(ink_kc_, HKV, D, nullptr, k.qk_clip, 0, 0);
+      rows(ink_vc_, HKV, D, nullptr, 0.0f, 0, 1);
     }
     {  // the slot's cache, then the attention over it (gated)
       cl_kernel ks = ink_k("ink_kv_store");

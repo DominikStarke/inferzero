@@ -728,13 +728,15 @@ static int run_main(int argc, char** argv) {
   //  rows are not capped at 1 + drafts; add_slots below then finds them made. hibagus, #48, 2026-11-22)
   if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);
   Engine eng(model, eo);
+  // (the logits that are tokens: Inkling 2's head has rows past its vocabulary, -inf; ref_forward writes the vocabulary)
+  const size_t VK = eng.hp.inkling ? (size_t)eng.ink_vocab() : (size_t)eng.hp.n_vocab;
   // (every position's logits are read after the prompt: no 8-token passes, see Engine::keep_rows; a reference of
   //  the last position only, or --kl-decode, keeps the passes the server takes)
   if (!ppl_file.empty()) eng.keep_rows = true;
   if (!kl_ref.empty() && !kl_decode) {
     std::error_code ec;
     const uintmax_t rb = std::filesystem::file_size(kl_ref, ec);
-    eng.keep_rows = !ec && rb != (uintmax_t)eng.hp.n_vocab * 4;
+    eng.keep_rows = !ec && rb != (uintmax_t)VK * 4;
   }
   Vocab vocab(eng.gguf());
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",
@@ -1411,7 +1413,7 @@ static int run_main(int argc, char** argv) {
     if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
     if (kl_decode) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
-      const size_t V = eng.hp.n_vocab;
+      const size_t V = VK;
       const std::vector<float> ref = read_kl_ref(kl_ref, V);
       if (ref.empty()) { zlog::eprintf("cannot read %s\n", kl_ref.c_str()); return 1; }
       const size_t got = ref.size();
@@ -1482,7 +1484,7 @@ static int run_main(int argc, char** argv) {
     if (!kl_ref.empty()) {
       // KL(reference || inferzero) over the full vocabulary; the reference file holds f32 log-probs of the last
       // position, or of every prompt position (then the KL is averaged over the prompt; single-chunk prompts).
-      const size_t V = lg.size();
+      const size_t V = eng.hp.inkling ? VK : lg.size();
       auto kl_of = [&](const std::vector<float>& l, const float* ref) {
         const double mx = *std::max_element(l.begin(), l.end());
         double z = 0;
@@ -1492,7 +1494,7 @@ static int run_main(int argc, char** argv) {
           if (ref[i] > -1e30f) kl += std::exp((double)ref[i]) * (ref[i] - (l[i] - mx - std::log(z)));
         return kl + kl_tail(l.data(), ref);
       };
-      const std::vector<float> ref = read_kl_ref(kl_ref, (size_t)eng.hp.n_vocab);
+      const std::vector<float> ref = read_kl_ref(kl_ref, VK);
       // (ARC_KL_FROM=N: the reference holds positions N.. only; they must lie in the last chunk, which x_ holds)
       // (kl_c0: the first position whose logits the last forward() left: the last call starts at rest0 (--feed-step),
       //  and of its rows x_ holds the last chunk. It was the chunk's start counted from 0, so with --feed-step the rows

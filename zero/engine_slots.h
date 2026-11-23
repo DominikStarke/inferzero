@@ -129,6 +129,7 @@
   void snapshot_host() {
     TP_MIRROR(snapshot_host(), TpMirror::kNone, 0);
     hsnap_.S.clear();
+    if (hp.inkling) return;  // (Inkling 2: no snapshots yet; restore_host refuses, so a conversation starts afresh)
     if (hp.ds41) {  // (DeepSeek-V4.1: see snapshot())
       ds_save(hsnap_.ds, hsnap_.dsh);
       hsnap_.pos = pos;
@@ -153,6 +154,7 @@
   bool restore_host() {
     TP_MIRROR(restore_host(), TpMirror::kNone, 0);
     if (hsnap_.pos < 0) return false;
+    if (hp.inkling) return false;  // (no snapshot of its slots yet: snapshot_host keeps none)
     if (hp.ds41) {
       ds_load(hsnap_.ds, hsnap_.dsh);
       pos = hsnap_.pos;

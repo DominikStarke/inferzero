@@ -150,10 +150,10 @@ __kernel void ink_conv_state(__global const float* cur, __global float* state, i
 
 // llama's clip on rows of n values (one work-group per row; rows: T x nrow, n <= INK_LS): times the row's scale
 // (scale: nrow rows of n, or has_scale 0), scaled down to an L2 norm of at most thr (factor clamp(thr / (norm + 1e-6),
-// 0, 1)); then, when log_alpha > 0, times tau = 1 + log_alpha log(max(1, (pos0 + t + 1) / log_floor)) (q and r of the
-// global layers). mode 1: an RMS norm instead (V: eps, no weight)
+// 0, 1)); then, when use_tau (q and r of the global layers, whatever log_alpha's sign), times
+// tau = 1 + log_alpha log(max(1, (pos0 + t + 1) / log_floor)). mode 1: an RMS norm instead (V: eps, no weight)
 __kernel void ink_rows(__global float* x, int nrow, int n, __global const float* scale, int has_scale, float thr,
-                       float log_alpha, float log_floor, int pos0, int mode, float eps) {
+                       int use_tau, float log_alpha, float log_floor, int pos0, int mode, float eps) {
   __local float red[INK_LS];
   const int g = get_group_id(0), l = get_local_id(0), t = g / nrow, r = g % nrow;
   __global float* v = x + (size_t)g * n;
@@ -166,7 +166,7 @@ __kernel void ink_rows(__global float* x, int nrow, int n, __global const float*
   float f;
   if (mode == 1) f = rsqrt(ss / (float)n + eps);
   else f = clamp(thr / (sqrt(ss) + 1e-6f), 0.0f, 1.0f);
-  if (log_alpha > 0.0f) f *= 1.0f + log_alpha * log(fmax(1.0f, (float)(pos0 + t + 1) / log_floor));
+  if (use_tau) f *= 1.0f + log_alpha * log(fmax(1.0f, (float)(pos0 + t + 1) / log_floor));
   if (l < n) v[l] = a * f;
 }
 

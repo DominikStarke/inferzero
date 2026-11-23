@@ -81,6 +81,13 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   L->alias = alias;
   L->path = model;
   zlog::eprintf("inferzero-server: loading %s\n", model.c_str());
+  {  // (Inkling 2: the engine runs it in runz only for now; the server's chat format and saved prompts are not done,
+     //  and a chat would continue on another one's state: docs/inkling2.md I1.6. Refused before any GPU memory)
+    std::string arch;
+    try { arch = GgufFile(model).get_str("general.architecture", ""); } catch (const std::exception&) {}
+    if (arch == "inkling2" || arch == "inkling2_loop")
+      throw std::runtime_error("Inkling 2 is not supported by the server yet (runz only, for the accuracy checks)");
+  }
   const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
     // (said, not dropped silently: --mmproj was accepted with --gpus 2 and /props said vision: false with no line
