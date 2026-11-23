@@ -270,11 +270,17 @@
         // (ggml-org's IQ4_NL file, 2026-11-24 (#83): IQ4_NL experts in layers 0-19, Q8_0 in 20-23. The streamed path,
         //  the default, takes IQ4_NL as every MoE model's experts (the shared MoE kernels); ARC_INK_RESIDENT=1's exact
         //  experts (ink_expert_mv) read NVFP4, BF16, Q8_0 and F32 only)
+        // (2026-11-24: streamed, every type the shared MoE path takes (is_w8_type: the K-quants, IQ4_XS / IQ4_NL, the
+        //  IQ2 / IQ3 types, Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0, MXFP4 / NVFP4), the float ones as Q8_0 records: the Q4
+        //  files most users run (Q4_K_M, UD-Q4_K_XL, IQ4_XS) were refused)
         const bool exact_ok = type == GGML_NVFP4 || type == GGML_BF16 || type == GGML_Q8_0 || type == GGML_F32;
-        if (!exact_ok && !(ink_streamed_ && type == GGML_IQ4_NL))
-          throw std::runtime_error("Inkling 2: expert type " + std::string(ggml_type_name(type)) + " (" + name +
-                                   ") not supported yet (NVFP4, BF16, Q8_0, F32; IQ4_NL streamed" +
-                                   (ink_streamed_ ? std::string(")") : std::string(": not with ARC_INK_RESIDENT=1)")));
+        const bool streamed_ok = is_w8_type(type) || ExpertStore::is_float_type(type);
+        if (ink_streamed_ ? !streamed_ok : !exact_ok)
+          throw std::runtime_error("Inkling 2: expert type " + std::string(ggml_type_name(type)) + " (" + name + ") not supported" +
+                                   (ink_streamed_ ? std::string(" (streamed experts: the K-quants, IQ types, Q4_0 to Q8_0, MXFP4 / "
+                                                                "NVFP4, BF16 / F16 / F32)")
+                                                  : std::string(" with ARC_INK_RESIDENT=1 (NVFP4, BF16, Q8_0, F32; every "
+                                                                "quantized type streamed, the default)")));
         rb = t.nbytes / ((uint64_t)NE * N);
         // (streamed, I1.7 step 5: no raw copy on the GPU; the expert file's records instead. Their bytes for the
         //  plan, as load_moe counts them; a float type's records are Q8_0, ExpertStore::rec_type)

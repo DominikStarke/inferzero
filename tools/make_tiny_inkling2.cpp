@@ -23,7 +23,7 @@
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab] [--exps-type T] [--mats-type T]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -41,6 +41,9 @@ namespace {
 int E = 256, NL = 8, H = 6, HKV = 2, D = 128, NREL = 16, SWA = 16, EXT = 32, NC = 4, BLOCK = 2;
 double g_init = 1.0;  // (--scale S)
 bool g_byte_vocab = false;  // (--byte-vocab: tokens 0..255 are GPT-2's byte characters, so text encodes: serverz tests)
+const uint32_t kNoType = 0xFFFFFFFFu;  // (no --exps-type / --mats-type: F32 is type 0)
+uint32_t g_exps_type = kNoType;  // (--exps-type q4_k / q6_k / iq4_xs: every expert tensor of that type, the FFN 256 wide)
+uint32_t g_mats_type = kNoType;  // (--mats-type T: the BF16 2D matrices of type T where their rows are whole blocks)
 int NE = 8, NU = 2, FF = 128, RANK = 16, LSTART = 2, LEND = 6, PASSES = 3, NV = 500, NVP = 512;
 const std::vector<int> GLOBAL = {1, 5, 7};
 const int NVFP4_LAYERS = 6;  // (experts of layers 0..5 NVFP4, the rest BF16)
@@ -133,8 +136,214 @@ void encode_nvfp4(const float* v, std::vector<uint8_t>& o) {
   }
 }
 
+// (--exps-type: K-quant and IQ4_XS superblocks of 256, simple quantizers (not ggml's search): a valid file of the
+//  type, the test being the engine against ref_forward on the same bytes; each superblock checked through the
+//  engine's own dequant_row, so a layout slip stops here)
+void encode_q4k(const float* v, std::vector<uint8_t>& o) {
+  float sc[8], mn[8];
+  for (int j = 0; j < 8; ++j) {
+    float lo = 0, hi = 0;
+    for (int i = 0; i < 32; ++i) lo = std::min(lo, v[32 * j + i]), hi = std::max(hi, v[32 * j + i]);
+    sc[j] = (hi - lo) / 15.0f;
+    mn[j] = -lo;
+  }
+  float msc = 0, mmn = 0;
+  for (int j = 0; j < 8; ++j) msc = std::max(msc, sc[j]), mmn = std::max(mmn, mn[j]);
+  const uint16_t dh = f32_to_fp16(msc / 63.0f), mh = f32_to_fp16(mmn / 63.0f);
+  const float d = fp16_to_f32(dh), dmin = fp16_to_f32(mh);
+  uint8_t ls[8], lm[8];
+  for (int j = 0; j < 8; ++j) {
+    ls[j] = (uint8_t)std::clamp((int)std::lround(d > 0 ? sc[j] / d : 0.0f), 0, 63);
+    lm[j] = (uint8_t)std::clamp((int)std::lround(dmin > 0 ? mn[j] / dmin : 0.0f), 0, 63);
+  }
+  uint8_t s12[12] = {};
+  for (int j = 0; j < 4; ++j) {
+    s12[j] = (uint8_t)(ls[j] | ((ls[j + 4] >> 4) << 6));
+    s12[j + 4] = (uint8_t)(lm[j] | ((lm[j + 4] >> 4) << 6));
+    s12[j + 8] = (uint8_t)((ls[j + 4] & 15) | ((lm[j + 4] & 15) << 4));
+  }
+  put<uint16_t>(o, dh);
+  put<uint16_t>(o, mh);
+  for (uint8_t b : s12) put<uint8_t>(o, b);
+  auto q = [&](int j, int i) {
+    const float s = d * ls[j];
+    return std::clamp((int)std::lround(s > 0 ? (v[32 * j + i] + dmin * lm[j]) / s : 0.0f), 0, 15);
+  };
+  for (int c = 0; c < 4; ++c)
+    for (int i = 0; i < 32; ++i) put<uint8_t>(o, (uint8_t)(q(2 * c, i) | (q(2 * c + 1, i) << 4)));
+}
+void encode_q6k(const float* v, std::vector<uint8_t>& o) {
+  float sc[16], ms = 0;
+  for (int s = 0; s < 16; ++s) {
+    float a = 0;
+    for (int i = 0; i < 16; ++i) a = std::max(a, std::fabs(v[16 * s + i]));
+    sc[s] = a / 31.0f;
+    ms = std::max(ms, sc[s]);
+  }
+  const uint16_t dh = f32_to_fp16(ms / 127.0f);
+  const float d = fp16_to_f32(dh);
+  int8_t is[16];
+  for (int s = 0; s < 16; ++s) is[s] = (int8_t)std::clamp((int)std::lround(d > 0 ? sc[s] / d : 0.0f), -127, 127);
+  uint8_t q[256];
+  for (int e = 0; e < 256; ++e) {
+    const float st = d * is[e / 16];
+    q[e] = (uint8_t)(std::clamp((int)std::lround(st != 0 ? v[e] / st : 0.0f), -32, 31) + 32);
+  }
+  uint8_t ql[128], qh[64] = {};
+  for (int n = 0; n < 2; ++n)  // (ggml's dequantize_row_q6_K order: halves of 128, four runs of 32)
+    for (int l = 0; l < 32; ++l) {
+      const uint8_t* y = q + 128 * n;
+      ql[64 * n + l] = (uint8_t)((y[l] & 15) | ((y[l + 64] & 15) << 4));
+      ql[64 * n + l + 32] = (uint8_t)((y[l + 32] & 15) | ((y[l + 96] & 15) << 4));
+      qh[32 * n + l] = (uint8_t)((y[l] >> 4) | ((y[l + 32] >> 4) << 2) | ((y[l + 64] >> 4) << 4) | ((y[l + 96] >> 4) << 6));
+    }
+  for (uint8_t b : ql) put<uint8_t>(o, b);
+  for (uint8_t b : qh) put<uint8_t>(o, b);
+  for (int8_t b : is) put<int8_t>(o, b);
+  put<uint16_t>(o, dh);
+}
+void encode_iq4xs(const float* v, std::vector<uint8_t>& o) {
+  float sc[8], ms = 0;
+  for (int j = 0; j < 8; ++j) {
+    float a = 0;
+    for (int i = 0; i < 32; ++i) a = std::max(a, std::fabs(v[32 * j + i]));
+    sc[j] = a / 127.0f;
+    ms = std::max(ms, sc[j]);
+  }
+  const uint16_t dh = f32_to_fp16(ms / 31.0f);
+  const float d = fp16_to_f32(dh);
+  uint8_t ls[8];
+  uint16_t sh = 0;
+  uint8_t sl[4] = {};
+  for (int j = 0; j < 8; ++j) {
+    ls[j] = (uint8_t)std::clamp((int)std::lround(d > 0 ? sc[j] / d : 0.0f) + 32, 0, 63);
+    sl[j / 2] |= (uint8_t)((ls[j] & 15) << (4 * (j % 2)));
+    sh |= (uint16_t)((ls[j] >> 4) << (2 * j));
+  }
+  put<uint16_t>(o, dh);
+  put<uint16_t>(o, sh);
+  for (uint8_t b : sl) put<uint8_t>(o, b);
+  for (int j = 0; j < 8; ++j) {
+    const float dl = d * (ls[j] - 32);
+    uint8_t q[32];
+    for (int i = 0; i < 32; ++i) {
+      int best = 0;
+      float bd = INFINITY;
+      for (int c = 0; c < 16; ++c) {
+        const float dd = std::fabs(v[32 * j + i] - dl * (float)kvalues_iq4nl[c]);
+        if (dd < bd) bd = dd, best = c;
+      }
+      q[i] = (uint8_t)best;
+    }
+    for (int i = 0; i < 16; ++i) put<uint8_t>(o, (uint8_t)(q[i] | (q[i + 16] << 4)));
+  }
+}
+
+// a type by its GGUF name, any case (q4_k, IQ2_XXS, mxfp4, f16, f32, ...); kNoType when unknown
+uint32_t type_by_name(std::string s) {
+  for (char& c : s) c = (char)toupper((unsigned char)c);
+  for (uint32_t t = 0; t < 64; ++t)
+    if (s == ggml_type_name(t)) return t;
+  return kNoType;
+}
+// (--exps-type / --mats-type, the types with no quantizer here (the IQ1 / IQ2 / IQ3 grids, Q2_K / Q3_K / Q5_K, the
+//  32-blocks, MXFP4): random code bytes, the block's scale fields set so that its values have the rms of x's block
+//  (value linear in the scale; a second offset field, Q4_1's m or a K-quant's dmin, zero); a valid file of the type, the
+//  test being the engine against ref_forward on the same bytes. Kinds: 'd' f16 scale, 'z' f16 zeroed, 'e' MXFP4's E8M0
+//  exponent, 'm' IQ1_M's scale in the top nibbles of its 4 scale words)
+struct ScaleAt { int off; char kind; };
+std::vector<ScaleAt> scale_fields(uint32_t t) {
+  switch (t) {
+    case GGML_Q4_0: case GGML_Q5_0: case GGML_Q8_0: case GGML_IQ4_NL: case GGML_Q2_0: case GGML_IQ2_XXS: case GGML_IQ2_XS:
+    case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S: case GGML_IQ4_XS: return {{0, 'd'}};
+    case GGML_Q4_1: case GGML_Q5_1: case GGML_Q8_1: case GGML_Q4_K: case GGML_Q5_K: return {{0, 'd'}, {2, 'z'}};
+    case GGML_Q2_K: return {{80, 'd'}, {82, 'z'}};
+    case GGML_Q3_K: return {{108, 'd'}};
+    case GGML_Q6_K: return {{208, 'd'}};
+    case GGML_IQ1_M: return {{48, 'm'}};
+    case GGML_MXFP4: return {{0, 'e'}};
+    default: return {};
+  }
+}
+void put_scale(uint8_t* b, const std::vector<ScaleAt>& fs, float d, int e) {
+  for (const ScaleAt& s : fs) {
+    if (s.kind == 'z') { const uint16_t z = 0; memcpy(b + s.off, &z, 2); }
+    if (s.kind == 'd') { const uint16_t h = f32_to_fp16(d); memcpy(b + s.off, &h, 2); }
+    if (s.kind == 'e') b[s.off] = (uint8_t)std::clamp(e, 1, 254);
+    if (s.kind == 'm') {
+      const uint16_t h = f32_to_fp16(d);
+      for (int i = 0; i < 4; ++i) {
+        uint16_t w;
+        memcpy(&w, b + s.off + 2 * i, 2);
+        w = (uint16_t)((w & 0x0FFF) | (((h >> (4 * i)) & 15) << 12));
+        memcpy(b + s.off + 2 * i, &w, 2);
+      }
+    }
+  }
+}
+std::vector<uint8_t> encode_random(const F& x, uint32_t type) {
+  int blk = 0, bytes = 0;
+  ggml_block_info(type, blk, bytes);
+  const std::vector<ScaleAt> fs = scale_fields(type);
+  if (fs.empty() || blk <= 0) throw std::runtime_error(std::string("encode: no generic form for ") + ggml_type_name(type));
+  if (x.size() % blk) throw std::runtime_error(std::string("encode: ") + ggml_type_name(type) + " needs whole blocks");
+  static Rng rng(0xC0DE5EEDull);
+  std::vector<uint8_t> o(x.size() / blk * bytes);
+  std::vector<float> back(blk);
+  for (size_t b = 0; b < x.size() / blk; ++b) {
+    uint8_t* p = o.data() + b * bytes;
+    for (int i = 0; i < bytes; ++i) p[i] = (uint8_t)(rng.next() >> 56);
+    double want = 0;
+    for (int i = 0; i < blk; ++i) want += (double)x[b * blk + i] * x[b * blk + i];
+    want = std::sqrt(want / blk) + 1e-6;
+    put_scale(p, fs, 1.0f, 127);  // (unit scale: the codes' own rms, then the scale that gives want)
+    dequant_row(type, p, blk, back.data());
+    double got = 0;
+    for (float v : back) got += (double)v * v;
+    got = std::sqrt(got / blk);
+    if (!(got > 1e-12) || !std::isfinite(got)) {  // (all codes zero: a fixed pattern instead)
+      for (int i = 0; i < bytes; ++i) p[i] = (uint8_t)(0x5A + 37 * i);
+      put_scale(p, fs, 1.0f, 127);
+      dequant_row(type, p, blk, back.data());
+      got = 0;
+      for (float v : back) got += (double)v * v;
+      got = std::sqrt(got / blk) + 1e-12;
+    }
+    put_scale(p, fs, (float)(want / got), 127 + (int)std::lround(std::log2(want / got)));
+    dequant_row(type, p, blk, back.data());
+    for (float v : back)
+      if (!std::isfinite(v)) throw std::runtime_error(std::string("encode: ") + ggml_type_name(type) + " gave a non-finite value");
+  }
+  return o;
+}
+
 std::vector<uint8_t> encode(const F& x, uint32_t type) {
   std::vector<uint8_t> o;
+  if (type == GGML_F16) {
+    for (float v : x) put<uint16_t>(o, f32_to_fp16(v));
+    return o;
+  }
+  if (!scale_fields(type).empty() && type != GGML_Q4_K && type != GGML_Q6_K && type != GGML_IQ4_XS &&
+      type != GGML_Q8_0 && type != GGML_IQ4_NL)
+    return encode_random(x, type);
+  if (type == GGML_Q4_K || type == GGML_Q6_K || type == GGML_IQ4_XS) {
+    if (x.size() % 256) throw std::runtime_error("K-quants / IQ4_XS need a multiple of 256 values");
+    const size_t sb = type == GGML_Q4_K ? 144 : type == GGML_Q6_K ? 210 : 136;
+    float back[256];
+    for (size_t b = 0; b < x.size() / 256; ++b) {
+      const size_t at = o.size();
+      if (type == GGML_Q4_K) encode_q4k(&x[b * 256], o);
+      else if (type == GGML_Q6_K) encode_q6k(&x[b * 256], o);
+      else encode_iq4xs(&x[b * 256], o);
+      if (o.size() - at != sb) throw std::runtime_error("encode: superblock size");
+      dequant_row(type, o.data() + at, 256, back);
+      double err = 0, ref = 0;
+      for (int i = 0; i < 256; ++i) err += (back[i] - x[b * 256 + i]) * (back[i] - x[b * 256 + i]), ref += x[b * 256 + i] * x[b * 256 + i];
+      if (err > 0.05 * ref + 1e-12) throw std::runtime_error("encode: type " + std::to_string(type) + " round trip off (" +
+                                                             std::to_string(std::sqrt(err / (ref + 1e-30))) + ")");
+    }
+    return o;
+  }
   if (type == GGML_F32) {
     o.resize(x.size() * 4);
     memcpy(o.data(), x.data(), o.size());
@@ -199,6 +408,12 @@ struct Model {
     //  controller F32)
     if ((g_ggml_org & 1) && type == GGML_BF16 && name.find("_exps.") == std::string::npos)
       type = name.find("loop_") != std::string::npos ? (uint32_t)GGML_F32 : shape.back() % 32 == 0 ? (uint32_t)GGML_Q8_0 : type;
+    // (--mats-type T: every BF16 2D matrix of type T where its rows are whole blocks of it, the rest BF16)
+    if (g_mats_type != kNoType && type == GGML_BF16 && name.find("_exps.") == std::string::npos && shape.size() == 2) {
+      int blk = 0, bytes = 0;
+      ggml_block_info(g_mats_type, blk, bytes);
+      if (blk > 0 && shape.back() % (uint64_t)blk == 0) type = g_mats_type;
+    }
     Tensor t;
     t.name = name;
     t.dims.assign(shape.rbegin(), shape.rend());
@@ -235,7 +450,7 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab] [--exps-type T] [--mats-type T]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
@@ -254,6 +469,16 @@ int main(int argc, char** argv) {
     else if (a == "--scale" && i + 1 < argc) g_init = std::max(0.01, atof(argv[++i]));
     else if (a == "--dspark" && i + 1 < argc) dspark_out = argv[++i];
     else if (a == "--byte-vocab") g_byte_vocab = true;
+    else if (a == "--mats-type" && i + 1 < argc) {
+      g_mats_type = type_by_name(argv[++i]);
+      if (g_mats_type == kNoType) { fprintf(stderr, "--mats-type: a GGUF type name\n"); return 2; }
+    }
+    else if (a == "--exps-type" && i + 1 < argc) {
+      const std::string t = argv[++i];
+      g_exps_type = type_by_name(t);
+      if (g_exps_type == kNoType) { fprintf(stderr, "--exps-type: a GGUF type name (q4_k, iq2_xxs, mxfp4, f16, ...)\n"); return 2; }
+      FF = 256;  // (superblocks of 256 along the down rows too)
+    }
     else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
     else { fprintf(stderr, "make_tiny_inkling2: unknown option %s\n", a.c_str()); return 2; }
   }
@@ -398,7 +623,7 @@ int main(int argc, char** argv) {
       w.tensor(b + "attn_post_conv.weight", randn((size_t)E * NC, 0.3), F32, S{uE, (uint64_t)NC});
       // (--ggml-org: IQ4_NL where the original has NVFP4, Q8_0 where it has MXFP8, no expert scales)
       const uint32_t XT = (g_ggml_org & 2) ? (il < NVFP4_LAYERS ? (uint32_t)GGML_IQ4_NL : (uint32_t)GGML_Q8_0)
-                                     : il < NVFP4_LAYERS ? NVFP4 : BF16;
+                                     : g_exps_type != kNoType ? g_exps_type : il < NVFP4_LAYERS ? NVFP4 : BF16;
       const uint64_t nE = NE;
       w.tensor(b + "ffn_gate_up_exps.weight", randn((size_t)NE * 2 * FF * E, 3 / std::sqrt((double)E)), XT,
                S{nE, (uint64_t)2 * FF, uE});
