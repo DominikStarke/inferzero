@@ -236,7 +236,7 @@
     x_host_.resize(M * hp.hce());
   }
   // tokens per layer-major prompt segment (Flash Next: 8192, its residual rows are 4 streams wide)
-  int lm_seg_for(int c) const { return std::max(max_chunk, std::min(c, hp.ds41 ? ds_lm_seg() : hp.hc ? 8192 : 16384) / max_chunk * max_chunk); }
+  int lm_seg_for(int c) const { return std::max(max_chunk, std::min(c, hp.ds41 ? ds_lm_seg() : hp.hc || small_plan_ ? 8192 : 16384) / max_chunk * max_chunk); }  // (small_plan_: plan_tight)
   // Prompts longer than a chunk go layer by layer (forward_layer_major) with just-in-time or streamed weights, and,
   // since 2026-11-14, on a dense split model with resident weights when ARC_TP_OVERLAP=1 (or ARC_TP_LM=1, layer by
   // layer without the overlap, to measure the two apart): the overlap hides the sums behind the next chunk only in

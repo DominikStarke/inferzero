@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: a small spill to RAM traded for smaller prompt chunks
+
+- **Faster generation where only a little of the model spills to RAM (to be measured):** a card that would keep at
+  most 0.5 GiB of the weights in RAM now takes prompt chunks of 512 and residual segments of 8K tokens instead, when
+  that leaves room for every weight. Weights in RAM cost every token: skipzx-lab's A770 with the 27B at 92K ran
+  10.0 tok/s with 0.39 GiB there, 22.4 with none (#45). The smaller chunk costs ~5-10 % of the prompt speed. The log
+  says which it chose; `ARC_TIGHT_SMALL=0` keeps the weights in RAM as before. Not when a chunk is set by hand.
+
 ## 2026-11-23: weights in host memory: one read of the input for the matrices that share it
 
 - **Faster (to be measured on a card):** the CPU's matrices of one input in host memory (gate and up; qkv, z and

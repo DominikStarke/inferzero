@@ -529,8 +529,9 @@
   //  the load, a tight model's estimate against what ctx_bytes counts, one slot, the KV alone, so the copies cannot
   //  drift apart unseen; a W line past 2 %. The Researcher's review of aa6f021)
   double kv_est_tight_ = -1;
+  bool small_plan_ = false;  // (plan_tight: 512-token chunks and 8K residual segments instead of a small spill to RAM)
   void kv_drift_check() {
-    if (kv_est_tight_ < 0 || !tight_ || zrt::integrated() || opt.dry || hp.ds41 || hp.moe) return;
+    if (kv_est_tight_ < 0 || !tight_ || small_plan_ || zrt::integrated() || opt.dry || hp.ds41 || hp.moe) return;  // (small_plan_: its rings for another chunk)
     if (opt.pp_begin > 0 || (opt.pp_end >= 0 && opt.pp_end < hp.n_layer)) return;  // (a stage: layers_ are the stage's)
     double real = (double)ctx_bytes(ctx) - (double)ctx_buf_bytes((ctx + 15) / 16 * 16);
     if (!hp.swa_rings) {
@@ -544,6 +545,7 @@
               "of the load's rules has drifted (please report)\n", kv_est_tight_ / 1073741824.0, real / 1073741824.0, 100 * d);
   }
   void plan_tight() {
+    small_plan_ = false;
     if (opt.tp_size > 1 || hp.moe || stream_) return;
     double total = 0;
     const bool tied = !f_.find("output.weight");
@@ -642,10 +644,13 @@
     }();
     // (the automatic room, worked out whether ARC_HOST_KEEP_GB is set or not: a room set by hand below it is warned
     //  of below, the Researcher's review of #37)
-    const double keep_auto = [&] {
+    // (the room for a chunk ch_in (0: the tight default, 1024 or the one asked) and a residual segment of at most
+    //  seg_cap tokens; quiet: no diagnostics line, the estimate not kept. Used for the default plan and for the
+    //  smaller one below)
+    auto room_for = [&](double ch_in, double seg_cap, bool quiet) {
       if (!disc) return keep_old;
       // (the chunk the tight model gets: 1024, or the one asked)
-      const double ch = opt.chunk > 0 ? (double)((std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128) : 1024.0;
+      const double ch = ch_in > 0 ? ch_in : opt.chunk > 0 ? (double)((std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128) : 1024.0;
       // (the just-in-time staging: one W8 copy per matrix role, each the size of that role's largest matrix)
       std::map<std::string, double> role_max;
       for (const GgufTensor& t : f_.tensors)
@@ -672,7 +677,7 @@
         act = std::min(act, ch * row * 1.1);
       }
       // (the layer-major residual: a segment of up to 16K tokens (8K with hc) and a chunk, engine_alloc.h)
-      const double seg = std::max(ch, std::floor(std::min((double)ctx, hp.hc ? 8192.0 : 16384.0) / ch) * ch);
+      const double seg = std::max(ch, std::floor(std::min((double)ctx, hp.hc ? 8192.0 : seg_cap) / ch) * ch);
       const double resid = (seg + ch) * hp.hce() * 4.0;
       // (the recurrent states: the caller's snapshots per slot (serverz 3, opt.state_snaps), and the MTP
       //  verification's second copy)
@@ -715,6 +720,7 @@
       //  GiB against 2.5), and a card that pages is slower than one with more of the weights in RAM. Below it (d-dorok's
       //  B580, the 27B at 4K, one slot: ~0.9) the same room as before)
       const double room = std::max(0.0, need + mtp_part + apart - credit);
+      if (quiet) return room;
       kv_est_tight_ = kv_est(ctx, true);  // (for the check against ctx_bytes after the load: kv_drift_check)
       if (getenv("ARC_FIT_PARTS") && !opt.dry)  // (diagnostics: the tight plan's room by part, with runz's memory line)
         zlog::eprintf("inferzero: room %.3f GiB = fixed %.2f + activations %.3f + staging %.3f + residual %.3f + states %.3f + "
@@ -723,7 +729,8 @@
                       kv_est(ctx, true) * std::max(opt.slots, 1) / GiB, mtp_part / GiB, apart / GiB,
                       (double)opt.stream_reserve / GiB, credit / GiB, keep_def / GiB);
       return room;
-    }();
+    };
+    const double keep_auto = room_for(0, 16384.0, false);
     const double keep = getenv("ARC_HOST_KEEP_GB") || !disc ? keep_old : keep_auto;
     // (tight or not by the old rule (audit 2026-11-18): the automatic room above is worked out for a tight model's
     //  buffers (1,024-token chunks, smaller rings), and keep_old does not change with the context below 32K, so the
@@ -742,6 +749,22 @@
       //  of the Discord report has 15.4 GiB))
       const double per_byte = host_cpu_on() && total > 0 ? 1.0 + 1.125 * total_w / total : 1.0;
       want = std::max(0.0, std::min(total - (budget - keep), ((double)plat::ram_available() - 4.0 * GiB) / per_byte));
+      // (a small spill, at most 0.5 GiB, where 512-token chunks and an 8K residual segment leave room for every weight:
+      //  those instead. Weights in RAM cost every token (skipzx-lab's A770, the 27B at 92K, #45: 0.39 GiB in RAM, 10.0
+      //  tok/s against 22.4 with none), the smaller chunk ~5-10 % of the prompt. Only with the automatic room, no chunk
+      //  asked; ARC_TIGHT_SMALL=0: the weights in RAM as before. The Researcher's #45 item 1, 2026-11-23)
+      const char* ts = getenv("ARC_TIGHT_SMALL");
+      if (want > 0 && want <= 0.5 * GiB && keep == keep_auto && opt.chunk <= 0 && opt.min_chunk <= 512 &&
+          !(ts && atoi(ts) == 0)) {
+        const double room_s = room_for(512.0, 8192.0, true);
+        if (total <= budget - room_s) {
+          if (!opt.dry)
+            LOG_INF("inferzero: the tight plan: prompt chunks of 512 and residual segments of 8K tokens instead of %.2f GiB "
+                    "of the weights in RAM (ARC_TIGHT_SMALL=0: the weights in RAM)\n", want / GiB);
+          small_plan_ = true;
+          want = 0;
+        }
+      }
     } else if (opt.host_weights_gb < 0 && tight_) {
       // (what leaves 45 % of the share for the rest, but no more than the RAM free now beyond the share, less 4 GiB:
       //  host memory is RAM all the same. Gemma 4 31B, 24.8 GB free: 5.3 GiB in host memory and a share filled with
