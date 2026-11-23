@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: Inkling 2's memory plan and catalog entry (step I1.6; not run yet)
+
+- **`--ctx auto`** counts Inkling 2's caches: 48 layer passes, the 8 global ones holding the whole context and the
+  sliding ones a ring.
+- **The model list** knows Unsloth's `Inkling-2-Mini-UD-Q8_K_XL.gguf` as `inkling-2-mini`, but marks it not supported
+  by the server yet. The server's chat format, streaming and saved prompts come next
+  ([docs/inkling2.md](docs/inkling2.md)).
+
 ## 2026-11-23: the engine's Inkling 2 graph (step I1.5, the correctness path; not run yet)
 
 - **The engine can load and run Inkling 2** (`inkling2`, `inkling2_loop`), written for correctness first: the

@@ -239,6 +239,30 @@ Developer cuts them.
 6. **Memory and fit:** ctx_bytes for the loop's per-pass KV (12 loop layers x 3 passes), the plan's estimate through
    the shared helpers (`ring_pos_bytes`, `swa_ring_cap`), and a catalog entry with the drafter.
 
+   **Written (2026-11-23):**
+   - **Memory:**
+     - `ink_ctx_cache_bytes(c)` (in `ctx_bytes`) is the 48 slots' f16 K / V: the 8 global slots hold c positions, the
+       40 sliding ones a ring of `swa_ring_cap(c, chunk, 0)`.
+     - Inkling 2 Mini at 32K: 8 x 32,768 x 1,024 x 2 x 2 = 1.07 GB, plus the rings, 40 x 1,536 x 4 KB = 0.25 GB.
+     - The conv states (48 slots x 3 inputs x (1,024 + 1,024 + 2,304 + 2,304) channels x 4 bytes, 3.8 MB), the weights, the raw experts and the chunk's buffers don't grow with c. They
+       are counted in `gpu_bytes` at load and alloc, also in a dry run (`--ctx auto`).
+   - **Catalog** (`tools/server_catalog.h`):
+     - The mainline file is known as `inkling-2-mini` / `inkling`, with the engine's chunk of 512.
+     - It is **listed but not supported** by the server yet: `m.supported` stays false, as for DeepSeek-V4.1.
+     - The DSpark drafter (`dspark-*.gguf`, GGUF `dflash`) isn't taken as a drafter; it is step I2's work.
+   - **What the server still needs**, before `m.supported` (a step of its own after the tiny file's KL passes):
+     - **Prompts:** render them with `inkling::render` (src/chat_inkling.h). The effort comes from the request's
+       `reasoning_effort` and the tools from `tools`.
+     - **Generation:** no generation prompt, since the model writes `<|message_model|>`. Stop at token 200006 and at
+       `<|end_message|>` only when the turn ends there.
+     - **Streaming:** the thinking (`<|content_thinking|>`) as reasoning, the text as content, and the calls from
+       `<|content_invoke_tool_json|>` via `inkling::parse`.
+     - **Snapshots:** the prefix cache needs them, i.e. the 48 slots' K / V and their conv states saved and restored
+       (`snapshot()` refuses now), and `save_state` for saved conversations (engine_sessions.h, out of this phase's
+       files).
+   - **Runs it waits on:** `serverz` lists the file as unsupported (no load); `runz --ctx auto` dry-run sizes on the
+     real file (no GPU work beyond the dry plan).
+
 **I2-I4. Speed, later, each needs cards** (from the analysis): tg on a B70 at ~83 % of its bandwidth, then DSpark
 drafting; prompt with NVFP4 read straight in the expert GEMM and chunk 8,192; the A770 needs DSpark and a ~3-bit file or
 the RAM tier, since the Q8 file doesn't fit 16 GB.

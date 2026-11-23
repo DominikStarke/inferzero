@@ -380,7 +380,9 @@ static std::vector<ModelInfo> scan_models() {
       {"gemma-4-12b-it-qat-q4_0.gguf", {"gemma4-12b", "g12"}},
       {"gemma-4-E4B_q4_0-it.gguf", {"gemma4-e4b", "e4b"}},
       {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}},
-      {"gemma-4-31B_q4_0-it.gguf", {"gemma4-31b", "g31"}}};
+      {"gemma-4-31B_q4_0-it.gguf", {"gemma4-31b", "g31"}},
+      // (Unsloth's Inkling 2 Mini, the mainline file: listed, not supported by the server yet, docs/inkling2.md I1.6)
+      {"Inkling-2-Mini-UD-Q8_K_XL.gguf", {"inkling-2-mini", "inkling"}}};
   std::vector<ModelInfo> out;
   for (size_t i = 0; i < cands.size(); ++i) {
     const Cand& c = cands[i];
@@ -1207,7 +1209,8 @@ static int list_models(size_t speech = 0, int gpus = 1, const std::filesystem::p
       const uint64_t gm = device_global_mem();
       const bool igpu = device_integrated();
       const bool fn_4k = gpus > 1 || gm >= (igpu ? (15ull << 30) : (20ull << 30)), res_long = !igpu && gm >= (11ull << 30);
-      int chunk = a.chunk > 0 ? a.chunk : m.arch == "deepseek41" ? 1024 : gemma && moe ? 2048 : m.arch == "qwen4exp" ? (fn_4k ? 4096 : 2048) : moe ? 4096
+      int chunk = a.chunk > 0 ? a.chunk : m.arch == "deepseek41" ? 1024
+                  : m.arch == "inkling2" || m.arch == "inkling2_loop" ? 512 : gemma && moe ? 2048 : m.arch == "qwen4exp" ? (fn_4k ? 4096 : 2048) : moe ? 4096
                   : a.host_gb > 0 ? 1024 : a.resident && !res_long ? 512 : 4096;
       if (gemma && m.vision) chunk = std::max(chunk, 2048);  // (an image is one chunk)
       d.set("chunk", chunk);
