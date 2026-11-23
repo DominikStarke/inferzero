@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: Inkling 2 Mini's experts streamed, as the 35B-A3B's (not in the server yet)
+
+- **Inkling 2 Mini runs with its experts streamed from an expert file** through the engine's shared MoE path (sigmoid routing, situ, the per-expert scales), so it no longer needs a 32 GB card: the GPU keeps a cache of the experts, the rest comes from the SSD (and the RAM tier on discrete cards). Checked on a small synthetic Inkling file: KL against the f32 reference 0.00043 (the exact path 0.00022), and the same results bit for bit with most experts missing from the cache. `ARC_INK_RESIDENT=1` keeps the exact path. The real model and the server's support come next (docs/inkling2.md).
+
 ## 2026-11-23: from hibagus's 2 x B70 and Max 1550 reports
 
 - **A split model now says it decodes without drafting:** `--gpus 2 --mtp` (or a DFlash2 drafter) printed nothing and ran

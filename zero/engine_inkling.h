@@ -165,7 +165,26 @@
     for (const GgufTensor& t : f_.tensors)
       if (t.name.size() > 12 && t.name.compare(t.name.size() - 12, 12, ".input_scale") == 0)
         throw std::runtime_error("Inkling 2: activation scales (" + t.name + ") are not supported");
+    // (I1.7 step 5: the experts streamed as the 35B-A3B's, the default; ARC_INK_RESIDENT=1 keeps I1.5's exact path,
+    //  every expert raw on the GPU, the accuracy reference (step 7). Streamed, Inkling is a standard MoE to the engine:
+    //  hp.moe / moe_std set stream_ (engine.h), the MoE buffers (engine_alloc.h) and the expert file (engine_stream.h);
+    //  no shared expert, F unpadded. The engine's MoE path takes one expert count a token, so it must be every layer's)
+    static const bool resident = getenv("ARC_INK_RESIDENT") && atoi(getenv("ARC_INK_RESIDENT")) != 0;
+    ink_streamed_ = !resident && opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM");
+    if (ink_streamed_) {
+      for (int il = 0; il < hp.n_layer; ++il)
+        if (inkl_[il].nu != hp.n_expert_used)
+          throw std::runtime_error("Inkling 2: streamed experts need one expert_used_count in every layer (ARC_INK_RESIDENT=1 "
+                                   "runs the exact path)");
+      hp.moe = hp.moe_std = true;
+      // (the experts' h rows and the down projection's input in whole superblocks, as Flash Next's 640 in 768: Inkling 2
+      //  Mini's 1152 in 1280, the tiny file's 128 in 256. The expert file pads the down rows with zero blocks
+      //  (padded_k), moe_quant quantizes whole superblocks; the padding's terms are exactly zero)
+      hp.n_ff_exp_pad = (hp.n_ff_exp + 255) / 256 * 256;
+      hp.n_ff_shexp = 0;
+    }
   }
+  bool ink_streamed_ = false;
 
   // a matrix [N][K]: the engine's matmul where the GEMM takes its shape and it is not kept f32, else f32 rows.
   // llama's build_lora_mm multiplies a 2D weight's output by its <name>.scale: not supported here yet (refused)
@@ -240,10 +259,24 @@
                                    ") not supported yet (NVFP4, BF16, Q8_0, F32)");
         if (!t.data) throw std::runtime_error("Inkling 2: " + name + " has no data in this file");
         rb = t.nbytes / ((uint64_t)NE * N);
+        // (streamed, I1.7 step 5: no raw copy on the GPU; the expert file's records instead. Their bytes for the
+        //  plan, as load_moe counts them; a float type's records are Q8_0, ExpertStore::rec_type)
+        if (ink_streamed_) {
+          const uint32_t rt = ExpertStore::is_float_type(type) ? (uint32_t)GGML_Q8_0 : type;
+          stream_bytes_ += (uint64_t)N * NE * (padded_k(K) / 256) * raw_padded_sb_bytes(rt);
+          return;
+        }
         raw = buf(t.nbytes, t.data);
       };
       experts(p + "ffn_gate_up_exps.weight", 2 * F, E, L.gu, L.gu_type, L.gu_rb);
       experts(p + "ffn_down_exps.weight", E, F, L.dn, L.dn_type, L.dn_rb);
+      // (I1.7 step 5: the engine's layer entry for layer_moe, streamed: the records' types (gate, up, down), as
+      //  ExpertStore lays them out from the fused gate_up tensor; the experts' addresses come from the cache's table)
+      if (ink_streamed_) {
+        auto rt = [](uint32_t t) { return ExpertStore::is_float_type(t) ? (uint32_t)GGML_Q8_0 : t; };
+        layers_[il].ex_type[0] = layers_[il].ex_type[1] = rt(L.gu_type);
+        layers_[il].ex_type[2] = rt(L.dn_type);
+      }
       if (k.loop && il >= k.start && il < k.end) {
         L.msg_q = load_vec(p + "loop_msg_query.weight", 4 * E);
         static const char* kc[4] = {"q", "k", "v", "ffn"};
@@ -262,6 +295,7 @@
     static const int8_t kv[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
     ink_kv_ = buf(16, kv);
     if (lm_head_.N != hp.n_vocab) throw std::runtime_error("inkling2: the output head's rows differ from vocab_size");
+    ink_fast_moe_ = ink_streamed_;  // (I1.7 step 5: streamed experts through layer_moe; else I1.5's exact experts)
     // the cache slots: K / V (f16) at the slot's capacity, the conv states (zeroed by ink_reset)
     inks_.assign(k.nslot, InkSlot());
     const int swa_cap = swa_ring_cap(ctx, max_chunk, 0);
