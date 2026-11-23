@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: ref_forward runs Inkling 2 (step I1.3; not run yet)
+
+- **`ref_forward`** now covers Inkling 2 (`inkling2`, `inkling2_loop`): the f32 reference forward pass, operation by
+  operation as llama.cpp's graph (`tools/ref_inkling2.h`; [docs/inkling2.md](docs/inkling2.md)). It is the
+  reference for the engine's KL checks once the engine runs the model.
+- The output head now drops the rows past a model's vocabulary (Inkling's head is padded to 201,024 rows for 200,058
+  tokens). For every other model the head has as many rows as the vocabulary, and nothing changes.
+
 ## 2026-11-23: Inkling 2's tokenizer and chat format (step I1.2; not run yet)
 
 - **Tokenizer:** the GGUF's pre-tokenizer `inkling2`, which is GPT-4o's split as llama.cpp runs it, plus llama.cpp's

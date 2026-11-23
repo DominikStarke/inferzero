@@ -1,5 +1,5 @@
 // CPU reference forward for Qwen3.5 (f32 activations, dequantized weights), mirroring llama.cpp's graph; also
-// Qwen3 dense, Gemma 4, Flash Next (qwen4exp) and DeepSeek-V4.1 below.
+// Qwen3 dense, Gemma 4, Flash Next (qwen4exp), DeepSeek-V4.1 below and Inkling 2 (tools/ref_inkling2.h).
 // Used to measure how close inferzero and llama.cpp are to the unquantized-activation result.
 // usage: ref_forward model.gguf 1,2,3|@ids_file [out_logprobs_file|-] [compare_logprobs_file]
 #include "../src/gguf.h"
@@ -1554,12 +1554,26 @@ static void softcap(std::vector<float>& l) {
     for (auto& v : l) v = c * std::tanh(v / c);
 }
 
+#include "ref_inkling2.h"  // (Inkling 2: inkling2_layers)
+
+// The output head on n rows of xs: the logits, soft-capped, V per row. Inkling 2's head has more rows than its
+// vocabulary (vocab_size, padded); llama.cpp drops the padding, and so does this. Other models: V = its rows, as is.
+static void head(const std::vector<float>& xs, int n, int V, std::vector<float>& out) {
+  matmul(F->find("output.weight") ? "output.weight" : "token_embd.weight", xs, n, out);
+  softcap(out);
+  const int N = (int)(out.size() / n);
+  if (N == V) return;
+  for (int r = 1; r < n; ++r) memmove(&out[(size_t)r * V], &out[(size_t)r * N], (size_t)V * 4);
+  out.resize((size_t)n * V);
+}
+
 int main(int argc, char** argv) {
   const char* usage = "usage: ref_forward model.gguf IDS [OUT.logprobs|-] [REF.logprobs]\n";
   if (argc > 1 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
     printf("%s"
            "The f32 CPU reference forward pass (dequantized weights, f32 activations) for runz's KL checks; Qwen3 /\n"
-           "Qwen3.5 / Qwen3.6 (dense and MoE), Gemma 4, Flash Next and DeepSeek-V4.1 GGUFs and inferzero packages.\n"
+           "Qwen3.5 / Qwen3.6 (dense and MoE), Gemma 4, Flash Next, DeepSeek-V4.1 and Inkling 2 GGUFs and inferzero\n"
+           "packages.\n"
            "Prints the next token's top 10.\n"
            "  IDS            the prompt's token ids, \"1,2,3\", or @FILE holding them\n"
            "  OUT.logprobs   writes the next token's log-probs (f32 x vocab); - for none\n"
@@ -1600,10 +1614,12 @@ int main(int argc, char** argv) {
   const float base = (float)f.get_float(A + ".rope.freq_base", 1e7);
   const int Cd = 2 * nk * ds + Di;
   const GgufTensor& te = f.get("token_embd.weight");
-  const int V = (int)te.dims[1];
+  // (Inkling 2: the embedding and head rows padded past the vocabulary, the logits only the unpadded V)
+  const bool ink = A == "inkling2" || A == "inkling2_loop";
+  const int VT = (int)te.dims[1], V = ink ? hp("vocab_size_unpadded", VT) : VT;
 
   std::vector<float> x((size_t)T * E), h, y, y2, y3;
-  for (int t = 0; t < T; ++t) dequant_row(te.type, te.data + (size_t)toks[t] * (te.nbytes / V), E, &x[(size_t)t * E]);
+  for (int t = 0; t < T; ++t) dequant_row(te.type, te.data + (size_t)toks[t] * (te.nbytes / VT), E, &x[(size_t)t * E]);
   // REF_EMB for the Qwen models too (Qwen3-ASR's audio rows, zero/asr_testz --kl-files): the rows as they are
   if (const char* ef = getenv("REF_EMB"); ef && A != "gemma4") {
     FILE* fe = fopen(ef, "rb");
@@ -1616,7 +1632,8 @@ int main(int argc, char** argv) {
   if (A == "gemma4") gemma4_layers(toks, x);
   if (A == "qwen4exp") qwen4exp_layers(toks, x);
   if (A == "deepseek41") deepseek41_layers(toks, x);
-  for (int il = 0; il < nl && A != "gemma4" && A != "qwen4exp" && A != "deepseek41"; ++il) {
+  if (ink) inkling2_layers(toks, x);  // (x: the output norm's result)
+  for (int il = 0; il < nl && A != "gemma4" && A != "qwen4exp" && A != "deepseek41" && !ink; ++il) {
     const std::string p = "blk." + std::to_string(il) + ".";
     auto an = vecf(p + "attn_norm.weight");
     h = x;
@@ -1834,15 +1851,14 @@ int main(int argc, char** argv) {
     zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   // (qwen4exp: no output norm, the final hyper-connection mixer is one)
-  const std::vector<float> on = f.find("output_norm.weight") ? vecf("output_norm.weight") : std::vector<float>();
+  const std::vector<float> on = f.find("output_norm.weight") && !ink ? vecf("output_norm.weight") : std::vector<float>();
   auto out_norm = [&](float* v) { if (!on.empty()) rmsnorm(v, E, on.data(), eps); };
   if (getenv("REF_PPL")) {
     // perplexity-style scoring of this chunk: negative log-likelihood of tokens T/2+1 .. T-1
     std::vector<float> xs(x.begin() + (size_t)(T / 2) * E, x.end() - E), lg;
     const int R = T - 1 - T / 2;
     for (int r = 0; r < R; ++r) out_norm(&xs[(size_t)r * E]);
-    matmul(f.find("output.weight") ? "output.weight" : "token_embd.weight", xs, R, lg);
-    softcap(lg);
+    head(xs, R, V, lg);
     double nll = 0;
     for (int r = 0; r < R; ++r) {
       const float* l = &lg[(size_t)r * V];
@@ -1856,8 +1872,7 @@ int main(int argc, char** argv) {
   }
   std::vector<float> last(x.end() - E, x.end()), logits;
   out_norm(last.data());
-  matmul(f.find("output.weight") ? "output.weight" : "token_embd.weight", last, 1, logits);
-  softcap(logits);
+  head(last, 1, V, logits);
   std::vector<int> idx(V);
   for (int i = 0; i < V; ++i) idx[i] = i;
   std::partial_sort(idx.begin(), idx.begin() + 10, idx.end(), [&](int a, int b) { return logits[a] > logits[b]; });
@@ -1885,8 +1900,7 @@ int main(int argc, char** argv) {
       const int from = getenv("REF_ALL_FROM") ? std::clamp(atoi(getenv("REF_ALL_FROM")), 0, T - 1) : 0, n = T - from;
       std::vector<float> xs(x.begin() + (size_t)from * E, x.end()), all;
       for (int t = 0; t < n; ++t) out_norm(&xs[(size_t)t * E]);
-      matmul(f.find("output.weight") ? "output.weight" : "token_embd.weight", xs, n, all);
-      softcap(all);
+      head(xs, n, V, all);
       for (int t = 0; t < n; ++t) {
         const float* l = &all[(size_t)t * V];
         double m2 = l[0], z2 = 0;

@@ -113,6 +113,35 @@ Developer cuts them.
 3. **ref_forward's `inkling2_loop` graph** (f32, `tools/ref_forward.cpp` or a part of its own): every operation above,
    mirroring PR #32704 line by line, the weights dequantized per row as today.
    - Waits on: ref_forward against llama.cpp on a short prompt (KL, top token), then the engine against ref_forward.
+
+   **Written (2026-11-23):** `tools/ref_inkling2.h`, included by `tools/ref_forward.cpp` for `inkling2` and
+   `inkling2_loop`. It mirrors llama.cpp master's `src/models/inkling2.cpp` and `inkling2-loop.cpp` (PR #32704 itself
+   only re-shares the loop's layers after the scale pass). In f32 with double sums, one sequence from position 0:
+   - **The loop:** the prelude (layers 0-5), then the core (6-17) three times, every pass starting from the prelude's
+     output and its blocks. A later pass gets each layer's "messages": a 4-query mix over the previous pass's bank
+     (its blocks after the first core one) and its output.
+   - **Controllers:** they act on the q / k / v / ffn inputs: `x - tanh(forget(g)) x + tanh(gain(g)) msg`, where
+     `g = down([rms(x), rms(msg)])`.
+   - **Attention residuals:** the stream restarts at every 6th layer, and the old stream joins the blocks. A layer's
+     inputs are softmax mixes over the RMS-normed blocks and the stream; the global layers take one mix each for q, k
+     and v.
+   - **Attention:**
+     - q and r times their per-head clip scales, then clipped to an L2 norm of 22.6 / 8; k clipped; v RMS-normed;
+     - q and r of the global layers times `1 + 0.1 log(max(1, (pos + 1) / 8192))`;
+     - the score is `q.k / sqrt(128) + r.bias[distance] - sink`; past the 1,024-entry table the bias is 0, so the
+       score is just minus the sink;
+     - a zero sink logit in the softmax; the SWA window is 1,024;
+     - the output times `sigmoid(gate)`.
+   - **Short convolutions:** on K and V (the global layers add per-head input-dependent taps), on the attention
+     output and on the MoE output, each with its residual and `1 / sqrt(5)` (with the taps: `1 / sqrt(9)`).
+   - **MoE:** a sigmoid router plus the selection bias, top 8, `w / (sum + 1e-20) x 8`; gate and up fused; each
+     expert's two matmul outputs times its `.scale`; situ.
+   - **The end:** the output mix, `output_norm`, the head, softcap 30, and the logits cut to the unpadded 200,058
+     (ref_forward's new `head()`: a no-op for every other model).
+   - Built clean. **Runs it waits on:** ref_forward on the real file, the top 10 and KL against llama.cpp on a short
+     prompt. That needs a llama.cpp build with `inkling2_loop` and #32704's fix (merged
+     2026-11-21; e.g. release b12648 of 2026-11-23). The local `llama-builds` (b12292, 2026-11-11) predate Inkling
+     altogether: it landed on 2026-11-14 (#32217) and the loop variant on 2026-11-20. Then the engine against it.
 4. **A tiny synthetic Inkling** (`tools/make_tiny_inkling2.cpp`, after make_tiny_deepseek41): the same tensor names
    and metadata, a few layers, a loop of 2-3, a few experts, random weights. It's for fast correctness tests of the
    engine against ref_forward without the 23 GB file.
