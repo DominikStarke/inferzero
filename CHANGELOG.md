@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-23: the Linux launcher's menu fits the terminal (#81)
+
+- **The whole terminal:** the menu takes the terminal's width and height: the panes grow with the width, the tip takes the rows the lists leave (up to 6 lines), and a tall terminal shows the options that do not apply too, with their reasons. A resized window is redrawn at its new size.
+- **Narrow terminals:** under 80 columns (down to 40) the models are stacked above the options, so nothing wraps or overlaps; short of rows, the models become a window around the selection.
+- **Changed options marked:** a `*` next to every option that differs from its default.
+- **Remembered:** each model's Drafting and Images choices are kept between runs (`~/.inferzero/launcher-models`), as the switches already were in `options.json`.
+- **The keys set apart:** in brackets, and bold where the terminal has it.
+
+(d-dorok's suggestions.)
+
 ## 2026-11-23: attn_x8 removed
 
 - **Removed:** `ARC_ATTN_X8` (and `_WG`, `_PSH`, `_LAZY`), the prompt attention as flash attention on 8-lane XMX. It was slower on both GPUs it was for: the A770 1.4-1.6x, PascalSoftwares' Arc 140T -3 % at 4K (#5). Those GPUs keep their default attention; nothing changes for anyone who did not set the switch.

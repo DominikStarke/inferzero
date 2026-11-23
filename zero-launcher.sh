@@ -610,7 +610,7 @@ tui_state() {  # KEY: SW_* for that model with its Drafting
   [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" = off ] && SW_DRAFTING=0 || SW_DRAFTING=1
 }
 tui_cut() { local s=$1 n=$2; [ ${#s} -le "$n" ] && printf '%-*s' "$n" "$s" || printf '%s~' "${s:0:$((n - 1))}"; }
-tui_wrap() { printf '%s\n' "$1" | fold -s -w 78 | sed 's/^/ /'; }
+tui_wrap() { printf '%s\n' "$1" | fold -s -w "${2:-78}" | sed 's/^/ /'; }  # TEXT [WIDTH]
 tui_items() {  # KEY: the right pane's items (draft, img, attn, the switches; the ones that do not apply folded)
   local k=$1 id why
   TUI_ITEMS=(draft img); TUI_NA=0
@@ -668,48 +668,110 @@ tui_changed() {  # KEY: what was changed from the defaults
   done
   if [ ${#x[@]} -eq 0 ]; then printf 'nothing'; else (IFS=';'; printf '%s' "${x[*]}" | sed 's/;/; /g'); fi
 }
+# (#81, d-dorok: "use the whole terminal", "mark what differs from the defaults", "stack the panes in a narrow
+#  terminal", "set the keys apart". The width and height are the terminal's (TUI_W / TUI_H, tui_ok): 80 columns or
+#  more side by side, the panes sized from the width; 40-79 the models above the options. The rows the lists leave go
+#  to the tip, up to 6 lines. A * column marks an option changed from its default; the keys in brackets, bold where
+#  the terminal has it)
+tui_changed_item() {  # KEY ITEM: 0 when the item differs from its default
+  local k=$1 it=$2
+  case "$it" in
+    draft) [ -n "${TUI_DRAFT[$k]+x}" ] && [ "${TUI_DRAFT[$k]}" != "$(tui_draft_default "$k")" ];;
+    img) [ "${TUI_IMG[$k]:-1}" = 0 ];;
+    attn) [ -n "${OPTC[qsa]+x}" ];;
+    na) return 1;;
+    *) [ -n "${OPTC[$it]+x}" ];;
+  esac
+}
+tui_keys_line() {  # WIDTH: the keys, set apart: bold where the terminal has it, else in brackets alone
+  local w=$1 b="${TUI_BOLD:-}" n="${TUI_NORM:-}" ud="Up/Down"
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *UTF-8*|*utf8*|*UTF8*|*utf-8*) ud=$'↑/↓';; esac
+  local k1="$b[$ud]$n move  $b[Tab]$n models/options  $b[Space]$n switch" k2="$b[Enter]$n start  $b[?]$n help  $b[q]$n quit  * changed"
+  if [ "$w" -ge 90 ]; then printf ' %s  %s\n' "$k1" "$k2"
+  elif [ "$w" -ge 50 ]; then printf ' %s\n %s\n' "$k1" "$k2"
+  else printf ' %s\n %s\n %s\n' "$b[$ud]$n move  $b[Tab]$n panes" "$b[Space]$n switch  $b[Enter]$n start" "$b[?]$n help  $b[q]$n quit  * changed"; fi
+}
+tui_keys_n() { if [ "$1" -ge 90 ]; then echo 1; elif [ "$1" -ge 50 ]; then echo 2; else echo 3; fi; }  # WIDTH: its lines
 tui_draw() {
   local k=${TUI_KEYS[$TUI_SEL]} i left right lines=() rows tip
   [ -n "${TUI_NAME[$k]+x}" ] || tui_cache  # (a draw before tui() opened the menu: the tests)
   tui_state "$k"; tui_items "$k"
+  # (a tall terminal: the options that do not apply shown too, with their reasons, until the user chooses with a; #81)
+  if [ "${TUI_NA_SET:-0}" = 0 ] && [ "$TUI_SHOWNA" = 0 ] && [ "$TUI_NA" -gt 0 ] &&
+     [ $((${#TUI_ITEMS[@]} + TUI_NA)) -le $(( ${TUI_H:-24} - 14 )) ] && [ "${TUI_W:-80}" -ge 80 ]; then
+    TUI_SHOWNA=1; tui_items "$k"
+  fi
   [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
-  lines+=(" inferzero  $(tui_cut "${TUI_NAME[$k]}" 40)  ~$(m_field "$k" 3) GB")
-  lines+=(" $(printf '%.0s-' {1..78})")
-  # (at most the terminal's height, TUI_H: the 10 lines around the lists and as many list rows as fit; a longer
-  #  options list scrolls, its window following the focus. A 24-row terminal scrolled with every option shown, and
-  #  the redraw from the top then wrote over the wrong lines; the Researcher's review)
-  local avail=$(( ${TUI_H:-24} - 10 )) off=${TUI_OFF:-0} ni=${#TUI_ITEMS[@]}
-  [ $avail -lt ${#TUI_KEYS[@]} ] && avail=${#TUI_KEYS[@]}
+  local W=${TUI_W:-80} H=${TUI_H:-24}
+  [ "$W" -lt 40 ] && W=40; [ "$W" -gt 200 ] && W=200
+  local stack=0; [ "$W" -lt 80 ] && stack=1
+  local nk=${#TUI_KEYS[@]} ni=${#TUI_ITEMS[@]} keyl=3; [ "$W" -ge 50 ] && keyl=2; [ "$W" -ge 90 ] && keyl=1
+  local sep; sep=" $(printf '%*s' $((W - 2)) '' | tr ' ' '-')"
+  lines+=(" inferzero  $(tui_cut "${TUI_NAME[$k]}" $((W - 22)))  ~$(m_field "$k" 3) GB")
+  lines+=("$sep")
+  # (at most the terminal's height: the fixed lines around the lists, then as many list rows as fit; a longer options
+  #  list scrolls, its window following the focus. A 24-row terminal scrolled with every option shown, and the redraw
+  #  from the top then wrote over the wrong lines; the Researcher's review)
+  local fixed avail mrows=$nk ms=0
+  if [ $stack = 1 ]; then
+    # (stacked: title, rule, two headers, two rules, the changed line, a rule and the keys, then the two lists and the
+    #  tip (2 lines at least). Short of rows, the models become a window around the selection and the options get the rest)
+    fixed=$((8 + keyl)); local left=$((H - fixed - 2))
+    if [ $((nk + 3)) -gt "$left" ]; then mrows=$((left - 3)); [ $mrows -lt 2 ] && mrows=2; fi
+    [ $mrows -gt "$nk" ] && mrows=$nk
+    ms=$((TUI_SEL - mrows / 2)); [ $((ms + mrows)) -gt "$nk" ] && ms=$((nk - mrows)); [ $ms -lt 0 ] && ms=0
+    avail=$((left - mrows)); [ $avail -lt 1 ] && avail=1
+  else fixed=$((7 + 3 + keyl)); avail=$((H - fixed)); [ $avail -lt $nk ] && avail=$nk; fi
+  local off=${TUI_OFF:-0}
   [ "$TUI_FOC" -lt "$off" ] && off=$TUI_FOC
   [ "$TUI_FOC" -ge $((off + avail)) ] && off=$((TUI_FOC - avail + 1))
   [ $((off + avail)) -gt "$ni" ] && off=$((ni - avail))
   [ "$off" -lt 0 ] && off=0
   TUI_OFF=$off
-  rows=${#TUI_KEYS[@]}; [ "$ni" -gt "$rows" ] && rows=$ni; [ "$rows" -gt "$avail" ] && rows=$avail
-  local more=""; [ "$ni" -gt "$rows" ] && more="  ($((off + 1))-$((off + rows)) of $ni)"
-  lines+=("   Models                         Options for the selected model$more")
-  for ((i = 0; i < rows; i++)); do
-    left=""; right=""
-    if [ $i -lt ${#TUI_KEYS[@]} ]; then
-      local mk=${TUI_KEYS[$i]} mark=" " cur=" "
-      [ "${TUI_HAVE[$mk]:-0}" = 1 ] && mark="*"
-      [ $i -eq "$TUI_SEL" ] && cur=">"
-      left="$cur$((i + 1)) $mark $(tui_cut "${TUI_NAME[$mk]}" 26)"
-    fi
-    local j=$((i + off))
-    if [ $j -lt "$ni" ]; then
-      local f=" "; [ "$TUI_PANE" = opts ] && [ $j -eq "$TUI_FOC" ] && f=">"
-      right="$f$(tui_cut "$(tui_item_line "$k" "${TUI_ITEMS[$j]}")" 44)"
-    fi
-    lines+=(" $(tui_cut "$left" 32) $right")
-  done
-  lines+=(" $(printf '%.0s-' {1..78})")
+  local orows=$ni; [ "$orows" -gt "$avail" ] && orows=$avail
+  local more=""; [ "$ni" -gt "$orows" ] && more="  ($((off + 1))-$((off + orows)) of $ni)"
+  # (a model's row; an option's row: the focus mark, the * of a changed option, the item)
+  model_row() {
+    local mk=${TUI_KEYS[$1]} mark=" " cur=" "
+    [ "${TUI_HAVE[$mk]:-0}" = 1 ] && mark="*"
+    [ "$1" -eq "$TUI_SEL" ] && cur=">"
+    printf '%s%d %s %s' "$cur" $(($1 + 1)) "$mark" "$(tui_cut "${TUI_NAME[$mk]}" $(($2 - 6)))"
+  }
+  opt_row() {
+    local it=${TUI_ITEMS[$1]} f=" " c=" "
+    [ "$TUI_PANE" = opts ] && [ "$1" -eq "$TUI_FOC" ] && f=">"
+    tui_changed_item "$k" "$it" && c="*"
+    printf '%s%s%s' "$f" "$c" "$(tui_cut "$(tui_item_line "$k" "$it")" $(($2 - 2)))"
+  }
+  if [ $stack = 1 ]; then
+    local mmore=""; [ "$mrows" -lt "$nk" ] && mmore="  ($((ms + 1))-$((ms + mrows)) of $nk)"
+    lines+=("   $(tui_cut "Models  (* downloaded)$mmore" $((W - 4)))")
+    for ((i = ms; i < ms + mrows; i++)); do lines+=(" $(model_row $i $((W - 2)))"); done
+    lines+=("$sep")
+    lines+=("   $(tui_cut "Options$more" $((W - 4)))")
+    for ((i = 0; i < orows; i++)); do lines+=(" $(opt_row $((i + off)) $((W - 2)))"); done
+  else
+    local LW=$((W / 3)); [ $LW -lt 32 ] && LW=32; [ $LW -gt 44 ] && LW=44
+    local RW=$((W - LW - 3))
+    rows=$nk; [ "$orows" -gt "$rows" ] && rows=$orows
+    lines+=("   $(tui_cut "Models" $((LW - 2)))Options for the selected model$more")
+    for ((i = 0; i < rows; i++)); do
+      left=""; right=""
+      [ $i -lt "$nk" ] && left=$(model_row $i "$LW")
+      [ $i -lt "$orows" ] && right=$(opt_row $((i + off)) "$RW")
+      lines+=(" $(tui_cut "$left" "$LW") $right")
+    done
+  fi
+  lines+=("$sep")
   if [ "$TUI_PANE" = opts ]; then tip=$(tui_tip "$k" "${TUI_ITEMS[$TUI_FOC]}")
   else tip="$(m_field "$k" 1), ~$(m_field "$k" 3) GB, wants $(m_field "$k" 5) GB of RAM. $([ "${TUI_HAVE[$k]:-0}" = 1 ] && printf 'Downloaded.' || printf 'Enter downloads it first.')"; fi
-  mapfile -t -O ${#lines[@]} lines < <(tui_wrap "$tip" | head -3)
-  lines+=(" Changed from the defaults: $(tui_changed "$k" | cut -c1-50)")
-  lines+=(" $(printf '%.0s-' {1..78})")
-  lines+=(" up/down move  tab models/options  space switch  enter start  ? help  q quit")
+  # (the tip: 3 lines, more where the terminal has rows to spare, up to 6)
+  local tipn=$((H - ${#lines[@]} - 3 - keyl)) tipmin=3; [ $stack = 1 ] && tipmin=2
+  [ $tipn -lt $tipmin ] && tipn=$tipmin; [ $tipn -gt 6 ] && tipn=6
+  mapfile -t -O ${#lines[@]} lines < <(tui_wrap "$tip" $((W - 2)) | head -"$tipn")
+  lines+=(" Changed from the defaults: $(tui_changed "$k" | cut -c1-$((W - 29 > 10 ? W - 29 : 10)))")
+  lines+=("$sep")
+  mapfile -t -O ${#lines[@]} lines < <(tui_keys_line "$W")
   printf '\033[H'
   printf '%s\033[K\n' "${lines[@]}"
   printf '\033[J'
@@ -723,7 +785,7 @@ tui_toggle() {  # the focused item: Space
       TUI_DRAFT[$k]=${nx:-$first};;
     img) sw_has "$(m_words "$k")" vision && { [ "${TUI_IMG[$k]:-1}" = 1 ] && TUI_IMG[$k]=0 || TUI_IMG[$k]=1; };;
     attn) [ -z "$(sw_reason qsa)" ] && case "${OPTC[qsa]:-}" in on) OPTC[qsa]=off;; off) unset 'OPTC[qsa]';; *) OPTC[qsa]=on;; esac;;
-    na) [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
+    na) TUI_NA_SET=1; [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
     *)
       [ -n "$(sw_reason "$it")" ] && return
       d=$(sw_default "$it")
@@ -739,12 +801,14 @@ tui_help() {
   say "   1-9           choose a model by its number"
   say "   space         turn the focused switch on or off, or step a choice (Drafting, Attention)"
   say "                 [x] on   [ ] off   [~] the engine picks   [-] does not apply (the reason next to it)"
+  say "                 * next to an option: changed from its default; * next to a model: downloaded"
   say "   a             show or hide the options that do not apply"
   say "   enter         start the server with the selected model (downloads it first if needed)"
   say "   r             reset the switches to the defaults"
   say "   c             check the system"
   say "   q             quit"
-  say ""; say " The switches are kept in $STATE_DIR/options.json, the same choices as zero-server on Windows."
+  say ""; say " The switches are kept in $STATE_DIR/options.json, the same choices as zero-server on Windows;"
+  say " each model's Drafting and Images in $STATE_DIR/launcher-models."
   say " Press a key to go back."
   IFS= read -rsn1 _ || true
 }
@@ -756,9 +820,13 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
   for ((e = 0; e < ${#TUI_KEYS[@]}; e++)); do [ "${TUI_KEYS[$e]}" = "$lp" ] && TUI_SEL=$e; done
   saved=$(stty -g 2>/dev/null)
   trap 'stty "$saved" 2>/dev/null; printf "\033[?25h"' EXIT
+  # (a resized window: its size again, and a full redraw at the next key)
+  trap 'TUI_W=$(tput cols 2>/dev/null || echo 80); TUI_H=$(tput lines 2>/dev/null || echo 24); printf "\033[H\033[J"' WINCH
+  TUI_BOLD=$(tput bold 2>/dev/null || true); TUI_NORM=$(tput sgr0 2>/dev/null || true)
   stty -echo -icanon 2>/dev/null
   printf '\033[?25l\033[H\033[J'
   tui_cache
+  tui_mem_load
   while :; do
     # (keys already waiting, a held arrow key or a paste: handled first, one redraw after them; #81)
     read -t 0 2>/dev/null || tui_draw
@@ -769,17 +837,17 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
       'ESC[B') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -lt $((${#TUI_KEYS[@]} - 1)) ] && TUI_SEL=$((TUI_SEL + 1)); TUI_FOC=0; else [ $TUI_FOC -lt $((${#TUI_ITEMS[@]} - 1)) ] && TUI_FOC=$((TUI_FOC + 1)); fi;;
       $'\t'|'ESC[C'|'ESC[D') [ "$TUI_PANE" = models ] && TUI_PANE=opts || TUI_PANE=models;;
       [1-9]) [ "$key" -le ${#TUI_KEYS[@]} ] && { TUI_SEL=$((key - 1)); TUI_PANE=models; TUI_FOC=0; };;
-      ' ') if [ "$TUI_PANE" = opts ]; then tui_toggle; opt_save; else TUI_PANE=opts; fi;;
-      a|A) [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
+      ' ') if [ "$TUI_PANE" = opts ]; then tui_toggle; opt_save; tui_mem_save; else TUI_PANE=opts; fi;;
+      a|A) TUI_NA_SET=1; [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
       r|R) local k=${TUI_KEYS[$TUI_SEL]} id; unset "TUI_DRAFT[$k]" "TUI_IMG[$k]"
-           for id in "${CT_IDS[@]}"; do sw_value "$id" || unset "OPTC[$id]"; done; opt_save;;
+           for id in "${CT_IDS[@]}"; do sw_value "$id" || unset "OPTC[$id]"; done; opt_save; tui_mem_save;;
       '?') tui_help; printf '\033[H\033[J';;
       c|C) printf '\033[H\033[J'; print_check; say ""; say " Press a key to go back."; IFS= read -rsn1 _ || true; printf '\033[H\033[J';;
       q|Q|'ESC') break;;
       '') TUI_START=${TUI_KEYS[$TUI_SEL]}; break;;
     esac
   done
-  stty "$saved" 2>/dev/null; printf '\033[?25h\033[H\033[J'; trap - EXIT
+  stty "$saved" 2>/dev/null; printf '\033[?25h\033[H\033[J'; trap - EXIT WINCH
   [ -n "$TUI_START" ] || return 0
   mkdir -p "$STATE_DIR" 2>/dev/null && printf '%s' "$TUI_START" > "$STATE_DIR/launcher-last"
   SEL_DRAFT=${TUI_DRAFT[$TUI_START]:-$(tui_draft_default "$TUI_START")}; SEL_IMG=${TUI_IMG[$TUI_START]:-1}
@@ -788,12 +856,31 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
   case " $(tui_draft_choices "$TUI_START") " in *" both "*) ;; *) [ "$SEL_DRAFT" = mtp ] && SEL_DRAFT=both;; esac
   start_key "$TUI_START"
 }
-tui_ok() {  # a terminal the full-screen menu can draw in: input and output a terminal, not dumb, 80 x 20 or more
+tui_ok() {  # a terminal the full-screen menu can draw in: input and output a terminal, not dumb, 40 x 20 or more
   [ -t 0 ] && [ -t 1 ] || return 1
   case "${TERM:-dumb}" in dumb|unknown|'') return 1;; esac
   local c r; c=$(tput cols 2>/dev/null || echo 80); r=$(tput lines 2>/dev/null || echo 24)
-  TUI_H=${r:-24}  # (tui_draw keeps to it)
-  [ "${c:-0}" -ge 80 ] && [ "${r:-0}" -ge 20 ]
+  TUI_H=${r:-24}; TUI_W=${c:-80}  # (tui_draw keeps to them: side by side from 80 columns, stacked below; #81)
+  [ "${c:-0}" -ge 40 ] && [ "${r:-0}" -ge 20 ]
+}
+# (#81: the Drafting and Images choices per model, kept between runs as the switches are in options.json:
+#  launcher-models, a line per model "KEY DRAFT IMG", only the ones changed from their defaults)
+tui_mem_load() {
+  local f="$STATE_DIR/launcher-models" key d im
+  [ -f "$f" ] || return 0
+  while read -r key d im; do
+    [ -n "$key" ] || continue
+    case "$d" in off|mtp|both|dflash) TUI_DRAFT[$key]=$d;; esac
+    case "$im" in 0|1) TUI_IMG[$key]=$im;; esac
+  done < "$f"
+}
+tui_mem_save() {
+  local f="$STATE_DIR/launcher-models" tmp key
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  tmp=$(mktemp "$STATE_DIR/.launcher-models-XXXXXX") || return 1
+  for key in $(printf '%s\n' "${!TUI_DRAFT[@]}" "${!TUI_IMG[@]}" | sort -u); do
+    printf '%s %s %s\n' "$key" "${TUI_DRAFT[$key]:--}" "${TUI_IMG[$key]:--}"
+  done > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 # --opt ID with --model KEY: an option that cannot apply to that model is refused with the menu's reason line (the
 # PC's reasons only warn: lspci's names are a guess, and a wrong guess must not stop a start)
