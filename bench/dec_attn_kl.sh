@@ -4,7 +4,7 @@
 # path's own log-probs at every decoded position are the reference (runz ARC_KL_SAVE); each switch's KL against them
 # (runz --kl-decode). The first CTX tokens are the prompt (ARC_KL_FROM), the next STEPS decoded one by one.
 #   bench/dec_attn_kl.sh MODEL.gguf [CTX 16384] [STEPS 256]
-# The limit for these switches (the user, 2026-11-23): max KL < 0.01, the same top token at >= 98 % of the positions,
+# The limit for these switches (AGENTS.md): max KL <= 0.015, the same top token at >= 98 % of the positions,
 # against the default GPU path (not f32: the default's own KL against f32 adds to it).
 set -euo pipefail
 model=${1:?usage: dec_attn_kl.sh MODEL.gguf [CTX] [STEPS]}
@@ -44,4 +44,4 @@ run() {  # NAME VAR=VALUE...
 run "ARC_QWEN_DSPLIT=1" ARC_QWEN_DSPLIT=1
 run "ARC_ATTN_DEC_SMAX=512" ARC_ATTN_DEC_SMAX=512
 run "both" ARC_QWEN_DSPLIT=1 ARC_ATTN_DEC_SMAX=512
-echo "dec_attn_kl: against the default GPU path; the limit: max KL < 0.01 and the same top token at >= 98 % of the positions"
+echo "dec_attn_kl: against the default GPU path; the limit: max KL <= 0.015 and the same top token at >= 98 % of the positions"

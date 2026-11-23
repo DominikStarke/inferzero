@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-23: the A770 GEMM plan finished: the split DPAS by default on Arc A-series cards
+
+- **Faster on Arc A-series (Alchemist) cards:** the big prompt tile's matrix instructions now run in their split form over
+  pairs of execution units by default (`ARC_GEMM_XW_DPASW`, opt-in until now). skipzx-lab's A770: the 27B's 4K prompt
+  1,703.7-1,715.0 -> 1,774.4 / 1,772.1 tok/s (+3.6 %). The results are the same bit for bit, checked at start;
+  `ARC_GEMM_XW_DPASW=0` turns it off.
+- **Removed, slower on the A770:** `ARC_GEMM_XW_UL` (-9.6 %), `ARC_GEMM_XW_K32` (-4.3 %), `ARC_GEMM_XW_SNAKE` (no
+  gain), the 32 x 48 tile (`ARC_GEMM_XW_SLM_TILE=32x48`) and their `xw_peak` rows (#45).
+- `bench/dec_attn_kl.ps1` / `.sh` state the limit as AGENTS.md does: max KL 0.015.
+
 ## 2026-11-23: fixed, wrong prompt results with resident W8 copies since 2026-11-23.18
 
 - **Fixed (a regression in 2026.11.23.18):** on a discrete card running a dense Qwen with H8 and the automatic resident

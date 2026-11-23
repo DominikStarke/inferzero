@@ -11,7 +11,7 @@
 #   ... -Ctx 32768 -Steps 256          (a longer context; -Ctx 65536 / 92000 where the card holds it)
 #
 # The text: the repository's docs, repeated to the length. Prints, per switch: the mean and max KL, and the share of
-# positions with the same top token. The limit for these switches (the user, 2026-11-23): KL < 0.01 at every position (the
+# positions with the same top token. The limit for these switches (AGENTS.md): KL <= 0.015 at every position (the
 # max), the same top token >= 98 %. The reference is the default GPU path, not f32: the switch's own change, to which the
 # default's KL against f32 adds (the laptop's 27B: 0.00058 mean, 0.0062 max at 480 positions).
 # Works in Windows PowerShell 5.1 and PowerShell 7.
@@ -68,7 +68,7 @@ try {
     Write-Output ("  {0,-24} {1}" -f $c.name, (($out | ForEach-Object { $_.Line }) -join " "))
   }
   Remove-Item Env:ARC_KL_FROM
-  Write-Output "dec_attn_kl: against the default GPU path; the limit: max KL < 0.01 and the same top token at >= 98 % of the positions"
+  Write-Output "dec_attn_kl: against the default GPU path; the limit: max KL <= 0.015 and the same top token at >= 98 % of the positions"
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

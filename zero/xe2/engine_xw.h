@@ -307,12 +307,10 @@
       XwBig b;
       if (const char* t = getenv("ARC_GEMM_XW_SLM_TILE")) {  // (TMxCOLS, each 16 / 32 / 64: xw_peak --all's forms)
         int tm = 0, cols = 0;
-        // (48 columns, 2026-11-22: the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), gemm_xw8.cl XW_NC 3
-        //  with B a k-half at a time; N's part beyond a multiple of 48 x X runs the default big tile, xw_piece)
-        if (sscanf(t, "%dx%d", &tm, &cols) == 2 && (tm == 16 || tm == 32 || tm == 64) &&
-            (cols == 16 || cols == 32 || cols == 64 || (cols == 48 && tm == 32)))
+        // (48 columns, the 32 x 48 tile, 2026-11-22 .. 23: removed, slower in every form on the A770, #45)
+        if (sscanf(t, "%dx%d", &tm, &cols) == 2 && (tm == 16 || tm == 32 || tm == 64) && (cols == 16 || cols == 32 || cols == 64))
           b.tm = tm, b.nc = cols / 16;
-        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_TILE=%s not TMxCOLS with 16 / 32 / 64 each (or 32x48): 32x32\n", t);
+        else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_TILE=%s not TMxCOLS with 16 / 32 / 64 each: 32x32\n", t);
       }
       if (const char* w = getenv("ARC_GEMM_XW_SLM_WG")) {
         int x = 0, y = 0;
@@ -501,7 +499,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_k32_opt(pack) + xw_snake_opt();
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx);
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -590,53 +588,27 @@
   // A770's GEMM question (xw_peak --probe's local-memory rows; xw_peak "slm 32x32 4x4 e2 p wgl bg"). The same words in
   // the same order: bit for bit, checked at start (xw_check's forms 27 / 31, xw_gu_check8); a difference turns off
   // only this. Pack bit 16, only where the weights are in the work-group order (bit 8)
-  // ARC_GEMM_XW_UL=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 1): the big tile's
-  // local-memory reads and writes as 64-bit block messages (gemm_xw8.cl -DXS_UL, with XS_LATE): the users' ocloc 26.40
-  // (dg2-g10) makes the 32-bit read8 two 128-B messages (32 for 32 DPAS) and these one 256-B message (16), as oneDNN's
-  // block_oword(16) reads. The cost: ~176 moves more in the kernel (a lane's 4 ulongs into DPAS's word layout). No spill
-  // there, with the fused gate / up too. Bit for bit, checked at start (the build options are the check's own)
   // ARC_GEMM_XW_DPASW=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 3): the big tile's
   // DPAS as the split form on a fused EU pair (gemm_xw8.cl -DXS_DPASW, cl_intel_subgroup_split_matrix_multiply_accumulate,
   // dpasw): each sub-group of a pair reads half of the token operand, so A's local reads halve (the users' ocloc 26.40,
   // dg2-g10: 24 local reads for 32 DPAS against 32, no spill, the same instruction count). The pairing is the driver's:
   // checked at start bit for bit; a form that differs or does not build (a driver without the extension) is dropped
-  // by the check's retry (xw_lay_ok_), keeping the plain DPAS and the rest of the big tile. Takes precedence over
-  // ARC_GEMM_XW_UL (another local layout). Only where the work-group has an even count of column sub-groups (the
-  // pairs); a shape whose wgx ends odd builds without it. Not on B-series cards (no fused EUs: no such DPAS)
-  static bool xw_dpasw_env() {
-    static const bool on = getenv("ARC_GEMM_XW_DPASW") && atoi(getenv("ARC_GEMM_XW_DPASW")) != 0;
-    return on;
+  // by the check's retry (xw_lay_ok_), keeping the plain DPAS and the rest of the big tile. Only where the work-group
+  // has an even count of column sub-groups (the pairs); a shape whose wgx ends odd builds without it. Not on B-series
+  // cards (no fused EUs: no such DPAS)
+  // (on by default since 2026-11-23 on discrete 8-lane cards, Alchemist: skipzx-lab's A770, the 27B 4K 1,703.7-1,715.0 ->
+  //  1,774.4 / 1,772.1 tok/s (+3.6 %), gate + up 584.7 -> 538.9 ms, down 360.5 -> 343.5, the start check passing on his
+  //  card, #45. Not on the Arc 140T (an iGPU: unmeasured) nor without 8-lane XMX; ARC_GEMM_XW_DPASW=0 / 1 decides)
+  bool xw_dpasw_env() const {
+    static const char* e = getenv("ARC_GEMM_XW_DPASW");
+    if (e) return atoi(e) != 0;
+    return xw_lanes() == 8 && cl_.sg8 && cl_.xmx && !zrt::integrated();
   }
-  static bool xw_ul_env() {
-    static const bool on = getenv("ARC_GEMM_XW_UL") && atoi(getenv("ARC_GEMM_XW_UL")) != 0;
-    return on;
-  }
-  // (the start check's verdict on these local-layout forms, per key; false after a check failed with one: plain)
+  // (the start check's verdict on the split DPAS, per key; false after a check failed with it: the plain DPAS)
+  // (ARC_GEMM_XW_K32, the k32 stages in 4 buffers, and ARC_GEMM_XW_SNAKE, the boustrophedon walk, were removed on
+  //  2026-11-23 after skipzx-lab's A770: K32 -4.3 % on the 27B 4K, SNAKE within the drift, #45)
   bool xw_lay_ok_ = true;
-  // ARC_GEMM_XW_K32=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 5): the big tile's stages
-  // of 32 k values in 4 local buffers, each stage's loads 3 stages ahead and the split barrier's wait a stage of DPAS
-  // after its arrive (gemm_xw8.cl -DXS_K32). Where both operands are in the work-group order (pack bits 4 and 8), not
-  // with the fused gate / up, DPASW, UL or BG (the kernel refuses them). The users' ocloc 26.40 (dg2-g10): no spill,
-  // 3,904 instructions and 530 moves against 3,974 and 627. Bit for bit, checked at start (a failure: the layout retry)
-  // ARC_GEMM_XW_SNAKE=1 (8 lanes, 2026-11-23, opt-in; the plan's step 6): the big tile's work-groups in a boustrophedon
-  // walk, every other slice of rows sweeping the column blocks backwards (gemm_xw8.cl -DXS_SNAKE): only the order, bit for bit
-  static std::string xw_snake_opt() {
-    static const bool on = getenv("ARC_GEMM_XW_SNAKE") && atoi(getenv("ARC_GEMM_XW_SNAKE")) != 0;
-    return on ? " -DXS_SNAKE" : std::string();
-  }
-  static bool xw_k32_env() {
-    static const bool on = getenv("ARC_GEMM_XW_K32") && atoi(getenv("ARC_GEMM_XW_K32")) != 0;
-    return on;
-  }
-  std::string xw_k32_opt(int pack) const {
-    // (and the kernel's other needs tested here, not left to its #error and the start check's retry: the pointer form
-    //  and one chunk a stage; the Researcher's review of 53a449d)
-    if (!xw_k32_env() || !xw_lay_ok_ || xw_dpasw_env() || xw_ul_env() || (pack & 12) != 12 || (pack & 16) || !xw_ptr() ||
-        (xw_big_on() && xw_big_cfg().cps > 1))
-      return std::string();
-    return " -DXS_K32";
-  }
-  bool xw_lay_on() const { return xw_lay_ok_ && (xw_dpasw_env() || xw_ul_env() || xw_k32_env()); }
+  bool xw_lay_on() const { return xw_lay_ok_ && xw_dpasw_env(); }
   // (the start line's "checked" with DPASW: only where the big tile's own work-group has an even wgx, so a key whose kernel
   //  built the plain form says so instead; the Researcher's review of 287604b. It reads the big tile's x only: the fused
   //  gate / up halves its own wgx by its width, and xw_dpasw_opt(wgx) decides that kernel's form at build time; this is
@@ -645,8 +617,7 @@
   // (the build options of the local-layout form for a kernel of wgx column sub-groups a work-group)
   std::string xw_dpasw_opt(int wgx) const {
     if (!xw_lay_ok_) return std::string();
-    if (xw_dpasw_env()) return wgx % 2 == 0 ? " -DXS_DPASW" : std::string();
-    return xw_ul_env() ? " -DXS_UL -DXS_LATE" : std::string();
+    return xw_dpasw_env() && wgx % 2 == 0 ? " -DXS_DPASW" : std::string();
   }
   // ARC_GEMM_XW_LSC=N (2026-11-23, opt-in; the A770's cache question, #45: with the removed ARC_GEMM_XW_AG, which kept
   // less in L3, gdn_recur fell 342 -> 306 ms and attention 133 -> 118 though neither changed): the big tile's loads
@@ -666,7 +637,7 @@
   bool xw_bg_bad_ = false;
   bool xw_bg_on() const { return xw_bg_env() && xw_bg_ok_ == 1 && xw_wgl_on(); }
   bool xw_wgl_try() const {
-    return xw_wgl_env() && xw_lanes() == 8 && xw_big_on() && xw_ptr() && xw_big_cfg().nc != 3 && (xw_pack_cfg() & 3) == 3 &&
+    return xw_wgl_env() && xw_lanes() == 8 && xw_big_on() && xw_ptr() && (xw_pack_cfg() & 3) == 3 &&
            !p140_res_ && !h8_q2();
   }
   bool xw_wgl_on() const { return xw_ && xw_wgl_ok_ == 1 && xw_wgl_try(); }
@@ -742,7 +713,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_snake_opt();
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx);
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -1005,8 +976,6 @@
     if (M > 0 && xw_big_on() && (pack & 3) == 3) {
       const XwBig& b = xw_big();  // (32 x 32, 4 x 4 unless the sweep's switches say otherwise)
       if (N % (16 * b.nc * b.x) == 0 && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
-      // (48 columns: whatever N holds of 48 x X; xw_piece runs the rest with the default big tile)
-      if (b.nc == 3 && N >= 48 * b.x && M % (b.tm * b.y) == 0) return {b.tm, b.nc, b.x, b.y};
     }
     XwTile t{xw_tm(), xw_nc_for(N), xw_wgx()};
     if (xw_shape_on() && xw_tm() == 32) {
@@ -1023,26 +992,6 @@
                 int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
     const XwTile t = xw_tile_for(N, K, M, pack);
     const int nc = t.nc;
-    if (nc == 3) {
-      // (the 32 x 48 tile over the columns a multiple of 48 x X, then the rest (the 27B's 5,120 / 17,408: 128) as the
-      //  default big tile would run it, 32 x 32 4 x 4, or the per-shape rule where that does not fit either. Views of
-      //  the packed weights from the rest's first column group (nsb x 4 x 256 words each, 16 scales); C from c_off + n3.
-      //  Each column's sums are its own: the split changes no value)
-      const int n3 = N - N % (48 * t.wgx), rest = N - n3;
-      xw_run(name, 3, pack, wq, wh, aq, asc, M, n3, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx, t.slm);
-      if (rest > 0) {
-        const size_t g = (size_t)n3 / 16, wbytes = g * (size_t)(K / 256) * 4 * 256 * 4;
-        cl_mem wq2 = from(wq, wbytes), wh2 = from(wh, g * 16 * 4);
-        XwTile r{32, 2, 4, 4};
-        if (!(rest % 128 == 0 && M % 128 == 0)) {
-          r = {xw_tm(), xw_nc_for(rest), xw_wgx(), 0};
-          if (xw_shape_on() && xw_tm() == 32) r = {32, 1, 4, 0};
-          while (r.nc > 1 && rest % (16 * r.nc)) r.nc /= 2;
-        }
-        xw_run(name, r.nc, pack, wq2, wh2, aq, asc, M, rest, K, C, ldc, c_off + n3, a, rgroup, s0, s1, wgy, 0, r.tm, r.wgx, r.slm);
-      }
-      return;
-    }
     if (nc != 6)
       return xw_run(name, nc, pack, wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 0, t.tm, t.wgx, t.slm);
     if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
@@ -1093,7 +1042,7 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : xw_ul_env() ? "|ul" : "") + (xw_k32_env() ? "|k32" : "") + (xw_snake_opt().empty() ? "" : "|snake") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : "") +(xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -1102,7 +1051,7 @@
     static std::map<std::string, bool> splk;  // (and whether ARC_GEMM_XW_SPLIT's check passed)
     xw_split_ = xw_split_env() && xw_big_on() && xw_lanes() == 8;
     if (splk.count(key)) xw_split_ = splk[key];
-    static std::map<std::string, bool> layk;  // (and ARC_GEMM_XW_DPASW's / _UL's)
+    static std::map<std::string, bool> layk;  // (and ARC_GEMM_XW_DPASW's)
     xw_lay_ok_ = true;
     if (layk.count(key)) xw_lay_ok_ = layk[key];
     if (fb2d.count(key)) xw_2d_fb_ = fb2d[key];
@@ -1113,11 +1062,11 @@
       xw_c_rnd_ = rnd_env && atoi(rnd_env) != 0;
       crnd[key] = xw_c_rnd_;
       bool ok = xw_check();
-      if (!ok && xw_lay_on()) {  // (the split DPAS or the 64-bit local layout failing: once more without it)
+      if (!ok && xw_lay_on()) {  // (the split DPAS failing: once more without it)
         xw_lay_ok_ = false;
         ok = xw_check();
-        zlog::eprintf("inferzero: %s differs or does not build: the plain local layout and DPAS (%s)\n",
-                      xw_dpasw_env() ? "ARC_GEMM_XW_DPASW: the split DPAS" : xw_ul_env() ? "ARC_GEMM_XW_UL: the 64-bit local reads" : "ARC_GEMM_XW_K32: the k32 stages", ok ? "checked" : "differs too");
+        zlog::eprintf("inferzero: ARC_GEMM_XW_DPASW: the split DPAS differs or does not build: the plain DPAS (%s)\n",
+                      ok ? "checked" : "differs too");
       }
       layk[key] = xw_lay_ok_;
       if (!ok && xw_split_) {  // (the split barrier failing: once more with the plain one)
@@ -1164,9 +1113,8 @@
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
       if (ok && xw_lay_on() && xw_big_on())
-        zlog::eprintf(xw_k32_env() && !xw_dpasw_env() && !xw_ul_env() ? "inferzero: gemm_xw8: the big tile's stages of 32 k values in 4 buffers (ARC_GEMM_XW_K32, results checked bit for bit)\n" : xw_dpasw_env() ? (xw_dpasw_built() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
-                                                       : "inferzero: ARC_GEMM_XW_DPASW: the big tile's work-group has an odd count of column sub-groups: the plain DPAS\n")
-                                     : "inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
+        zlog::eprintf("%s", xw_dpasw_built() ?"inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
+                                         : "inferzero: ARC_GEMM_XW_DPASW: the big tile's work-group has an odd count of column sub-groups: the plain DPAS\n");
       if (ok && !xw_lsc_opt().empty() && xw_big_on())
         zlog::eprintf("inferzero: gemm_xw8: the big tile's loads with the compiler's cache policy %s (ARC_GEMM_XW_LSC)\n",
                       getenv("ARC_GEMM_XW_LSC"));
@@ -1257,8 +1205,6 @@
       if (xw_big_on()) {
         const XwBig& b = xw_big_cfg();
         shapes.push_back({2 * b.y * b.tm, 2 * b.x * 16 * b.nc, K0});
-        // (48 columns: a width with a rest, as the 27B's (two of its work-groups and 128 more), so the split runs too)
-        if (b.nc == 3) shapes.push_back({2 * b.y * b.tm, 2 * b.x * 48 + 128, K0});
         // (ARC_GEMM_XW_SLM_WG_GU: the gate / up GEMMs' work-groups too, as the gate)
         const XwBig& g = xw_big_gu_cfg();
         if (g.x != b.x || g.y != b.y) shapes.push_back({2 * g.y * g.tm, 2 * g.x * 16 * g.nc, K0, 7});

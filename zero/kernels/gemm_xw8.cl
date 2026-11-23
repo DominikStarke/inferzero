@@ -63,19 +63,11 @@
 #if XW_TM != 16 && XW_TM != 32 && XW_TM != 64
 #error "XW_TM must be 16, 32 or 64"
 #endif
-// (3, 2026-11-22: 48 columns, the A770's 32 x 48 tile after oneDNN's int8 GEMM strategy (#45; ideas only, no code),
-//  only with XW_SLM, whose B is then read a k-half at a time (XW_HB): 32 x 48's sums are 192 registers)
-#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4 && !(XW_NC == 3 && defined(XW_SLM))
-#error "XW_NC must be 1, 2 or 4 (3 with XW_SLM)"
-#endif
-// (ocloc dg2-g10 at 256 registers, 32 x 48 with 8 x 4 sub-groups: XW_HB 1 spills inside the K loop (30 scratch
-//  messages), XW_HB 2 with XS_LATE none there (235 instructions for its DPAS, 4.2 each; 84 scratch messages outside
-//  the loop, the epilogue's). 4 x 8 sub-groups spill in the loop either way: 8 x 4 is the form)
-#if XW_NC == 3 && !defined(XW_HB) && !defined(XS_BSTREAM)  // (XS_BSTREAM: B streamed instead)
-#define XW_HB 2
-#endif
-#if XW_NC == 3 && !defined(XS_LATE)
-#define XS_LATE
+// (3, the A770's 32 x 48 tile after oneDNN's kernel, 2026-11-22 .. 23: removed. Slower in every form on skipzx-lab's
+//  A770 (#45): the spill-free form (B streamed, the split DPAS, the per-block epilogue) 68.2 T, the EPI2 forms 99-102 T
+//  with 928-1,440 B spilled, against 147.4 T for 32 x 32 4 x 8 wgl split on the same shapes)
+#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4
+#error "XW_NC must be 1, 2 or 4"
 #endif
 #ifndef XW_WGX
 #define XW_WGX 1
@@ -116,8 +108,8 @@
 #endif
 
 #ifdef XS_DPASW  // (the split DPAS, the big tile's plain loop: see there)
-#if defined(XW_HB) || defined(XS_UL) || !defined(XW_SLM) || XW_WGX % 2
-#error "XS_DPASW: the big tile's plain loop (not XW_HB, not XS_UL), an even XW_WGX"
+#if !defined(XW_SLM) || XW_WGX % 2
+#error "XS_DPASW: the big tile (XW_SLM), an even XW_WGX"
 #endif
 #ifndef XW_EMU
 #pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
@@ -162,14 +154,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int NB = N / (LS * XW_NCO * XW_WGX), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
-#ifdef XS_SNAKE
-  // -DXS_SNAKE (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 6; ARC_GEMM_XW_SNAKE): every other slice of
-  // rgroup rows sweeps the column blocks right to left, so the B panels a slice ends on are the next slice's first, as
-  // oneDNN's boustrophedon walk keeps its resident work-groups' panels in L3. Only the order of the work-groups: bit for bit
-  const int cb = (grp & 1) ? NB - 1 - rem / rin : rem / rin, row = grp * rgroup + rem % rin;
-#else
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
-#endif
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
   // (XW_GU: g0 is the first output column group, of the gate's and the up's rows alike)
   const int nsb = K / 256, g0 = (cb * XW_WGX + sx) * XW_NCO;
@@ -204,8 +189,8 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 // 184 -> 169 instructions for its 33 DPAS, 37 -> 19 local-memory messages, no spill. The same words: bit for bit.
 // With the work-group order of B (XS_WGLB); with XW_GU the gate's and the up's rows each from their own matrix.
 // The engine: ARC_GEMM_XW_BG=1 (engine_xw.h)
-#if !defined(XS_WGLB) && !defined(XS_WGL) || defined(XW_HB)
-#error "XS_BG: with XS_WGLB, not XW_HB"
+#if !defined(XS_WGLB) && !defined(XS_WGL)
+#error "XS_BG: with XS_WGLB"
 #endif
 #define XS_U (XS_AW / 64)
 #define XS_SB 0  // (B's words in local memory a chunk)
@@ -296,15 +281,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     d_[0] = v_.s0, d_[8] = v_.s1, d_[16] = v_.s2, d_[24] = v_.s3, d_[32] = v_.s4, d_[40] = v_.s5;           \
     d_[48] = v_.s6, d_[56] = v_.s7;                                                                         \
   }
-#elif defined(XS_UL)
-// -DXS_UL (2026-11-23, the A770 GEMM plan from oneDNN's kernel, step 1; ARC_GEMM_XW_UL): the local reads and writes as
-// 64-bit block messages, a lane's 8 words as 4 ulongs. The users' ocloc 26.40 (dg2-g10) makes the 32-bit read8 two
-// 128-B messages (load.slm.d32x32t, 32 of them for 32 DPAS) and the write one 256-B one (store.slm.d64x32t); oneDNN
-// reads its operands in 256-B messages (block_oword(16)), 7 per 24 DPAS. A 64-bit block message puts a different word
-// pair of a 256-B unit in each lane than the 32-bit one, so the stores use it too: every lane reads back the same
-// 8 words it would have had (the unit's layout in local memory changes, never what a lane holds): bit for bit
-#define XS_RD(p) as_int8(intel_sub_group_block_read_ul4((__local const ulong*)(p)))
-#define XS_WR(p, x) intel_sub_group_block_write_ul4((__local ulong*)(p), as_ulong4(x))
 #else  // (one block message each: component w of lane l = word 8 w + l, as the global block reads)
 #define XS_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
 #define XS_WR(p, x) intel_sub_group_block_write8((__local uint*)(p), as_uint8(x))
@@ -391,76 +367,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_WAITB()
 #define XS_STAGE_END() barrier(CLK_LOCAL_MEM_FENCE)
 #endif
-#ifdef XS_K32
-  // -DXS_K32 (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 5; ARC_GEMM_XW_K32): stages of 32 k values
-  // (half a chunk: A's units of one k-half, u % 2, and B's parts {0, 1} or {2, 3}) in 4 local buffers, 12 KB each at
-  // 4 x 8 (the 48 KB of xs). Each stage's global loads issue 3 stages ahead; iteration s: the loads of s + 3, the DPAS
-  // of s, the wait for iteration s - 1's arrive (everyone past the DPAS of s - 1), the stores of s + 3 into the buffer s
-  // - 1 left, the arrive. The wait sits a stage of DPAS after its arrive (oneDNN's barrierwait after its 24 dpasw), so
-  // a slow sub-group stalls the rest less. Each sum takes k 0..31 then 32..63 of a chunk, as before: bit for bit
-#if !defined(XW_PTR) || !defined(XS_WGLA) || !defined(XS_WGLB) || defined(XW_GU) || defined(XW_HB) || \
-    defined(XS_BSTREAM) || defined(XS_DPASW) || defined(XS_UL) || defined(XS_BG) || XS_CPS != 1
-#error "XS_K32: with XW_PTR and the work-group order (XS_WGLA / XS_WGLB), the plain loop, one chunk a stage"
-#endif
-#define K32_UA (XS_UA / 2)                  // (A units a stage: one a token group)
-#define K32_U (K32_UA + XS_BW / 128)        // (units a stage)
-#define K32_W (K32_U * 64)                  // (words a stage buffer)
-#define K32_UPS ((K32_U + XS_NS - 1) / XS_NS)
-#ifdef XW_EMU
-#define K32_ARRIVE()
-#define K32_WAIT() barrier(CLK_LOCAL_MEM_FENCE)
-#else
-#pragma OPENCL EXTENSION cl_intel_split_work_group_barrier : enable
-#define K32_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
-#define K32_WAIT() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
-#endif
-  __local uint* const kb = &xs[0][0][0];  // (4 x K32_W words: 2 x XS_CPS x (XS_AW + XS_SB) holds them)
-  const int ns = 2 * (ch1 - ch0);         // (stages: 2 a chunk)
-  int8 kst[K32_UPS];
-  // unit v of stage q: A (v < K32_UA) of token group v, k-half q % 2; B of column group (v - K32_UA) / 2, part
-  // 2 (q % 2) + (v - K32_UA) % 2; in the stage's buffer at v * 64
-#define K32_SRC(v, q)                                                                                           \
-  ((v) < K32_UA ? apw + (size_t)(ch0 + (q) / 2) * XS_AW + (2 * (v) + (q) % 2) * 64                          \
-                : wpw + (size_t)(ch0 + (q) / 2) * XS_BW + (4 * (((v) - K32_UA) / 2) + 2 * ((q) % 2) + ((v) - K32_UA) % 2) * 64)
-#define K32_LOAD(q)                                                                             \
-  _Pragma("unroll") for (int i = 0; i < K32_UPS; ++i) {                                        \
-    const int v = sid + i * XS_NS;                                                             \
-    if (v < K32_U) kst[i] = as_int8(intel_sub_group_block_read8(K32_SRC(v, (q))));            \
-  }
-#define K32_STORE(q)                                                                            \
-  _Pragma("unroll") for (int i = 0; i < K32_UPS; ++i) {                                        \
-    const int v = sid + i * XS_NS;                                                             \
-    if (v < K32_U) XS_WR(kb + ((q) & 3) * K32_W + v * 64, kst[i]);                             \
-  }
-  for (int q = 0; q < 3 && q < ns; ++q) {  // (the prologue: stages 0..2 into buffers 0..2)
-    K32_LOAD(q)
-    K32_STORE(q)
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
-  for (int q = 0; q < ns; ++q) {
-    const bool more = q + 3 < ns;
-    if (more) { K32_LOAD(q + 3) }
-    __local const uint* const bb = kb + (q & 3) * K32_W;
-    __local const uint* xa = bb + sy * XW_TG * 64;
-    __local const uint* xb = bb + K32_UA * 64 + sx * XW_NC * 128;
-    int8 bl[XW_NC], bh[XW_NC];
-#pragma unroll
-    for (int c = 0; c < XW_NC; ++c) bl[c] = XS_RD(xb + c * 128), bh[c] = XS_RD(xb + c * 128 + 64);
-#pragma unroll
-    for (int t = 0; t < XW_TG; ++t) {
-      const int8 a = XS_RD(xa + t * 64);
-#pragma unroll
-      for (int c = 0; c < XW_NC; ++c) {
-        xacc[t][2 * c] = xw8_mad(a, bl[c], xacc[t][2 * c]);
-        xacc[t][2 * c + 1] = xw8_mad(a, bh[c], xacc[t][2 * c + 1]);
-      }
-    }
-    if (q) K32_WAIT();  // (iteration q - 1's arrive: every sub-group past the DPAS of stage q - 1)
-    if (more) { K32_STORE(q + 3) }  // (into stage q - 1's buffer, (q + 3) & 3)
-    K32_ARRIVE();
-  }
-  if (ns) K32_WAIT();  // (the last arrive's wait: arrives and waits in pairs)
-#else
   if (ch0 < ch1) {  // (s_begin / s_end are the same for the whole work-group: its barriers stay uniform)
     XS_LOAD(ch0)
     XS_STORE(0)
@@ -477,75 +383,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
       __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
       __local const uint* xb = xs[cur][j] + XS_AW + sx * XW_NC * 256;
-#if defined(XS_BSTREAM)
-      // -DXS_BSTREAM (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 4; ARC_GEMM_XW_BSTREAM): A held for
-      // every token group of the chunk, B streamed one 8-column block at a time (8 registers), as oneDNN's kernel
-      // streams its operand: the B registers no longer grow with XW_NC, the 32 x 48 tile's spill (the users' ocloc
-      // 26.40: 118 scratch messages holding B's chunk). With XS_DPASW A is half its size (int4 a token group and
-      // k-half). Each sum still takes k 0..31 then 32..63 of the chunk; integer sums: bit for bit either way
-#if defined(XS_DPASW) && !defined(XW_EMU)
-      int4 ak[2][XW_TG];
-      const int hh = (sx & 1) * 32;
-#pragma unroll
-      for (int hf = 0; hf < 2; ++hf)
-#pragma unroll
-        for (int t = 0; t < XW_TG; ++t)
-          ak[hf][t] = as_int4(intel_sub_group_block_read4((__local const uint*)(xa + t * 128 + hf * 64 + hh)));
-#define XS_BMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
-#else
-      int8 ak[2][XW_TG];
-#pragma unroll
-      for (int hf = 0; hf < 2; ++hf)
-#pragma unroll
-        for (int t = 0; t < XW_TG; ++t) ak[hf][t] = XS_RD(xa + t * 128 + hf * 64);
-#define XS_BMAD(a, b, c) xw8_mad(a, b, c)
-#endif
-#pragma unroll
-      for (int hf = 0; hf < 2; ++hf)  // (k 0..31: the lo blocks of the column groups; then 32..63: the hi ones)
-#pragma unroll
-        for (int c = 0; c < XW_NC; ++c)
-#pragma unroll
-          for (int h = 0; h < 2; ++h) {  // (the column group's two blocks of 8 columns: lo0 / lo1, hi0 / hi1)
-            const int8 b = XS_RD(xb + c * 256 + hf * 128 + h * 64);
-#pragma unroll
-            for (int t = 0; t < XW_TG; ++t) xacc[t][2 * c + h] = XS_BMAD(ak[hf][t], b, xacc[t][2 * c + h]);
-          }
-#undef XS_BMAD
-#elif defined(XW_HB) && XW_HB == 2
-      // -DXW_HB=2: B a column group and a k-half at a time (16 registers of B), A read again for each: each sum
-      // still takes values 0..31 of the chunk, then 32..63 (integer sums: bit for bit either way)
-#pragma unroll
-      for (int hf = 0; hf < 2; ++hf) {
-#pragma unroll
-        for (int c = 0; c < XW_NC; ++c) {
-          const int8 b0 = XS_RD(xb + c * 256 + hf * 128), b1 = XS_RD(xb + c * 256 + hf * 128 + 64);
-#pragma unroll
-          for (int t = 0; t < XW_TG; ++t) {
-            const int8 a = XS_RD(xa + t * 128 + hf * 64);
-            xacc[t][2 * c] = xw8_mad(a, b0, xacc[t][2 * c]);
-            xacc[t][2 * c + 1] = xw8_mad(a, b1, xacc[t][2 * c + 1]);
-          }
-        }
-      }
-#elif defined(XW_HB)
-      // -DXW_HB (XW_NC 3's default): B a k-half at a time for all column groups (XW_NC x 16 registers, not 32): values
-      // 0..31 of the chunk into every sum, then 32..63, as the plain form adds them (integer sums: bit for bit)
-#pragma unroll
-      for (int hf = 0; hf < 2; ++hf) {
-        int8 b0[XW_NC], b1[XW_NC];
-#pragma unroll
-        for (int c = 0; c < XW_NC; ++c) b0[c] = XS_RD(xb + c * 256 + hf * 128), b1[c] = XS_RD(xb + c * 256 + hf * 128 + 64);
-#pragma unroll
-        for (int t = 0; t < XW_TG; ++t) {
-          const int8 a = XS_RD(xa + t * 128 + hf * 64);
-#pragma unroll
-          for (int c = 0; c < XW_NC; ++c) {
-            xacc[t][2 * c] = xw8_mad(a, b0[c], xacc[t][2 * c]);
-            xacc[t][2 * c + 1] = xw8_mad(a, b1[c], xacc[t][2 * c + 1]);
-          }
-        }
-      }
-#else
       int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
 #pragma unroll
       for (int c = 0; c < XW_NC; ++c) {
@@ -598,7 +435,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
         }
 #endif
       }
-#endif  // XW_HB
     }
 #ifdef XS_LATE
     // (-DXS_LATE, 2026-11-22: the next stage read after this one's DPAS, not before them, so its staging registers
@@ -611,7 +447,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #ifdef XS_SPLIT
   if (ch0 < ch1) XS_WAITB();  // (the last arrive's wait: arrives and waits in pairs)
 #endif
-#endif  // XS_K32
 #elif defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
   // ---- -DXW_DB (ARC_GEMM_XW_DB, 2026-11-20, the A770 row's G3; the Alchemist default for 32-token tiles since 2026-11-21): the packed loop with its loads one step ahead. The
   //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B
@@ -888,42 +723,10 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define EPI_T uint4
 #define EPI_RD(p) intel_sub_group_block_read4(p)
 #define EPI_WR(p, v) intel_sub_group_block_write4((p), (v))
-#elif XW_NH == 6  // (XW_NC 3: a row's 48 columns as a block of 4 words and one of 2, not 8: the 2 after are another's)
-#define EPI_T uint8
-#define EPI_RD(p) ((uint8)(intel_sub_group_block_read4(p), intel_sub_group_block_read2((p) + 32), (uint2)(0)))
-#define EPI_WR(p, v)                                  \
-  {                                                   \
-    intel_sub_group_block_write4((p), (v).s0123);     \
-    intel_sub_group_block_write2((p) + 32, (v).s45);  \
-  }
 #else
 #define EPI_T uint8
 #define EPI_RD(p) intel_sub_group_block_read8(p)
 #define EPI_WR(p, v) intel_sub_group_block_write8((p), (v))
-#endif
-  // (-DXW_EPI3, 2026-11-23, the A770 GEMM plan step 4; ARC_GEMM_XW_EPI3: a row's words in an array of XW_NH uints with
-  //  constant indices, copied from and into the block's vector, instead of a pointer into the vector, (uint*)&o: the users'
-  //  ocloc 26.40 (dg2-g10) spilled the 32 x 48 tile's epilogue (107-119 scratch messages, none in the K loop). The same
-  //  values through the same operations: bit for bit)
-#ifdef XW_EPI3
-#define EPI_OW_DECL uint ow[XW_NH];
-#if XW_NH == 6
-#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; ow[2] = o.s2; ow[3] = o.s3; ow[4] = o.s4; ow[5] = o.s5; }
-#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; o.s2 = ow[2]; o.s3 = ow[3]; o.s4 = ow[4]; o.s5 = ow[5]; }
-#elif XW_NH == 4
-#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; ow[2] = o.s2; ow[3] = o.s3; }
-#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; o.s2 = ow[2]; o.s3 = ow[3]; }
-#elif XW_NH == 2
-#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; }
-#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; }
-#else
-#define EPI_OW_FROM_O { for (int q_ = 0; q_ < 8; ++q_) ow[q_] = o[q_]; }
-#define EPI_OW_TO_O { for (int q_ = 0; q_ < 8; ++q_) o[q_] = ow[q_]; }
-#endif
-#else
-#define EPI_OW_DECL uint* ow = (uint*)&o;
-#define EPI_OW_FROM_O
-#define EPI_OW_TO_O
 #endif
   float dc[XW_NH];
 #pragma unroll
@@ -935,9 +738,8 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       const float as = BCAST(av[t], r);                                                                    \
       __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + 8 * t + r) * ldc + (size_t)g0 * LS); \
       EPI_T o;                                                                                             \
-      EPI_OW_DECL                                                                                          \
+      uint* ow = (uint*)&o;                                                                                \
       MODE##_LOAD                                                                                          \
-      EPI_OW_FROM_O                                                                                        \
       _Pragma("unroll") for (int h = 0; h < XW_NH; ++h) {                                                  \
         const int8 x = xacc[t][h];                                                                         \
         const int is[8] = {x.s0, x.s1, x.s2, x.s3, x.s4, x.s5, x.s6, x.s7};                                \
@@ -945,7 +747,6 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
         MODE##_OP                                                                                          \
         ow[h] = as_uint(v);                                                                                \
       }                                                                                                    \
-      EPI_OW_TO_O                                                                                          \
       EPI_WR(cp, o);                                                                                       \
     }                                                                                                      \
   }

@@ -556,18 +556,9 @@ int main(int argc, char** argv) {
       // big tile's loop: 410 -> 184 instructions for 33 DPAS); the same results bit for bit
       {"slm 32x32 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
       {"slm 32x16 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 1, true, true, 4, false, 4},
-      {"slm 32x48 8x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 3, true, true, 8, false, 4},
       // (2026-11-23, S1 of the A770's 4K to 2,200: with the split barrier, as the engine runs it; ocloc dg2-g10 at 256
       //  registers: the K loop spill-free, 4.2 instructions a DPAS against 32 x 32 4 x 8's 5.5, 84 scratch messages in
       //  the epilogue only)
-      {"slm 32x48 8x4 e2 p split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_SPLIT", 32, 3, true, true, 8, false, 4},
-      // (2026-11-23, the A770 GEMM plan step 4: the 32 x 48 tile's spill is its epilogue's (the users' ocloc 26.40, dg2-g10:
-      //  119 scratch messages, none in the K loop). " p split": the per-block epilogue (13); " e2 ... epi3": EPI2 with the row's
-      //  words in an array (73); " bs dpasw": B streamed (XS_BSTREAM) with the split DPAS, the per-block epilogue: none)
-      {"slm 32x48 8x4 p split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_PTR -DXS_SPLIT", 32, 3, true, true, 8, false, 4},
-      {"slm 32x48 8x4 e2 p split epi3", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_EPI3 -DXW_PTR -DXS_SPLIT", 32, 3, true, true, 8, false, 4},
-      {"slm 32x48 8x4 p split bs dpasw", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_PTR -DXS_SPLIT -DXS_BSTREAM -DXS_LATE -DXS_DPASW", 32, 3, true, true, 8, false, 4},
-      {"slm 32x48 8x4 e2 p split bs dpasw epi3", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_EPI3 -DXW_PTR -DXS_SPLIT -DXS_BSTREAM -DXS_LATE -DXS_DPASW", 32, 3, true, true, 8, false, 4},
       {"slm 32x32 4x4 c2 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
       // (2026-11-22, the A770 plan's step 4) " wgl": A and B in the work-group's order (gemm_xw8.cl -DXS_WGL), a
       // work-group's chunk one contiguous run of each; the data rearranged here from the packed copies, per variant
@@ -580,22 +571,12 @@ int main(int argc, char** argv) {
       // (" split": the stage barrier split in arrive and wait, gemm_xw8.cl -DXS_SPLIT)
       {"slm 32x32 4x4 e2 p wgl split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT", 32, 2, true, true, 4, false, 4, true},
       {"slm 32x32 4x8 e2 p wgl split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT", 32, 2, true, true, 4, false, 8, true},
-      // (2026-11-23, the A770 GEMM plan after oneDNN's kernel: " ul", the local reads in 256-B messages, gemm_xw8.cl -DXS_UL;
-      //  " hb2", B a column group and a k-half at a time, so consecutive DPAS share the weight operand (26.40: 26 of 37 DPAS
-      //  chained with {Atomic} against 16 of 33))
-      {"slm 32x32 4x8 e2 p wgl split ul", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_UL -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
-      {"slm 32x32 4x8 e2 p wgl split hb2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXW_HB=2 -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
-      // (" k32": stages of 32 k values in 4 local buffers, loads 3 stages ahead, gemm_xw8.cl -DXS_K32)
-      {"slm 32x32 4x8 e2 p wgl split snake", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_SNAKE", 32, 2, true, true, 4, false, 8, true},
-      {"slm 32x32 4x8 e2 p wgl split k32", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_K32", 32, 2, true, true, 4, false, 8, true},
+      // (the A770 GEMM plan's other forms, measured on skipzx-lab's A770 and removed on 2026-11-23, #45: " ul" 256-B local
+      //  reads -9.6 % on the 27B 4K, " hb2" -9 % here, every 32 x 48 form slower, " k32" -4.3 %, " snake" within the drift)
       // (" dpasw": the split DPAS over fused EU pairs, gemm_xw8.cl -DXS_DPASW: half of A's local reads; DG2 only)
       {"slm 32x32 4x8 e2 p wgl split dpasw", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_DPASW", 32, 2, true, true, 4, false, 8, true},
-      {"slm 32x32 4x8 e2 p wgl split ul hb2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_UL -DXW_HB=2 -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
   };
-  // (2026-11-22) "slm 32x48 8x4 e2 p": the 32 x 48 tile after oneDNN's int8 GEMM on the A770 (#45), 8 column x 4 token
-  // sub-groups, a work-group 128 tokens x 384 columns (oneDNN's 256 x 192, 4 x 8 here, spills in the K loop at 256
-  // registers, ocloc dg2-g10), B a k-half at a time. Only on widths that are multiples of 384 (the engine runs a
-  // width's rest with the 32 x 32 tile): --shape 17280x5120, 17280x5120:2, 4992x17408 for the 27B's gate / up / down
+  // (the 32 x 48 rows, 2026-11-22 .. 23: removed with the tile, slower in every form on the A770, #45)
   std::vector<Variant> cand = all;
   if (wgx > 1 || lock)  // (each variant again with the column sub-groups and / or the lock: " w2", " w4L", " L")
     for (Variant v : all) {
