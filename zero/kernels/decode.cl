@@ -23,13 +23,16 @@
 #define MXFP4 39
 #define NVFP4 40  // (Inkling 2 Mini's experts: blocks of 64, a UE4M3 scale per 16; folded per 32 in decode32)
 #define Q5_1 7  // (Unsloth's UD-Q4_K_XL Flash Next: its down experts; requantized per block, see decode32)
+#define Q4_1 3  // (#88, 2026-11-23: as Q5_1 without the fifth bit; it was requantized to Q8_0 on the CPU at load)
+#define Q5_0 6  // (the same day: d (q - 16), q = 0..31, exact in int8)
+#define Q8_1 9  // (the same day: d q with a block sum the GEMV does not need, exact in int8)
 // (a private inferzero type, not a GGML one: AutoRound INT4, 128 values to one f16 scale, zero point 8, pull request
 //  #22; tools/import_autoround_experts.py)
 #define AR4_128 0x41523447
 // The per-type lists, in one place (a new type goes here, and in src/quants.h is_per32_type / is_small_block_type):
 // per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header; C++
 // is_per32_type)
-#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1 || \
+#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1 || QT == Q4_1 || QT == Q5_0 || QT == Q8_1 || \
                QT == NVFP4)
 // a vector decoder, vblock (gemv_v, and the experts' MOE_VB / moe_rg): each 32-block read straight into registers
 #define VB_TYPE (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || \
@@ -109,6 +112,12 @@ inline void ar4_unpack(uint4 q, uint* w) {
 #define BB 72  // (4 blocks of 64)
 #elif QT == Q5_1
 #define BB 192  // (8 blocks of 32 as in the GGUF: f16 d, f16 m, 32 high bits, 16 nibble bytes)
+#elif QT == Q4_1
+#define BB 160  // (8 blocks of 32 as in the GGUF: f16 d, f16 m, 16 nibble bytes)
+#elif QT == Q5_0
+#define BB 176  // (8 blocks of 32 as in the GGUF: f16 d, 32 high bits, 16 nibble bytes)
+#elif QT == Q8_1
+#define BB 288  // (8 blocks of 32 as in the GGUF: f16 d, f16 sum, 32 int8)
 #elif QT == NVFP4
 #define BB 144  // (4 blocks of 64: the 16 UE4M3 scale bytes, then 4 x 32 code bytes)
 #else
@@ -357,6 +366,69 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
         w[k + 4 * h] = word;
       }
     }
+  }
+#elif QT == Q4_1
+  {
+    // GPU form = the GGUF's (gpu_raw_sb copies it): 20 bytes per block, f16 d, f16 m, 16 bytes with elements 0..15 in
+    // the low nibbles and 16..31 in the high ones; w = d q + m, q = 0..15. Requantized per block as Q5_1 above (the
+    // per-32 int8 form has no offset): s = max(|m|, |m + 15 d|) / 127, w = rint((d q + m) / s), at most s / 2 off.
+    // Every path decodes through here. (2026-11-23, #88: before, the CPU requantized Q4_1 rows to Q8_0 at load, 1.7x
+    // their bytes on the card)
+    const uchar* b = p + 20 * ib;
+    const float bd = f16(rd16(b)), bm = f16(rd16(b + 2));
+    const float vmax = fmax(fabs(bm), fabs(bm + 15.0f * bd));
+    const float inv = vmax > 0.0f ? 127.0f / vmax : 0.0f;
+    d = vmax / 127.0f;
+    sc0 = sc1 = 1;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+      const uint v = rd32(b + 4 + 4 * k);
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        uint word = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const int q = (int)((v >> (8 * j + 4 * h)) & 15u);
+          const int i8 = clamp((int)rint((bd * (float)q + bm) * inv), -127, 127);
+          word |= ((uint)i8 & 0xFFu) << (8 * j);
+        }
+        w[k + 4 * h] = word;
+      }
+    }
+  }
+#elif QT == Q5_0
+  {
+    // GPU form = the GGUF's: 22 bytes per block, f16 d, the 32 high bits, 16 nibble bytes (elements 0..15 low, 16..31
+    // high); w = d (q - 16), q = 0..31: the int8 values are exact, d the block's scale (2026-11-23; it was requantized
+    // to Q8_0 on the CPU at load)
+    const uchar* b = p + 22 * ib;
+    d = f16(rd16(b));
+    sc0 = sc1 = 1;
+    const uint qh = rd32(b + 2);
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+      const uint v = (uint)b[6 + 4 * k] | ((uint)b[7 + 4 * k] << 8) | ((uint)b[8 + 4 * k] << 16) | ((uint)b[9 + 4 * k] << 24);
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        uint word = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const int e = 16 * h + 4 * k + j;
+          const int q = ((int)((v >> (8 * j + 4 * h)) & 15u) | (int)(((qh >> e) & 1u) << 4)) - 16;
+          word |= ((uint)q & 0xFFu) << (8 * j);
+        }
+        w[k + 4 * h] = word;
+      }
+    }
+  }
+#elif QT == Q8_1
+  {
+    // GPU form = the GGUF's: 36 bytes per block, f16 d, f16 sum (unused here), 32 int8; w = d q, exact (2026-11-23)
+    const uchar* b = p + 36 * ib;
+    d = f16(rd16(b));
+    sc0 = sc1 = 1;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) w[k] = rd32(b + 4 + 4 * k);
   }
 #elif QT == NVFP4
   {

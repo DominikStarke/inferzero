@@ -259,22 +259,9 @@
   }
   GpuWeight make_weight(uint32_t type, const uint8_t* data, size_t nbytes, int N, int K, int role = kRoles - 1,
                         const cl_mem* view = nullptr) {
-    // (QUEUE Q2, 2026-11-21: a type with no GPU kernel, Q4_1, Q5_0 or Q8_1, is decoded here on the CPU and stored as
-    //  Q8_0, said once per type; it threw "unsupported weight type" before. Q8_0's 8-bit steps are finer than those
-    //  types' 4-5 bits, so little is lost; the memory it takes is said in the line)
-    if (!view && N > 0 && (type == GGML_Q4_1 || type == GGML_Q5_0 || type == GGML_Q8_1) && K % 32 == 0) {
-      const size_t rb = nbytes / (size_t)N;
-      const std::vector<uint8_t> q8 = requant_rows_q8_0(type, data, rb, N, K);
-      static std::mutex said_mu;
-      static std::set<uint32_t> said;
-      {
-        std::lock_guard<std::mutex> g(said_mu);
-        if (said.insert(type).second)
-          zlog::eprintf("inferzero: %s weights have no GPU kernel yet: decoded on the CPU at load and kept as Q8_0 "
-                        "(%.2f -> %.2f bytes a value)\n", ggml_type_name(type), (double)rb / K, 34.0 / 32.0);
-      }
-      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, role, nullptr);
-    }
+    // (QUEUE Q2, 2026-11-21 to 2026-11-23: Q4_1, Q5_0 and Q8_1 were decoded here on the CPU and stored as Q8_0, 1.7x
+    //  Q4_1's bytes; #88's B580 ran out of memory partly from that copy. Since 2026-11-23 they run on the GPU in their
+    //  own form, decode.cl decode32)
     GpuWeight w;
     w.role = role;
     w.type = type;
@@ -347,20 +334,13 @@
   //  tensors, was planned with too few weights in host memory, overfilled the card, and the driver's eviction to
   //  system RAM ran a 15.4 GiB PC out of memory. Other types: the file's bytes, as before)
   static double stored_bytes(const GgufTensor& t) {
-    if ((t.type == GGML_Q4_1 || t.type == GGML_Q5_0 || t.type == GGML_Q8_1) && t.dims.size() >= 2 && t.dims[0] % 32 == 0)
-      return (double)t.nelements() / 32.0 * 34.0;
+    // (since 2026-11-23 every quantized type is stored in its own bytes: Q4_1 / Q5_0 / Q8_1 no longer become Q8_0.
+    //  Kept as the plans' one place for a type whose stored form differs from the file's)
     return (double)t.nbytes;
   }
-  // (one log line per type that has no GPU kernel and is requantized at load; the float types say nothing, as before)
-  static void note_requant(uint32_t t) {
-    if (t != GGML_Q4_1 && t != GGML_Q5_0 && t != GGML_Q8_1) return;
-    static std::mutex mu;
-    static std::set<uint32_t> said;
-    std::lock_guard<std::mutex> g(mu);
-    if (said.insert(t).second)
-      zlog::eprintf("inferzero: %s weights have no GPU kernel yet: decoded on the CPU at load and kept as Q8_0\n",
-                    ggml_type_name(t));
-  }
+  // (one log line per type that has no GPU kernel and is requantized at load; the float types say nothing, as before;
+  //  none is left since 2026-11-23)
+  static void note_requant(uint32_t) {}
   GpuWeight load_w(const std::string& name) {
     const GgufTensor& t = mat(T(name));
     const int K = (int)t.dims[0], N = (int)t.dims[1];
@@ -375,10 +355,11 @@
   // DeltaNet input projections (qkv, z = attn_gate, ab = alpha + beta). When qkv and z have the same quantized type
   // they are uploaded as one stack of rows (with ab, already Q8_0, when they are Q8_0 too): a single token runs one GEMV
   // over all of them (Layer::qz); the matrices are views of it, stored once.
-  // ("float": requantized to Q8_0 at load. The float types, and since 2026-11-21 the ones with no GPU kernel, Q4_1,
-  //  Q5_0 and Q8_1, decoded on the CPU: QUEUE Q2)
+  // ("float": requantized to Q8_0 at load. The float types, and since 2026-11-21 the ones with no GPU kernel, Q5_0
+  //  and Q8_1, decoded on the CPU: QUEUE Q2. Since 2026-11-23 Q4_1, Q5_0 and Q8_1 run on the GPU itself, decode.cl
+  //  decode32, #88)
   static bool float_type(uint32_t t) {
-    return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16 || t == GGML_Q4_1 || t == GGML_Q5_0 || t == GGML_Q8_1;
+    return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16;
   }
   // a float matrix as the Q8_0 rows load_w would make of it (kept in `keep`), so that it can be stacked with others
   const GgufTensor& as_q8(const GgufTensor& t, GgufTensor& out, std::vector<uint8_t>& keep) {

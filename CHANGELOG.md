@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: Q4_1, Q5_0 and Q8_1 run on the GPU in their own form
+
+- **Files with Q4_1, Q5_0 or Q8_1 tensors** are no longer requantized to Q8_0 on the CPU at load: the GPU reads them as they are. A Q4_1 copy of the Qwen3.5 4B on the laptop: GPU memory 7.95 -> 6.60 GiB, load 49 -> 5 s, generation 15.2 -> 22.2 tok/s, the same accuracy (KL against f32 0.00144 against 0.00136). Q5_0: 7.95 -> 6.81 GiB, KL 0.00133 -> 0.00093 (its values are exact on the GPU). This also removes the memory pressure behind #88.
+
 ## 2026-11-23: the Linux launcher's menu fits the terminal (#81)
 
 - **The whole terminal:** the menu takes the terminal's width and height: the panes grow with the width, the tip takes the rows the lists leave (up to 6 lines), and a tall terminal shows the options that do not apply too, with their reasons. A resized window is redrawn at its new size.

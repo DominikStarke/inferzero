@@ -757,7 +757,8 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
 inline bool is_small_block_type(uint32_t t) {
-  return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 || t == GGML_Q5_1 || t == GGML_NVFP4;
+  return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 || t == GGML_Q5_1 || t == GGML_NVFP4 ||
+         t == GGML_Q4_1 || t == GGML_Q5_0 || t == GGML_Q8_1;  // (since 2026-11-23, #88: on the GPU, no longer requantized to Q8_0 on the CPU)
 }
 // Types with a float scale per 32-block (their own block of 32, or AR4_128's per 128): decoded into the W8 GEMM's
 // native Q8_0 form (w8_variant 4), regrouped on the GPU (scales first), read by moe_rg. The kernels' list of the same
@@ -765,7 +766,7 @@ inline bool is_small_block_type(uint32_t t) {
 // with its own scale as it is decoded, since the per-32 form has no offset: decode.cl decode32.)
 inline bool is_per32_type(uint32_t t) {
   return t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 ||
-         t == GGML_Q5_1 || t == GGML_NVFP4;  // (NVFP4: its per-16 scales folded per 32, nvfp4_block32_w8)
+         t == GGML_Q5_1 || t == GGML_NVFP4 || t == GGML_Q4_1 || t == GGML_Q5_0 || t == GGML_Q8_1;  // (NVFP4: its per-16 scales folded per 32, nvfp4_block32_w8; Q4_1 as Q5_1)
 }
 inline int padded_k(int K) { return (K + 255) / 256 * 256; }
 // N rows of K elements of a small-block type -> N rows of padded_k(K) elements (dst holds N * the padded row bytes)
@@ -784,7 +785,7 @@ inline bool is_w8_type(uint32_t t) {
     case GGML_AR4_128:
     case GGML_Q2_K: case GGML_Q3_K: case GGML_Q4_K: case GGML_Q5_K: case GGML_Q6_K: case GGML_IQ2_XXS: case GGML_IQ2_XS:
     case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S: case GGML_IQ1_M: case GGML_IQ4_XS: case GGML_Q8_0: case GGML_Q4_0:
-    case GGML_IQ4_NL: case GGML_Q2_0: case GGML_MXFP4: case GGML_Q5_1: case GGML_NVFP4: return true;
+    case GGML_IQ4_NL: case GGML_Q2_0: case GGML_MXFP4: case GGML_Q5_1: case GGML_NVFP4: case GGML_Q4_1: case GGML_Q5_0: case GGML_Q8_1: return true;
     default: return false;
   }
 }
