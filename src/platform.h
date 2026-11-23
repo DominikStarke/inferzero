@@ -20,8 +20,12 @@
 #endif
 #include <windows.h>
 #include <io.h>  // (_get_osfhandle)
+#include <shlobj.h>  // (SHGetKnownFolderPath: home_env's fallback)
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 #else
 #include <cerrno>
+#include <pwd.h>  // (getpwuid: home_env's fallback)
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <setjmp.h>  // (sigsetjmp: guarded_copy)
@@ -872,13 +876,41 @@ inline bool same_file(FILE* a, FILE* b) {
 #endif
 }
 
-// The user's home folder: %USERPROFILE% on Windows, $HOME on Linux; nullptr when the variable is not set.
+// The user's home folder, absolute: %USERPROFILE% on Windows, $HOME on Linux, and where that is unset or empty the
+// account's own (Linux: the password database, getpwuid; Windows: the known Profile folder). nullptr only when none
+// is found. (2026-11-23: a B580 under CachyOS started without HOME put the data folder at "./.inferzero", relative to
+// wherever serverz started: the kernel cache, the logs and the GPU hang marker split over folders)
+inline bool& home_fallback() { static bool f = false; return f; }  // (true: the variable was missing, the account's used)
 inline const char* home_env() {
+  static const std::string h = [] {
+    std::string s;
 #ifdef _WIN32
-  return getenv("USERPROFILE");
+    if (const char* e = getenv("USERPROFILE"); e && *e) s = e;
+    if (s.empty()) {
+      PWSTR w = nullptr;
+      if (SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &w) == S_OK && w) {
+        s = std::filesystem::path(w).string();
+        home_fallback() = !s.empty();
+      }
+      if (w) CoTaskMemFree(w);
+    }
 #else
-  return getenv("HOME");
+    if (const char* e = getenv("HOME"); e && *e) s = e;
+    if (s.empty()) {
+      if (const struct passwd* pw = getpwuid(getuid()); pw && pw->pw_dir && *pw->pw_dir) {
+        s = pw->pw_dir;
+        home_fallback() = true;
+      }
+    }
 #endif
+    if (!s.empty()) {
+      std::error_code ec;
+      const std::filesystem::path a = std::filesystem::absolute(s, ec);
+      if (!ec) s = a.string();
+    }
+    return s;
+  }();
+  return h.empty() ? nullptr : h.c_str();
 }
 
 }  // namespace plat

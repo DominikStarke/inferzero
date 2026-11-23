@@ -20,10 +20,22 @@
 inline std::string app_dir() {
   static const std::string dir = [] {
     namespace fs = std::filesystem;
-    if (const char* d = getenv("ARC_DATA_DIR"); d && *d) return std::string(d);
-    const char* up = plat::home_env();  // (%USERPROFILE%; $HOME on Linux)
+    std::error_code ec0;
+    if (const char* d = getenv("ARC_DATA_DIR"); d && *d) {  // (absolute: a relative one moved with the current folder)
+      const fs::path a = fs::absolute(d, ec0);
+      return ec0 ? std::string(d) : a.string();
+    }
+    const char* up = plat::home_env();  // (%USERPROFILE%; $HOME on Linux; the account's own where unset, absolute)
+#ifdef _WIN32
+    const char* home_var = "USERPROFILE";
+#else
+    const char* home_var = "HOME";
+#endif
+    if (plat::home_fallback()) LOG_WRN("inferzero: %s is not set: the data folder in the account's home, %s\n", home_var, up);
+    else if (!up)
+      LOG_WRN("inferzero: no home folder found (HOME / USERPROFILE unset): the data folder in the current one, made absolute\n");
     const char* la = getenv("LOCALAPPDATA");
-    const fs::path home = fs::path(up ? up : ".");
+    const fs::path home = up ? fs::path(up) : fs::absolute(".", ec0);
     const fs::path now = home / ".inferzero";
     std::error_code ec;
     if (fs::exists(now, ec)) return now.string();

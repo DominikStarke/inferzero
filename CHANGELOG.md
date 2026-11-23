@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: the data folder without HOME
+
+- **Fixed:** without `HOME` (or with it empty), the data folder was `./.inferzero`, relative to wherever serverz was
+  started. Its parts then split over folders: the kernel cache, the logs, `model-dirs.txt` and the GPU hang marker,
+  which then only worked when started from the same folder. A B580 under CachyOS hit it.
+  - It now falls back to the account's own home folder (Linux: the password database; Windows: the Profile folder,
+    where `USERPROFILE` is unset), with a warning.
+  - The folder is always absolute; a relative `ARC_DATA_DIR` is made absolute too.
+
 ## 2026-11-23: audit fixes: the memory plan of layer splits and Gemma, the RAM of the CPU path, the failsafe
 
 - **Cards that cannot hold the model:**
