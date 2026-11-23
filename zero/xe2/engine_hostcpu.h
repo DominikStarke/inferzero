@@ -20,6 +20,23 @@ struct HostMat {
   int N = 0, K = 0;
 };
 std::unordered_map<cl_mem, HostMat> host_mat_;  // (zero/engine_load.h upload_padded: a matrix put in host memory)
+// ARC_HOST_CPU_NATIVE=1 (2026-11-23, opt-in; the A770 at 92K, #45: the CPU's rows ~54 ms of a ~100 ms step): an IQ3_S
+// matrix kept as the GGUF's own blocks (110 bytes a superblock of 256: 0.43 bytes a weight) and decoded in the dot
+// loop, in place of the int8 copy (1.125 bytes a weight, read from RAM every token, and that much RAM more). The dot
+// is exact in integers inside a block of 32 (the grid's values 1..15 with their signs, times the int8 activations),
+// then (d x the block's scale) x the activation's scale x that sum in f32: no requantization of the weights, so its
+// sums differ from the int8 copy's (KL-checked, not bit for bit). Other types keep the int8 copy
+struct HostRaw {
+  std::vector<uint8_t> b;  // (the superblocks in order, rows of K / 256 each)
+  uint32_t type = 0;
+  size_t nsb = 0;
+};
+std::unordered_map<cl_mem, HostRaw> host_raw_;
+static bool host_native_on() {
+  static const bool e = getenv("ARC_HOST_CPU_NATIVE") && atoi(getenv("ARC_HOST_CPU_NATIVE")) != 0;
+  return e;
+}
+uint64_t hcpu_native_n_ = 0;
 std::vector<int8_t> hcpu_q_;
 std::vector<float> hcpu_y_, hcpu_sc_;
 uint64_t hcpu_n_ = 0;
@@ -44,6 +61,17 @@ void host_src_note(cl_mem m, uint32_t type, const uint8_t* data, size_t nbytes, 
   //  nbytes / nsb bytes each, as upload_padded counts them (gguf_sb_bytes))
   const size_t vals = nsb * 256;
   if (!vals || nbytes % nsb) return;
+  if (host_native_on() && type == GGML_IQ3_S && nbytes / nsb == 110) {
+    HostRaw r;
+    r.b.assign(data, data + nbytes);
+    r.type = type;
+    r.nsb = nsb;
+    if (host_raw_.empty())
+      LOG_INF("ARC_HOST_CPU_NATIVE=1: the CPU's IQ3_S matrices in host memory as their own blocks, decoded in its dot "
+              "loop (no int8 copy)\n");
+    host_raw_[m] = std::move(r);
+    return;
+  }
   HostMat h;
   h.q.resize(vals);
   h.d.resize(vals / 32);
@@ -108,6 +136,64 @@ static float host_dot(const int8_t* w, const float* wd, const int8_t* a, const f
   return s;
 #endif
 }
+// (one IQ3_S row's dot with the int8 activations, ARC_HOST_CPU_NATIVE: ns superblocks of 110 bytes (d, qs 64, qh 8,
+//  signs 32, scales 4; src/quants.h decode_sb's layout). Block ib of 32 values: grid entry k (values 4k..4k+3) is
+//  iq3s_grid[qs[8 ib + k] | ((qh[ib] << (8 - k)) & 256)], value 8l + j negative where bit j of signs[4 ib + l] is set,
+//  the block's scale 1 + 2 x its nibble)
+static float host_dot_iq3s(const uint8_t* row, int ns, const int8_t* a, const float* ad) {
+#ifdef __AVX2__
+  __m256 acc = _mm256_setzero_ps();
+  const __m256i ones = _mm256_set1_epi16(1), one8 = _mm256_set1_epi8(1);
+  // (byte i of the 32 takes sign byte i / 8, bit i % 8)
+  const __m256i sh = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3,
+                                      3, 3, 3, 3);
+  const __m256i bit = _mm256_set1_epi64x((long long)0x8040201008040201ull);
+  for (int s = 0; s < ns; ++s) {
+    const uint8_t* p = row + 110 * (size_t)s;
+    const float d = fp16_to_f32(rd16(p));
+    const uint8_t *qs = p + 2, *qh = p + 66, *sg = p + 74, *sc = p + 106;
+    for (int ib = 0; ib < 8; ++ib) {
+      const uint32_t h = qh[ib];
+      const uint8_t* q = qs + 8 * ib;
+      const __m256i g = _mm256_setr_epi32(
+          (int)iq3s_grid[q[0] | ((h << 8) & 256)], (int)iq3s_grid[q[1] | ((h << 7) & 256)],
+          (int)iq3s_grid[q[2] | ((h << 6) & 256)], (int)iq3s_grid[q[3] | ((h << 5) & 256)],
+          (int)iq3s_grid[q[4] | ((h << 4) & 256)], (int)iq3s_grid[q[5] | ((h << 3) & 256)],
+          (int)iq3s_grid[q[6] | ((h << 2) & 256)], (int)iq3s_grid[q[7] | ((h << 1) & 256)]);
+      const __m256i sb = _mm256_shuffle_epi8(_mm256_set1_epi32((int)rd32(sg + 4 * ib)), sh);
+      const __m256i neg = _mm256_cmpeq_epi8(_mm256_and_si256(sb, bit), bit);  // (0xFF: negative)
+      const __m256i av = _mm256_sign_epi8(_mm256_loadu_si256((const __m256i*)(a + 32 * (8 * s + ib))),
+                                          _mm256_or_si256(neg, one8));
+      const __m256i p32 = _mm256_madd_epi16(_mm256_maddubs_epi16(g, av), ones);
+      const int bs = 1 + 2 * ((sc[ib / 2] >> (4 * (ib % 2))) & 0xF);
+      acc = _mm256_fmadd_ps(_mm256_set1_ps(d * (float)bs * ad[8 * s + ib]), _mm256_cvtepi32_ps(p32), acc);
+    }
+  }
+  const __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(acc), _mm256_extractf128_ps(acc, 1));
+  const __m128 s2 = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
+  return _mm_cvtss_f32(_mm_add_ss(s2, _mm_shuffle_ps(s2, s2, 1)));
+#else
+  float r = 0.0f;
+  for (int s = 0; s < ns; ++s) {
+    const uint8_t* p = row + 110 * (size_t)s;
+    const float d = fp16_to_f32(rd16(p));
+    const uint8_t *qs = p + 2, *qh = p + 66, *sg = p + 74, *sc = p + 106;
+    for (int ib = 0; ib < 8; ++ib) {
+      int t = 0;
+      for (int k = 0; k < 8; ++k) {
+        const uint8_t* g = (const uint8_t*)(iq3s_grid + (qs[8 * ib + k] | ((qh[ib] << (8 - k)) & 256)));
+        for (int j = 0; j < 4; ++j) {
+          const int v = 4 * k + j, w = (sg[4 * ib + v / 8] >> (v % 8)) & 1 ? -(int)g[j] : (int)g[j];
+          t += w * (int)a[32 * (8 * s + ib) + v];
+        }
+      }
+      const int bs = 1 + 2 * ((sc[ib / 2] >> (4 * (ib % 2))) & 0xF);
+      r += d * (float)bs * ad[8 * s + ib] * (float)t;
+    }
+  }
+  return r;
+#endif
+}
 // (matmul1, one token: true when the CPU did it; C[c_off + n] (+)= sum_k W[n][k] * a[k])
 bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   // (with --prof / --prof-gen too since 2026-11-23: a profile without it timed the GPU reading these matrices over
@@ -115,10 +201,14 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   //  Its time is the profile's row "<matrix> (CPU)", matmul1)
   if (!host_cpu_on() || acc > 1 || q2mm_) return false;
   const auto it = host_mat_.find(w.raw);
-  if (it == host_mat_.end()) return false;
-  const HostMat& h = it->second;
+  const auto itr = it == host_mat_.end() ? host_raw_.find(w.raw) : host_raw_.end();
+  if (it == host_mat_.end() && itr == host_raw_.end()) return false;
+  const HostMat* hm = it != host_mat_.end() ? &it->second : nullptr;
+  const HostRaw* hr = hm ? nullptr : &itr->second;
   const int N = w.N, K = w.K, nb = K / 32;
-  if (N <= 0 || K % 32 || h.q.size() != (size_t)N * K) return false;
+  if (N <= 0 || K % 32) return false;
+  if (hm && hm->q.size() != (size_t)N * K) return false;
+  if (hr && (K % 256 || hr->nsb != (size_t)N * (K / 256))) return false;
   hcpu_y_.resize(N);
   // (the activations: int8 values, then one scale per 32 values at stride M (quant_store16, act32); the blocking
   //  read last, so the queue has run up to here. One read per input since 2026-11-23: where nothing that can write a
@@ -148,10 +238,13 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   //  ARC_HOST_CPU_THREADS=N sets it; 0 or a count that cannot be read: OpenMP's default)
   static const int nthr = getenv("ARC_HOST_CPU_THREADS") ? std::max(0, atoi(getenv("ARC_HOST_CPU_THREADS")))
                                                          : plat::physical_cores();
+  const int nsr = K / 256;
   auto row = [&](int n) {
-    const float s = host_dot(h.q.data() + (size_t)n * K, h.d.data() + (size_t)n * nb, a, ad.data(), nb);
+    const float s = hm ? host_dot(hm->q.data() + (size_t)n * K, hm->d.data() + (size_t)n * nb, a, ad.data(), nb)
+                       : host_dot_iq3s(hr->b.data() + (size_t)n * nsr * 110, nsr, a, ad.data());
     y[n] = acc ? y[n] + s : s;
   };
+  if (hr) ++hcpu_native_n_;
   if (nthr > 0) {
 #pragma omp parallel for schedule(static) num_threads(nthr)
     for (int n = 0; n < N; ++n) row(n);

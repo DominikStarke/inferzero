@@ -489,9 +489,10 @@
   //  slm: -DXW_SLM with that many token sub-groups a work-group (0: not), in place of the read-ahead loop)
   cl_kernel xw_kernel(int nc = 0, int pack = 0, int wgx = 1, bool gu = false, int tm = 0, int slm = 0) {
     // (pack bits 4 / 8, ARC_GEMM_XW_WGL's block orders: the big tile's kernel only)
-    if ((pack & 28) && !(slm > 0 && xw_lanes() == 8 && (pack & 3) == 3 && !gu && xw_ptr()))
+    if ((pack & 60) && !(slm > 0 && xw_lanes() == 8 && (pack & 3) == 3 && !gu && xw_ptr()))
       throw std::logic_error("gemm_xw8: the work-group order for a kernel other than the big tile's");
     if ((pack & 16) && !(pack & 8)) throw std::logic_error("gemm_xw8: ARC_GEMM_XW_BG without the weights' work-group order");
+    if ((pack & 32) && (pack & 16)) throw std::logic_error("gemm_xw8: ARC_GEMM_XW_AG with ARC_GEMM_XW_BG");
     if (slm > 0 && xw_lanes() == 8 && (pack & 3) == 3 && !gu) {
       const std::string sd = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(tm ? tm : xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
@@ -501,7 +502,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
+                             ((pack & 16) ? " -DXS_BG" : "") + ((pack & 32) ? " -DXS_AG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -597,6 +598,18 @@
   int xw_bg_ok_ = -1;
   bool xw_bg_bad_ = false;
   bool xw_bg_on() const { return xw_bg_env() && xw_bg_ok_ == 1 && xw_wgl_on(); }
+  // ARC_GEMM_XW_AG=1 (8 lanes, 2026-11-23, opt-in, with ARC_GEMM_XW_WGL; not with ARC_GEMM_XW_BG, which wins): the other
+  // way round, only B in local memory, each sub-group reading its A from global memory, four chunks a stage and one
+  // barrier per stage (gemm_xw8.cl -DXS_AG): skipzx-lab's xw_peak --probe on his A770 (#45), 4 x 8 on cached data, 76 %
+  // of the XMX peak against 64 % with both staged and a barrier a chunk. Bit for bit, checked at start as XS_BG (pack
+  // bit 32); a difference turns off only this
+  static bool xw_ag_env() {
+    static const bool on = getenv("ARC_GEMM_XW_AG") && atoi(getenv("ARC_GEMM_XW_AG")) != 0 && !xw_bg_env();
+    return on;
+  }
+  int xw_ag_ok_ = -1;
+  bool xw_ag_bad_ = false;
+  bool xw_ag_on() const { return xw_ag_env() && xw_ag_ok_ == 1 && xw_wgl_on(); }
   bool xw_wgl_try() const {
     return xw_wgl_env() && xw_lanes() == 8 && xw_big_on() && xw_ptr() && xw_big_cfg().nc != 3 && (xw_pack_cfg() & 3) == 3 &&
            !p140_res_ && !h8_q2();
@@ -674,7 +687,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + ((wgl & 32) ? " -DXS_AG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -707,7 +720,7 @@
     h8_act(Mp, gw.K, act32);
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     xw_gu_run8("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, rg_env,
-               (ua > 1 ? 4 : 0) | (og > 1 ? 8 : 0) | (og > 1 && xw_bg_on() ? 16 : 0));
+               (ua > 1 ? 4 : 0) | (og > 1 ? 8 : 0) | (og > 1 && xw_bg_on() ? 16 : 0) | (og > 1 && xw_ag_on() ? 32 : 0));
     return true;
   }
   // the 8-lane fused launch against the two it replaces (the gate stored, then the up with the fused SwiGLU, each
@@ -730,6 +743,7 @@
       std::vector<std::array<int, 2>> runs = {{2 * 16 * b.x, 0}, {3 * 16 * b.x, 0}};
       if (xw_wgl_on()) runs.insert(runs.end(), {{32 * b.x, 12}, {64 * b.x, 12}});
       if (xw_bg_on()) runs.insert(runs.end(), {{32 * b.x, 28}, {64 * b.x, 28}});  // (and B from global, ARC_GEMM_XW_BG)
+      if (xw_ag_on()) runs.insert(runs.end(), {{32 * b.x, 44}, {64 * b.x, 44}});  // (and A from global, ARC_GEMM_XW_AG)
       for (const auto& rn : runs) {
         const int N = rn[0], wgl = rn[1];
         const int ng = N / 16, ldc = N + 32;
@@ -1021,12 +1035,13 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_wgl_try() && xw_ag_env() ? "|ag" : "") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
     static std::map<std::string, bool> wglk;  // (per key: ARC_GEMM_XW_WGL's forms checked the same)
     static std::map<std::string, bool> bgk;  // (and ARC_GEMM_XW_BG's)
+    static std::map<std::string, bool> agk;  // (and ARC_GEMM_XW_AG's)
     static std::map<std::string, bool> splk;  // (and whether ARC_GEMM_XW_SPLIT's check passed)
     xw_split_ = xw_split_env() && xw_big_on() && xw_lanes() == 8;
     if (splk.count(key)) xw_split_ = splk[key];
@@ -1077,6 +1092,11 @@
         zlog::eprintf(bgk[key] ? "inferzero: gemm_xw8: the big tile's B read from global memory, only A in local memory "
                                  "(ARC_GEMM_XW_BG, results checked bit for bit)\n"
                                : "inferzero: ARC_GEMM_XW_BG differs or does not build: B through local memory\n");
+      agk[key] = wglk[key] && xw_ag_env() && !xw_ag_bad_;
+      if (wglk[key] && xw_ag_env())
+        zlog::eprintf(agk[key] ? "inferzero: gemm_xw8: the big tile's A read from global memory, only B in local memory, "
+                                 "four chunks a barrier (ARC_GEMM_XW_AG, results checked bit for bit)\n"
+                               : "inferzero: ARC_GEMM_XW_AG differs or does not build: A through local memory\n");
       if (ok && xw_wgl_try())
         zlog::eprintf(wglk[key] ? "inferzero: gemm_xw8: the big tile's operands in its work-group order (ARC_GEMM_XW_WGL, results "
                                   "checked bit for bit)\n"
@@ -1128,6 +1148,7 @@
     }
     xw_wgl_ok_ = wglk.count(key) && wglk[key] ? 1 : 0;
     xw_bg_ok_ = bgk.count(key) && bgk[key] ? 1 : 0;
+    xw_ag_ok_ = agk.count(key) && agk[key] ? 1 : 0;
     xw_ = it->second;
   }
   // random H8R weights (int8 values, per-column scales), int8 activations with per-token scales over three decades;
@@ -1137,6 +1158,7 @@
     const int K0 = 2048;  // (each shape's K: K0 unless it says, see the per-shape tiles' long-K shape)
     xw_wgl_bad_ = false;
     xw_bg_bad_ = false;
+    xw_ag_bad_ = false;
     uint32_t seed = 777;
     auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
     auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
@@ -1241,6 +1263,7 @@
           if ((p & pcfg) == p) forms.push_back(p);
         if (wgl_here) forms.insert(forms.end(), {3 | 4, 3 | 8, 3 | 12});  // (ARC_GEMM_XW_WGL: A, B, both)
         if (wgl_here && xw_bg_env()) forms.insert(forms.end(), {3 | 8 | 16, 3 | 12 | 16});  // (ARC_GEMM_XW_BG)
+        if (wgl_here && xw_ag_env()) forms.insert(forms.end(), {3 | 8 | 32, 3 | 12 | 32});  // (ARC_GEMM_XW_AG)
         for (int mode = 0; mode < 4; ++mode) {  // store, split-K pieces, add, fused SwiGLU
           const int acc = mode == 2 ? 1 : mode == 3 ? 2 : 0, pieces = mode == 1 ? 3 : 1;
           for (int wgy : {1, 2}) {
@@ -1259,7 +1282,7 @@
                   run("xw_check", k, 2, gws, lws);
                 } else {
                   cl_mem wsel = (form & 8) ? bqw : (form & 2) ? bqp : bq, asel = (form & 4) ? baw : (form & 1) ? bap : ba;
-                  if (!(form & 28)) {
+                  if (!(form & 60)) {
                     xw_piece("xw_check", wsel, bh, asel, bs, M, N, K, bc, ld, co, ac, rg, s0, s1, wgy, form);
                   } else {
                     try {  // (a WGL form that does not build: only ARC_GEMM_XW_WGL off)
@@ -1270,6 +1293,9 @@
                       if (form & 16) {
                         if (!xw_bg_bad_) zlog::eprintf("inferzero: ARC_GEMM_XW_BG: %s\n", e.what());
                         xw_bg_bad_ = true;
+                      } else if (form & 32) {
+                        if (!xw_ag_bad_) zlog::eprintf("inferzero: ARC_GEMM_XW_AG: %s\n", e.what());
+                        xw_ag_bad_ = true;
                       } else {
                         if (!xw_wgl_bad_) zlog::eprintf("inferzero: ARC_GEMM_XW_WGL: %s\n", e.what());
                         xw_wgl_bad_ = true;
@@ -1287,8 +1313,8 @@
               sane = sane || out[0][i] != c0[i];
             }
             if (!sane || memcmp(out[0].data(), out[1].data(), c0.size() * 4)) {
-              if (form & 28) {  // (a WGL / BG form: only that switch off, not the XMX GEMMs)
-                (form & 16 ? xw_bg_bad_ : xw_wgl_bad_) = true;
+              if (form & 60) {  // (a WGL / BG / AG form: only that switch off, not the XMX GEMMs)
+                (form & 16 ? xw_bg_bad_ : form & 32 ? xw_ag_bad_ : xw_wgl_bad_) = true;
                 zlog::eprintf("inferzero: ARC_GEMM_XW_WGL check %dx%d mode %d wgy %d form %d differs%s\n", M, N, mode, wgy, form,
                               sane ? "" : " (or no output)");
                 continue;

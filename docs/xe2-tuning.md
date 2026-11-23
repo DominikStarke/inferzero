@@ -1239,5 +1239,7 @@ user's log could not show whether it ran).
 | `ARC_GPU_MEM_GB=N` | the fit checks (`--ctx auto`, the `--ctx` check, the expert cache's share) count at most N GiB, as on a smaller card |
 | `ARC_LOG_ROLL_KB=n` | the server log's roll within a run at n KB instead of 256 MB (a test, [logging.md](logging.md)) |
 | `ARC_TIGHT_SMALL=0` | a small spill to RAM kept as weights in RAM, not traded for 512-token chunks (the tight plan, 2026-11-23) |
-| `ARC_HOST_CPU_THREADS=N` | the threads of the CPU's matrix loop for weights in host memory (unset: OpenMP's default) |
+| `ARC_HOST_CPU_THREADS=N` | the threads of the CPU's matrix loop for weights in host memory (unset: the CPU's physical cores since 2026-11-23; 0: OpenMP's default) |
+| `ARC_HOST_CPU_NATIVE=1` | the CPU's IQ3_S matrices in host memory kept as the file's own blocks and decoded in its dot loop (0.43 bytes a weight), not an int8 copy (1.125); KL-checked; other types keep the copy |
+| `ARC_GEMM_XW_AG=1` | the big tile (8 lanes) with only B in local memory and A read from global memory, four chunks a barrier; with `ARC_GEMM_XW_WGL`, not with `ARC_GEMM_XW_BG`; bit for bit, checked at start |
 | `ARC_GPU_WAIT_S=s` / `ARC_WAIT_STATS=1` / `ARC_GPU_FAULT_TEST=hang\|lost` / `ARC_IGNORE_HANG=1` | the GPU failsafe's wait limit, longest-wait report, fault test and marker override ([gpu-failsafe.md](gpu-failsafe.md)) |

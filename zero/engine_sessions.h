@@ -760,7 +760,12 @@
         // (two steps, the first that leaves every weight on the card: 512-token chunks and 8K segments, then 256 and
         //  4K (skipzx-lab's 27B at 92,688, #45: 0.39 GiB in RAM, the first step short; generation 10.0 tok/s against
         //  22.4 with none, so a slower prompt is the better trade). ARC_FIT_PARTS says each step's room)
-        const double steps[2][2] = {{512.0, 8192.0}, {256.0, 4096.0}};
+        // (and between them since 2026-11-23, 512 and 4K: skipzx-lab's 92K on .14 (#45) missed the first step by 0.022
+        //  GiB and took 256 / 4K, generation 11.43 -> 15.11 tok/s but the prompt 675.8 -> 310.8. Of the room only the
+        //  activations and the residual follow the chunk and segment (the staging is each role's largest matrix, the
+        //  partials follow the context): an 8K -> 4K segment frees (4K) x n_embd x 4 bytes, 80 MiB on the 27B, with the
+        //  512-token chunk kept)
+        const double steps[3][2] = {{512.0, 8192.0}, {512.0, 4096.0}, {256.0, 4096.0}};
         for (const auto& st : steps) {
           if (opt.min_chunk > (int)st[0]) continue;
           const double room_s = room_for(st[0], st[1], true);
@@ -772,8 +777,11 @@
           if (!fits) continue;
           if (!opt.dry)
             zlog::eprintf("inferzero: the tight plan: prompt chunks of %d and residual segments of %dK tokens instead of %.2f "
-                          "GiB of the weights in RAM (ARC_TIGHT_SMALL=0: the weights in RAM)\n", (int)st[0], (int)st[1] / 1024,
-                          want / GiB);
+                          "GiB of the weights in RAM (%s; ARC_TIGHT_SMALL=0: the weights in RAM)\n", (int)st[0], (int)st[1] / 1024,
+                          want / GiB,
+                          st[0] < 512 ? "the prompt about half as fast, generation faster: an A770's 27B at 92K 676 -> 311 "
+                                        "tok/s prompt, 11.4 -> 15.1 generation"
+                                      : "the prompt somewhat slower, generation faster");
           small_chunk_ = (int)st[0];
           small_seg_ = (int)st[1];
           small_plan_ = true;

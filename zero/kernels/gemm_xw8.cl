@@ -194,9 +194,38 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #endif
 #define XS_U (XS_AW / 64)
 #define XS_SB 0  // (B's words in local memory a chunk)
+#elif defined(XS_AG)
+// -DXS_AG (2026-11-23, the engine's ARC_GEMM_XW_AG=1, opt-in; the A770's GEMM, #45): the other way round, only B
+// staged in local memory, each sub-group reading its A straight from global memory (the work-group's column
+// sub-groups read the same A, through L1), four chunks a stage (B's 8 KB a chunk at 4 x 8: 2 x 4 x 8 KB, the 64 KB of
+// local memory) and so one barrier per four chunks. skipzx-lab's xw_peak --probe (db9d86d), the 4 x 8 work-group on
+// data in the caches: 176.3 T, 76 % of the XMX peak, against 149.4 T (64 %) with both staged and a barrier a chunk.
+// The same words to the same DPAS in the same order: bit for bit. Not with XW_HB or XS_BG
+#if defined(XW_HB) || defined(XS_BG)
+#error "XS_AG: not with XW_HB or XS_BG"
+#endif
+#ifndef XS_CPS
+#define XS_CPS 4
+#endif
+// (and the next stage read after this one's DPAS, XS_LATE: the users' ocloc 26.40 (dg2-g10), 32 x 32 at 4 x 8 with the
+//  split barrier: 11 scratch messages without it ("spilled around 23"), none with it; the fused gate / up (XW_GU) 17 ->
+//  0. Four chunks' staging registers are not held through the DPAS)
+#ifndef XS_LATE
+#define XS_LATE
+#endif
+#define XS_U (XS_BW / 64)
+#define XS_SB XS_BW
 #else
 #define XS_U ((XS_AW + XS_BW) / 64)   // 64-word units a chunk
 #define XS_SB XS_BW
+#endif
+// (the staged A: its units a chunk and its words in local memory; none with XS_AG)
+#ifdef XS_AG
+#define XS_SUA 0
+#define XS_LA 0
+#else
+#define XS_SUA XS_UA
+#define XS_LA XS_AW
 #endif
 #define XS_NS (XW_WGX * XW_WGY)       // sub-groups a work-group
 // -DXS_CPS=2 / 4 (2026-11-21, ARC_GEMM_XW_SLM_CPS): that many 64-value chunks a stage, one barrier a stage instead of
@@ -209,7 +238,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #error "XS_CPS must be 1, 2 or 4"
 #endif
 #define XS_UPS ((XS_U * XS_CPS + XS_NS - 1) / XS_NS)  // (a stage's units a sub-group: v = sid + i * XS_NS)
-  __local uint xs[2][XS_CPS][XS_AW + XS_SB];
+  __local uint xs[2][XS_CPS][XS_LA + XS_SB];
   const int nch = K / 64, lane = (int)get_sub_group_local_id();
   const int sy = (int)get_local_id(1), sid = sy * XW_WGX + sx;
   // (the work-group's first token group and column group: this sub-group's are tg0 + sy * XW_TG and cg0 + sx * XW_NC)
@@ -254,11 +283,11 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #endif
   const int ch0 = s_begin * 4, ch1 = s_end * 4;
   int8 st[XS_UPS];
-  // unit u of chunk ch: A (u < XS_UA) of the work-group's token group u / 2, half u % 2; B of its column group
-  // (u - XS_UA) / 4, part (u - XS_UA) % 4; in local memory at u * 64 either way
+  // unit u of chunk ch: A (u < XS_SUA) of the work-group's token group u / 2, half u % 2; B of its column group
+  // (u - XS_SUA) / 4, part (u - XS_SUA) % 4; in local memory at u * 64 either way
 #define XS_SRC(u, ch)                                                                         \
-  ((u) < XS_UA ? apw + ((size_t)((u) >> 1) * nch + (ch)) * 128 + ((u) & 1) * 64             \
-               : wpw + ((size_t)(((u) - XS_UA) >> 2) * nsb * 4 + (ch)) * 256 + (((u) - XS_UA) & 3) * 64)
+  ((u) < XS_SUA ? apw + ((size_t)((u) >> 1) * nch + (ch)) * 128 + ((u) & 1) * 64             \
+               : wpw + ((size_t)(((u) - XS_SUA) >> 2) * nsb * 4 + (ch)) * 256 + (((u) - XS_SUA) & 3) * 64)
 #define XS_LOAD(ch)                                                                          \
   _Pragma("unroll") for (int i = 0; i < XS_UPS; ++i) {                                        \
     const int v = sid + i * XS_NS;  /* (unit v of the stage: chunk v / XS_U, its unit v % XS_U) */ \
@@ -297,8 +326,8 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   //  A or B is fixed at build time where the sub-groups divide both A's units and all units (XS_FIX: the defaults),
   //  so its base is a constant there and one flag a unit otherwise)
 #define XS_ALL ((XS_U * XS_CPS) % XS_NS == 0)
-#define XS_FIX (XS_ALL && XS_U % XS_NS == 0 && XS_UA % XS_NS == 0)
-#define XS_IS_A(i) (XS_FIX ? ((i) * XS_NS) % XS_U < XS_UA : xs_a[i])
+#define XS_FIX (XS_ALL && XS_U % XS_NS == 0 && XS_SUA % XS_NS == 0)
+#define XS_IS_A(i) (XS_FIX ? ((i) * XS_NS) % XS_U < XS_SUA : xs_a[i])
   uint xs_off[XS_UPS];
   int xs_dst[XS_UPS];
   bool xs_a[XS_UPS];
@@ -311,29 +340,29 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
   for (int i = 0; i < XS_UPS; ++i) {
     const int v = sid + i * XS_NS, u = v % XS_U, j = v / XS_U, c = ch0 + j;
-    xs_a[i] = u < XS_UA;  // (a unit past the stage's end, v >= XS_U * XS_CPS, is never read)
+    xs_a[i] = u < XS_SUA;  // (a unit past the stage's end, v >= XS_U * XS_CPS, is never read)
 #ifdef XW_GU
     // (B unit of the work-group's column group cg = sub-group cg / XW_NC's group cg % XW_NC: the gate's rows of output
     //  group cs * XW_NCO + cc for the first XW_NCO groups, the up's of cs * XW_NCO + cc - XW_NCO for the others)
-    const int cg = (u - XS_UA) >> 2, cs = cg / XW_NC, cc = cg % XW_NC;
+    const int cg = (u - XS_SUA) >> 2, cs = cg / XW_NC, cc = cg % XW_NC;
     xs_up[i] = !xs_a[i] && cc >= XW_NCO;
     const int og = cs * XW_NCO + (cc >= XW_NCO ? cc - XW_NCO : cc);
 #ifdef XS_WGLB
-    const uint ob = (uint)(c * XS_BW + og * 256 + ((u - XS_UA) & 3) * 64);
+    const uint ob = (uint)(c * XS_BW + og * 256 + ((u - XS_SUA) & 3) * 64);
 #else
-    const uint ob = (uint)((og * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+    const uint ob = (uint)((og * nsb * 4 + c) * 256 + ((u - XS_SUA) & 3) * 64);
 #endif
 #elif defined(XS_WGLB)
-    const uint ob = (uint)(c * XS_BW + (u - XS_UA) * 64);
+    const uint ob = (uint)(c * XS_BW + (u - XS_SUA) * 64);
 #else
-    const uint ob = (uint)((((u - XS_UA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_UA) & 3) * 64);
+    const uint ob = (uint)((((u - XS_SUA) >> 2) * nsb * 4 + c) * 256 + ((u - XS_SUA) & 3) * 64);
 #endif
 #ifdef XS_WGLA
     xs_off[i] = xs_a[i] ? (uint)(c * XS_AW + u * 64) : ob;
 #else
     xs_off[i] = xs_a[i] ? (uint)(((u >> 1) * nch + c) * 128 + (u & 1) * 64) : ob;
 #endif
-    xs_dst[i] = j * (XS_AW + XS_SB) + u * 64;
+    xs_dst[i] = j * (XS_LA + XS_SB) + u * 64;
   }
 #undef XS_LOAD
 #undef XS_STORE
@@ -382,7 +411,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
       __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
-      __local const uint* xb = xs[cur][j] + XS_AW + sx * XW_NC * 256;
+      __local const uint* xb = xs[cur][j] + XS_LA + sx * XW_NC * 256;
 #if defined(XW_HB) && XW_HB == 2
       // -DXW_HB=2: B a column group and a k-half at a time (16 registers of B), A read again for each: each sum
       // still takes values 0..31 of the chunk, then 32..63 (integer sums: bit for bit either way)
@@ -438,7 +467,17 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       }
 #pragma unroll
       for (int t = 0; t < XW_TG; ++t) {
+#ifdef XS_AG
+        // (token group sy * XW_TG + t of the work-group, chunk ch + j: where XS_SRC's A unit of it would be staged from)
+#ifdef XS_WGLA
+        __global const uint* ga = apw + (size_t)(ch + j) * XS_AW + (sy * XW_TG + t) * 128;
+#else
+        __global const uint* ga = apw + ((size_t)(sy * XW_TG + t) * nch + (ch + j)) * 128;
+#endif
+        const int8 a0 = as_int8(intel_sub_group_block_read8(ga)), a1 = as_int8(intel_sub_group_block_read8(ga + 64));
+#else
         const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
+#endif
 #pragma unroll
         for (int c = 0; c < XW_NC; ++c) {
           xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
