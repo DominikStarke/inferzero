@@ -29,7 +29,8 @@ if [ -z "$bin" ]; then
 fi
 ( cd "$out" && "$oc" disasm -file "$bin" -device "$dev" -dump dis >/dev/null 2>&1 )
 asm=$(find "$out" -name "*$kern*.asm" | head -1)  # (named .text.<kernel>.asm: a dot file, so not a plain glob)
-sc=$(grep -ci "scratch" "$asm" 2>/dev/null || echo "?")
-ins=$(grep -cE "^\s+\(?[A-Za-z0-9~&|.]*\)?\s*[a-z][a-z0-9_.]* \(" "$asm" 2>/dev/null || echo "?")
+[ -n "$asm" ] || { echo "== $label: no assembly for $kern"; exit 1; }
+sc=$(grep -ci "scratch" "$asm")  # (grep -c prints 0 and fails on no match: no '|| echo' here)
+ins=$(grep -cE "^\s+\(?[A-Za-z0-9~&|.]*\)?\s*[a-z][a-z0-9_.]* \(" "$asm")
 spl=$(printf '%s\n' "$log" | grep -ioE "allocated [0-9]+ regs and spilled[^,;]*" | head -1)
 echo "== $label: scratch messages $sc, instructions ~$ins${spl:+ | compiler: $spl}"
