@@ -128,6 +128,11 @@
         k.block < 1 || k.log_floor < 1 || k.nv < 1 || k.nv > hp.n_vocab || hp.n_expert > 256 || hp.n_embd % 256)
       throw std::runtime_error("inkling2: unsupported dimensions (head size 128, the embedding a multiple of 256, at most "
                                "256 experts)");
+    // (the token embedding, read by embed() on the host: the loaders of the other models set it with their shapes;
+    //  2026-11-23, the first run of the tiny file: unset here, embed() read through a null pointer)
+    tok_embd_ = &f_.get("token_embd.weight");
+    if (tok_embd_->dims.size() < 2 || tok_embd_->dims[0] != (uint64_t)hp.n_embd || tok_embd_->dims[1] != (uint64_t)hp.n_vocab)
+      throw std::runtime_error("inkling2: token_embd.weight is not n_embd x vocab_size in the GGUF");
     if (std::max(k.swa, k.ext) > 1024) throw std::runtime_error("inkling2: a relative-bias table over 1024 rows");
     if (k.nrel > 256) throw std::runtime_error("inkling2: more than 256 relative buckets (ink_rows' work-group)");
     if (hp.n_ff_exp % 64) throw std::runtime_error("inkling2: an expert FFN width not a multiple of 64 (NVFP4 blocks)");
