@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-24: the MoE expert GEMMs on 8-lane XMX (opt-in, Alchemist)
+
+- **`ARC_MOE_X8=1`** runs the expert GEMMs of MoE prompt chunks on the matrix units of GPUs with 8-lane XMX (Arc A770 / A750 / A580, and the 140T where XMX is on) instead of DP4a. An A770's 35B spent more than half of its prompt there (#45). The results are the same bit for bit: checked at start against the DP4a kernel, which stays in use if they differ. Off until an A770 measures it (`bench\gpu_sweep` has a row for it). Without the switch nothing changes.
+
 ## 2026-11-23: the Arc 140T's big-tile settings in one switch (opt-in)
 
 - **`ARC_140T_BIG=1`** turns on, in the Arc 140T preset, the prompt-GEMM settings that measured best in the 140T sweep (#5): the 32 x 32 tile through local memory with work-groups of 4 x 8 sub-groups and 1 chunk a stage, the epilogue a row at a time, the copy's addresses set once, and 2 row groups for chunks of 2K tokens or more (8 below). It stays off until a run on a 140T confirms the gain; then it becomes the preset's default. The results are the same bit for bit (checked on the laptop with DPAS emulated: the same logits with and without it); without the switch nothing changes (the 4B's logits as before). dpasw stays off on iGPUs.

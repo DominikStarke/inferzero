@@ -11,6 +11,12 @@
 // column, bit for bit.
 // -DX8_EMU (tests on a GPU without XMX, ARC_XMX_TRY=2): the DPAS as the DP4a dot products the extension's text gives.
 // With -DDBG_NOBCAST (ARC_XMX_TRY=3) a wrong one, which the check must refuse.
+// -DMOE_TILES (ARC_MOE_X8=1, 2026-11-23; zero/engine_setup.h moe_gemm_kernel): gemm.cl's mixture-of-experts tile GEMM
+// (decode_w8's experts stacked, moe_scan's slot tiles, the same arguments and launch shape) on 8-lane DPAS. A 16-slot
+// tile: lane l holds slots l and l + 8 (rows past the tile repeat its last slot, as gemm.cl's lanes do); the activation
+// rows read through each slot's row map, the per-32 activation scales per slot. The same integer sums and the same
+// float steps in the same order as gemm.cl's DP4a tile kernel: its results bit for bit (xmx_check compares them).
+// W8 layouts without mins (100, 101), -DACT32, TM 16, one column half per sub-group.
 #define SG 8
 #define LS 16  // lanes in the layouts
 #ifndef TM
@@ -81,7 +87,44 @@ inline int8 x8_mad(int8 a, int8 b, int8 c) {
 #define SBYTE(u, k) ((int)(char)(((u) >> (8 * (k))) & 0xFF))
 #define UBYTE(u, k) ((int)(((u) >> (8 * (k))) & 0xFF))
 
+#ifdef MOE_TILES
+#if TM != 16 || HAS_MIN || !defined(ACT32) || defined(X8W) || defined(H8)
+#error "gemm_x8 MOE_TILES: TM 16, -DACT32, W8 layouts 100 / 101, no X8W"
+#endif
+#if defined(MOE_SITU)  // (Inkling 2's up pass: gemm.cl's gemm_situ)
+#if !defined(SITU_B) || !defined(SITU_LB)
+#error "MOE_SITU needs -DSITU_B and -DSITU_LB"
+#endif
+#define X8_SITU_ARG , __global const float* esc_gu
+inline float x8_situ(float g, float u) {
+  const float a = SITU_B * tanh(g / SITU_B) * (1.0f / (1.0f + exp(-g)));
+  return a * (SITU_LB > 0.0f ? SITU_LB * tanh(u / SITU_LB) : u);
+}
+#else
+#define X8_SITU_ARG
+#endif
+#endif
+
 __attribute__((intel_reqd_sub_group_size(SG)))
+#ifdef MOE_TILES
+__kernel void gemm_x8(__global const uint* restrict wq, __global const uint* restrict wh,
+                      __global const char* restrict aq, __global const float* restrict asc,
+                      __global const ushort* restrict absum, __global float* restrict C,
+                      int M, int N, int K, int ldc, int accumulate, __global const int* restrict tiles,
+                      __global const int* restrict tstart, int e0, int e1, __global const int* restrict rowmap,
+                      int use_map, __global const float* restrict rowscale, int use_scale X8_SITU_ARG) {
+  const int nsb = K / 256, s_begin = 0, s_end = nsb, lane = get_sub_group_local_id();
+  const int gc = get_global_id(0) / LS, hg = ((int)get_local_id(0) / SG) & 1, t_end = tstart[e1];
+  for (int t = tstart[e0] + get_global_id(1); t < t_end; t += get_global_size(1)) {
+  const int e = tiles[1 + 3 * t], r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
+  const int g = (e - e0) * (N / LS) + gc;  // (column group in the stacked decoded experts)
+  int rl[TMV], tokl[TMV];  // (slots lane and lane + 8)
+#pragma unroll
+  for (int v = 0; v < TMV; ++v) {
+    rl[v] = r0 + min(lane + SG * v, nr - 1);
+    tokl[v] = use_map ? rowmap[rl[v]] : rl[v];
+  }
+#else
 __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* restrict wh,
                       __global const char* restrict aq, __global const float* restrict asc,
                       __global const ushort* restrict absum, __global float* restrict C,
@@ -97,11 +140,14 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
 #endif
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * TM;
   const int nsb = K / 256;
+#endif
 
   // column half h of this sub-group: its weights at + h * SG (one word of a column every 16 uints)
   __global const uint* wqp = wq + (size_t)g * nsb * (4 * DPJ * LS) + hg * SG;
   __global const uint* whp = wh + (size_t)g * nsb * (HDR * LS) + hg * SG;
+#ifndef MOE_TILES
   __global const char* ap = aq + (size_t)m0 * K;
+#endif
 
   float res[NH][TM];
 #pragma unroll
@@ -182,8 +228,13 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
       float avl[TMV], avh[TMV];
 #pragma unroll
       for (int v = 0; v < TMV; ++v) {
+#ifdef MOE_TILES
+        avl[v] = asc[((size_t)s * 8 + 2 * j) * M + tokl[v]];
+        avh[v] = asc[((size_t)s * 8 + 2 * j + 1) * M + tokl[v]];
+#else
         avl[v] = as_float(intel_sub_group_block_read((__global const uint*)(asc + ((size_t)s * 8 + 2 * j) * M + m0 + SG * v)));
         avh[v] = as_float(intel_sub_group_block_read((__global const uint*)(asc + ((size_t)s * 8 + 2 * j + 1) * M + m0 + SG * v)));
+#endif
       }
 #if HAS_MIN
       int b0[TMV], b1[TMV], b2[TMV], b3[TMV];
@@ -199,7 +250,11 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
 #pragma unroll
       for (int mg = 0; mg < TM; mg += 8) {
         // this chunk's values 0..31 and 32..63 of 8 tokens: a lane's word is 4 values of a row (loaded once for NH halves)
+#ifdef MOE_TILES
+#define X8_ROW(p, o) intel_sub_group_block_read((__global const uint*)(aq + (size_t)BCAST(tokl[mg / SG], (p)) * K + s * 256 + j * 64 + (o)))
+#else
 #define X8_ROW(p, o) intel_sub_group_block_read((__global const uint*)(ap + (size_t)(mg + (p)) * K + s * 256 + j * 64 + (o)))
+#endif
         const int8 al = (int8)(X8_ROW(0, 0), X8_ROW(1, 0), X8_ROW(2, 0), X8_ROW(3, 0), X8_ROW(4, 0), X8_ROW(5, 0), X8_ROW(6, 0), X8_ROW(7, 0));
         const int8 ah = (int8)(X8_ROW(0, 32), X8_ROW(1, 32), X8_ROW(2, 32), X8_ROW(3, 32), X8_ROW(4, 32), X8_ROW(5, 32), X8_ROW(6, 32), X8_ROW(7, 32));
 #pragma unroll
@@ -322,6 +377,32 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
   }
 #endif
 
+#ifdef MOE_TILES
+  float rsc[TMV];
+#pragma unroll
+  for (int v = 0; v < TMV; ++v) rsc[v] = use_scale ? rowscale[rl[v]] : 1.0f;
+#pragma unroll
+  for (int h = 0; h < NH; ++h)
+#pragma unroll
+    for (int m = 0; m < TM; ++m) {
+      if (m >= nr) break;
+      __global uint* cp = (__global uint*)(C + (size_t)(r0 + m) * ldc + (size_t)gc * LS + hg * SG);
+      float v = res[h][m] * BCAST(rsc[m / SG], m % SG);
+      if (accumulate == 1) {
+        v += as_float(intel_sub_group_block_read(cp));
+      } else if (accumulate == 2) {
+        const float gt = as_float(intel_sub_group_block_read(cp));
+#ifdef MOE_SITU  // (Inkling 2: the gate-up scale on both, then situ)
+        const float es = esc_gu[e];
+        v = x8_situ(gt * es, v * es);
+#else
+        v *= gt / (1.0f + exp(-gt));
+#endif
+      }
+      intel_sub_group_block_write(cp, as_uint(v));
+    }
+  }  // (the tiles)
+#else
 #pragma unroll
   for (int h = 0; h < NH; ++h)
 #pragma unroll
@@ -336,4 +417,5 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
       }
       intel_sub_group_block_write(cp, as_uint(v));
     }
+#endif
 }

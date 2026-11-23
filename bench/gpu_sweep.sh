@@ -161,6 +161,7 @@ MOE=(
   "ARC_MOE_GR_DN|1 2 4 8|1 4 8"            # down
   "ARC_MOE_TM|16 32|16 32"                 # tokens per expert tile
   "ARC_MOE_RG_XMX|0 1|0 1"                 # the expert GEMMs on XMX from the raw rows
+  "ARC_MOE_X8|0 1|0 1"                     # the expert GEMMs on 8-lane XMX (Alchemist, the 140T)
   "ARC_MOE_GEMM_PAD|0 1|0 1"               # padded experts (Flash Next)
   "ARC_XALL|0 1|0 1"
   "ARC_XCPU|0 1|0 1"                       # missed experts on the CPU (changes the sums: KL)

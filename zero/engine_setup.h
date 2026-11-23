@@ -531,7 +531,16 @@
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
   // (situ: Inkling 2's up pass, gemm.cl -DMOE_SITU with the gate-up scales as the last argument, I1.7 step 4)
+  // (8-lane GPUs, Alchemist and the 140T: gemm_x8.cl -DMOE_TILES with ARC_MOE_X8=1, where XMX is on and its tile
+  //  checks passed (moe_x8_ok_, xmx_check); ARC_XMX_TRY=2 / 3 its DP4a stand-ins, as gemm_kernel's)
   cl_kernel moe_gemm_kernel(int qtype, int xmx = -1, bool situ = false) {
+    if (cl_.sg8 && (xmx < 0 ? xmx_ && moe_x8_ok_ : xmx != 0) && moe_x8_env()) {
+      static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
+      return kernel("x8", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
+                              (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : "") +
+                              (situ ? ink_situ_defs() : std::string()),
+                    "gemm_x8");
+    }
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               ((xmx < 0 ? xmx_ : xmx != 0) && !cl_.sg8 ? xmx_defs() : "") +  // (8-lane GPUs: DP4a, gemm_x8 has no tiles)
                               (situ ? ink_situ_defs() : std::string()),
@@ -546,6 +555,16 @@
   // (ARC_XMX_TRY=1: the check on any GPU; =2: a DP4a variant in the XMX slot, which must pass; =3: a wrong one, which
   //  must fail)
   bool xmx_ = false;
+  // ARC_MOE_X8=1 (2026-11-23, opt-in until an A770 measures it): the MoE expert GEMMs of prompt chunks on 8-lane XMX
+  // (gemm_x8.cl -DMOE_TILES) instead of gemm.cl's DP4a tile kernel, on GPUs with 8-lane DPAS where XMX is on (Alchemist;
+  // the 140T in its preset). An A770's 35B spent 52-57 % of its prompt in the DP4a expert GEMMs and decode_w8 (#45).
+  // Checked at start against the DP4a tile kernel bit for bit (xmx_check: two experts, partial tiles, a row map, the
+  // routing weights, the fused SwiGLU, two work-group shapes); a difference keeps DP4a for the tiles only
+  static bool moe_x8_env() {
+    static const bool on = getenv("ARC_MOE_X8") && atoi(getenv("ARC_MOE_X8")) != 0;
+    return on;
+  }
+  bool moe_x8_ok_ = true;
   bool xmx_slow_ = false;  // (the check failed on speed, the results being right: no retry without 2D loads)
   // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
   // 140T preset's, checked apart and kept per kind by the caller (zero/engine.h): a failing H8 kernel then turns H8
@@ -730,9 +749,12 @@
           check(nm + "/add", make, dense(1, 1, 2, 2));
           check(nm + "/swiglu", make, dense(2, 2, 4, 0));
         }
+      // (8-lane GPUs: only with ARC_MOE_X8=1, gemm_x8's tiles; their failure keeps DP4a for the tiles alone, moe_x8_ok_)
+      const std::string bad_before_moe = bad;
+      try {
       for (int q : {100, 101})  // (the tile kernel has no layouts with mins)
         for (int acc : {0, 2}) {
-          if (cl_.sg8 || mode != 0) continue;  // (DP4a on 8-lane GPUs: moe_gemm_kernel)
+          if ((cl_.sg8 && !moe_x8_env()) || mode != 0) continue;  // (DP4a on 8-lane GPUs: moe_gemm_kernel)
           auto make = [&](int x) { return moe_gemm_kernel(q, x); };
           check(std::to_string(q) + "/moe" + (acc ? "/swiglu" : ""), make, [&](cl_kernel k) {
             int MM = M, NN = N, KK = K, ldc = N, ac = acc, e0 = 0, e1 = 2, um = acc ? 1 : 0, us = acc ? 0 : 1;
@@ -748,6 +770,17 @@
             run("xmx_check", k, 2, gws, lws);
           });
         }
+      } catch (const std::exception& e) {
+        if (!cl_.sg8) throw;  // (16 lanes: as before, the outer handler keeps DP4a for everything)
+        bad += std::string(" moe-x8 does not build (") + e.what() + ")";
+      }
+      if (cl_.sg8 && moe_x8_env() && mode == 0) {
+        moe_x8_ok_ = bad == bad_before_moe;
+        zlog::eprintf("inferzero: the MoE expert GEMMs on 8-lane XMX (gemm_x8 tiles, ARC_MOE_X8=1): %s\n",
+                      moe_x8_ok_ ? "the same results as DP4a bit for bit"
+                                 : ("DIFFER from DP4a (" + bad.substr(bad_before_moe.size()) + " ): DP4a kept for them (please report)").c_str());
+        bad = bad_before_moe;  // (the dense kernels keep XMX)
+      }
       // (the Arc 140T preset, zero/xe2/engine_xe2.h p140_: its own kernels, XMX at 32 tokens, 2 column groups and 128
       //  registers, against the DP4a default (16 tokens, 256 registers) bit for bit: the W8 layouts with and without
       //  per-32 activation scales and H8R, stored, in two split-K pieces and with the fused SwiGLU)
