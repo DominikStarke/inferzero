@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-24: `--ctx N` after `--ctx auto` is kept (#39); the Linux launcher's menu (#81)
+
+- **The last `--ctx` decides** (#39): `serverz ... --ctx auto ... --ctx 50000` ran with the automatic context, so a context given to the Linux launcher after `--` (which it passes after its own `--ctx auto`) was ignored. Now 50,000 is used; `--ctx 3000 --ctx auto` gives auto, as written.
+- **The Linux launcher leaves out its own `--ctx auto`, `--think-budget` and `--session-cache-gb`** when the arguments after `--` give them, so the printed command shows the user's values alone.
+- **The launcher's menu** (#81, d-dorok): after Space or `a`, the focus stays on the same option (with options that do not apply folded, a toggle that folded or unfolded another one moved the focus, and the next Space switched the wrong option); the menu takes the whole width of wide terminals (it stopped at 200 columns); the `a` key is listed with the others at the bottom.
+
 ## 2026-11-24: the MoE expert GEMMs on 8-lane XMX (opt-in, Alchemist)
 
 - **`ARC_MOE_X8=1`** runs the expert GEMMs of MoE prompt chunks on the matrix units of GPUs with 8-lane XMX (Arc A770 / A750 / A580, and the 140T where XMX is on) instead of DP4a. An A770's 35B spent more than half of its prompt there (#45). The results are the same bit for bit: checked at start against the DP4a kernel, which stays in use if they differ. Off until an A770 measures it (`bench\gpu_sweep` has a row for it). Without the switch nothing changes.

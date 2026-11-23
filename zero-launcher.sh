@@ -684,14 +684,25 @@ tui_changed_item() {  # KEY ITEM: 0 when the item differs from its default
   esac
 }
 tui_keys_line() {  # WIDTH: the keys, set apart: bold where the terminal has it, else in brackets alone
-  local w=$1 b="${TUI_BOLD:-}" n="${TUI_NORM:-}" ud="Up/Down"
+  local w=$1 b="${TUI_BOLD:-}" n="${TUI_NORM:-}" ud="Up/Down" a=""
   case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *UTF-8*|*utf8*|*UTF8*|*utf-8*) ud=$'↑/↓';; esac
-  local k1="$b[$ud]$n move  $b[Tab]$n models/options  $b[Space]$n switch" k2="$b[Enter]$n start  $b[?]$n help  $b[q]$n quit  * changed"
-  if [ "$w" -ge 90 ]; then printf ' %s  %s\n' "$k1" "$k2"
-  elif [ "$w" -ge 50 ]; then printf ' %s\n %s\n' "$k1" "$k2"
-  else printf ' %s\n %s\n %s\n' "$b[$ud]$n move  $b[Tab]$n panes" "$b[Space]$n switch  $b[Enter]$n start" "$b[?]$n help  $b[q]$n quit  * changed"; fi
+  # (the a key with the others where options are folded or shown, #81: "more" shows them, "fewer" folds them again)
+  if [ "${TUI_NA:-0}" -gt 0 ]; then [ "$TUI_SHOWNA" = 1 ] && a="  $b[a]$n fewer" || a="  $b[a]$n more"; fi
+  local k1="$b[$ud]$n move  $b[Tab]$n models/options  $b[Space]$n switch" k2="$b[Enter]$n start$a  $b[?]$n help  $b[q]$n quit  * changed"
+  if [ "$w" -ge 107 ]; then printf ' %s  %s\n' "$k1" "$k2"
+  elif [ "$w" -ge 57 ]; then printf ' %s\n %s\n' "$k1" "$k2"
+  else printf ' %s\n %s\n %s\n' "$b[$ud]$n move  $b[Tab]$n panes" "$b[Space]$n switch  $b[Enter]$n start" "$b[?]$n help  $b[q]$n quit$a  * changed"; fi
 }
-tui_keys_n() { if [ "$1" -ge 90 ]; then echo 1; elif [ "$1" -ge 50 ]; then echo 2; else echo 3; fi; }  # WIDTH: its lines
+tui_keys_n() { if [ "$1" -ge 107 ]; then echo 1; elif [ "$1" -ge 57 ]; then echo 2; else echo 3; fi; }  # WIDTH: its lines
+# (after a toggle the list is filtered again: an option whose reason changed comes or goes, and the focus by index
+#  landed on another option, so the next Space switched that one; #81, d-dorok. The focus follows the item's id)
+tui_keep_focus() {  # ID
+  local k=${TUI_KEYS[$TUI_SEL]} i
+  tui_state "$k"; tui_items "$k"
+  for i in "${!TUI_ITEMS[@]}"; do [ "${TUI_ITEMS[$i]}" = "$1" ] && { TUI_FOC=$i; return; }; done
+  [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
+  return 0
+}
 tui_draw() {
   local k=${TUI_KEYS[$TUI_SEL]} i left right lines=() rows tip
   [ -n "${TUI_NAME[$k]+x}" ] || tui_cache  # (a draw before tui() opened the menu: the tests)
@@ -703,9 +714,9 @@ tui_draw() {
   fi
   [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
   local W=${TUI_W:-80} H=${TUI_H:-24}
-  [ "$W" -lt 40 ] && W=40; [ "$W" -gt 200 ] && W=200
+  [ "$W" -lt 40 ] && W=40  # (no upper cap: the whole terminal, #81)
   local stack=0; [ "$W" -lt 80 ] && stack=1
-  local nk=${#TUI_KEYS[@]} ni=${#TUI_ITEMS[@]} keyl=3; [ "$W" -ge 50 ] && keyl=2; [ "$W" -ge 90 ] && keyl=1
+  local nk=${#TUI_KEYS[@]} ni=${#TUI_ITEMS[@]} keyl; keyl=$(tui_keys_n "$W")
   local sep; sep=" $(printf '%*s' $((W - 2)) '' | tr ' ' '-')"
   lines+=(" inferzero  $(tui_cut "${TUI_NAME[$k]}" $((W - 22)))  ~$(m_field "$k" 3) GB")
   lines+=("$sep")
@@ -853,8 +864,11 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
       'ESC[B') if [ "$TUI_PANE" = models ]; then [ $TUI_SEL -lt $((${#TUI_KEYS[@]} - 1)) ] && TUI_SEL=$((TUI_SEL + 1)); TUI_FOC=0; else [ $TUI_FOC -lt $((${#TUI_ITEMS[@]} - 1)) ] && TUI_FOC=$((TUI_FOC + 1)); fi;;
       $'\t'|'ESC[C'|'ESC[D') [ "$TUI_PANE" = models ] && TUI_PANE=opts || TUI_PANE=models;;
       [1-9]) [ "$key" -le ${#TUI_KEYS[@]} ] && { TUI_SEL=$((key - 1)); TUI_PANE=models; TUI_FOC=0; };;
-      ' ') if [ "$TUI_PANE" = opts ]; then tui_toggle; opt_save; tui_mem_save; else TUI_PANE=opts; fi;;
-      a|A) TUI_NA_SET=1; [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1;;
+      ' ') if [ "$TUI_PANE" = opts ]; then
+             local fid=${TUI_ITEMS[$TUI_FOC]:-}; tui_toggle; opt_save; tui_mem_save; tui_keep_focus "$fid"
+           else TUI_PANE=opts; fi;;
+      a|A) local fid=${TUI_ITEMS[$TUI_FOC]:-}; TUI_NA_SET=1; [ "$TUI_SHOWNA" = 1 ] && TUI_SHOWNA=0 || TUI_SHOWNA=1
+           [ "$TUI_PANE" = opts ] && tui_keep_focus "$fid";;
       r|R) local k=${TUI_KEYS[$TUI_SEL]} id; unset "TUI_DRAFT[$k]" "TUI_IMG[$k]"
            for id in "${CT_IDS[@]}"; do sw_value "$id" || unset "OPTC[$id]"; done; opt_save; tui_mem_save;;
       '?') tui_help; printf '\033[H\033[J';;
@@ -917,8 +931,21 @@ cli_check() {  # KEY
   return $bad
 }
 
+extra_has() {  # NAME...: one of these options is among the arguments after -- (EXTRA)
+  local a n
+  for a in "${EXTRA[@]}"; do
+    for n in "$@"; do [ "$a" = "$n" ] || [ "${a%%=*}" = "$n" ] && return 0; done
+  done
+  return 1
+}
+
 server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT off / mtp / both / dflash, SEL_IMG 0 / 1)
-  CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget "${THINK:-8192}" --session-cache-gb "${SESS_GB:-8}")
+  # (the launcher's own --ctx auto / --think-budget / --session-cache-gb only where the arguments after -- give none:
+  #  the user's then stand alone in the command, #39; serverz takes the last --ctx in any case)
+  CMD=("$SERVERZ" -m "$1" --port "$PORT")
+  extra_has --ctx -c || CMD+=(--ctx auto)
+  extra_has --think-budget || CMD+=(--think-budget "${THINK:-8192}")
+  extra_has --session-cache-gb || CMD+=(--session-cache-gb "${SESS_GB:-8}")
   [ -n "${CHUNK:-}" ] && CMD+=(--chunk "$CHUNK")
   [ -n "${LOG_DIR:-}" ] && CMD+=(--log-dir "$LOG_DIR")  # (the logs folder: also in a unit made by --install-service)
   case "${SEL_DRAFT:-}" in

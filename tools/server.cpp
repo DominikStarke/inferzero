@@ -1091,8 +1091,13 @@ static int server_main(int argc, char** argv) {
     else if (a == "--port") port = to_int(a, next());
     else if (a == "--ctx" || a == "-c") {
       const std::string v = next();
+      // (the last --ctx decides: `--ctx auto ... --ctx 50000` is 50,000, as the launcher passes the user's after its
+      //  own auto; before, ctx_auto stayed set and auto won, #39)
       if (v == "auto") so.ctx_auto = true;
-      else so.eo.ctx = std::clamp(to_int(a, v), 0, 1 << 22);  // (4M tokens: past it the sizes overflow int)
+      else {
+        so.ctx_auto = false;
+        so.eo.ctx = std::clamp(to_int(a, v), 0, 1 << 22);  // (4M tokens: past it the sizes overflow int)
+      }
     }
     else if (a == "--chunk") so.eo.chunk = std::clamp(to_int(a, next()), 0, 65536);
     else if (a == "--expert-cache-gb") so.eo.expert_cache_gb = to_double(a, next());

@@ -120,6 +120,26 @@ SW_WORDS=$(m_words 27b); SW_DRAFTING=0; SW_SKIP=1; SEL_DRAFT=off; server_cmd /m.
 SW_DRAFTING=1; SEL_DRAFT=both; server_cmd /m.gguf 1; b="${CMD[*]}"; SW_SKIP=0; SEL_DRAFT=""; OPTC=()
 [[ "$a" != *--copy-draft* ]] && [[ "$a" != *--mtp* ]] && [[ "$b" == *--copy-draft* ]] && [[ "$b" == *--mtp* ]]
 ok $? "greyed option left out ($a | $b)"
+# 16b2. #81: after a toggle the focus stays on the same option when the folded list changes (Drafting off: the
+#       options that need it leave the list, and the focus by index landed on another option)
+cat_load; OPTC=(); GPUS=1; SW_PC=""; TUI_SHOWNA=0; TUI_NA_SET=1
+TUI_KEYS=(); for e in "${CATALOG[@]}"; do TUI_KEYS+=("${e%%|*}"); done
+for ((s = 0; s < ${#TUI_KEYS[@]}; s++)); do [ "${TUI_KEYS[$s]}" = 27b ] && TUI_SEL=$s; done
+k=27b; unset 'TUI_DRAFT[27b]'; tui_state $k; tui_items $k; before=("${TUI_ITEMS[@]}"); last=${TUI_ITEMS[$((${#TUI_ITEMS[@]} - 2))]}
+TUI_FOC=$((${#TUI_ITEMS[@]} - 2)); TUI_DRAFT[$k]=off; tui_keep_focus "$last"; after=("${TUI_ITEMS[@]}")
+[ "${TUI_ITEMS[$TUI_FOC]}" = "$last" ] && [ ${#after[@]} -le ${#before[@]} ]
+ok $? "the focus follows the option after a toggle (${#before[@]} -> ${#after[@]} items, on $last)"
+unset 'TUI_DRAFT[27b]'; TUI_NA_SET=0
+# 16c. #39: arguments after -- that give --ctx / --think-budget / --session-cache-gb replace the launcher's own;
+#      without them the launcher's defaults stay
+cat_load; OPTC=(); GPUS=1; SW_PC=""; PORT=8090; HOST=""; SEL_DRAFT=off
+EXTRA=(--ctx 50000 --think-budget 2048); server_cmd /m.gguf 0; a="${CMD[*]}"
+EXTRA=(-c 4096 --session-cache-gb 0); server_cmd /m.gguf 0; b="${CMD[*]}"
+EXTRA=(); server_cmd /m.gguf 0; c="${CMD[*]}"; SEL_DRAFT=""
+[[ "$a" != *"--ctx auto"* ]] && [[ "$a" == *"--ctx 50000"* ]] && [[ "$a" != *"--think-budget 8192"* ]] &&
+  [[ "$a" == *"--session-cache-gb 8"* ]] && [[ "$b" != *"--ctx auto"* ]] && [[ "$b" != *"--session-cache-gb 8"* ]] &&
+  [[ "$b" == *"--think-budget 8192"* ]] && [[ "$c" == *"--ctx auto"* ]] && [[ "$c" == *"--think-budget 8192"* ]]
+ok $? "the user's --ctx / --think-budget / --session-cache-gb after -- replace the launcher's ($a | $b | $c)"
 # 17. --opt with --model: an option the model cannot take is refused with the reason, before options.json is written
 T=$(mktemp -d); OUT=$(ARC_DATA_DIR="$T" bash "$root/zero-launcher.sh" --opt copy_draft --model flash 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$OUT" == *"--opt copy_draft: for models with MTP only"* ]] && [ ! -f "$T/options.json" ]; ok $? "--opt refused for the model"
