@@ -4,6 +4,24 @@
 #error "IQ3T: the experts keep the plain layout (ARC_IQ3S_TILE repacks dense weights only)"
 #endif
 
+// -DMOE_SITU (Inkling 2, I1.7 step 3, docs/inkling2.md): the experts' activation is situ, not SwiGLU, and the expert's
+// gate-up scale (esc_gu[e], the layer's ffn_gate_up_exps.scale: one f32 an expert) multiplies the gate and the up
+// output before it, as llama.cpp's build_lora_mm_id does and ops_inkling.cl ink_situ: situ(g, u) = SITU_B tanh(g /
+// SITU_B) sigmoid(g) x SITU_LB tanh(u / SITU_LB) (SITU_LB 0: u as it is). -DSITU_B / -DSITU_LB as float literals.
+// The table is the kernels' last argument (SITU_ARG), so every other model's arguments stay where they are
+#ifdef MOE_SITU
+#if !defined(SITU_B) || !defined(SITU_LB)
+#error "MOE_SITU needs -DSITU_B and -DSITU_LB"
+#endif
+#define SITU_ARG , __global const float* esc_gu
+inline float situ_act(float g, float u) {
+  const float a = SITU_B * tanh(g / SITU_B) * (1.0f / (1.0f + exp(-g)));
+  return a * (SITU_LB > 0.0f ? SITU_LB * tanh(u / SITU_LB) : u);
+}
+#else
+#define SITU_ARG
+#endif
+
 // ---- Mixture-of-experts on standard GGUF expert tensors (Unsloth / llama.cpp quantizations of Qwen3.5 / 3.6 MoE):
 // the expert matrices [NE][N][K] of one type, in the GPU raw form. Same slots and tiles as kernels/moe.cl (tiles of
 // up to TM slots of one expert); each sub-group computes GROWS rows of the tile's expert for its TM slots, decoding
@@ -94,7 +112,7 @@ inline float moe_term(uint8 a8, const uint* w, float d, float dmin, int sc0, int
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, int F, int K, __global const uint* tabs,
                            __global const char* aq, __global const float* asc, int M, __global const int* tiles,
-                           __global const int* stok, __global float* h XARGS_GU) {
+                           __global const int* stok, __global float* h XARGS_GU SITU_ARG) {
   __local uint win_all[16][WIN_CALLS * 16];
   // (win_all holds 16 sub-groups' windows: the launches use work-groups of 256 or 64. A larger group would share
   //  windows, a silent race: it returns instead. Audit 2026-11-12 #7; uniform over the group, before any barrier)
@@ -248,7 +266,12 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
       const float g = sub_group_reduce_add(ag[r][m]), u = sub_group_reduce_add(au[r][m]);
 #endif
       const int n = n0 + r;
-#ifdef MOE_GELU  // (Gemma 4 experts: gelu_tanh(gate) * up)
+#if defined(MOE_SITU)  // (Inkling 2: the gate-up scale on both, then situ)
+      if (lane == 0 && n < F && m < nr) {
+        const float es = esc_gu[e];
+        h[(size_t)(r0 + m) * HLD + n] = situ_act(g * es, u * es);
+      }
+#elif defined(MOE_GELU)  // (Gemma 4 experts: gelu_tanh(gate) * up)
       if (lane == 0 && n < F && m < nr)
         h[(size_t)(r0 + m) * HLD + n] = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u;
 #elif defined(SWI_CLAMP)  // (DeepSeek-V4.1: the gate clamped from above, the up both ways)
@@ -512,7 +535,7 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
                      __global const float* restrict asc, __global float* restrict C, int M, int ldc, int accumulate,
                      __global const int* restrict tiles, __global const int* restrict tstart, int ne,
                      __global const int* restrict rowmap, int use_map, __global const float* restrict rowscale,
-                     int use_scale, int kv XARGS_RG) {
+                     int use_scale, int kv XARGS_RG SITU_ARG) {
   const int gy = get_group_id(1), ngy = get_num_groups(1);
   if (tstart[0] + gy >= tstart[ne]) return;  // (no tile for this work-group: before the staging)
 #ifdef GRID_OFF
@@ -683,7 +706,12 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
         v += as_float(intel_sub_group_block_read(cp));
       } else if (accumulate == 2) {
         const float g = as_float(intel_sub_group_block_read(cp));
+#ifdef MOE_SITU  // (Inkling 2: the gate pass stored the gate unscaled; the gate-up scale on both, then situ)
+        const float es = esc_gu[e];
+        v = situ_act(g * es, v * es);
+#else
         v *= g / (1.0f + exp(-g));
+#endif
       }
       intel_sub_group_block_write(cp, as_uint(v));
     }

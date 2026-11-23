@@ -137,6 +137,21 @@
 inline uint sub32_bytes(uint q) { return ((q | 0x80808080u) - 0x20202020u) ^ 0x80808080u; }
 
 // (MOE_TILES: one tile slot per lane, the tokens broadcast from it, and no m0 for the min terms)
+// (-DMOE_SITU with MOE_TILES, Inkling 2, I1.7 step 3: the fused up pass takes situ instead of SwiGLU, after the
+//  expert's gate-up scale esc_gu[e] on both the stored gate and the up output: kernels/decode_moe.cl says the same for
+//  moe_rg and moe_gateup_q. -DSITU_B / -DSITU_LB as float literals; the table the last argument)
+#if defined(MOE_SITU) && defined(MOE_TILES)
+#if !defined(SITU_B) || !defined(SITU_LB)
+#error "MOE_SITU needs -DSITU_B and -DSITU_LB"
+#endif
+#define GEMM_SITU_ARG , __global const float* esc_gu
+inline float gemm_situ(float g, float u) {
+  const float a = SITU_B * tanh(g / SITU_B) * (1.0f / (1.0f + exp(-g)));
+  return a * (SITU_LB > 0.0f ? SITU_LB * tanh(u / SITU_LB) : u);
+}
+#else
+#define GEMM_SITU_ARG
+#endif
 #if defined(MOE_TILES) && (TM != 16 || HAS_MIN || !defined(ACT32))
 #error "MOE_TILES needs TM 16, -DACT32 and a weight layout without mins"
 #endif
@@ -148,7 +163,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
                    __global const ushort* restrict absum, __global float* restrict C,
                    int M, int N, int K, int ldc, int accumulate, __global const int* restrict tiles,
                    __global const int* restrict tstart, int e0, int e1, __global const int* restrict rowmap,
-                   int use_map, __global const float* restrict rowscale, int use_scale) {
+                   int use_map, __global const float* restrict rowscale, int use_scale GEMM_SITU_ARG) {
   const int nsb = K / 256, s_begin = 0, s_end = nsb, lane = get_sub_group_local_id();
   // (a work-group may hold several sub-groups: along x the next column groups of the same tile (its activation rows
   //  shared through L1), along y the next tiles (mostly the same expert's: its weight columns shared). Each output is
@@ -561,7 +576,12 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       v += as_float(intel_sub_group_block_read(cp));
     } else if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
       const float gate = as_float(intel_sub_group_block_read(cp));  // (not g: the column group's index above)
+#if defined(MOE_SITU) && defined(MOE_TILES)  // (Inkling 2: the gate-up scale on both, then situ)
+      const float es = esc_gu[e];
+      v = gemm_situ(gate * es, v * es);
+#else
       v *= gate / (1.0f + exp(-gate));
+#endif
     }
     intel_sub_group_block_write(cp, as_uint(v));
   }

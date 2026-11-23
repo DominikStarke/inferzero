@@ -17,6 +17,9 @@ inline uint dec2(uint w, int j) { return (((w >> (2 * j)) & 0x03030303u) + 0x7E7
 #ifdef ROUTE_DS  // (DeepSeek-V4.1: sqrt(softplus(g)), see moe_route)
 inline float ds_sp(float g) { return sqrt(g > 20.0f ? g + log1p(exp(-g)) : log1p(exp(g))); }
 #endif
+#ifdef ROUTE_SIG  // (Inkling 2: the sigmoid router, see moe_route; here, before the kernels' attributes below)
+inline float sig_p(float g) { return 1.0f / (1.0f + exp(-g)); }
+#endif
 
 // One sub-group per token: softmax over the NE router logits, top NU (ties: lower expert), weights renormalized
 // over the selection; counts the tokens of every expert. Row t of `logits` holds the shared-expert gate logit at
@@ -30,12 +33,25 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 #define ESCALE_ARG
 #define ESCALE_MUL(e)
 #endif
+#if defined(ROUTE_DS) && defined(ROUTE_SIG)
+#error "ROUTE_DS and ROUTE_SIG: one routing form"
+#endif
 #ifdef ROUTE_DS  // (DeepSeek-V4.1: s = sqrt(softplus(logit)), chosen by s + bias, weights s / (sum + 1e-20) * RSCALE)
 #define ROUTE_ARG , __global const float* ebias
 #define ROUTE_V(g, e) (ds_sp(g) + ebias[e])
 #define ROUTE_PK(gv, mx, lg, gi) ds_sp((lg)[gi])
 #define ROUTE_W(pk, sum) ((pk) / ((sum) + 1e-20f) * RSCALE)
 #define SGATE(lg) 1.0f
+#elif defined(ROUTE_SIG)
+// (Inkling 2, I1.7 step 3: p = sigmoid(logit), chosen by p + bias (exp_probs_b), ties to the lower expert, weights
+//  p / (sum + 1e-20) * RSCALE (expert_weights_scale, 8), the sum over the choices in their order: ops_inkling.cl
+//  ink_route's rule. No shared expert: SGATE 0. With -DESCALE the down projection's per-expert scale joins the weight,
+//  w x s_down[e], formed before the expert's output is scaled, as llama.cpp's w x (down x s). sig_p: at the top)
+#define ROUTE_ARG , __global const float* ebias
+#define ROUTE_V(g, e) (sig_p(g) + ebias[e])
+#define ROUTE_PK(gv, mx, lg, gi) sig_p((lg)[gi])
+#define ROUTE_W(pk, sum) ((pk) / ((sum) + 1e-20f) * RSCALE)
+#define SGATE(lg) 0.0f
 #else
 #define ROUTE_ARG
 #define ROUTE_V(g, e) (g)
