@@ -314,7 +314,9 @@
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
     // (gemm_xw8's packed order where it will read them, as h8_act writes it: since 2026-11-17, so the 140T preset, whose
     //  GEMMs read the packed order, can take the fused norm; before, ARC_H8_NORM fell back to rmsnorm_quant there)
-    cl_kernel k = kernel("ops", h8_grf() + "-DH8NORM" + (d ? " -DH8_D" : "") + " -DHB=" +
+    // (ARC_H8_NORM_ONCE=1, 2026-11-23, opt-in: the row read once into local memory, ops.cl -DH8N_ONCE, bit for bit)
+    static const bool once = getenv("ARC_H8_NORM_ONCE") && atoi(getenv("ARC_H8_NORM_ONCE")) != 0;
+    cl_kernel k = kernel("ops", h8_grf() + "-DH8NORM" + (once ? " -DH8N_ONCE" : "") + (d ? " -DH8_D" : "") + " -DHB=" +
                                     std::to_string(hb) + " -DH8N_K=" + std::to_string(K) +
                                     (xw_pack_a(Mp, K) ? " -DXW_PACKA_OUT" : "") + xw_wgla_defs(Mp, K), "rmsnorm_h8r");
     float eps = hp.eps;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: the fused norm reads its row once (opt-in)
+
+- **New, opt-in: `ARC_H8_NORM_ONCE=1`.** The norm before the prompt GEMMs (rmsnorm_h8r) reads each token's row from
+  memory once instead of twice. On an A770 it took 88 ms of the 27B's 4K prompt at about 150 GB/s (#45). The results are
+  the same bit for bit. Not measured on a card yet.
+
 ## 2026-11-23: Inkling 2 kept out of the server for now; review fixes
 
 - **`serverz` refuses an Inkling 2 file** with a clear message, before taking any GPU memory, until the server's chat
