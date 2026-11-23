@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: the Arc 140T's big-tile settings in one switch (opt-in)
+
+- **`ARC_140T_BIG=1`** turns on, in the Arc 140T preset, the prompt-GEMM settings that measured best in the 140T sweep (#5): the 32 x 32 tile through local memory with work-groups of 4 x 8 sub-groups and 1 chunk a stage, the epilogue a row at a time, the copy's addresses set once, and 2 row groups for chunks of 2K tokens or more (8 below). It stays off until a run on a 140T confirms the gain; then it becomes the preset's default. The results are the same bit for bit (checked on the laptop with DPAS emulated: the same logits with and without it); without the switch nothing changes (the 4B's logits as before). dpasw stays off on iGPUs.
+
 ## 2026-11-23: the placement check covers the model's own buffers
 
 - **The system-memory warning now also checks the model's own buffers** (the weights, the KV cache, the DeltaNet state, the work buffers: the 256 largest of 16 MB or more), not only the expert cache. lact-lab's two A770s under Windows (#93) ran the 35B's 4K prompt at 193 tok/s with `gdn_recur` ten times slower than on another A770: buffers the driver had put in system memory. Discrete cards; about 0.1 s at load.

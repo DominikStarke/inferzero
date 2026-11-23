@@ -275,7 +275,7 @@
   //  tile, and with the big tile below 1,488; ARC_GEMM_XW_EPI2=0 off, =1 on any 8-lane GPU. The 140T: until measured)
   bool xw_epi2() const {
     static const int e = getenv("ARC_GEMM_XW_EPI2") ? (atoi(getenv("ARC_GEMM_XW_EPI2")) != 0 ? 1 : 0) : -1;
-    return e >= 0 ? e == 1 : xw_lanes() == 8 && cl_.sg8 && !zrt::integrated();
+    return e >= 0 ? e == 1 : xw_lanes() == 8 && cl_.sg8 && (!zrt::integrated() || p140_big());
   }
   // The big tile on Alchemist, by default since 2026-11-21 (skipzx-lab's A770 at 150 W, #45, b9f011c, the 27B IQ3_S):
   // every prompt GEMM at 32 x 32 (NC 2) with 4 column sub-groups, through local memory with 4 token sub-groups a
@@ -327,6 +327,9 @@
         //  27B 4K 1,594 -> 1,701 with the split on the per-GEMM shapes, 1,710 with every GEMM at 4 x 8 (gdn_recur and
         //  attention back to 343 / 133.5 ms); Windows confirmed (hansong80: 1,653 -> 1,760 against SPLIT=0). ARC_GEMM_XW_SLM_WG=4,4 and
         //  ARC_GEMM_XW_SLM_WG_GU=4,8 give the shapes of before; ARC_GEMM_XW_SPLIT=0 gives them too)
+        b.y = 8;
+      } else if (zrt::integrated() && p140_big_env() && !getenv("ARC_GEMM_XW_SLM_TILE") && !getenv("ARC_GEMM_XW_SLM_CPS")) {
+        // (the 140T preset with ARC_140T_BIG: 4 x 8 sub-groups, PascalSoftwares' phase X best, #5)
         b.y = 8;
       }
       if (const char* c2 = getenv("ARC_GEMM_XW_SLM_CPS")) {
@@ -472,14 +475,32 @@
   }
   bool xw_ptr() const {
     static const int e = getenv("ARC_GEMM_XW_PTR") ? (atoi(getenv("ARC_GEMM_XW_PTR")) != 0 ? 1 : 0) : -1;
-    return e >= 0 ? e == 1 : cl_.sg8 && !zrt::integrated();
+    return e >= 0 ? e == 1 : (cl_.sg8 && !zrt::integrated()) || p140_big();
+  }
+  // ARC_140T_BIG=1 (2026-11-23, opt-in until a 140T confirms it with generation; then the preset's default): the Arc
+  // 140T preset's prompt GEMMs on the big tile as PascalSoftwares' gpu_sweep phase X found best (#5, .20, driver 8864,
+  // the 27B with the same logits): 32 x 32 at 4 x 8 sub-groups, the epilogue a row at a time (EPI2), the pointer form,
+  // one chunk a stage, and ARC_GEMM_RG 2 for chunks of 2,048+ tokens and 8 below (its best at 4K and at 512: 4K 405.0 ->
+  // 469.9 tok/s, +16 %; 512 247.8 -> 268.8). ARC_GEMM_XW_BIG=1 alone lost 10 % there: it took Alchemist's settings.
+  // Each of these switches set by hand still wins. Bit for bit, checked at start as every big-tile form
+  static bool p140_big_env() {
+    static const bool on = getenv("ARC_140T_BIG") && atoi(getenv("ARC_140T_BIG")) != 0;
+    return on;
+  }
+  bool p140_big() const { return p140_big_env() && p140_ && zrt::integrated() && cl_.sg8; }
+  // (the row groups of the big tile's launches: ARC_GEMM_RG when set, else 4; the 140T preset with ARC_140T_BIG: 2 from
+  //  2,048 tokens, 8 below)
+  int xw_rg(int Mp) const {
+    static const int e = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 0;
+    if (e > 0) return e;
+    return p140_big() ? (Mp >= 2048 ? 2 : 8) : 4;
   }
   bool xw_big_on() const {
     static const int env = getenv("ARC_GEMM_XW_BIG") ? atoi(getenv("ARC_GEMM_XW_BIG")) : -1;
     static const bool fixed = getenv("ARC_GEMM_XW_TM") || getenv("ARC_GEMM_XW_NC") || getenv("ARC_GEMM_XW_WGX") ||
                               getenv("ARC_GEMM_XW_SLM");
     if (env == 0 || fixed || xw_nc_e() || xw_lanes() != 8 || xw_tm() != 32) return false;
-    return env == 1 || (cl_.sg8 && !zrt::integrated());
+    return env == 1 || (cl_.sg8 && !zrt::integrated()) || p140_big();
   }
   bool xw_gu_shape(int nc) const { return nc == 2 || nc == 4 || nc == 8; }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
@@ -746,8 +767,7 @@
     const uint64_t act0 = h8_act_calls_;
     h8_act(Mp, gw.K, act32);
     h8_input_check(act0, "gemm_gateup");
-    static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
-    xw_gu_run8("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, rg_env,
+    xw_gu_run8("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, xw_rg(Mp),
                (ua > 1 ? 4 : 0) | (og > 1 ? 8 : 0) | (og > 1 && xw_bg_on() ? 16 : 0));
     return true;
   }
@@ -1005,14 +1025,13 @@
                  int pack = 0) {
     const int tm = xw_tm();
     if (Mp % tm || !xw_takes_n(N) || K % 256) return false;
-    static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
     // (the pieces gemm.cl's H8 GEMM takes, h8_matmul's own helper: the same sums per piece, so the same results)
     const int nsb = K / 256, splits = h8_splits(K, a);
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
     for (int sp = 0; sp < splits; ++sp)
-      xw_piece(name, wq, hh, h8_aq_, h8_asc_, Mp, N, K, C, ldc, c_off, sp == 0 ? a : 1, rg_env, nsb * sp / splits,
+      xw_piece(name, wq, hh, h8_aq_, h8_asc_, Mp, N, K, C, ldc, c_off, sp == 0 ? a : 1, xw_rg(Mp), nsb * sp / splits,
                nsb * (sp + 1) / splits, wgy, pack);
     return true;
   }
