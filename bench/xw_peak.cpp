@@ -144,12 +144,20 @@ __kernel void ldprobe(__global const uint* ap, __global const uint* wp, int nch,
 // --probe's local-memory rows (2026-11-22, the A770's GEMM question: is the big tile short of local-memory read
 // bandwidth?): the inner loop of gemm_xw8 -DXW_SLM (32 x 32 a sub-group, XW_WGX x XW_WGY sub-groups) on two chunks
 // staged once in local memory, so the loop reads local memory only. Modes: 0 the reads and the DPAS, 1 the reads
-// only, 2 the DPAS only, 3 the reads, the DPAS and a barrier a chunk (as the big tile's stage). A sub-group's reads a
+// only, 2 the DPAS only, 3 the reads, the DPAS and a barrier a chunk (as the big tile's stage); 4 a barrier every
+// second chunk, 5 A from global and a barrier every fourth chunk, 6 the split barrier (see the host's table). A sub-group's reads a
 // chunk: its 4 token groups' A (2 x 256 B each) and its 2 column groups' B (4 x 256 B each), 4 KB
 #ifdef XW_WGY  // (only in the local-memory rows' builds)
 #define SP_AW (XW_WGY * XW_TG * 128)
 #define SP_BW (XW_WGX * XW_NC * 256)
 #define SP_RD(p) as_int8(intel_sub_group_block_read8((__local const uint*)(p)))
+#ifdef XW_EMU
+#define SP_ARRIVE()
+#define SP_WAIT() barrier(CLK_LOCAL_MEM_FENCE)
+#else
+#define SP_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
+#define SP_WAIT() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
+#endif
 __attribute__((intel_reqd_sub_group_size(8)))
 __kernel void slmprobe(__global const uint* src, int nch, __global int* out) {
   __local uint xs[2][SP_AW + SP_BW];
@@ -180,7 +188,13 @@ __kernel void slmprobe(__global const uint* src, int nch, __global int* out) {
 #endif
 #pragma unroll
     for (int t = 0; t < XW_TG; ++t) {
-#if PROBE_MODE != 2
+#if PROBE_MODE == 5
+      // (A from global memory, the sub-group's own token groups: a 4 x 16 KB window that stays in the caches, as
+      //  the work-group's X sub-groups sharing a token group read it through L1)
+      __global const uint* ga = src + (ch & 3) * 4096 + sy * 512 + t * 128;
+      a0[t] = as_int8(intel_sub_group_block_read8(ga));
+      a1[t] = as_int8(intel_sub_group_block_read8(ga + 64));
+#elif PROBE_MODE != 2
       a0[t] = SP_RD(xa + t * 128);
       a1[t] = SP_RD(xa + t * 128 + 64);
 #endif
@@ -197,8 +211,20 @@ __kernel void slmprobe(__global const uint* src, int nch, __global int* out) {
     }
 #if PROBE_MODE == 3
     barrier(CLK_LOCAL_MEM_FENCE);
+#elif PROBE_MODE == 4
+    if (ch & 1) barrier(CLK_LOCAL_MEM_FENCE);  // (half the barriers: what a stage of two chunks would cost)
+#elif PROBE_MODE == 5
+    if ((ch & 3) == 3) barrier(CLK_LOCAL_MEM_FENCE);  // (B alone staged, 8 KB a chunk: four chunks a stage in 64 KB)
+#elif PROBE_MODE == 6
+    // (the split barrier: this chunk's arrive waited for one chunk later, so sub-groups may be a chunk apart, as the
+    //  big tile's XS_SPLIT)
+    if (ch) SP_WAIT();
+    SP_ARRIVE();
 #endif
   }
+#if PROBE_MODE == 6
+  if (nch) SP_WAIT();
+#endif
   int s = 0;
 #pragma unroll
   for (int t = 0; t < XW_TG; ++t)
@@ -452,9 +478,14 @@ int main(int argc, char** argv) {
     printf("\nlocal-memory probe: the big tile's inner loop (32 x 32 a sub-group) on data in local memory; B/clk per Xe-core\n");
     printf("%-10s %-16s %9s %9s %9s %9s %9s\n", "work-group", "mode", "ms", "DPAS T", "% peak", "GB/s", "B/clk/core");
     const int wgs[][2] = {{4, 4}, {4, 8}};
-    const char* smodes[] = {"reads+DPAS", "reads only", "DPAS only", "reads+DPAS+bar"};
+    // (modes 4-6, 2026-11-23, the A770's barrier question: its 4 x 8 row went from 84 % of peak to 53 % with a barrier
+    //  a chunk. 4: a barrier every second chunk (what halving the barriers could buy); 5: B alone in local memory and
+    //  A from global, a barrier every fourth chunk (B's 8 KB a chunk: four a stage in 64 KB); 6: the split barrier,
+    //  sub-groups up to a chunk apart, as the big tile's XS_SPLIT)
+    const char* smodes[] = {"reads+DPAS", "reads only", "DPAS only", "reads+DPAS+bar", "bar every 2", "B only, bar/4",
+                            "split bar"};
     for (const auto& wg : wgs)
-      for (int mode = 0; mode < 4; ++mode) {
+      for (int mode = 0; mode < 7; ++mode) {
         try {
           const std::string opts = std::string("-cl-std=CL3.0 -cl-mad-enable -cl-intel-256-GRF-per-thread -DXW_TM=32 -DXW_NC=2") +
                                    " -DXW_WGX=" + std::to_string(wg[0]) + " -DXW_WGY=" + std::to_string(wg[1]) +
