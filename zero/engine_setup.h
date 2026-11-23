@@ -72,7 +72,8 @@
       //  Flash Next 512; the scan's work-group is NE wide)
       // (Flash Next 16..512 since 2026-11-23: a pruned one routes as the pruned Qwen MoE does (NEV, masked lanes,
       //  moe_group_ a divisor of NE), the scan's work-group as wide as the 512 it runs today at most. ISTA-DASLab's
-      //  Qwen3.8-Flash-Next-GSQ-RCO-Coder IQ1_M (expert-pruning) was refused, gee456, #1; not yet run here)
+      //  Qwen3.8-Flash-Next-GSQ-RCO-Coder IQ1_M (expert-pruning) was refused, gee456, #1: a regression of b8824ac,
+      //  whose rule took Flash Next at 512 only, where the check before it took 256 too)
       const bool ne_ok = hp.hc ? hp.n_expert >= 16 && hp.n_expert <= 512 : hp.n_expert >= 16 && hp.n_expert <= 256;
       if (!ne_ok || hp.n_expert_used < 1 || hp.n_expert_used > std::min(16, hp.n_expert) ||
           (hp.n_ff_exp % 256 && !hp.hc) || hp.n_ff_shexp % 256 || (hp.hc && !hp.moe_std))
