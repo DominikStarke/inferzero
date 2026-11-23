@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-23: NVFP4 weights (Inkling 2 Mini, step I1.1; not run yet)
+
+- **New weight type NVFP4** (ggml type 40, blocks of 64 with a UE4M3 scale per 16), the experts of Unsloth's Inkling 2
+  Mini Q8_K_XL. `gguf_dump` and the loaders now open such files, and `dequant_row` reads NVFP4 exactly as ggml does.
+- **On the GPU,** the engine's int8 form has one scale per 32 values. Two 16-value halves with the same scale keep their
+  codes; otherwise one half is rounded, by at most 1/192 of the largest value the block can hold (exact for power-of-two scale
+  ratios up to 8). Every path (one token, the expert GEMV, the prompt's expert tiles) decodes the same way.
+- Inkling 2 Mini does not run yet: this is the first of its support steps ([docs/inkling2.md](docs/inkling2.md)), written
+  and compiled only. Every other type decodes as before (its kernels are built from the same source with the new
+  branch compiled out).
+
 ## 2026-11-23: `ARC_GDN_SPLIT` removed
 
 - **Removed: `ARC_GDN_SPLIT=2` / `4`,** the prompt's DeltaNet with 2 or 4 work-items per state column. On skipzx-lab's

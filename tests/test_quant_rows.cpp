@@ -44,8 +44,88 @@ static int q51_reference_test() {
   return 0;
 }
 
+// NVFP4 (ggml type 40): the scale decode against ggml's ggml_ue4m3_to_fp32 written out literally, dequant_row against
+// ggml's dequantize_row_nvfp4 loop, the GPU raw form's per-32 addressing (zero/kernels/decode.cl decode32 QT 40) and the
+// per-32 fold nvfp4_block32_w8: exact for equal scales and power-of-two ratios up to 8, else within d / 2.
+static float ggml_ue4m3_literal(uint8_t x) {
+  if (x == 0 || x == 0x7F) return 0.0f;
+  const int exp = (x >> 3) & 0xF, man = x & 0x7;
+  const float raw = exp == 0 ? std::ldexp((float)man, -9) : std::ldexp(1.0f + (float)man / 8.0f, exp - 7);
+  return raw * 0.5f;
+}
+static int nvfp4_reference_test() {
+  static const int8_t kv[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+  for (int x = 0; x < 256; ++x)
+    if (nvfp4_scale((uint8_t)x) != ggml_ue4m3_literal((uint8_t)x)) {
+      std::printf("FAIL nvfp4 scale 0x%02X: %g, ggml %g\n", x, nvfp4_scale((uint8_t)x), ggml_ue4m3_literal((uint8_t)x));
+      return 1;
+    }
+  // a row of 4 superblocks (16 blocks of 64): scale bytes from a walk over all 256 values, codes from a counter
+  const int K = 1024, NB = K / 64;
+  std::vector<uint8_t> row((size_t)NB * 36);
+  for (int b = 0; b < NB; ++b)
+    for (int i = 0; i < 36; ++i) row[(size_t)b * 36 + i] = (uint8_t)(i < 4 ? (b * 4 + i) * 37 + 11 : (b * 31 + i * 7) & 0xFF);
+  std::vector<float> got(K), want(K);
+  dequant_row(GGML_NVFP4, row.data(), K, got.data());
+  for (int b = 0; b < NB; ++b)  // ggml's loop, as written there
+    for (int s = 0; s < 4; ++s) {
+      const float d = ggml_ue4m3_literal(row[(size_t)b * 36 + s]);
+      for (int j = 0; j < 8; ++j) {
+        const uint8_t c = row[(size_t)b * 36 + 4 + s * 8 + j];
+        want[b * 64 + s * 16 + j] = kv[c & 0x0F] * d;
+        want[b * 64 + s * 16 + j + 8] = kv[c >> 4] * d;
+      }
+    }
+  for (int i = 0; i < K; ++i)
+    if (got[i] != want[i]) { std::printf("FAIL nvfp4 dequant i=%d got=%g want=%g\n", i, got[i], want[i]); return 2; }
+  // the GPU raw form: per superblock, 32-block ib's scales at [2 ib], its codes at 16 + 16 ib
+  int exact = 0, folded = 0;
+  for (int sb = 0; sb < K / 256; ++sb) {
+    uint8_t g[144];
+    gpu_raw_sb(GGML_NVFP4, row.data() + (size_t)sb * 144, g);
+    for (int ib = 0; ib < 8; ++ib) {
+      int8_t q[32];
+      const float d = nvfp4_block32_w8(g + 2 * ib, g + 16 + 16 * ib, q);
+      const float s0 = nvfp4_scale(g[2 * ib]), s1 = nvfp4_scale(g[2 * ib + 1]);
+      const float lo = std::min(s0, s1), hi = std::max(s0, s1);
+      bool pow2 = lo == hi || lo == 0.0f;
+      for (float r = 0.5f; r >= 0.125f && !pow2; r *= 0.5f) pow2 = lo == hi * r;
+      for (int j = 0; j < 32; ++j) {
+        const float w = want[sb * 256 + ib * 32 + j], v = d * q[j];
+        if (q[j] > 127 || q[j] < -127) { std::printf("FAIL nvfp4 fold: code %d\n", q[j]); return 3; }
+        if (pow2 ? v != w : std::fabs(v - w) > d * 0.5f * (1.0f + 1e-6f)) {
+          std::printf("FAIL nvfp4 fold sb=%d ib=%d j=%d: %g (d %g q %d), exact %g\n", sb, ib, j, v, d, q[j], w);
+          return 4;
+        }
+      }
+      (pow2 ? exact : folded) += 32;
+    }
+  }
+  // every pair of scale bytes, the codes +-12 (the largest): the fold's bound and code range
+  for (int a = 0; a < 256; ++a)
+    for (int c = 0; c < 256; ++c) {
+      const uint8_t sc[2] = {(uint8_t)a, (uint8_t)c}, qs[16] = {0x77, 0xFF, 0x77, 0xFF, 0x77, 0xFF, 0x77, 0xFF,
+                                                                0xF7, 0x7F, 0xF7, 0x7F, 0xF7, 0x7F, 0xF7, 0x7F};
+      int8_t q[32];
+      const float d = nvfp4_block32_w8(sc, qs, q);
+      for (int j = 0; j < 32; ++j) {
+        const float w = (float)kv[(qs[(j / 16) * 8 + j % 8] >> (j % 16 < 8 ? 0 : 4)) & 15] * nvfp4_scale(sc[j / 16]);
+        if (std::fabs(d * q[j] - w) > d * 0.5f * (1.0f + 1e-6f)) {
+          std::printf("FAIL nvfp4 fold scales 0x%02X 0x%02X j=%d: %g, exact %g\n", a, c, j, d * q[j], w);
+          return 5;
+        }
+      }
+    }
+  std::printf("test_quant_rows: nvfp4 passed (256 scales, %d values exact, %d values folded within d/2, 65536 scale pairs)\n",
+              exact, folded);
+  return 0;
+}
+
 int main(int argc, char** argv) {
-  if (argc == 1 || (argc == 2 && std::string(argv[1]) == "--self-test")) return q51_reference_test();
+  if (argc == 1 || (argc == 2 && std::string(argv[1]) == "--self-test")) {
+    if (const int r = nvfp4_reference_test()) return 10 + r;
+    return q51_reference_test();
+  }
   if (argc < 3) { fprintf(stderr, "usage: test_quant_rows model.gguf TENSOR [row] [n]\n"); return 1; }
   GgufFile f(argv[1]);
   const GgufTensor& t = f.get(argv[2]);

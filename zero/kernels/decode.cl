@@ -21,6 +21,7 @@
 #define IQ4_NL 20
 #define Q2_0 42
 #define MXFP4 39
+#define NVFP4 40  // (Inkling 2 Mini's experts: blocks of 64, a UE4M3 scale per 16; folded per 32 in decode32)
 #define Q5_1 7  // (Unsloth's UD-Q4_K_XL Flash Next: its down experts; requantized per block, see decode32)
 // (a private inferzero type, not a GGML one: AutoRound INT4, 128 values to one f16 scale, zero point 8, pull request
 //  #22; tools/import_autoround_experts.py)
@@ -28,7 +29,8 @@
 // The per-type lists, in one place (a new type goes here, and in src/quants.h is_per32_type / is_small_block_type):
 // per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header; C++
 // is_per32_type)
-#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1)
+#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1 || \
+               QT == NVFP4)
 // a vector decoder, vblock (gemv_v, and the experts' MOE_VB / moe_rg): each 32-block read straight into registers
 #define VB_TYPE (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || \
                  QT == MXFP4)
@@ -107,6 +109,8 @@ inline void ar4_unpack(uint4 q, uint* w) {
 #define BB 72  // (4 blocks of 64)
 #elif QT == Q5_1
 #define BB 192  // (8 blocks of 32 as in the GGUF: f16 d, f16 m, 32 high bits, 16 nibble bytes)
+#elif QT == NVFP4
+#define BB 144  // (4 blocks of 64: the 16 UE4M3 scale bytes, then 4 x 32 code bytes)
 #else
 #error "unsupported QT"
 #endif
@@ -154,7 +158,7 @@ inline float f16(uint h) { return vload_half(0, (const __private half*)&h); }
 #elif QT == IQ4_XS || QT == IQ4_NL
 #define AUX_OFF TAB_KVAL
 #define AUX_N 4
-#elif QT == MXFP4
+#elif QT == MXFP4 || QT == NVFP4
 #define AUX_OFF TAB_KFP4
 #define AUX_N 4
 #endif
@@ -351,6 +355,56 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
           word |= ((uint)i8 & 0xFFu) << (8 * j);
         }
         w[k + 4 * h] = word;
+      }
+    }
+  }
+#elif QT == NVFP4
+  {
+    // GPU form (src/quants.h gpu_raw_sb): the superblock's 16 UE4M3 scales (one per 16 values), then 16 code bytes per
+    // 32-block (8 per half: low nibbles values 0..7 of the half, high 8..15). The per-32 form has one scale, so the two
+    // halves' scales s0, s1 are folded as src/quants.h nvfp4_block32_w8 does, in the same integers: equal halves keep
+    // their codes (d = s); else d = max / 8, the larger half's codes x 8, the other's round(|kv| 8 M_h / (M_big
+    // 2^(E_big - E_h))) half away from zero. Every path decodes through here, so prompt and generation agree.
+    const uchar* kv = (const uchar*)aux;
+    int M[2], E[2];
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+      const uint x = p[2 * ib + h];
+      const uint e = (x >> 3) & 15u, m = x & 7u;
+      const bool z = x == 0u || x == 0x7Fu;
+      M[h] = z ? 0 : (e == 0u ? (int)m : 8 + (int)m);
+      E[h] = z || e == 0u ? 1 : (int)e;
+    }
+    const float s0 = ldexp((float)M[0], E[0] - 11), s1 = ldexp((float)M[1], E[1] - 11);
+    const int big = s1 > s0 ? 1 : 0;
+    const bool same = s0 == s1;
+    d = same ? s0 : fmax(s0, s1) * 0.125f;
+    sc0 = sc1 = 1;
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+      const uint lo = rd32(p + 16 + 16 * ib + 8 * h), hi = rd32(p + 16 + 16 * ib + 8 * h + 4);
+      const int den = M[big] << (E[big] - E[h]), mh = 8 * M[h];
+#pragma unroll
+      for (int k = 0; k < 4; ++k) {
+        // word k of the half: values 4k..4k+3 = (k < 2: low nibbles of bytes 4k..4k+3; else high nibbles of 4(k-2)..)
+        const uint src = (k & 1) ? hi : lo;
+        const int sh = k < 2 ? 0 : 4;
+        uint word = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const int c = (char)kv[(src >> (8 * j + sh)) & 15u];
+          int v = c;
+          if (!same) {
+            if (h == big) v = 8 * c;
+            else {
+              const int a = c < 0 ? -c : c;
+              const int r = (2 * a * mh + den) / (2 * den);
+              v = c < 0 ? -r : r;
+            }
+          }
+          word |= ((uint)v & 0xFFu) << (8 * j);
+        }
+        w[4 * h + k] = word;
       }
     }
   }

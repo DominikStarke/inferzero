@@ -21,6 +21,8 @@ enum GgmlType : uint32_t {
   GGML_Q8_K = 15, GGML_IQ2_XXS = 16, GGML_IQ2_XS = 17, GGML_IQ3_XXS = 18, GGML_IQ1_S = 19, GGML_IQ4_NL = 20,
   GGML_IQ3_S = 21, GGML_IQ2_S = 22, GGML_IQ4_XS = 23, GGML_I8 = 24, GGML_I16 = 25, GGML_I32 = 26, GGML_IQ1_M = 29,
   GGML_BF16 = 30, GGML_TQ1_0 = 34, GGML_TQ2_0 = 35, GGML_MXFP4 = 39,
+  // blocks of 64: 4 UE4M3 scales (one per 16 values), then 32 bytes of E2M1 codes (Inkling 2 Mini's experts)
+  GGML_NVFP4 = 40,
   // Unsloth's llama.cpp fork for DeepSeek-V4.1 (its Engram table): 32 E4M3 (fn) values sharing one E8M0 scale, 33
   // bytes. Upstream ggml gives 43 to plain F8_E4M3 (1 byte a value, no scale), which no model this engine runs uses.
   GGML_MXFP8 = 43,
@@ -41,6 +43,7 @@ inline const char* ggml_type_name(uint32_t t) {
     case GGML_IQ1_S: return "IQ1_S"; case GGML_IQ3_S: return "IQ3_S"; case GGML_IQ2_S: return "IQ2_S"; case GGML_IQ1_M: return "IQ1_M";
     case GGML_AR4_128: return "AR4_128";
     case GGML_MXFP4: return "MXFP4"; case GGML_MXFP8: return "MXFP8"; case GGML_Q2_0: return "Q2_0";
+    case GGML_NVFP4: return "NVFP4";
     case GGML_Q8_1: return "Q8_1"; case GGML_Q8_K: return "Q8_K"; case GGML_TQ1_0: return "TQ1_0"; case GGML_TQ2_0: return "TQ2_0";
     default: return "?";
   }
@@ -74,6 +77,7 @@ inline void ggml_block_info(uint32_t t, int& blk, int& bytes) {
     case GGML_IQ1_S: blk = 256; bytes = 50; return;
     case GGML_IQ1_M: blk = 256; bytes = 56; return;
     case GGML_MXFP4: blk = 32; bytes = 17; return;
+    case GGML_NVFP4: blk = 64; bytes = 36; return;
     case GGML_MXFP8: blk = 32; bytes = 33; return;
     case GGML_Q2_0: blk = 64; bytes = 18; return;
     // (known so a file holding them opens; Q8_1 decodes on the CPU at load, Q8_K / TQ1_0 / TQ2_0 are named in the error

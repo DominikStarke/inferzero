@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 #include <vector>
 #include <stdexcept>
 #include "gguf.h"
@@ -515,8 +516,67 @@ inline float e4m3fn_to_f32(uint8_t q) {
   return s ? -v : v;
 }
 
+// NVFP4 (ggml type 40, Inkling 2 Mini's experts): blocks of 64 values, 36 bytes: 4 UE4M3 scales (one per 16 values),
+// then 32 bytes of E2M1 codes, 8 bytes per 16 values (low nibbles values 0..7, high nibbles 8..15). A value is
+// kvalues_mxfp4[code] x the scale, the scale as ggml's ggml_ue4m3_to_fp32: 0x00 and 0x7F are 0, the top bit is not
+// read, and the result is halved (kvalues_mxfp4 are E2M1 x 2). A scale is M x 2^(E - 11) with M, E small integers
+// (nvfp4_scale_me), which the GPU's per-32 form below uses for exact integer ratios.
+inline void nvfp4_scale_me(uint8_t x, int& M, int& E) {
+  if (x == 0 || x == 0x7F) { M = 0; E = 1; return; }
+  const int e = (x >> 3) & 15, m = x & 7;
+  if (e == 0) { M = m; E = 1; } else { M = 8 + m; E = e; }
+}
+inline float nvfp4_scale(uint8_t x) {  // = ggml_ue4m3_to_fp32(x), exactly
+  int M, E;
+  nvfp4_scale_me(x, M, E);
+  return std::ldexp((float)M, E - 11);
+}
+// One 32-value block of NVFP4 (two 16-value halves, scales s0 and s1) in the engine's per-32 int8 form: an f32 scale d
+// and 32 int8 codes, w = d x q. Equal halves keep the E2M1 codes (|q| <= 12, exact). Otherwise d = max(s0, s1) / 8:
+// the larger half is exact (|q| <= 96), the other q = round(kv x 8 s / max) in integers (half away from zero), exact
+// when the scales differ by a power of two up to 8 (or one is 0), else off by at most d / 2 (1/192 of the block's
+// largest possible magnitude, 12 x max). The GPU decode (zero/kernels/decode.cl decode32, QT 40) computes the same
+// integers; sc: the two scale bytes, qs: the 16 code bytes (8 per half). The CPU reference (dequant_row) stays exact.
+inline float nvfp4_block32_w8(const uint8_t sc[2], const uint8_t* qs, int8_t q[32]) {
+  int M[2], E[2];
+  nvfp4_scale_me(sc[0], M[0], E[0]);
+  nvfp4_scale_me(sc[1], M[1], E[1]);
+  const float s0 = std::ldexp((float)M[0], E[0] - 11), s1 = std::ldexp((float)M[1], E[1] - 11);
+  const int big = s1 > s0 ? 1 : 0;
+  for (int h = 0; h < 2; ++h)
+    for (int j = 0; j < 16; ++j) {
+      const int kv = kvalues_mxfp4[(qs[8 * h + j % 8] >> (j < 8 ? 0 : 4)) & 15];
+      int v = kv;
+      if (s0 != s1) {
+        if (h == big) v = 8 * kv;
+        else {
+          // |kv| 8 M_h 2^E_h / (M_big 2^E_big), E_h <= E_big as s_h < s_big; rounded half away from zero
+          const int num = (kv < 0 ? -kv : kv) * 8 * M[h], den = M[big] << (E[big] - E[h]);
+          const int r = (2 * num + den) / (2 * den);
+          v = kv < 0 ? -r : r;
+        }
+      }
+      q[16 * h + j] = (int8_t)v;
+    }
+  return s0 == s1 ? s0 : std::max(s0, s1) * 0.125f;
+}
+
 // Dequantizes one full row (K elements) of a GGUF matrix to float (CPU reference / embeddings).
 inline void dequant_row(uint32_t type, const uint8_t* row, int K, float* out) {
+  if (type == GGML_NVFP4) {  // (exact, as ggml's dequantize_row_nvfp4)
+    for (int b = 0; b < K / 64; ++b) {
+      const uint8_t* p = row + (size_t)b * 36;
+      for (int s = 0; s < 4; ++s) {
+        const float d = nvfp4_scale(p[s]);
+        for (int j = 0; j < 8; ++j) {
+          const uint8_t c = p[4 + 8 * s + j];
+          out[b * 64 + 16 * s + j] = d * (float)kvalues_mxfp4[c & 0x0F];
+          out[b * 64 + 16 * s + 8 + j] = d * (float)kvalues_mxfp4[c >> 4];
+        }
+      }
+    }
+    return;
+  }
   if (type == GGML_MXFP4) {  // blocks of 32: E8M0 scale, low nibbles = elements 0..15, high = 16..31
     for (int b = 0; b < K / 32; ++b) {
       const uint8_t* p = row + (size_t)b * 17;
@@ -697,7 +757,7 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
 inline bool is_small_block_type(uint32_t t) {
-  return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 || t == GGML_Q5_1;
+  return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 || t == GGML_Q5_1 || t == GGML_NVFP4;
 }
 // Types with a float scale per 32-block (their own block of 32, or AR4_128's per 128): decoded into the W8 GEMM's
 // native Q8_0 form (w8_variant 4), regrouped on the GPU (scales first), read by moe_rg. The kernels' list of the same
@@ -705,7 +765,7 @@ inline bool is_small_block_type(uint32_t t) {
 // with its own scale as it is decoded, since the per-32 form has no offset: decode.cl decode32.)
 inline bool is_per32_type(uint32_t t) {
   return t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128 ||
-         t == GGML_Q5_1;
+         t == GGML_Q5_1 || t == GGML_NVFP4;  // (NVFP4: its per-16 scales folded per 32, nvfp4_block32_w8)
 }
 inline int padded_k(int K) { return (K + 255) / 256 * 256; }
 // N rows of K elements of a small-block type -> N rows of padded_k(K) elements (dst holds N * the padded row bytes)
@@ -724,7 +784,7 @@ inline bool is_w8_type(uint32_t t) {
     case GGML_AR4_128:
     case GGML_Q2_K: case GGML_Q3_K: case GGML_Q4_K: case GGML_Q5_K: case GGML_Q6_K: case GGML_IQ2_XXS: case GGML_IQ2_XS:
     case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S: case GGML_IQ1_M: case GGML_IQ4_XS: case GGML_Q8_0: case GGML_Q4_0:
-    case GGML_IQ4_NL: case GGML_Q2_0: case GGML_MXFP4: case GGML_Q5_1: return true;
+    case GGML_IQ4_NL: case GGML_Q2_0: case GGML_MXFP4: case GGML_Q5_1: case GGML_NVFP4: return true;
     default: return false;
   }
 }
@@ -782,6 +842,13 @@ inline void gpu_raw_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
     for (int b = 0; b < 8; ++b) {
       dst[b] = src[17 * b];
       memcpy(dst + 8 + 16 * b, src + 17 * b + 1, 16);
+    }
+    return;
+  }
+  if (type == GGML_NVFP4) {  // 4 blocks of 36 bytes (4 scale bytes + 32 code bytes) -> the 16 scale bytes, then 4 x 32
+    for (int b = 0; b < 4; ++b) {
+      memcpy(dst + 4 * b, src + 36 * b, 4);
+      memcpy(dst + 16 + 32 * b, src + 36 * b + 4, 32);
     }
     return;
   }
