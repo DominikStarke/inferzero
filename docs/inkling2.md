@@ -426,9 +426,68 @@ they are, with nothing of its own but the record recipe:
   - the expert file's build on the real model (14.7 GB written to C:);
   - the real model on the laptop through gpu_guard: KL against ref_forward on a short prompt, then speed.
 
-**I2-I4. Speed, later, each needs cards** (from the analysis): tg on a B70 at ~83 % of its bandwidth, then DSpark
-drafting; prompt with NVFP4 read straight in the expert GEMM and chunk 8,192; the A770 needs DSpark and a ~3-bit file or
-the RAM tier, since the Q8 file doesn't fit 16 GB.
+**I2. The fastest preset for every card** (the user, 2026-11-23: "continue inkling 2 with fastest techniques and
+configuration for every card"; targets pp 6,000 / tg 130 on the B70 and the A770, #83). Plan only: each item opt-in
+until a card measures it, then that family's default; bit for bit, or KL <= 0.015 token by token over hundreds of
+positions with the same top token at 98 % or more. Built on I1.7 (the streamed experts), whose path every card takes:
+with all experts cached it is the resident path, with smaller Q8_0 records for the BF16 experts.
+
+**What a token costs** (Inkling 2 Mini, the expert file's records; estimates to check against `--prof-gen`):
+- **Bytes read:** experts ~1.7 GB (8 of 128 a pass, 48 passes, NVFP4 at 4.5 bits, Q8_0 in layers 20-23); attention,
+  controllers and convs ~1.4 GB (the BF16 matrices as Q8_0, read in each of the 48 passes); the head 0.49 GB (200,058 x
+  2,304, Q8_0). **~3.6 GB a token.**
+- **The ceilings** at 100 % of the measured bandwidth: B70 (603 GB/s) ~167 tok/s, so 130 is 78 % of it; B65 the same
+  memory; B60 / B580 (456 GB/s) ~127; A770 (~405 GB/s) ~112, so **130 on the A770 needs drafting**; the iGPUs
+  (B390, 140T, the laptop's 125H: 75-120 GB/s) 20-33.
+- **Launches:** the I1.5 graph runs ~25 small kernels a layer pass, ~1,200 a token. At ~5 us each that alone is ~6 ms,
+  a ceiling of ~165 tok/s on any card. **Fewer launches is a lever on every card**, before any kernel gets faster.
+- **The prompt:** ~10 int8 GOP a token, ~75 % of it in the experts (8 routed experts against ~20 M dense weights a
+  pass). 6,000 tok/s is ~60 int8 TOPS of useful work: ~16 % of a B70's XMX peak (~367 TOPS), ~26 % of an A770's
+  measured 232. Attention is cheap at 4K: 40 of the 48 slots are sliding windows of 1,024.
+
+**The steps, for every card unless a card is named** (each its own commit and before-after row):
+1. **Fused layer kernels (generation first).** The controller (`ink_rms2` + `ink_ctrl_apply`), the K / V rows and
+   their short convs and the store (`ink_rows` + `ink_conv` + `ink_kv_store`), the depth mixes (`ink_mix`), the
+   router and situ: each group one launch. Bit for bit against I1.5 where the sums keep their order, else KL. Target:
+   under 10 launches a layer pass. With Alchemist's command lists (`ARC_BATCH=64`, its default) the launches left cost
+   less there; B-series has no such default (it measured neutral), so fusion is what counts there.
+2. **The dense matrices on the engine's fast paths.** Prompt: gemm.cl on XMX (16 lanes) or gemm_x8 (8 lanes), as the
+   Qwen models' non-H8 GEMMs; H8 is Qwen-only and stays so until its rotation is checked for Inkling's shapes (a later
+   item). Generation: the GEMV defaults per family (B-series `ARC_GEMV_DB` / `PF`, Alchemist `ARC_GVROWS=1`), the
+   per-pass matrices of a loop layer being the same weights three times, so passes 2 and 3 may hit L2 on the B70 (18 MB).
+   The rank-64 controllers and the 24-row sinks stay f32 (`ink_mm_f32`) until a GEMV form takes their shapes.
+3. **The experts, prompt:**
+   - B-series and the B390 (16 lanes): decode_w8 + gemm.cl's XMX tiles (the 35B's default), against `moe_rg` on XMX
+     straight from the NVFP4 rows (`ARC_MOE_RG_XMX`: slower for the 35B on a B70, but Inkling's experts are smaller and
+     NVFP4's decode is cheaper than IQ4_XS's): measure both, keep the faster.
+   - **A770 and the 140T (8 lanes): the 8-lane XMX expert GEMM**, the same kernel as the 35B's (queued after this
+     plan: the A770's 35B spends 52-57 % of its prompt in DP4a experts and their decode, #45), with the big tile's split
+     DPAS (dpasw) on DG2. Without it Inkling's experts run DP4a there, and 6,000 is out of reach.
+   - The chunk: 8,192 on the B70 / B65 (room for it at 32 GB), 4,096 on the B60, 2,048 on the A770 / B580 (the expert
+     cache's room first), 512-1,024 on the iGPUs; the plan's rule, `--chunk` overrides.
+4. **The experts, generation:** `MOE_Q` reads NVFP4's raw rows (4.5 bits) and Q8_0, so no decode pass. The GEMV rows
+   per sub-group (`ARC_MOE_GR_GU` / `_DN`) swept per family with `bench\decode_try.ps1`, as for the 35B.
+5. **The head:** 0.49 GB of 3.6 a token (14 %). Q8_0 by default; a Q6_K / Q4_K head is an opt-in with its own KL run.
+6. **Drafting with DSpark** (the drafter in the HF cache, GGUF arch `dflash`): the engine's DFlash2 path, taught the
+   drafter's own architecture. Each verified token costs one main pass for several tokens, so it is the lever where
+   bandwidth caps: the A770 (130 needs ~1.2 tokens a pass at 100 % of its bandwidth, ~1.6 at a realistic 75 %), the
+   B60 / B580, the iGPUs. The drafts a step per family as `xe2_mtp_drafts` does for MTP (Alchemist 4).
+7. **The memory tiers per card** (I1.7's design, sized by the plan):
+
+| Card | Memory, bandwidth | Experts (14.7 GiB of records) | Prompt experts | Drafting | Notes |
+|---|---|---|---|---|---|
+| Pro B70 / B65 | 32 GB, ~603 GB/s | all in VRAM | 16-lane XMX tiles | DSpark for > 130 | chunk 8,192; the B65 has the B60's EU count on the B70's die: its own GEMV rules (`zrt::bmg_g21`) |
+| Pro B60 | 24 GB, 456 GB/s | all in VRAM (~1.2 GiB + context left: ~6 GiB at 32K) | 16-lane XMX tiles | DSpark | chunk 4,096 |
+| B580 | 12 GB, 456 GB/s | ~9.5 GiB cached, the rest in the RAM tier (a 32 GB PC) or the SSD | 16-lane XMX tiles | DSpark | a 16 GB PC: GPU cache + SSD; `ARC_XCPU` for the loop's misses |
+| A770 16 GB | 16 GB, ~405 GB/s | ~13 GiB cached, ~2 GiB in the RAM tier | the 8-lane XMX expert GEMM (dpasw) | DSpark, needed for 130 | `ARC_BATCH=64`; a ~3-bit expert file only if the cache misses cost too much |
+| B390 (Panther Lake) | shared RAM, ~120 GB/s | the cache is the RAM share | 16-lane XMX (where its checks pass) | DSpark | 2D loads off (as under Windows) |
+| Arc 140T (Arrow Lake H) | shared RAM, ~120 GB/s | as the B390 | 8-lane XMX expert GEMM (no dpasw: an iGPU, unmeasured) | DSpark | the 140T preset's other rules |
+| The laptop's 125H (Xe-LPG) | shared RAM, 75 GB/s | ~14 GiB cache, ~95 % of the experts | DP4a (no XMX) | DSpark | the correctness host: every step's KL runs here first |
+
+**Order:** I1.7 steps 2-6 first (the streamed path, the base of every row above), then 1 (launches, all cards), then 3
+(the 8-lane XMX expert GEMM, shared with the 35B) and 6 (DSpark), then 2, 4 and 5 by what the cards' profiles show.
+**What each card is asked for:** `runz --bench-pp 4096 --prof` and `--n 128 --prof-gen` on the real file,
+then the A / B of each step against the default; the B70 and A770 owners first (#83).
 
 ## Runs waiting for the user's go (none run yet)
 
