@@ -18,6 +18,7 @@
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
   }
   size_t saved_size(int keep_from) {
+    if (hp.inkling) return 0;  // (Inkling 2: its 48 cache slots and conv states are not saved yet, zero/engine_inkling.h)
     if (hp.ds41) return ds_saved_size();  // (DeepSeek-V4.1: a layout of its own, zero/engine_ds41.h)
     if (!opt.attn_int8) return 0;
     std::vector<int32_t> hdr;
@@ -32,6 +33,7 @@
     return n;
   }
   bool save_state(const Sink& out, int keep_from, bool host_snapshot = true) {
+    if (hp.inkling) return false;  // (as saved_size)
     if (hp.ds41) return ds_save_state(out, host_snapshot);
     if (!opt.attn_int8) return false;
     flush_mtp_pending();
@@ -46,6 +48,7 @@
     return ok;
   }
   bool load_state(FILE* f) {
+    if (hp.inkling) return false;  // (as saved_size: nothing of it was saved)
     reset();
     for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);
     drop_host_snapshot();
@@ -240,7 +243,8 @@
     prog_base_ = prog_total_ = 0;
     // (DeepSeek-V4.1: the layers that ran overwrote window-ring slots and pending compressor rows the positions before
     //  p0 still need, and the Engram history moved on: back to the start)
-    if (hp.ds41) reset();
+    // (Inkling 2 too: its graph runs from layer 0 each chunk, so its conv states and rings moved on)
+    if (hp.ds41 || hp.inkling) reset();
     else if (hp.swa_rings && !rewind(p0)) reset();  // the rings no longer hold the n_swa positions before p0
     else pos = p0;
     throw Cancelled();
@@ -565,14 +569,16 @@
       if (il >= hp.n_layer) return pp_last();  // (the MTP block's layer)
       return il >= lb && il < le;
     };
-    double total_w = 0;  // (the same tensors' values, for the RAM a byte of them costs below)
+    // (the same tensors' CPU copy, for the RAM a byte of them costs below: int8 and a scale per 32 values, ~1.125
+    //  bytes a value; with ARC_HOST_CPU_NATIVE an IQ3_S tensor's own bytes once more, zero/xe2/engine_hostcpu.h)
+    double cpu_copy = 0;
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight" &&
           (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0) && in_stage(t.name)) {
         total += (double)t.nbytes;
         double v = 1;
         for (const auto d : t.dims) v *= (double)d;
-        total_w += v;
+        cpu_copy += host_native_on() && t.type == GGML_IQ3_S ? (double)t.nbytes : 1.125 * v;
       }
     const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
     // (a discrete card, 2026-11-16, an Arc B580 (12 GB) for Qwen3.8 27B: the weights that leave less than keep_gb of
@@ -749,7 +755,7 @@
       //  its CPU copy, int8 and a scale per 32 values, ~1.125 bytes a value: an IQ3_S byte (~0.43 a value) costs ~3.6
       //  bytes of RAM. The cap counted the raw bytes only: a 16 GB PC paged or failed (audit 2026-11-23, M3; the B580
       //  of the Discord report has 15.4 GiB))
-      const double per_byte = host_cpu_on() && total > 0 ? 1.0 + 1.125 * total_w / total : 1.0;
+      const double per_byte = host_cpu_on() && total > 0 ? 1.0 + cpu_copy / total : 1.0;
       want = std::max(0.0, std::min(total - (budget - keep), ((double)plat::ram_available() - 4.0 * GiB) / per_byte));
       // (a small spill, at most 0.5 GiB, where 512-token chunks and an 8K residual segment leave room for every weight:
       //  those instead. Weights in RAM cost every token (skipzx-lab's A770, the 27B at 92K, #45: 0.39 GiB in RAM, 10.0
