@@ -516,7 +516,12 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
      plan: the A770's 35B spends 52-57 % of its prompt in DP4a experts and their decode, #45), with the big tile's split
      DPAS (dpasw) on DG2. Without it Inkling's experts run DP4a there, and 6,000 is out of reach.
    - The chunk: 8,192 on the B70 / B65 (room for it at 32 GB), 4,096 on the B60, 2,048 on the A770 / B580 (the expert
-     cache's room first), 512-1,024 on the iGPUs; the plan's rule, `--chunk` overrides.
+     cache's room first), 512-1,024 on the iGPUs; the plan's rule, `--chunk` overrides. **Done (2026-11-24),
+     `ink_chunk_default`:** by the card's memory (30 / 22 GiB lines, iGPUs 512), halved down to 2,048 while the file's
+     tensors and the chunk's buffers would pass 92 % of the card; the exact path's expert rows no longer take chunk
+     rows when streamed. Tiny file: the same KL (0.00040) at 512, 1,024 and 2,048.
+   - The 8-lane expert kernels are in (`ARC_MOE_X8`, `ARC_MOE_RG_XMX` on 8 lanes, `ARC_MOE_DPASW`, all opt-in until an
+     A770 measures them).
 4. **The experts, generation:** `MOE_Q` reads NVFP4's raw rows (4.5 bits) and Q8_0, so no decode pass. The GEMV rows
    per sub-group (`ARC_MOE_GR_GU` / `_DN`) swept per family with `bench\decode_try.ps1`, as for the 35B.
 5. **The head:** 0.49 GB of 3.6 a token (14 %). Q8_0 by default; a Q6_K / Q4_K head is an opt-in with its own KL run.

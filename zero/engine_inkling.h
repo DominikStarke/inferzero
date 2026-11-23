@@ -328,6 +328,31 @@
     return n;
   }
 
+  // (I2 step 3, 2026-11-24) the prompt chunk by GPU kind (docs/inkling2.md, I2 step 3): iGPUs 512; discrete cards by
+  // memory, 8,192 from 30 GiB (the Pro B70 / B65's 32), 4,096 from 22 GiB (the B60's 24), else 2,048 (the A770's 16, the
+  // B580's 12); then the expert cache's room first: halved (not below 2,048) while the file's tensors and the chunk's
+  // buffers would take over 92 % of the card, so a larger chunk never pushes experts out of the cache. --chunk decides
+  // when given. The row bytes: alloc_inkling's buffers of a row and the shared MoE ones (aq_, mh_, my_: NU slots a row);
+  // an estimate, counted the same way on every card
+  uint64_t ink_row_bytes() const {
+    const uint64_t E = hp.n_embd, HD = (uint64_t)hp.n_head * hp.head_dim, KG = (uint64_t)hp.n_head_kv * hp.head_dim,
+                   F = hp.n_ff_exp, NU = hp.n_expert_used;
+    const uint64_t maxb = (hp.n_layer + std::max(ink_.block, 1) - 1) / std::max(ink_.block, 1) + 1;
+    uint64_t fl = (21 + 2 * maxb) * E + 3 * HD + 4 * KG + (uint64_t)ink_.nrel * hp.n_head + hp.n_head + hp.n_expert;
+    if (!ink_streamed_) fl += NU * (3 * F + E);  // (the exact path's ink_gu_ / ink_act_ / ink_de_)
+    fl += NU * (2 * F + E);                      // (the shared MoE path's slots)
+    return fl * 4 + 2 * E;                       // (+ the int8 activations)
+  }
+  int ink_chunk_default() const {
+    if (zrt::integrated()) return 512;
+    const uint64_t mem = zrt::D().global_mem;
+    int c = mem >= (30ull << 30) ? 8192 : mem >= (22ull << 30) ? 4096 : 2048;
+    uint64_t w = 0;
+    for (const GgufTensor& t : f_.tensors) w += t.nbytes;
+    while (c > 2048 && (double)(w + (uint64_t)c * ink_row_bytes()) > 0.92 * (double)mem) c /= 2;
+    return c;
+  }
+
   void alloc_inkling() {
     const size_t M = max_chunk;
     const InkHp& k = ink_;
@@ -349,7 +374,10 @@
     ink_gain_ = f(E); ink_fgt_ = f(E);
     ink_rl_ = f(NE);
     ink_ids_ = f(NU); ink_w_ = f(NU);
-    ink_gu_ = f((size_t)NU * 2 * F); ink_act_ = f((size_t)NU * F); ink_de_ = f((size_t)NU * E);
+    // (the exact path's expert rows: one row's worth when streamed, where layer_moe's buffers serve; I2 step 3, ~35 %
+    //  of a chunk row on the real model)
+    auto fx = [&](size_t per_row) { return ink_streamed_ ? buf(per_row * 4) : f(per_row); };
+    ink_gu_ = fx((size_t)NU * 2 * F); ink_act_ = fx((size_t)NU * F); ink_de_ = fx((size_t)NU * E);
     // the blocks: one per attn_res block of the layers before the output (the prelude's, a pass's, the epilogue's)
     ink_maxb_ = (hp.n_layer + k.block - 1) / k.block + 1;
     if (ink_maxb_ + 1 > 16) throw std::runtime_error("inkling2: more residual blocks than the mix holds (16)");
