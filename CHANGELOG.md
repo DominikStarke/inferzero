@@ -5,6 +5,8 @@
 - **New, opt-in: `ARC_GEMM_XW_K32=1`** (8-lane discrete cards, the big prompt tile): the tile works through its input
   in smaller steps with four buffers, loading three steps ahead, so a slow part of the GPU holds the others up less, as
   oneDNN's A770 kernel does. The results are the same bit for bit, checked at start.
+- **New, opt-in: `ARC_GEMM_XW_SNAKE=1`**: the big prompt tile's work-groups visit the matrix in a back-and-forth order, so
+  the weights one row of them finishes on are where the next starts. The results are the same bit for bit.
 - **The 32 x 48 tile without register spills:** a form that compiles without spills for the A770 is in `xw_peak` (its rows
   "slm 32x48 8x4 ..."), for the A770 to measure before it goes into the engine (#45).
 

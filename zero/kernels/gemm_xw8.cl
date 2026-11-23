@@ -162,7 +162,14 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
   const int NB = N / (LS * XW_NCO * XW_WGX), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
+#ifdef XS_SNAKE
+  // -DXS_SNAKE (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 6; ARC_GEMM_XW_SNAKE): every other slice of
+  // rgroup rows sweeps the column blocks right to left, so the B panels a slice ends on are the next slice's first, as
+  // oneDNN's boustrophedon walk keeps its resident work-groups' panels in L3. Only the order of the work-groups: bit for bit
+  const int cb = (grp & 1) ? NB - 1 - rem / rin : rem / rin, row = grp * rgroup + rem % rin;
+#else
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
+#endif
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
   // (XW_GU: g0 is the first output column group, of the gate's and the up's rows alike)
   const int nsb = K / 256, g0 = (cb * XW_WGX + sx) * XW_NCO;

@@ -501,7 +501,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_k32_opt(pack);
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_k32_opt(pack) + xw_snake_opt();
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -618,12 +618,22 @@
   // after its arrive (gemm_xw8.cl -DXS_K32). Where both operands are in the work-group order (pack bits 4 and 8), not
   // with the fused gate / up, DPASW, UL or BG (the kernel refuses them). The users' ocloc 26.40 (dg2-g10): no spill,
   // 3,904 instructions and 530 moves against 3,974 and 627. Bit for bit, checked at start (a failure: the layout retry)
+  // ARC_GEMM_XW_SNAKE=1 (8 lanes, 2026-11-23, opt-in; the plan's step 6): the big tile's work-groups in a boustrophedon
+  // walk, every other slice of rows sweeping the column blocks backwards (gemm_xw8.cl -DXS_SNAKE): only the order, bit for bit
+  static std::string xw_snake_opt() {
+    static const bool on = getenv("ARC_GEMM_XW_SNAKE") && atoi(getenv("ARC_GEMM_XW_SNAKE")) != 0;
+    return on ? " -DXS_SNAKE" : std::string();
+  }
   static bool xw_k32_env() {
     static const bool on = getenv("ARC_GEMM_XW_K32") && atoi(getenv("ARC_GEMM_XW_K32")) != 0;
     return on;
   }
   std::string xw_k32_opt(int pack) const {
-    if (!xw_k32_env() || !xw_lay_ok_ || xw_dpasw_env() || xw_ul_env() || (pack & 12) != 12 || (pack & 16)) return std::string();
+    // (and the kernel's other needs tested here, not left to its #error and the start check's retry: the pointer form
+    //  and one chunk a stage; the Researcher's review of 53a449d)
+    if (!xw_k32_env() || !xw_lay_ok_ || xw_dpasw_env() || xw_ul_env() || (pack & 12) != 12 || (pack & 16) || !xw_ptr() ||
+        (xw_big_on() && xw_big_cfg().cps > 1))
+      return std::string();
     return " -DXS_K32";
   }
   bool xw_lay_on() const { return xw_lay_ok_ && (xw_dpasw_env() || xw_ul_env() || xw_k32_env()); }
@@ -732,7 +742,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx);
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_snake_opt();
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -1083,7 +1093,7 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : xw_ul_env() ? "|ul" : "") + (xw_k32_env() ? "|k32" : "") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : xw_ul_env() ? "|ul" : "") + (xw_k32_env() ? "|k32" : "") + (xw_snake_opt().empty() ? "" : "|snake") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)

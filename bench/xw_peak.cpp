@@ -586,6 +586,7 @@ int main(int argc, char** argv) {
       {"slm 32x32 4x8 e2 p wgl split ul", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_UL -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
       {"slm 32x32 4x8 e2 p wgl split hb2", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXW_HB=2 -DXS_LATE", 32, 2, true, true, 4, false, 8, true},
       // (" k32": stages of 32 k values in 4 local buffers, loads 3 stages ahead, gemm_xw8.cl -DXS_K32)
+      {"slm 32x32 4x8 e2 p wgl split snake", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_SNAKE", 32, 2, true, true, 4, false, 8, true},
       {"slm 32x32 4x8 e2 p wgl split k32", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_K32", 32, 2, true, true, 4, false, 8, true},
       // (" dpasw": the split DPAS over fused EU pairs, gemm_xw8.cl -DXS_DPASW: half of A's local reads; DG2 only)
       {"slm 32x32 4x8 e2 p wgl split dpasw", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_WGL -DXS_SPLIT -DXS_DPASW", 32, 2, true, true, 4, false, 8, true},
