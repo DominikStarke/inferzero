@@ -4,7 +4,7 @@
 # The PowerShell port of the former prompt_bench.py (2026-11-21, the user: no Python in the repository): the same
 # requests, files and summary records. Windows PowerShell 5.1 or 7.
 #   powershell -File bench\prompt_bench.ps1 [-Models 35b,g12,9b,4b,e4b,27b] [-Out bench\results\landing] [-Port 8090] [-MaxTokens 6144]
-param([string]$Models = "35b,g12,9b,4b,e4b,27b", [string]$Out = "", [int]$Port = 8090, [int]$MaxTokens = 6144)
+param([string[]]$Models = @("35b,g12,9b,4b,e4b,27b"), [string]$Out = "", [int]$Port = 8090, [int]$MaxTokens = 6144)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Net.Http
 $prompt = "buat html landing page professional toko coklat enak di pondok gede dalam satu file yang ringkas, " +
@@ -42,7 +42,8 @@ function Extract-Html([string]$t) {
 function Get-P($o, $n) { if ($null -eq $o) { return $null }; $p = $o.PSObject.Properties[$n]; if ($p) { $p.Value } else { $null } }
 $http = New-Object System.Net.Http.HttpClient
 $http.Timeout = [TimeSpan]::FromSeconds(7200)
-foreach ($model in $Models.Split(",")) {
+# (-Models 4b,9b unquoted arrives as an array, quoted as one string: both to one comma list, as gpu_sweep -Contexts; #5)
+foreach ($model in ((@($Models) | Where-Object { $_ }) -join ",").Split(",")) {
   $r = Run-Server @("start", "-Model", $model, "-Quiet", "-Port", "$Port")
   if ($r.code -ne 0) { "${model}: server failed to start`n$($r.out)"; continue }
   $alias = (Invoke-RestMethod "$base/v1/models").data[0].id

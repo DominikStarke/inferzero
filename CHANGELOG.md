@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: the benchmark scripts take unquoted lists
+
+- **Fixed:** `bench\gpu_sweep.ps1 -Contexts 512,4096` stopped with a parameter error when the list was not quoted (PascalSoftwares, #5); `bench\prompt_bench.ps1 -Models` had the same fault. Both take the list quoted or not, in Windows PowerShell 5.1 and PowerShell 7.
+
 ## 2026-11-23: Inkling 2 Mini's experts streamed, as the 35B-A3B's (not in the server yet)
 
 - **Inkling 2 Mini runs with its experts streamed from an expert file** through the engine's shared MoE path (sigmoid routing, situ, the per-expert scales), so it no longer needs a 32 GB card: the GPU keeps a cache of the experts, the rest comes from the SSD (and the RAM tier on discrete cards). Checked on a small synthetic Inkling file: KL against the f32 reference 0.00043 (the exact path 0.00022), and the same results bit for bit with most experts missing from the cache. `ARC_INK_RESIDENT=1` keeps the exact path. The real model and the server's support come next (docs/inkling2.md).

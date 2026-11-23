@@ -40,7 +40,7 @@ param(
   [string]$DFlash = "",
   [string]$Device = "",
   [string]$Phases = "GPXDTKM",
-  [string]$Contexts = "",
+  [string[]]$Contexts = @(),  # (a list: -Contexts 512,4096 unquoted arrives as an array, quoted or through -File as one string; #5)
   [string]$XwArgs = "",
   [switch]$Quick,
   [switch]$Fresh
@@ -92,6 +92,7 @@ $vars = @("ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_BENCH_RUNS", "ARC_GEMM_XW_BIG
   "ARC_GEMM_XW_SLM_TILE", "ARC_GEMM_XW_SLM_WG", "ARC_GEMM_XW_SLM_CPS", "ARC_GEMM_XW_PTR", "ARC_GEMM_XW_WGX", "ARC_GEMM_XW_LOCK", "ARC_GEMM_XW_2D", "ARC_GEMM_XW_C_RND", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD", "ARC_GEMM_XW_PFL") + @(($GEN + $PP + $MOE) | ForEach-Object { ($_ -split '\|')[0] } | Where-Object { $_ -like "ARC_*" })
 if ($Device) { $env:ZE_AFFINITY_MASK = $Device }
 function Vals([string]$item) { $p = $item -split '\|'; if ($Quick) { $p[2] -split ' ' } else { $p[1] -split ' ' } }
+$Contexts = (@($Contexts) | Where-Object { $_ }) -join ','  # (either form, to one comma list)
 if (-not $Contexts) { $Contexts = if ($Quick) { "512,4096" } else { "512,4096,32768,max" } }
 $ctxList = @($Contexts -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 foreach ($c in $ctxList) { if ($c -ne "max" -and -not ($c -match '^\d+$' -and [int]$c -ge 64)) { throw "-Contexts: numbers of at least 64 or max ($c)" } }
