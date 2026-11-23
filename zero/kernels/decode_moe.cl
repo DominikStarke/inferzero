@@ -511,6 +511,184 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
 // A DPAS gives the 32-value integer sums exactly, as the DP4a loop does, and the float epilogue is the same fma's in the
 // same order: bit for bit the DP4a kernel's results (checked once per type at the first use, engine_moe_xw.h).
 // -DRG_XEMU: DPAS emulated with DP4a (tests on a GPU without XMX).
+// -DRG_SG8 (with -DRG_XMX, 2026-11-24; zero/xe2/engine_moe_xw.h): the same kernel for GPUs whose DPAS takes 8-lane
+// sub-groups (Alchemist, the 140T): lanes = 8 weight rows (a 16-row group is two sub-groups, as gemm_x8's halves), each
+// lane holding two of the tile's 16 slots (l and l + 8; rows past the tile repeat its last slot). A lane's 32 decoded
+// values are the B operand as on 16 lanes; the A operand is 8 tokens, lane l holding their values 4l .. 4l + 3 (one
+// uint block read per row). The integer sums and the float steps per token are the 16-lane kernel's, in its order: the
+// DP4a moe_rg's results bit for bit (checked at the first use). The types with one scale per 32 values only.
+// -DRG_XEMU: the 8-lane DPAS emulated with DP4a, as gemm_x8.cl's X8_EMU.
+#ifdef RG_SG8
+#if !defined(RG_XMX) || !RG_SC32
+#error "RG_SG8: -DRG_XMX and a type with one scale per 32 values"
+#endif
+#define RG_SGN 8
+#ifdef RG_XEMU
+#ifdef RG_XBAD  // (ARC_MOE_RG_XEMU=2: a wrong DPAS, no broadcast, which the first-use check must refuse)
+#define RG8A(a, w) (a)
+#else
+#define RG8A(a, w) intel_sub_group_shuffle((a), (w))
+#endif
+inline int rg8_row(uint a, int8 b) {
+  int acc = 0;
+  acc += dot_4x8packed_ss_int(RG8A(a, 0), (uint)b.s0);
+  acc += dot_4x8packed_ss_int(RG8A(a, 1), (uint)b.s1);
+  acc += dot_4x8packed_ss_int(RG8A(a, 2), (uint)b.s2);
+  acc += dot_4x8packed_ss_int(RG8A(a, 3), (uint)b.s3);
+  acc += dot_4x8packed_ss_int(RG8A(a, 4), (uint)b.s4);
+  acc += dot_4x8packed_ss_int(RG8A(a, 5), (uint)b.s5);
+  acc += dot_4x8packed_ss_int(RG8A(a, 6), (uint)b.s6);
+  acc += dot_4x8packed_ss_int(RG8A(a, 7), (uint)b.s7);
+  return acc;
+}
+inline int8 rg8_mad(int8 a, int8 b) {
+  return (int8)(rg8_row((uint)a.s0, b), rg8_row((uint)a.s1, b), rg8_row((uint)a.s2, b), rg8_row((uint)a.s3, b),
+                rg8_row((uint)a.s4, b), rg8_row((uint)a.s5, b), rg8_row((uint)a.s6, b), rg8_row((uint)a.s7, b));
+}
+#else
+#define rg8_mad(a, b) intel_sub_group_i8_i8_matrix_mad_k32((a), (b), (int8)(0))
+#endif
+__attribute__((intel_reqd_sub_group_size(8)))
+__kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* restrict aq,
+                     __global const float* restrict asc, __global float* restrict C, int M, int ldc, int accumulate,
+                     __global const int* restrict tiles, __global const int* restrict tstart, int ne,
+                     __global const int* restrict rowmap, int use_map, __global const float* restrict rowscale,
+                     int use_scale, int kv XARGS_RG SITU_ARG) {
+  const int gy = get_group_id(1), ngy = get_num_groups(1);
+  if (tstart[0] + gy >= tstart[ne]) return;  // (no tile for this work-group: before the staging)
+#ifdef GRID_OFF
+  __local uint lgrid[GRID_N];
+  for (int i = get_local_id(0); i < GRID_N; i += get_local_size(0)) lgrid[i] = tabs[GRID_OFF + i];
+  const uint* grid = lgrid;
+#else
+  const uint* grid = tabs;
+#endif
+#ifdef AUX_OFF
+  __local uint laux[AUX_N];
+  for (int i = get_local_id(0); i < AUX_N; i += get_local_size(0)) laux[i] = tabs[AUX_OFF + i];
+  const uint* aux = laux;
+#else
+  const uint* aux = tabs;
+#endif
+  barrier(CLK_LOCAL_MEM_FENCE);
+#ifdef RG_VB
+  __local uint kt[VB_TABLES];  // (unused by these types)
+#endif
+  const int lane = get_sub_group_local_id(), gc = get_group_id(0), nsb = K / 256, t_end = tstart[ne];
+  const int hg = ((int)get_local_id(0) / RG_SGN) & 1;  // (which half of the 16-row group)
+  for (int t = tstart[0] + gy; t < t_end; t += ngy) {
+    const int e = tiles[1 + 3 * t], r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
+    int rl[2], tokl[2];  // (slots lane and lane + 8)
+#pragma unroll
+    for (int v = 0; v < 2; ++v) {
+      rl[v] = r0 + min(lane + RG_SGN * v, nr - 1);
+      tokl[v] = use_map ? rowmap[rl[v]] : rl[v];
+    }
+    const int n = gc * 16 + hg * RG_SGN + lane;  // this lane's weight row
+#ifdef XCACHE
+    __global const uchar* wrow = (__global const uchar*)xaddr[e] + xoff + (size_t)n * nsb * BBP;
+#else
+    __global const uchar* wrow = raw + ((size_t)e * N + n) * nsb * BBP;
+#endif
+    float res[RG_TM];
+#pragma unroll
+    for (int m = 0; m < RG_TM; ++m) res[m] = 0.0f;
+    for (int s = 0; s < nsb; ++s) {
+#ifdef RG_VB
+      __global const uchar* sbp = wrow + (size_t)s * BBP;
+#else
+      uint sbu[BBP / 4];
+      {
+        __global const uint* src = (__global const uint*)(wrow + (size_t)s * BBP);
+#pragma unroll
+        for (int i = 0; i < BBP / 8; ++i) {
+          const uint2 v = vload2(i, src);
+          sbu[2 * i] = v.x;
+          sbu[2 * i + 1] = v.y;
+        }
+      }
+      const uchar* p = (const uchar*)sbu;
+#endif
+      float tq[RG_TM];
+#pragma unroll
+      for (int m = 0; m < RG_TM; ++m) tq[m] = 0.0f;
+      float d = 0.0f;
+#pragma unroll
+      for (int j = 0; j < 4; ++j) {
+        if (s * 256 + 64 * j >= kv) break;  // (columns past kv: padding; kv % 64 == 0)
+        uint lo[8], hi[8];
+        int a0, a1, b0, b1, mn0, mn1;
+        float dl, dmin;
+#ifdef RG_VB
+        vblock(sbp, 2 * j, kt, lo, &dl, &dmin, &a0, &a1, &mn0, &mn1);
+        vblock(sbp, 2 * j + 1, kt, hi, &d, &dmin, &b0, &b1, &mn0, &mn1);
+#else
+        decode32(p, 2 * j, grid, aux, lo, &a0, &a1, &mn0, &mn1, &dl, &dmin);
+        decode32(p, 2 * j + 1, grid, aux, hi, &b0, &b1, &mn0, &mn1, &d, &dmin);
+#endif
+        a0 = (int)(char)a0; a1 = (int)(char)a1; b0 = (int)(char)b0; b1 = (int)(char)b1;
+        float avl[2], avh[2];  // (slots lane and lane + 8)
+#pragma unroll
+        for (int v = 0; v < 2; ++v) {
+          avl[v] = asc[((size_t)s * 8 + 2 * j) * M + tokl[v]];
+          avh[v] = asc[((size_t)s * 8 + 2 * j + 1) * M + tokl[v]];
+        }
+        const int8 blo = as_int8((uint8)(lo[0], lo[1], lo[2], lo[3], lo[4], lo[5], lo[6], lo[7]));
+        const int8 bhi = as_int8((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7]));
+#pragma unroll
+        for (int tg = 0; tg < 2; ++tg) {  // (slots tg * 8 .. tg * 8 + 7: lane r's slot tg)
+          int al[8], ah[8];
+#pragma unroll
+          for (int r = 0; r < 8; ++r) {
+            __global const uint* ap = (__global const uint*)(aq + (size_t)RG_B(tokl[tg], r) * K + s * 256 + j * 64);
+            al[r] = as_int(intel_sub_group_block_read(ap));      // values 0 .. 31 of the chunk
+            ah[r] = as_int(intel_sub_group_block_read(ap + 8));  // values 32 .. 63
+          }
+          const int8 x0 = rg8_mad((int8)(al[0], al[1], al[2], al[3], al[4], al[5], al[6], al[7]), blo);
+          const int8 x1 = rg8_mad((int8)(ah[0], ah[1], ah[2], ah[3], ah[4], ah[5], ah[6], ah[7]), bhi);
+          const int cv0[8] = {x0.s0, x0.s1, x0.s2, x0.s3, x0.s4, x0.s5, x0.s6, x0.s7};
+          const int cv1[8] = {x1.s0, x1.s1, x1.s2, x1.s3, x1.s4, x1.s5, x1.s6, x1.s7};
+#pragma unroll
+          for (int r = 0; r < 8; ++r) {
+            const int m = tg * 8 + r;
+#if PER32
+            res[m] = fma(RG_B(avl[tg], r) * dl, (float)cv0[r], fma(RG_B(avh[tg], r) * d, (float)cv1[r], res[m]));
+#else
+            const float plo = (float)cv0[r] * (float)a0, phi = (float)cv1[r] * (float)b0;
+            tq[m] = fma(RG_B(avl[tg], r), plo, fma(RG_B(avh[tg], r), phi, tq[m]));
+#endif
+          }
+        }
+      }
+#if !PER32
+#pragma unroll
+      for (int m = 0; m < RG_TM; ++m) res[m] = fma(d, tq[m], res[m]);
+#endif
+    }
+    float rsc[2];
+#pragma unroll
+    for (int v = 0; v < 2; ++v) rsc[v] = use_scale ? rowscale[rl[v]] : 1.0f;
+#pragma unroll
+    for (int m = 0; m < RG_TM; ++m) {
+      if (m >= nr) break;
+      __global uint* cp = (__global uint*)(C + (size_t)(r0 + m) * ldc + gc * 16 + hg * RG_SGN);
+      float v = res[m] * RG_B(rsc[m / 8], m % 8);
+      if (accumulate == 1) {
+        v += as_float(intel_sub_group_block_read(cp));
+      } else if (accumulate == 2) {
+        const float g = as_float(intel_sub_group_block_read(cp));
+#ifdef MOE_SITU  // (Inkling 2: the gate pass stored the gate unscaled; the gate-up scale on both, then situ)
+        const float es = esc_gu[e];
+        v = situ_act(g * es, v * es);
+#else
+        v *= g / (1.0f + exp(-g));
+#endif
+      }
+      intel_sub_group_block_write(cp, as_uint(v));
+    }
+  }
+}
+#else  // !RG_SG8: the 16-lane kernel
 #if defined(RG_XMX) && defined(RG_XEMU)
 inline int8 rg_mad(short8 a, int8 b) {
   const int av[8] = {a.s0, a.s1, a.s2, a.s3, a.s4, a.s5, a.s6, a.s7};
@@ -717,4 +895,5 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
     }
   }
 }
+#endif  // RG_SG8
 #endif  // MOE_RG

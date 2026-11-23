@@ -15,7 +15,7 @@
 // moe_rg's bit for bit, and moe_rg's are decode + GEMM's: checked once per expert type at its first use, on the chunk
 // itself (the DP4a kernel writes the layer's output, the XMX one a copy, compared byte for byte; any difference, or an
 // XMX kernel that does not build, keeps DP4a for that type, with a line; the copy is freed after each check).
-// ARC_MOE_RG_XEMU=1: DPAS emulated with DP4a, on any GPU (tests).
+// ARC_MOE_RG_XEMU=1: DPAS emulated with DP4a, on any GPU (tests); =2 on an 8-lane GPU a wrong one, which must fail.
 
   static bool rgx_emu() {
     static const bool e = getenv("ARC_MOE_RG_XEMU") && atoi(getenv("ARC_MOE_RG_XEMU")) != 0;
@@ -23,8 +23,11 @@
   }
   bool moe_rgx_on() const {
     static const bool on = getenv("ARC_MOE_RG_XMX") && atoi(getenv("ARC_MOE_RG_XMX")) != 0;
-    return on && hp.moe_std && !hp.ds41 && (rgx_emu() || (xmx_ && cl_.xmx && !cl_.sg8));
+    return on && hp.moe_std && !hp.ds41 && (rgx_emu() || (xmx_ && cl_.xmx));
   }
+  // (8-lane GPUs, Alchemist and the 140T, since 2026-11-24: moe_rg's 8-lane XMX form, -DRG_SG8 (decode_moe.cl), the same
+  //  rule and the same first-use check; for an A770's 35B, whose decode_w8 pass was about as long as its expert GEMMs
+  //  (#45). ARC_MOE_RG_XEMU=1 on an 8-lane GPU emulates that form's DPAS)
   // moe_rg's RG_SC32 types: one scale per 32 values (the DPAS sums are its c0 / c1)
   static bool rgx_type(uint32_t t) {
     return t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS || is_per32_type(t);
@@ -64,7 +67,8 @@
   }
   std::string rgx_defs(const Layer& L, int i) const {
     if (!rgx_part(L, i)) return std::string();
-    return std::string(" -DRG_XMX") + (rgx_emu() ? " -DRG_XEMU" : "");
+    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (rgx_emu() ? " -DRG_XEMU" : "") +
+           (cl_.sg8 && rgx_emu() && atoi(getenv("ARC_MOE_RG_XEMU")) == 2 ? " -DRG_XBAD" : "");
   }
   // The first use of a type on XMX: run the DP4a kernel as always into C, the XMX kernel into a copy of C taken before
   // either ran, then compare the two buffers whole (the same tiles, rows and columns written by both). run(k) sets the
