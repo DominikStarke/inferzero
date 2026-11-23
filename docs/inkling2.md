@@ -1,8 +1,7 @@
 # Inkling 2 Mini: design (2026-11-23)
 
 Status: design, to build. The user's targets are **prompt 6,000 tok/s on a Pro B70** (the user, 2026-11-23: "I mean
-6000tok/s for B70") **and generation 130 tok/s on a Pro B70 and an A770** (#83); the A770's prompt has no number yet
-(the realistic estimate ~3,500-4,500 until the user sets one). The model facts below come from the other session's analysis of the GGUF headers (unsloth/Inkling-2-Mini-GGUF:
+6000tok/s for B70") **prompt 4,000 tok/s on an A770** (the user: "Use 4,000"), **and generation 130 tok/s on both** (#83). The model facts below come from the other session's analysis of the GGUF headers (unsloth/Inkling-2-Mini-GGUF:
 the mainline Q8_K_XL, the mmproj, the DSpark drafter; all in the laptop's HF cache).
 
 ## Work rules for this phase (the user: no GPU and no CPU use)
@@ -429,7 +428,7 @@ they are, with nothing of its own but the record recipe:
   - the real model on the laptop through gpu_guard: KL against ref_forward on a short prompt, then speed.
 
 **I2. The fastest preset for every card** (the user, 2026-11-23: "continue inkling 2 with fastest techniques and
-configuration for every card"; targets: pp 6,000 on the B70, tg 130 on the B70 and the A770, #83). Plan only: each item opt-in
+configuration for every card"; targets: pp 6,000 on the B70, pp 4,000 on the A770, tg 130 on both, #83). Plan only: each item opt-in
 until a card measures it, then that family's default; bit for bit, or KL <= 0.015 token by token over hundreds of
 positions with the same top token at 98 % or more. Built on I1.7 (the streamed experts), whose path every card takes:
 with all experts cached it is the resident path, with smaller Q8_0 records for the BF16 experts.
@@ -452,15 +451,16 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
     token, ~9 % of its peak; Inkling needs ~1.8x that. In its favour: 8 of 128 experts (the 35B: 8 of 256), so each
     expert gets ~512 rows at chunk 8,192 and the XMX tiles fill better, and NVFP4 decodes more cheaply than IQ4_XS.
     6,000 needs the expert GEMM near the dense GEMMs' efficiency at chunk 8,192; the 35B-like baseline is measured first.
-  - **The A770: ~3,500-4,500 expected, no target set yet** (the 6,000 is the B70's: the user, 2026-11-23). Its 35B runs
+  - **The A770: the target is 4,000** (the user, 2026-11-23: "Use 4,000"; the 6,000 is the B70's). ~40 TOPS of useful
+    work, ~17 % of its measured 232. Its 35B runs
     2,538 tok/s at 4K, ~15 TOPS (6.6 % of its peak) with DP4a experts, and its whole dense 27B prompt is ~41 % of peak.
-    What gets it there, and further if the user sets a higher number:
+    What gets it there:
     - **the 8-lane XMX expert GEMM near the big tile's efficiency**, with dpasw;
     - **no separate decode_w8 pass for the experts** (12-15 % of the 35B's prompt today): the NVFP4 rows decoded in the
       GEMM's own loads, or read raw into the XMX operands as `MOE_Q` reads them;
     - **routing, scatter and combine fused and small**;
     - **the chunk as large as the expert cache allows.**
-    Each of these gets a before-after row with the A770's `--prof` share beside it.
+    Each of these is measured against 4,000 in its before-after row, with the A770's `--prof` share beside it.
 
 **The steps, for every card unless a card is named** (each its own commit and before-after row):
 1. **Fused layer kernels (generation first).** The controller (`ink_rms2` + `ink_ctrl_apply`), the K / V rows and
