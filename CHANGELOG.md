@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-23: the engine's Inkling 2 graph (step I1.5, the correctness path; not run yet)
+
+- **The engine can load and run Inkling 2** (`inkling2`, `inkling2_loop`), written for correctness first: the
+  looped layers with their controllers, the attention over depth, the relative-position attention with sinks, the
+  short convolutions, and the situ experts read exactly from their NVFP4 / BF16 rows
+  ([docs/inkling2.md](docs/inkling2.md)). Speed work comes after the accuracy checks.
+- One conversation at a time for now. Slots, drafting, several GPUs and saved prompts are refused, and the 23 GB
+  Q8_K_XL needs a 32 GB card.
+- Other models: unchanged (each new line runs only for Inkling 2; its kernels are in a file of their own, loaded after
+  every other).
+
 ## 2026-11-23: a tiny synthetic Inkling 2 for tests (step I1.4; not run yet)
 
 - **`tools/make_tiny_inkling2`** writes a small Inkling 2 GGUF with random weights and the real file's layout: 8

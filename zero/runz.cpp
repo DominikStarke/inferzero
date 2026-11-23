@@ -317,7 +317,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     return same ? 0 : 1;
   }
   if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
-    const size_t V = (size_t)tp.vocab();
+    // (Inkling 2: the head's rows past the vocabulary are -inf logits; the reference holds the vocabulary only)
+    const size_t V = e0.hp.inkling ? (size_t)e0.ink_vocab() : (size_t)tp.vocab();
     const std::vector<float> ref = read_kl_ref(kl_ref, V);
     if (ref.empty()) { zlog::eprintf("cannot read %s\n", kl_ref.c_str()); return 1; }
     if (ref.size() != V * prompt.size()) { zlog::eprintf("reference must hold every position\n"); return 1; }

@@ -54,6 +54,7 @@ struct Hparams {
   bool qwen3 = false;  // Qwen3 dense (qwen3 / qwen3vl, Qwen3-ASR's text model): full attention in every layer, no
                        // output gate, 128-dim heads with RoPE over all dims, SwiGLU FFN
   bool ds41 = false;  // DeepSeek-V4.1-Flash (deepseek41): zero/engine_ds41.h
+  bool inkling = false;  // Inkling 2 (inkling2 / inkling2_loop): zero/engine_inkling.h
   bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
@@ -422,7 +423,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const bool fn_4k = o.tp_size > 1 || zrt::D().global_mem >= (zrt::integrated() ? (15ull << 30) : (20ull << 30));
     // (the user, 2026-11-20: "Yes, 4096 for all", then "gemma4 2048 then": a MoE model with every expert on the GPU
     //  (the 35B-A3B on a B60 / B70) 2048 -> 4096 too, Gemma 4 2048 either way)
-    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? (small_plan_ ? small_chunk_ : 1024) : (w8_resident && !res_long ? 512 : 4096);
+    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : hp.inkling ? 512 : stream_ ? (hp.gemma ? 2048 : hp.hc ? (fn_4k ? 4096 : 2048) : 4096) : hp.moe ? (hp.gemma ? 2048 : 4096) : tight_ ? (small_plan_ ? small_chunk_ : 1024) : (w8_resident && !res_long ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
@@ -631,6 +632,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     TP_MIRROR(reset(), TpMirror::kNone, 0);
     pos = 0;
     ds_hist_.clear();
+    if (hp.inkling) ink_reset();  // (the slots' conv states)
     written_hi_ = 0;
     swa_lo_ = 0;
     pend_toks_.clear();
@@ -679,7 +681,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (hp.ple_layer >= 0) ple_sync();
     struct DflCommit { Engine& e; int p0; ~DflCommit() { if (e.dfl_) e.dfl_commit_prompt(p0); } } dfl_commit{*this, pos};
     if (dfl_) dfl_window(pos, n);
-    if (lm_prompts() && n > max_chunk && !hp.n_ple && (!hp.ds41 || ds_lm_on())) {
+    if (lm_prompts() && n > max_chunk && !hp.n_ple && !hp.inkling && (!hp.ds41 || ds_lm_on())) {
       // layer-major in segments of up to lm_seg_ tokens (each matrix is decoded once per segment)
       prog_total_ = n;
       for (int s0 = 0; s0 < n; s0 += lm_seg_) {
@@ -1050,6 +1052,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void snapshot(int slot) {
     TP_MIRROR(snapshot(slot), TpMirror::kNone, 0);
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
+    if (hp.inkling) throw std::runtime_error("Inkling 2: snapshots are not supported yet");
     Snap& s = snaps_[slot];
     // (DeepSeek-V4.1: its compressed rows are position-indexed like a KV cache; the window rings, the pending
     //  compressor rows and the Engram history are copied, ~10 MB on the real model)
@@ -1125,6 +1128,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   bool restore(int slot) {
     TP_MIRROR(restore(slot), TpMirror::kNone, 0);
+    if (hp.inkling) return false;  // (no snapshots yet: snapshot() refuses)
     if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
     if (hp.ds41) {  // (see snapshot())
@@ -1655,6 +1659,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       return;
     }
     if (hp.ds41) return ds_layer(L, T, Mp);
+    if (hp.inkling) {  // (Inkling 2: the whole looped graph on the first layer, zero/engine_inkling.h)
+      if (&L == &layers_.front()) ink_forward(T, Mp);
+      return;
+    }
     if (hp.hc) {  // Flash Next: each block reads the mixed streams and adds its output to every stream
       if (L.il == hp.ple_layer) ple_block(L, T, Mp);
       hc_mix(L.hc_norm[0], L.hc_down[0], L.hc_up[0], T, Mp, act32_for(false), 0);
@@ -1893,6 +1901,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 
 #include "engine_flashnext.h"  // (Qwen3.8 Flash Next)
 #include "engine_ds41.h"  // (DeepSeek-V4.1-Flash)
+#include "engine_inkling.h"  // (Inkling 2, docs/inkling2.md)
 
 #include "engine_qwen.h"  // (Qwen layers)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
@@ -1938,6 +1947,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     size_t gws[2] = {256, (size_t)n}, lws[2] = {256, 1};
     run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
     matmul(hw ? "lm_head_draft" : "lm_head", H, 16, logits_, nl, 0, 0, true);
+    if (hp.inkling) ink_mask_logits(n, nl);  // (the head's rows past the vocabulary)
     cur_T_ = saved;
   }
   void head(int T) { head_rows(T - 1, 1, out_norm_, has_mtp ? hlast_ : nullptr); }

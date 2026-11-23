@@ -196,6 +196,46 @@ Developer cuts them.
    - BF16 matrices take the engine's float requant to Q8_0, as other models do.
    - Explicit local sizes where a kernel's local memory or shuffles assume a group shape (AGENTS.md).
    - Waits on: the tiny model's KL on the laptop through gpu_guard, then the real file.
+
+   **Written (2026-11-23): the correctness path.** `zero/engine_inkling.h` (part of the Engine class) and
+   `zero/kernels/ops_inkling.cl`. It follows `ref_inkling2.h` step by step:
+   - **Weights:**
+     - The dense matrices (q, k, v, o, gate, rel, conv taps, the controllers' down) go through the engine's int8
+       matmuls, BF16 requantized to Q8_0 as for every model.
+     - Matrices whose shapes the GEMM refuses (N not a multiple of 16 or K of 256: the 24-row sinks, the controllers'
+       rank-64 gain / forget), and the router, stay f32 (`ink_mm_f32`); the router is f32 in llama.cpp too.
+     - A 2D weight with a `.scale` is refused for now, and so are `.input_scale` tensors.
+   - **Experts:** read from their raw GGUF rows by `ink_expert_mv`: NVFP4 per 16 exactly, plus BF16, Q8_0 and F32.
+     The per-expert `.scale` goes on the gate-up output (in `ink_situ`) and on the down output (`ink_expert_sum`), as
+     llama.cpp applies it. So this path does not take the per-32 fold: the fast MoE kernels (I2 / I3) will. The whole
+     expert tensors are uploaded raw: the Q8_K_XL needs a 32 GB card (B70, B65), and the laptop runs the tiny file.
+   - **Cache slots:** llama.cpp's 48, i.e. the 24 layers and then the loop's later passes. Each has its own f16 K / V
+     (the global layers' slots hold the context, the sliding ones a ring of `swa_ring_cap`) and its four
+     short-convolution states (K, V, attention output, FFN output), zeroed by `reset()`.
+   - **Kernels**, f32 and written for correctness:
+     - `ink_mix` (the attention over depth), `ink_rms2` and `ink_ctrl_apply` (the controllers);
+     - `ink_conv` and `ink_conv_state`; `ink_rows` (the clips and tau, V's norm); `ink_kv_store`;
+     - `ink_attn`: one work-group of 128 per (token, head), the relative-bias table in local memory, online softmax
+       from the zero sink, the gate;
+     - `ink_route`, `ink_situ`, `ink_expert_sum`, `ink_mask_logits`.
+     - Every kernel with local memory takes an explicit size and keeps its barriers in uniform control flow.
+   - **The chunk:** `ink_forward` runs the whole graph from `run_layer`'s first layer: the prelude, the passes with
+     their bank and messages, the epilogue. The output mix goes into `x_`, and `head()` then applies `output_norm`,
+     the head (Q8_0) and the softcap; `ink_mask_logits` sets the padded vocabulary's logits to -inf.
+     `runz --kl-ref` compares the unpadded 200,058. The chunk is 512.
+   - **Refused:** slots, MTP / DFlash, several GPUs, snapshots (`snapshot()` throws, `restore()` returns false).
+   - **Hooks**, each under `hp.inkling`:
+     - engine_setup.h `load_hparams`; engine_load.h `build_kernels` / `load_weights`; engine_alloc.h;
+     - engine.h `forward` (no layer-major), `run_layer`, `head_rows`, `reset`, `snapshot` / `restore`, `max_chunk`;
+     - engine_slots.h `ctx_bytes`; runz's `--kl-ref` vocabulary; `ops_inkling.cl` appended last to
+       `KernelParts::kOps`, so every other kernel's source is unchanged.
+   - Built: runz and serverz clean; `ops_inkling.cl` compiles alone for mtl, bmg-g31 and dg2-g10, and after the other
+     ops parts for mtl.
+   - **Runs it waits on:**
+     - the tiny file through `bench\gpu_guard.ps1`, runz `--kl-ref` against ref_forward's REF_ALL, with and without
+       `--nvfp4-equal` (they should agree, since this path reads NVFP4 exactly);
+     - the bit-identity of the other models: `runz --dump-logits` on the 4B and the 35B before and after;
+     - the real file on a 32 GB card.
 6. **Memory and fit:** ctx_bytes for the loop's per-pass KV (12 loop layers x 3 passes), the plan's estimate through
    the shared helpers (`ring_pos_bytes`, `swa_ring_cap`), and a catalog entry with the drafter.
 

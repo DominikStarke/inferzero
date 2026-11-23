@@ -209,6 +209,7 @@
         stage_h_[r] = buf(stage_have_h_[r] = stage_need_h_[r]);
       }
     if (hp.ds41) alloc_ds41();
+    if (hp.inkling) alloc_inkling();
     if (lm_prompts() && (!hp.ds41 || ds_lm_on())) {  // (DeepSeek-V4.1: with ARC_DS_LM only, zero/engine_ds41.h)
       // residual stream of a layer-major segment (+ one chunk of padding rows)
       lm_seg_ = lm_seg_for(ctx);

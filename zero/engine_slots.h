@@ -58,6 +58,7 @@
     c = (c + 15) / 16 * 16;
     size_t n = ctx_buf_bytes(c);
     if (hp.ds41) return n + ds_ctx_cache_bytes(c);
+    if (hp.inkling) return n + ink_ctx_cache_bytes(c);  // (zero/engine_inkling.h)
     if (hp.swa_rings) {
       const int swa_cap = swa_ring_cap(c, max_chunk, swa_margin());
       for (const Layer& L : layers_)

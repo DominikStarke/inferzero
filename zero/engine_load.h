@@ -10,6 +10,12 @@
     auto p = [&](const char* n) { return kernel("ops", "", n); };
     // (h8f_defs_: H8's float copy of the activations, zero/engine_h8.h; empty otherwise)
     k_rmsnorm_ = kernel("ops", h8f_defs_, "rmsnorm_quant");
+    if (hp.inkling) {  // (Inkling 2: its own kernels, built as used, zero/engine_inkling.h; quant_rows' k_swiglu_)
+      k_swiglu_ = kernel("ops", h8f_defs_, "swiglu_quant");
+      auto tabs = build_iq_tables();
+      if (!tabs_) tabs_ = buf(tabs.size() * 4, tabs.data());
+      return;
+    }
     if (hp.ds41) {  // (DeepSeek-V4.1: its shared expert's SwiGLU clamped; none of the Qwen attention / DeltaNet kernels)
       k_swiglu_ = kernel("ops", h8f_defs_ + ds_swi_defs(), "swiglu_quant");
       auto tabs = build_iq_tables();
@@ -726,6 +732,7 @@
     if (pp_last()) load_head();
     if (hp.gemma) return load_weights_gemma4();
     if (hp.ds41) return load_weights_ds41();
+    if (hp.inkling) return load_weights_inkling();
     layers_.resize(le - lb);
     for (int il = lb; il < le; ++il) {
       Layer& L = layers_[il - lb];
