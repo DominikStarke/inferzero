@@ -204,10 +204,11 @@
     const double sync_ms = std::chrono::duration<double, std::milli>(h1 - h0).count();
     hst_sync_ms_ += sync_ms;
     // (Inkling: whether this layer runs again in this forward, a later loop pass: its experts kept at the list's front)
+    //  (cleared on every way out, an ensure() that throws included: the Researcher's review of 4546f5d)
+    struct KeepFront { bool& f; ~KeepFront() { f = false; } } keep_guard{xc_->keep_front};
     xc_->keep_front = hp.inkling && std::find(ink_order_.begin() + std::min(ink_pos_, ink_order_.size()), ink_order_.end(), L.il) !=
                                         ink_order_.end();
     xc_->ensure(L.il, ids.data(), ids.size(), T > 8, gemm);
-    xc_->keep_front = false;
     const double ens_ms = hms(h1);
     hst_ensure_ms_ += ens_ms;
     if (T == 1) gen_sync_ms_ += sync_ms, gen_ensure_ms_ += ens_ms, ++gen_waits_;
