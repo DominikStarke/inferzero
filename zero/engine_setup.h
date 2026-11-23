@@ -461,10 +461,6 @@
       gdnx_src_ = read_file(opt.kernel_dir + "/gdn_x.cl");
       if (gdnx_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gdn_x.cl");
     }
-    if (which == "gdns" && gdns_src_.empty()) {  // (gdn_recur with 2 / 4 work-items a column, ARC_GDN_SPLIT, engine_xe2.h)
-      gdns_src_ = read_file(opt.kernel_dir + "/gdn_split.cl");
-      if (gdns_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gdn_split.cl");
-    }
     if (which == "attnfx" && attnfx_src_.empty()) {  // (the prompt attention as flash attention on XMX, engine_xe2.h)
       attnfx_src_ = read_file(opt.kernel_dir + "/attn_fx.cl");
       if (attnfx_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/attn_fx.cl");
@@ -480,7 +476,7 @@
     }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
                              : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
-                             : which == "gdnx" ? gdnx_src_ : which == "gdns" ? gdns_src_ : which == "attnx" ? attnx_src_ : which == "attnfx" ? attnfx_src_ : which == "attnx8" ? attnx8_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
+                             : which == "gdnx" ? gdnx_src_ :which == "attnx" ? attnx_src_ : which == "attnfx" ? attnfx_src_ : which == "attnx8" ? attnx8_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
                              : ops_.for_kernel(name);
     // (the H8 rotation, kernels/rot.cl, in front of the kernels that use it: h8.cl's, decode.cl's h8r_decode and
     //  ops.cl's rmsnorm_h8r)

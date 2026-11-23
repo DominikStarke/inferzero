@@ -1219,6 +1219,10 @@ These are read by the engine but are not in the options catalog (`scripts/option
 Each is off or at its default unless set. The audit of 2026-11-23 found them documented only in before-after, or
 nowhere.
 
+A new opt-in that puts another kernel in a kernel's place gets a profile row of its own name and a start-up line
+saying it is on (2026-11-23: `ARC_GDN_SPLIT`'s kernel was profiled as `gdn_recur` and said nothing at start-up, so a
+user's log could not show whether it ran).
+
 | Switch | What it does |
 |---|---|
 | `ARC_COPY_DRAFT=1` | copy drafting without `--copy-draft`: drafts copied from an earlier place in the context where the last tokens appear (`zero/engine_drafters.h`) |
@@ -1232,7 +1236,6 @@ nowhere.
 | `ARC_XLIST_SYNC=1` | MoE: the expert hit / miss lists written with a blocking write (a test) |
 | `ARC_GEMV_DEEP=2..16` | the one-token GEMV with D read windows in flight, in place of `ARC_GEMV_DB` / `_PF`; bit-identical |
 | `ARC_GV_SGNPOP=1` | the GEMVs' sign table computed, not read (IQ2_XXS / IQ2_XS / IQ3_XXS); bit-identical |
-| `ARC_GDN_SPLIT=2` / `4` | the prompt's DeltaNet with 2 / 4 work-items a state column (`kernels/gdn_split.cl`), bit for bit `gdn_recur`; opt-in, the A770 to measure (slower on the laptop's iGPU) |
 | `ARC_GPU_MEM_GB=N` | the fit checks (`--ctx auto`, the `--ctx` check, the expert cache's share) count at most N GiB, as on a smaller card |
 | `ARC_LOG_ROLL_KB=n` | the server log's roll within a run at n KB instead of 256 MB (a test, [logging.md](logging.md)) |
 | `ARC_TIGHT_SMALL=0` | a small spill to RAM kept as weights in RAM, not traded for 512-token chunks (the tight plan, 2026-11-23) |

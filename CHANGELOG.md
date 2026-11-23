@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: `ARC_GDN_SPLIT` removed
+
+- **Removed: `ARC_GDN_SPLIT=2` / `4`,** the prompt's DeltaNet with 2 or 4 work-items per state column. On skipzx-lab's
+  A770, the card it was made for, it was slower: the 27B's 4K prompt went from 1,712 to 1,426 / 1,183 tok/s (#45). The
+  default was never changed.
+
 ## 2026-11-23: bench/stray_words.ps1 counts the answer, not the thinking
 
 - **Fixed:** the Latin and other-script columns counted the whole saved file, thinking included. A thinking part in
