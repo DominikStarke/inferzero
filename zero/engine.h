@@ -196,7 +196,10 @@ class Engine {
   // card several times that), so runz's "% of" fits the machine it runs on. (Before 2026-11-18: one 512-byte read at
   // a time per sub-group over a 64 KB strip of a 256 MB buffer: an Arc A770 measured 273-293 GB/s against 560 on paper
   // and gpu_bench's 406, issue #35, so its GEMVs' share looked twice what it was)
-  double read_gbs() {
+  // (the read kernels' program, built once: read_gbs and the expert cache's placement check, engine_stream.h)
+  cl_program rd_prog_ = nullptr;
+  cl_program rd_prog() {
+    if (rd_prog_) return rd_prog_;
     static const char* src = R"CLC(
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void rd_block(__global const uint* x, __global uint* out, int n) {
@@ -222,8 +225,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   if (acc == 0x12345678u) out[0] = acc;
 })CLC";
-    cl_program p = cl_.build(src, "-cl-std=CL3.0");
-    progs_.push_back(p);
+    rd_prog_ = cl_.build(src, "-cl-std=CL3.0");
+    progs_.push_back(rd_prog_);
+    return rd_prog_;
+  }
+  double read_gbs() {
+    cl_program p = rd_prog();
     // (both patterns, the faster counts: the laptop's iGPU reads 72-73 GB/s with the strips and 58-60 with the
     //  interleaved reads; a discrete card's memory may want the other)
     cl_kernel k = cl_.kernel(p, "rd_block"), ks = cl_.kernel(p, "rd_strip");

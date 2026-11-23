@@ -168,6 +168,60 @@
     zlog::eprintf("inferzero: expert cache %.2f GiB (%.0f %% of %.2f GiB experts, %d slots), staging %.0f MiB, file %s\n",
             xc_->cache_bytes / GiB, 100.0 * xc_->cache_bytes / all, all / GiB, xc_->slots(), xc_->stage_bytes / 1048576.0,
             xc_->st.path.c_str());
+    xcache_placement_check();
+  }
+  // (2026-11-23, #45: a discrete card nearly full of buffers can get part of a large allocation placed in system memory
+  //  by the driver without an error. hansong80's A770 under Windows, the 35B with 14.6 GiB of buffers on 16 GB:
+  //  generation alternated run to run, 43.7 against 23.2 tok/s, "weights read" 106 against 56 GB/s, the same load
+  //  lines. Each 1 GiB piece of the expert cache is read here once, 64 MB of it, timed: the card's own memory reads
+  //  186 GB/s or more (the A380 and up), PCIe ~20-30, so a piece under 64 GB/s is in system memory, and the run says
+  //  how much, and what keeps it on the card. Discrete cards only, ~1 ms a GiB; ARC_XPLACE=0 skips it, =2 prints each
+  //  piece's rate)
+  void xcache_placement_check() {
+    static const int mode = getenv("ARC_XPLACE") ? atoi(getenv("ARC_XPLACE")) : 1;
+    if (mode == 0 || (zrt::integrated() && mode != 2) || opt.dry || !xc_) return;  // (=2 on an iGPU too: tests)
+    cl_kernel k = cl_.kernel(rd_prog(), "rd_block");
+    struct Rel { cl_kernel k; ~Rel() { clReleaseKernel(k); } } rel{k};
+    cl_mem o = buf(64);
+    struct FreeO { Engine& e; cl_mem o; ~FreeO() { e.free_buf(o); } } free_o{*this, o};
+    const double GiB = 1073741824.0;
+    double slow_bytes = 0, all_bytes = 0, slow_min = 1e30, fast_min = 1e30;
+    const size_t groups = std::max<size_t>(64, (size_t)std::max<uint32_t>(zrt::hw_threads(), 1024) * 4 / 16);
+    for (size_t pi = 0; pi < xc_->pools.size(); ++pi) {
+      auto& P = xc_->pools[pi];
+      const int per = (int)std::max<uint64_t>(1, (1ull << 30) / P.rec);
+      for (size_t c = 0; c < P.chunks.size(); ++c) {
+        const int kslots = std::min(per, P.n - (int)c * per);
+        const size_t piece = (size_t)kslots * P.rec;
+        const size_t bytes = std::min<size_t>(piece, (size_t)64 << 20) / 2048 * 2048;
+        if (bytes < ((size_t)16 << 20)) continue;  // (a small piece: the launch's own cost would hide the rate)
+        void* ptr = P.chunks[c];
+        int n = (int)(bytes / 4);
+        double best = 1e30;
+        for (int r = 0; r < 3; ++r) {
+          set_args(k, 0, ptr, o, n);
+          size_t gws[1] = {groups * 256}, lws[1] = {256};
+          clFinish(cl_.queue);
+          const auto t0 = std::chrono::steady_clock::now();
+          run("xcache_place", k, 1, gws, lws);
+          clFinish(cl_.queue);
+          const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
+        }
+        const double gbs = bytes / 1e6 / best;
+        all_bytes += piece;
+        if (gbs < 64) slow_bytes += piece, slow_min = std::min(slow_min, gbs);
+        else fast_min = std::min(fast_min, gbs);
+        if (mode == 2)
+          zlog::eprintf("inferzero: ARC_XPLACE: pool %zu piece %zu (%.2f GiB): %.0f GB/s\n", pi, c, piece / GiB, gbs);
+      }
+    }
+    if (slow_bytes > 0)
+      zlog::eprintf("inferzero: warning: %.2f of the expert cache's %.2f GiB are in system memory (read at %.0f GB/s, the "
+                    "card's own memory at %.0f): their experts are read over PCIe and generation slows. A smaller cache keeps "
+                    "it on the card: --expert-cache-gb %.1f (#45)\n",
+                    slow_bytes / GiB, all_bytes / GiB, slow_min, fast_min < 1e29 ? fast_min : 0.0,
+                    std::max(0.5, (xc_->cache_bytes - slow_bytes) / GiB - 0.5));
   }
   // After the routing of layer L: read the chosen experts and make them resident (see zero/xcache.h).
   // (tl1: one token's tiles when the caller has read them already)

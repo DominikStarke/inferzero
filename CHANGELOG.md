@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: a warning when part of the expert cache lands in system memory
+
+- **New: a check of where the expert cache was placed** (discrete cards). A card nearly full of buffers can get part of a large allocation put in system memory by the driver without an error; its experts are then read over PCIe, and generation can run at half speed in some runs and not others (hansong80's A770 with the 35B, #45: 43.7 against 23.2 tok/s with the same load lines). After the cache is filled, each 1 GiB piece is read once and timed; a piece slower than the card's own memory gets a warning with how much is affected and a smaller `--expert-cache-gb` that keeps the cache on the card. About 1 ms a GiB; `ARC_XPLACE=0` skips it, `=2` prints each piece's rate.
+
 ## 2026-11-23: the benchmark scripts take unquoted lists
 
 - **Fixed:** `bench\gpu_sweep.ps1 -Contexts 512,4096` stopped with a parameter error when the list was not quoted (PascalSoftwares, #5); `bench\prompt_bench.ps1 -Models` had the same fault. Both take the list quoted or not, in Windows PowerShell 5.1 and PowerShell 7.
