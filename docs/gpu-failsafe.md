@@ -75,17 +75,20 @@ Today `sync()` and `wait_guarded()` have two paths: an unlimited wait, and 100 m
 - **No limit:** one call with `UINT64_MAX`, as now (zero cost).
 - **A limit:** 100 ms pieces. Each piece re-reads the limit and the split model's abort flag. Past the limit: `on_timeout(what)`, which is `throw GpuWaitError` on a split model's shard and `gpu_fatal(Hang, what)` otherwise.
 
-The limit (`ARC_GPU_WAIT_S`):
+The limit (`ARC_GPU_WAIT_S`), as built (2026-11-23; the design above proposed 120 s on iGPUs by default):
 
 | GPU | Default | Why |
 |---|---|---|
-| integrated (it drives the screen) | **120 s** | the longest real single wait must stay well below it: measured first (below) |
-| discrete | off | a user's long prompt with weights paging over PCIe can legitimately take minutes; set it to turn it on |
-| split model's shards | as now (`TpEngine`'s limit) | unchanged |
+| every GPU, one-GPU waits | **off** unless `ARC_GPU_WAIT_S` is set (at least 5 s; any value with `ARC_GPU_FAULT_TEST`) | the longest real single waits are not measured yet, and a wait with a limit may poll a CPU core in the driver where the unlimited one sleeps |
+| test runs | `bench/gpu_guard.ps1` / `.sh` set it a little below their timeout | the program's own limit names the kernel before the watchdog kills it |
+| split model's shards | `TpEngine`'s own limit; past it the marker is written too (`split=1`) | the failover goes on as before |
 
-- **Before 120 s becomes the default:** `--prof` and `ARC_FIT_PARTS`-style diagnostics print the longest single wait of the run. It is checked on the 125H at its longest cases (the 27B at its longest context, a speech file, the 35B MoE prompt). If any comes within 4x of 120 s, the default goes up.
-- **The last kernel launched:** each launch stores its kernel's name pointer in `Dev` (one store, no string copy). The hang message names it: `GPU work did not finish within 120 s (the last kernel launched: attn_x8, in attn_bench)`.
-
+- **The longest wait:** `ARC_WAIT_STATS=1` prints the run's longest single GPU wait at the end, to pick a default for
+  iGPUs later.
+- **The last kernel launched:** each launch stores its kernel's name pointer in `gpufail::last_kernel`
+  (`src/gpu_fail.h`; one store, no string copy). The hang message names it:
+  `GPU hang: GPU 0: the work it was given did not finish within 60 s (ARC_GPU_WAIT_S) (the last kernel launched:
+  attn_x8, in attn_bench)`.
 ## 3. `gpu_fatal`: the one way out after a GPU fault
 
 `gpu_fatal(kind, detail)`, in `zero/clrt.h`, used by `ZE_CHECK` (through `ze_fail_hook`, which exists), by `wait_for`'s timeout, and by device-lost results:

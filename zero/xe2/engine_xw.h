@@ -378,7 +378,7 @@
         else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG_GU=%s not X,Y with 2 / 4 / 8 each, X x Y <= 32, in 64 KB: as the other GEMMs\n", w);
       } else if (!getenv("ARC_GEMM_XW_SLM_WG") && !zrt::integrated() && b.x == 4 && b.y == 4 && b.cps == 1 && b.tm == 32 &&
                  b.nc == 2) {
-        // (the default on discrete 8-lane cards, Alchemist, since 2026-11-23: the gate / up at 4 x 8, the rest at 4 x 4;
+        // (a discrete 8-lane card where xw_big_cfg left 4 x 4, i.e. a tile, stages or SPLIT=0 asked: the gate / up at 4 x 8;
         //  skipzx-lab's A770 (Linux, #45); Windows confirmed (hansong80: 1,653 -> 1,760 against SPLIT=0); docs/before-after.md)
         b.y = 8;
       }
@@ -451,7 +451,7 @@
   // 1,432.6 / 1,431.8 -> 1,527.8 / 1,528.0 tok/s (+6.7 %, rounds 0 / 1 / 0 / 1), down / up / gate 444.3 / 437.6 / 382.9
   // -> 413.9 / 386.8 / 329.7 ms, xw_peak 103.5 -> 114.9 T "identical", the logits' sha256 the same. The 140T (an iGPU,
   // whose big tile is opt-in): only with =1, until measured
-  // ARC_GEMM_XW_SPLIT=1 (8 lanes, 2026-11-23, opt-in): the big tile's stage barrier split into arrive and wait
+  // ARC_GEMM_XW_SPLIT (8 lanes, 2026-11-23; on by default on discrete 8-lane cards, =0 off): the big tile's stage barrier split into arrive and wait
   // (gemm_xw8.cl -DXS_SPLIT), the plain tile's and the fused gate / up's. skipzx-lab's local-memory probe (#45): at
   // 4 x 8 the barrier a chunk cost 37 %. The same stages in the same order: bit for bit, the start check run with it;
   // where that fails or does not build (no cl_intel_split_work_group_barrier), checked again without it

@@ -179,6 +179,9 @@ zero-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other op
 zero-server help                # the common commands and options; help options / writing / errors / all for the rest
 ```
 
+Several GPUs: `serverz --gpus N` (`--split tensor` or `--split layer`, `--tensor-split 3,1` for unequal shares,
+[docs/multi-gpu.md](docs/multi-gpu.md)); copy drafting for edits of text already in the conversation: `--copy-draft`.
+
 The server log is `%USERPROFILE%\.inferzero\logs\server.log` (on Linux `~/.inferzero/logs/server.log`;
 `-LogDir D` or `ARC_LOG_DIR` another folder). Each start writes it anew; the earlier servers' logs are
 kept next to it, named by the local date and time of their last line

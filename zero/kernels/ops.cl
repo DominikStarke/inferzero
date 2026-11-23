@@ -935,7 +935,7 @@ __kernel void gated_norm_quant(__global const float* o, __global const float* z,
   }
 }
 #ifdef H8NORM
-// ---- gated_norm_quant and h8.cl's h8r_act in one kernel (ARC_H8_OUT=1, zero/engine_h8.h h8_out_rows; the A770
+// ---- gated_norm_quant and h8.cl's h8r_act in one kernel (ARC_H8_OUT, on by default on discrete 8-lane cards; zero/engine_h8.h h8_out_kernel; the A770
 // plan's H8 passes): gated_norm_quant's values and int8 rows unchanged, the f32 values to local memory instead of the
 // H8F copy, then the row rotated there (h8n_rotate), as rmsnorm_h8r does for the norm: h8_aq_ / h8_asc_ bit for bit
 // h8r_act's from that copy, without the copy's write and read and h8_act's launch. grid (256, M), local (256, 1)

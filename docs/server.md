@@ -138,6 +138,14 @@
   chunk's matrix products while the GPU computes the rest, through Level Zero alone (Qwen3.8 27B and Gemma 4 12B;
   generation unchanged). Where it pays off, how it is turned on and off, and the results:
   [docs/npu-experiment.md](npu-experiment.md).
+- Several GPUs (`--gpus N`, inferzero): `--split tensor` (the default: every layer cut over the GPUs) or `--split
+  layer` (each GPU a range of layers, also for unlike cards); `--tensor-split 3,1` gives the GPUs shares other than
+  equal ([multi-gpu.md](multi-gpu.md)).
+- Copy drafting (`--copy-draft`): drafts copied from an earlier place in the context where the last tokens appear,
+  for edits of code or text already in the conversation ([options.md](options.md#copy-drafting---copy-draft)).
+- The log: `--log-dir D` puts the log file in D (default `~/.inferzero/logs`, [logging.md](logging.md)); runz has
+  `--clear-hang` (deletes the GPU hang marker, [gpu-failsafe.md](gpu-failsafe.md)) and `--must-fit` (exit code 6 when
+  the model and the context do not fit the GPU share).
 - Conversation slots (`--slots N`, inferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same
   time. When several are generating, their next tokens and drafts run in one engine pass (Qwen dense and MoE, Gemma
@@ -188,8 +196,9 @@
   logs the raw text of every tool call.
 - During a long prompt, streaming responses carry `: prefill N/M` progress comments (also shown in the web UI).
 - Qwen3.8 Flash Next (inferzero only): pass the first part (`...-IQ3_S-00001-of-00002.gguf`) with `-m`; part 2
-  must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`; `--precise` (or
-  `ARC_FN_PRECISE=1`, opt-in) is the more exact, slower mode. Its MTP head comes as a file of its own
+  must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`. The precise mode is
+  the default since 2026-11-22 (KL under 0.015); `--fast` (or `ARC_FN_PRECISE=0`) is the opt-in fast mode, prompts
+  ~1.7x as fast and less exact on markdown and code (KL up to ~0.05). Its MTP head comes as a file of its own
   (`--mtp-model`, above). With Intel's AutoRound INT4 experts (`setup -Models flash-ar4`,
   [install.md](install.md#flash-next-with-intels-autoround-int4-experts-flash-ar4)) it runs in precise mode by itself. Its speed and KL: the tables above and "Supported models"; running it:
   [USAGE.md, section 3](../USAGE.md#3-managing-the-server); where its time goes and what was tried: QUEUE F21.13 /

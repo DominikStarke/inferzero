@@ -183,7 +183,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_BW (XW_WGX * XW_NC * 256)  // words of B a chunk (column group c's: lo0, lo1, hi0, hi1 x 64 words)
 #define XS_UA (XS_AW / 64)
 #ifdef XS_BG
-// -DXS_BG (2026-11-22, xw_peak only so far; the A770's GEMM question): only A staged in local memory, each sub-group
+// -DXS_BG (2026-11-22, the engine's ARC_GEMM_XW_BG=1, off: measured slower on the A770; the A770's GEMM question): only A staged in local memory, each sub-group
 // reading its B straight from global memory (L1: the work-group's token sub-groups read the same B), so the local-
 // memory reads a DPAS halve (64 B instead of 128) and the rest goes through the load path. ocloc dg2-g10: the K loop
 // 184 -> 169 instructions for its 33 DPAS, 37 -> 19 local-memory messages, no spill. The same words: bit for bit.
@@ -348,7 +348,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     if (XS_ALL || sid + i * XS_NS < XS_U * XS_CPS) XS_WR(&xs[b][0][0] + xs_dst[i], st[i]);   \
   }
 #endif
-// -DXS_SPLIT (2026-11-23, xw_peak only so far; skipzx-lab's local-memory probe, #45: at 4 x 8 the reads and the DPAS
+// -DXS_SPLIT (2026-11-23, the engine's ARC_GEMM_XW_SPLIT, on by default on discrete 8-lane cards; skipzx-lab's local-memory probe, #45: at 4 x 8 the reads and the DPAS
 // overlap, 84 % of peak, but a barrier a chunk cost 37 %): the stage's barrier split, arrive after the stores and
 // wait before the next stage's reads, so a sub-group's next global loads issue while the others finish. The same
 // order of the same stages (two buffers: the wait at a stage's start covers both the stores of its buffer and the

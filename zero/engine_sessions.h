@@ -625,8 +625,8 @@
       }
       return n;
     };
-    // (the room, automatic since 2026-11-18: what this model and this context need, at most the old rule's 2.5 GiB + the
-    //  context past 32K, so where that rule fitted this keeps no fewer weights on the GPU. An Arc B580 12 GB, the 27B at
+    // (the room, automatic since 2026-11-18: what this model and this context need (until 2026-11-23 at most the old rule's 2.5 GiB + the
+    //  context past 32K, so where that rule fitted this kept no fewer weights on the GPU). An Arc B580 12 GB, the 27B at
     //  a 4,240-token context: 2.24 GiB of the weights in RAM with 9.89 of ~11.3 GiB used, generation 1.94 tok/s over
     //  PCIe 3.0, issue #37; its buffers besides the weights ~1.5 GiB. The parts: 0.4 GiB for the kernels, the driver
     //  and the small buffers; the activations of a 1,024-token chunk (the tight chunk) at ~48 bytes per n_embd and 24

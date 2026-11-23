@@ -89,7 +89,7 @@ A shard is an `Engine` on its device with that device's defaults, exactly the on
 ([xe2-tuning.md](xe2-tuning.md)): a B60 its discrete-Battlemage set (H8 on `gemm_xw` WGX 4, 2D + prefetch 3 / 2,
 SPLIT 34, H8_NORM, H8_GRF 128, GEMV_WAVE / DB, GDN_L1PF 2, `attn_fx`, MOE_GRF 128); an A770 the Alchemist set (the
 140T preset: H8 on `gemm_xw8` 32 x 16 PACK 3 WGX 2 for chunks of 512+, SPLIT 17, H8_GRF 256, GVROWS 1 on Linux,
-ARC_BATCH 64 on Windows, XSPLIT_TAB, the GEMV switches off); a B580 / B70 / 140V / B390 / Max 1550 likewise. Rules:
+ARC_BATCH 64 (Windows and Linux), XSPLIT_TAB, the GEMV switches off); a B580 / B70 / 140V / B390 / Max 1550 likewise. Rules:
 
 - every device-dependent default is a member of the shard's `Engine`, decided from its own device; no function-local
   static that the first shard to ask decides for all (one known: `engine_h8.h:126`, `ARC_H8_GRF`);
