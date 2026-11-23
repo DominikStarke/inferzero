@@ -228,6 +228,9 @@ inline bool take_lock(const fs::path& dir, unsigned long* pid) {
   const std::string me = std::to_string(plat::process_id()) + "\n";
 #ifdef _WIN32
   HANDLE h = CreateFileW(p.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  // (only a sharing violation is another server holding it; any other failure (access denied, a read-only folder): no
+  //  lock possible, as on Linux, the run goes on as before without the guard. The audit of 2026-11-23)
+  if (h == INVALID_HANDLE_VALUE && GetLastError() != ERROR_SHARING_VIOLATION) return true;
   if (h == INVALID_HANDLE_VALUE) {
     if (pid) {
       *pid = 0;
