@@ -50,8 +50,11 @@ inline float ink_sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 // llama's mix (attention over depth), one work-group per token t: the states (nb blocks, block s at blocks + s bstride,
 // then cur), each RMS-normed (eps 1e-6, no weight); per query j (q: nq rows of E) a softmax over the states of
 // (normed state . q_j) / sqrt(E); out[t][j] = the softmax-weighted sum of the normed states. Rows of E per token.
+// (I2 step 1, 2026-11-24: sep 1 writes query j's rows to outj ([T][E] each) instead of out's [T][nq][E]; sep 2 (nq 1)
+//  writes the one query's rows to out, out1 and out2: what ink_take copied out after it. The same values)
 __kernel void ink_mix(__global const float* blocks, int nb, long bstride, __global const float* cur,
-                      __global const float* q, int nq, __global float* out, int E) {
+                      __global const float* q, int nq, __global float* out, int E, __global float* out1,
+                      __global float* out2, int sep) {
   __local float red[INK_LS];
   __local float rs[INK_MAXS];
   __local float sc[4 * INK_MAXS];
@@ -86,7 +89,14 @@ __kernel void ink_mix(__global const float* blocks, int nb, long bstride, __glob
     for (int i = l; i < E; i += n) {
       float acc = 0.0f;
       for (int s = 0; s < S; ++s) acc += sc[j * INK_MAXS + s] * rs[s] * INK_STATE(s)[i];
-      out[((size_t)t * nq + j) * E + i] = acc;
+      if (sep == 0) {
+        out[((size_t)t * nq + j) * E + i] = acc;
+      } else {
+        const size_t o = (size_t)t * E + i;
+        if (sep == 2 || j == 0) out[o] = acc;
+        if (sep == 2 || j == 1) out1[o] = acc;
+        if (sep == 2 || j == 2) out2[o] = acc;
+      }
     }
 #undef INK_STATE
 }
@@ -116,6 +126,25 @@ __kernel void ink_ctrl_apply(__global float* x, __global const float* f, __globa
   x[i] = v - tanh(f[i]) * v + tanh(gn[i]) * m[moff + (size_t)t * mstride + e];
 }
 
+// (I2 step 1, 2026-11-24) the controller's gain, forget and apply in one launch, for f32 gain / forget matrices (the
+// rank-64 ones, which ink_mm_f32 ran): per value (t, e) its forget and gain rows' dot products with lo[t] (K values),
+// the same loop as ink_mm_f32's, then ink_ctrl_apply's step. The same values bit for bit
+__kernel void ink_ctrl_fused(__global float* x, __global const float* Wf, __global const float* Wg,
+                             __global const float* lo, __global const float* m, int moff, int mstride, int E, int K,
+                             int T) {
+  const int i = get_global_id(0);
+  if (i >= E * T) return;
+  const int t = i / E, e = i % E;
+  __global const float* xr = lo + (size_t)t * K;
+  __global const float* wf = Wf + (size_t)e * K;
+  __global const float* wg = Wg + (size_t)e * K;
+  float f = 0.0f, g = 0.0f;
+  for (int k = 0; k < K; ++k) f += wf[k] * xr[k];
+  for (int k = 0; k < K; ++k) g += wg[k] * xr[k];
+  const float v = x[i];
+  x[i] = v - tanh(f) * v + tanh(g) * m[moff + (size_t)t * mstride + e];
+}
+
 // llama's convolve on a chunk of T tokens after the slot's history (any size; one work-item per value):
 // out[t][c] = (cur[t][c] + sum_i w[c][i] x(t - (NC - 1) + i) + [dyn] sum_lag x(t - lag) dyn[t][h(c)][lag]) * scale,
 // x(tt) the chunk's input for tt >= 0, else the slot's state (the NC - 1 inputs before the chunk, oldest first, per
@@ -134,6 +163,25 @@ __kernel void ink_conv(__global const float* cur, __global const float* w, __glo
   }
   out[i] = (cur[i] + acc) * scale;
 #undef INK_X
+}
+
+// (I2 step 1, 2026-11-24) one token (generation): ink_conv and ink_conv_state in one launch, one work-item per channel:
+// the conv as ink_conv's (reading the old state), then the state moved on as ink_conv_state's. The same values
+__kernel void ink_conv1(__global const float* cur, __global const float* w, __global const float* dyn, int has_dyn, int nh,
+                        __global float* state, __global float* out, int C, int NC, float scale) {
+  const int c = get_global_id(0);
+  if (c >= C) return;
+  __global float* s = state + (size_t)c * (NC - 1);
+#define INK_X1(tt) ((tt) >= 0 ? cur[c] : s[(NC - 1) + (tt)])
+  float acc = 0.0f;
+  for (int k = 0; k < NC; ++k) acc += w[(size_t)c * NC + k] * INK_X1(-(NC - 1) + k);
+  if (has_dyn) {
+    __global const float* dt = dyn + (size_t)(c / (C / nh)) * NC;
+    for (int lag = 0; lag < NC; ++lag) acc += INK_X1(-lag) * dt[lag];
+  }
+  out[c] = (cur[c] + acc) * scale;
+#undef INK_X1
+  for (int k = 0; k < NC - 1; ++k) s[k] = k == NC - 2 ? cur[c] : s[k + 1];
 }
 
 // the slot's conv state after a chunk: the last NC - 1 inputs, oldest first (one work-item per channel; in place,

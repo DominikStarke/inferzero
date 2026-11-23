@@ -390,7 +390,12 @@
     return kernel("ops", "-DINK_LS=256 -DINK_D=" + std::to_string(hp.head_dim) + " -DINK_EXT=1024", name);
   }
   // y[T][N] = M x[T][K]
-  void ink_mm(const char* name, const InkMat& m, cl_mem x, cl_mem y, int T, int Mp) {
+  // (I2 step 1, 2026-11-24: reuse = x is the input the last quantized ink_mm took, unchanged since, with the same K:
+  //  its aq_ / asc_ rows are reused instead of quantizing x again. The same int8 rows and scales: bit for bit. The
+  //  caller says so; ink_q_x_ / ink_q_k_ only guard against a reuse after another input was quantized)
+  cl_mem ink_q_x_ = nullptr;
+  int ink_q_k_ = 0;
+  void ink_mm(const char* name, const InkMat& m, cl_mem x, cl_mem y, int T, int Mp, bool reuse = false) {
     if (m.f) {
       cl_kernel kk = ink_k("ink_mm_f32");
       set_args(kk, 0, m.f, x, y, m.N, m.K, T);
@@ -398,7 +403,8 @@
       return;
     }
     const int a32 = 1;  // (per-32 scales: the activations of a reference check)
-    quant_rows(x, m.K, Mp, T, a32);
+    if (!(reuse && ink_q_x_ == x && ink_q_k_ == m.K)) quant_rows(x, m.K, Mp, T, a32);
+    ink_q_x_ = x, ink_q_k_ = m.K;
     matmul(name, m.w, Mp, y, m.N, 0, 0, a32 != 0);
   }
   void ink_rmsnorm(cl_mem x, int xstride, cl_mem w, cl_mem out, int T) {
@@ -417,11 +423,14 @@
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, src, dst, src_off, dst_off, bytes, 0, nullptr, nullptr));
   }
   // out[t][j] = the mix of the blocks (nb of them, each M x E apart in `blocks`) and cur with q's nq queries
-  void ink_mix(cl_mem blocks, int nb, cl_mem cur, cl_mem q, int nq, cl_mem out, int T) {
+  // (sep: 0 out as [T][nq][E]; 1 query j into outs[j]; 2 the one query into outs[0..2], ops_inkling.cl)
+  void ink_mix(cl_mem blocks, int nb, cl_mem cur, cl_mem q, int nq, cl_mem out, int T, int sep = 0,
+               cl_mem out1 = nullptr, cl_mem out2 = nullptr) {
     cl_kernel kk = ink_k("ink_mix");
     int64_t bs = (int64_t)max_chunk * hp.n_embd;
-    int E = hp.n_embd;
-    set_args(kk, 0, blocks ? blocks : ink_dummy_, nb, bs, cur, q, nq, out, E);
+    int E = hp.n_embd, sp = sep;
+    set_args(kk, 0, blocks ? blocks : ink_dummy_, nb, bs, cur, q, nq, out, E, out1 ? out1 : ink_dummy_,
+             out2 ? out2 : ink_dummy_, sp);
     ink_rung("ink_mix", kk, T, 256);
   }
   void ink_take(cl_mem src, int nq, int j, cl_mem out, int T) {
@@ -435,6 +444,13 @@
     cl_kernel kk = ink_k("ink_conv");
     int has = dyn ? 1 : 0, nh = hp.n_head_kv, NC = ink_.nc;
     float sc = 1.0f / std::sqrt((float)((dyn ? 2 : 1) * NC + 1));
+    static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+    if (T == 1 && !unfused) {  // (I2 step 1: one token, the conv and its state's move in one launch)
+      cl_kernel k1 = ink_k("ink_conv1");
+      set_args(k1, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, NC, sc);
+      ink_run1("ink_conv1", k1, C);
+      return;
+    }
     set_args(kk, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, T, NC, sc);
     ink_run1("ink_conv", kk, (size_t)C * T);
     cl_kernel ks = ink_k("ink_conv_state");
@@ -449,6 +465,15 @@
     set_args(k2, 0, x, xs, ink_msgs_, moff, mst, ink_cg_, EE);
     ink_rung("ink_rms2", k2, T, 256);
     ink_mm("ink_ctrl_down", L.ctrl_down[c], ink_cg_, ink_lo_, T, Mp);
+    static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;  // (A/B: the launches of before)
+    if (!unfused && L.ctrl_gain[c].f && L.ctrl_forget[c].f && L.ctrl_gain[c].K == L.ctrl_forget[c].K) {
+      // (I2 step 1: gain, forget and apply in one launch where both are f32, the rank-64 matrices)
+      cl_kernel kf = ink_k("ink_ctrl_fused");
+      int KR = L.ctrl_gain[c].K;
+      set_args(kf, 0, x, L.ctrl_forget[c].f, L.ctrl_gain[c].f, ink_lo_, ink_msgs_, moff, mst, EE, KR, TT);
+      ink_run1("ink_ctrl_fused", kf, (size_t)E * T);
+      return;
+    }
     ink_mm("ink_ctrl_gain", L.ctrl_gain[c], ink_lo_, ink_gain_, T, Mp);
     ink_mm("ink_ctrl_forget", L.ctrl_forget[c], ink_lo_, ink_fgt_, T, Mp);
     cl_kernel ka = ink_k("ink_ctrl_apply");
@@ -484,15 +509,13 @@
     // the attention inputs: a mix (one query, SWA; three, global) of the blocks and the stream, from layer 1 on
     cl_mem in[3] = {ink_cur_, ink_cur_, ink_cur_};
     if (L.res_q) {
-      ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_mix_, T);
+      // (I2 step 1: the mix writes the rows the layer reads, where ink_take copied them out of ink_mix_ before)
       if (L.nq == 1 && !msgs) {
-        ink_take(ink_mix_, 1, 0, ink_in_[0], T);
+        ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T);  // ([T][1][E] is [T][E])
         in[0] = in[1] = in[2] = ink_in_[0];
       } else {
-        for (int j = 0; j < 3; ++j) {
-          ink_take(ink_mix_, L.nq, L.nq == 1 ? 0 : j, ink_in_[j], T);
-          in[j] = ink_in_[j];
-        }
+        ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1], ink_in_[2]);
+        for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       }
     } else if (msgs) {  // (layer 0 is never a loop layer: the loop core starts after a block)
       for (int j = 0; j < 3; ++j) {
@@ -517,16 +540,17 @@
       }
     }
     // the projections; K and V through their convolutions (global: the input-dependent taps)
+    // (I2 step 1: grouped by input, each input quantized once: in[0] for q / rel / sink / gate, in[1] for k / kcp,
+    //  in[2] for v / vcp; a sliding layer outside the loop has one input for all. Independent outputs: the order of
+    //  the launches changes no sum)
     ink_mm("ink_q", L.q, in[0], ink_q_, T, Mp);
-    ink_mm("ink_k", L.k, in[1], ink_k0_, T, Mp);
-    ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp);
-    ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp);
-    ink_mm("ink_sink", L.sink, in[0], ink_s_, T, Mp);
-    ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp);
-    if (L.glob) {
-      ink_mm("ink_kcp", L.kcp, in[1], ink_kd_, T, Mp);
-      ink_mm("ink_vcp", L.vcp, in[2], ink_vd_, T, Mp);
-    }
+    ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp, true);
+    ink_mm("ink_sink", L.sink, in[0], ink_s_, T, Mp, true);
+    ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp, true);
+    ink_mm("ink_k", L.k, in[1], ink_k0_, T, Mp, true);
+    if (L.glob) ink_mm("ink_kcp", L.kcp, in[1], ink_kd_, T, Mp, true);
+    ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp, true);
+    if (L.glob) ink_mm("ink_vcp", L.vcp, in[2], ink_vd_, T, Mp, true);
     ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T);
     ink_conv(ink_v0_, L.v_conv, L.glob ? ink_vd_ : nullptr, S.conv[1], ink_vc_, KG, T);
     // clips (q, r: per-head scales; global: the log-length factor), K's clip, V's RMS norm
