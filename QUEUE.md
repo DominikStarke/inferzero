@@ -7,7 +7,7 @@ Status: ✅ done · 🔄 in progress · ⏳ queued · ⏸️ parked · 💡 idea
 ## Open now (tidied 2026-11-20)
 
 Finished, dropped and superseded rows, and the history sections (F1-F34, the Whisper plan), are in [QUEUE-archive.md](QUEUE-archive.md) (moved 2026-11-20); a row not listed here is done, dropped
-(⚠️ with the reason) or parked (⏸️). The KL limit for every model is below 0.01 (the user, 2026-11-23; 0.015 since 2026-10-23), token by token, the same top token at 98 % or more; Flash Next's opt-in fast mode excepted. **KL audit (2026-11-23):** every default measured between 0.01 and 0.015 under the old limit re-measured token by token and brought below 0.01 or listed here (known candidates: the Gemma 4 26B, held to 0.015 in tests/run_tests.ps1; Flash Next on 2-3 GPUs, docs/multi-gpu.md; the H8 threshold in zero/engine_h8.h). Until it is done, README / features / models.md keep saying 0.015.
+(⚠️ with the reason) or parked (⏸️). The KL limit for every model is 0.015 (the user, 2026-10-23).
 
 | Priority | Item | Section |
 |---|---|---|
