@@ -146,6 +146,24 @@ Developer cuts them.
    and metadata, a few layers, a loop of 2-3, a few experts, random weights. It's for fast correctness tests of the
    engine against ref_forward without the 23 GB file.
    - Waits on: the user's go for CPU / GPU runs.
+
+   **Written (2026-11-23):** `tools/make_tiny_inkling2.cpp` (`make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop]
+   [--nvfp4-equal]`). The real file's keys and tensor names, with sizes chosen so that a ~40-token prompt reaches
+   every case:
+   - 8 layers in residual blocks of 2, the loop core [2, 6) run 3 times;
+   - global layers 1, 5 and 7: 5 inside the loop, so a global layer gets messages;
+   - head size 128, 6 query heads over 2 KV heads (GQA 3, as 24 / 8);
+   - a window of 16 and a relative extent of 32, so distances pass both tables' ends; a log-scale floor of 8;
+   - 8 experts, 2 active, FFN 128: NVFP4 with their `.scale` tensors in layers 0-5, BF16 in 6-7 (as Unsloth's split);
+   - every other matrix BF16, the router F32;
+   - a vocabulary of 500 padded to 512, tokenizer pre `inkling2`.
+
+   `--no-loop` writes the plain `inkling2` architecture. `--nvfp4-equal` makes every NVFP4 block's scales equal, so
+   the engine's per-32 fold is exact and any remaining difference is the graph's. Built clean.
+
+   **Runs it waits on:** making the file (CPU, a second), and ref_forward on it (CPU, seconds). Then the engine
+   against ref_forward on the laptop through gpu_guard (I1.5), with and without `--nvfp4-equal`. One check of the
+   file itself: llama.cpp (a build with Inkling) loads it and gives the same top token as ref_forward.
 5. **The engine's graph:**
    - `zero/engine_inkling.h` (hparams, the loader's tensor map, the layer loop with per-pass KV, the forward for one
      token and for a prompt chunk);

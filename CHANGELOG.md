@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-23: a tiny synthetic Inkling 2 for tests (step I1.4; not run yet)
+
+- **`tools/make_tiny_inkling2`** writes a small Inkling 2 GGUF with random weights and the real file's layout: 8
+  layers with a 3-pass loop, sliding-window and global layers, NVFP4 and BF16 experts, a padded vocabulary. The
+  engine's support can then be checked against `ref_forward` in seconds instead of on the 23 GB model
+  ([docs/inkling2.md](docs/inkling2.md)).
+
+## 2026-11-23: A770 work: a GEMM form with fewer barriers, a middle tight-plan step, the CPU's IQ3_S from its own blocks
+
+- **New, opt-in: `ARC_GEMM_XW_AG=1`** (8-lane discrete cards, the big prompt tile). Only B goes through local memory,
+  four chunks a stage with one barrier per stage, and each sub-group reads its A straight from global memory. The
+  A770's probe put this form at 76 % of the matrix units' peak, against 64 % for today's (#45). The results are the
+  same bit for bit, checked at start; a difference turns it off. Not measured in a full GEMM on a card yet.
+- **The tight plan's middle step:** between 512-token chunks with 8K residual segments and 256-token chunks with 4K
+  segments, 512 with 4K is now tried. An A770's 27B at 92K missed the first step by 22 MB and took the 256 step:
+  generation 11.4 -> 15.1 tok/s, but the prompt 676 -> 311 tok/s. The 512 / 4K step frees 80 MB and keeps the
+  512-token chunks. The plan's line now says what each step costs the prompt.
+- **New, opt-in: `ARC_HOST_CPU_NATIVE=1`** (weights in host memory, computed by the CPU): IQ3_S matrices stay as the
+  file's own blocks (0.43 bytes a weight) and are decoded in the CPU's dot loop, in place of an int8 copy (1.125 bytes
+  a weight, read every token, and that much RAM). On an A770 at 92K the CPU's matrices were ~54 ms of a ~100 ms
+  step (#45). Other types keep the int8 copy.
+
 ## 2026-11-23: ref_forward runs Inkling 2 (step I1.3; not run yet)
 
 - **`ref_forward`** now covers Inkling 2 (`inkling2`, `inkling2_loop`): the f32 reference forward pass, operation by
