@@ -67,7 +67,8 @@
   }
   std::string rgx_defs(const Layer& L, int i) const {
     if (!rgx_part(L, i)) return std::string();
-    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (rgx_emu() ? " -DRG_XEMU" : "") +
+    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (cl_.sg8 && moe_dpasw_on() ? " -DRG_DPASW" : "") +
+           (rgx_emu() ? " -DRG_XEMU" : "") +
            (cl_.sg8 && rgx_emu() && atoi(getenv("ARC_MOE_RG_XEMU")) == 2 ? " -DRG_XBAD" : "");
   }
   // The first use of a type on XMX: run the DP4a kernel as always into C, the XMX kernel into a copy of C taken before
@@ -119,7 +120,8 @@
     // (the copy only lives for a check: up to slots x max(n_embd, Fp) floats, 128 MiB for the 35B at 2,048-token chunks,
     //  outside the memory plan; freed at once by free_after, audit 2026-11-17)
     static std::once_flag said;
-    std::call_once(said, [] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1)\n"); });
+    const char* form = !cl_.sg8 ? "" : moe_dpasw_on() ? ", 8 lanes, the split DPAS: ARC_MOE_DPASW=1" : ", 8 lanes";
+    std::call_once(said, [form] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1%s)\n", form); });
     zlog::eprintf("inferzero: moe_rg on XMX for %s experts%s: %s\n", ggml_type_name(type), key & 1 ? " (situ)" : "",
                   same ? "the same results as DP4a bit for bit" : "DIFFERS from DP4a: DP4a kept for this type (please report)");
   }

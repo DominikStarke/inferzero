@@ -80,6 +80,20 @@ inline int8 x8_mad(int8 a, int8 b, int8 c) {
 #else
 #define x8_mad(a, b, c) intel_sub_group_i8_i8_matrix_mad_k32((a), (b), (c))
 #endif
+// -DX8_DPASW (with MOE_TILES, ARC_MOE_DPASW=1, 2026-11-24, discrete 8-lane cards): the split DPAS on a fused EU pair, as
+// gemm_xw8.cl's XS_DPASW. Sub-groups 2k and 2k + 1 of a work-group are the two halves (hg) of one 16-column group on the
+// same tile: each reads half of the 8 token rows (hg 0 rows 0-3, hg 1 rows 4-7) and the hardware exchanges them. Every
+// DPAS is reached by both. Checked at start against the DP4a tile kernel bit for bit; under X8_EMU the plain form
+#if defined(X8_DPASW) && !defined(MOE_TILES)
+#error "X8_DPASW: the MoE tile form only"
+#endif
+#if defined(X8_DPASW) && !defined(X8_EMU)
+#pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
+#define X8_SPLIT 1
+#define X8_AMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
+#else
+#define X8_AMAD(a, b, c) x8_mad((a), (b), (c))
+#endif
 
 // W8: as gemm.cl, one instruction each where a 32x32-bit multiply is emulated; the same products
 #define MULS(x, sc) ((x) * (short)(sc))
@@ -255,8 +269,13 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
 #else
 #define X8_ROW(p, o) intel_sub_group_block_read((__global const uint*)(ap + (size_t)(mg + (p)) * K + s * 256 + j * 64 + (o)))
 #endif
+#ifdef X8_SPLIT  // (this sub-group's half of the 8 token rows)
+        const int4 al = (int4)(X8_ROW(hg * 4, 0), X8_ROW(hg * 4 + 1, 0), X8_ROW(hg * 4 + 2, 0), X8_ROW(hg * 4 + 3, 0));
+        const int4 ah = (int4)(X8_ROW(hg * 4, 32), X8_ROW(hg * 4 + 1, 32), X8_ROW(hg * 4 + 2, 32), X8_ROW(hg * 4 + 3, 32));
+#else
         const int8 al = (int8)(X8_ROW(0, 0), X8_ROW(1, 0), X8_ROW(2, 0), X8_ROW(3, 0), X8_ROW(4, 0), X8_ROW(5, 0), X8_ROW(6, 0), X8_ROW(7, 0));
         const int8 ah = (int8)(X8_ROW(0, 32), X8_ROW(1, 32), X8_ROW(2, 32), X8_ROW(3, 32), X8_ROW(4, 32), X8_ROW(5, 32), X8_ROW(6, 32), X8_ROW(7, 32));
+#endif
 #pragma unroll
         for (int h = 0; h < NH; ++h) {
 #ifdef H8R
@@ -271,7 +290,7 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
           int c0[8], c1[8];
 #if SC32
           {
-            const int8 r0 = x8_mad(al, lo[h], (int8)(0)), r1 = x8_mad(ah, hi[h], (int8)(0));
+            const int8 r0 = X8_AMAD(al, lo[h], (int8)(0)), r1 = X8_AMAD(ah, hi[h], (int8)(0));
             vstore8(r0, 0, c0);
             vstore8(r1, 0, c1);
           }
@@ -279,10 +298,10 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
           int c2[8], c3[8];
           {
             // (per-16 scales: each half of a 32-block alone, the other half's weights zero)
-            const int8 r0 = x8_mad(al, (int8)(lo[h].s0, lo[h].s1, lo[h].s2, lo[h].s3, 0, 0, 0, 0), (int8)(0));
-            const int8 r1 = x8_mad(al, (int8)(0, 0, 0, 0, lo[h].s4, lo[h].s5, lo[h].s6, lo[h].s7), (int8)(0));
-            const int8 r2 = x8_mad(ah, (int8)(hi[h].s0, hi[h].s1, hi[h].s2, hi[h].s3, 0, 0, 0, 0), (int8)(0));
-            const int8 r3 = x8_mad(ah, (int8)(0, 0, 0, 0, hi[h].s4, hi[h].s5, hi[h].s6, hi[h].s7), (int8)(0));
+            const int8 r0 = X8_AMAD(al, (int8)(lo[h].s0, lo[h].s1, lo[h].s2, lo[h].s3, 0, 0, 0, 0), (int8)(0));
+            const int8 r1 = X8_AMAD(al, (int8)(0, 0, 0, 0, lo[h].s4, lo[h].s5, lo[h].s6, lo[h].s7), (int8)(0));
+            const int8 r2 = X8_AMAD(ah, (int8)(hi[h].s0, hi[h].s1, hi[h].s2, hi[h].s3, 0, 0, 0, 0), (int8)(0));
+            const int8 r3 = X8_AMAD(ah, (int8)(0, 0, 0, 0, hi[h].s4, hi[h].s5, hi[h].s6, hi[h].s7), (int8)(0));
             vstore8(r0, 0, c0);
             vstore8(r1, 0, c1);
             vstore8(r2, 0, c2);

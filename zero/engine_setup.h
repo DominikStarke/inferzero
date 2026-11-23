@@ -538,7 +538,7 @@
       static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
       return kernel("x8", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : "") +
-                              (situ ? ink_situ_defs() : std::string()),
+                              (moe_dpasw_on() ? " -DX8_DPASW" : "") + (situ ? ink_situ_defs() : std::string()),
                     "gemm_x8");
     }
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
@@ -565,6 +565,14 @@
     return on;
   }
   bool moe_x8_ok_ = true;
+  // ARC_MOE_DPASW=1 (2026-11-24, opt-in): the split DPAS (dpasw, a fused EU pair) in the 8-lane expert kernels, gemm_x8's
+  // tiles (-DX8_DPASW) and moe_rg's 8-lane form (-DRG_DPASW): a work-group's two sub-groups share the token operand, each
+  // reading half. Discrete 8-lane cards only (Alchemist; the big tile's ARC_GEMM_XW_DPASW gained 3.6 % on an A770, #45).
+  // Covered by the same checks as the plain forms (xmx_check's tiles, moe_rg's first use), bit for bit against DP4a
+  bool moe_dpasw_on() const {
+    static const bool on = getenv("ARC_MOE_DPASW") && atoi(getenv("ARC_MOE_DPASW")) != 0;
+    return on && cl_.sg8 && cl_.xmx && !zrt::integrated();
+  }
   bool xmx_slow_ = false;  // (the check failed on speed, the results being right: no retry without 2D loads)
   // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
   // 140T preset's, checked apart and kept per kind by the caller (zero/engine.h): a failing H8 kernel then turns H8
@@ -776,7 +784,8 @@
       }
       if (cl_.sg8 && moe_x8_env() && mode == 0) {
         moe_x8_ok_ = bad == bad_before_moe;
-        zlog::eprintf("inferzero: the MoE expert GEMMs on 8-lane XMX (gemm_x8 tiles, ARC_MOE_X8=1): %s\n",
+        zlog::eprintf("inferzero: the MoE expert GEMMs on 8-lane XMX (gemm_x8 tiles, ARC_MOE_X8=1%s): %s\n",
+                      moe_dpasw_on() ? ", the split DPAS: ARC_MOE_DPASW=1" : "",
                       moe_x8_ok_ ? "the same results as DP4a bit for bit"
                                  : ("DIFFER from DP4a (" + bad.substr(bad_before_moe.size()) + " ): DP4a kept for them (please report)").c_str());
         bad = bad_before_moe;  // (the dense kernels keep XMX)

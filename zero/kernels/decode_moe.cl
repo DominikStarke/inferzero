@@ -548,6 +548,16 @@ inline int8 rg8_mad(int8 a, int8 b) {
 #else
 #define rg8_mad(a, b) intel_sub_group_i8_i8_matrix_mad_k32((a), (b), (int8)(0))
 #endif
+// -DRG_DPASW (ARC_MOE_DPASW=1, 2026-11-24, discrete 8-lane cards: Alchemist): the split DPAS on a fused EU pair
+// (cl_intel_subgroup_split_matrix_multiply_accumulate, dpasw), as gemm_xw8.cl's XS_DPASW. A work-group's two sub-groups
+// (hg 0 and 1: the same tile and tokens, the two halves of a 16-row group) each read half of the token operand (rows
+// 0-3 / 4-7) and the hardware exchanges the halves: each still gets its 8 x 8 sums. Every DPAS is reached by both (the
+// loops' bounds are the work-group's). The pairing is the driver's: the first-use check compares it with DP4a bit for
+// bit. Under RG_XEMU the whole operand is read and the plain DPAS emulated
+#if defined(RG_DPASW) && !defined(RG_XEMU)
+#pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
+#define RG8_SPLIT 1
+#endif
 __attribute__((intel_reqd_sub_group_size(8)))
 __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* restrict aq,
                      __global const float* restrict asc, __global float* restrict C, int M, int ldc, int accumulate,
@@ -637,6 +647,17 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
         const int8 bhi = as_int8((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7]));
 #pragma unroll
         for (int tg = 0; tg < 2; ++tg) {  // (slots tg * 8 .. tg * 8 + 7: lane r's slot tg)
+#ifdef RG8_SPLIT
+          int al[4], ah[4];  // (this sub-group's half of the 8 token rows: hg 0 rows 0-3, hg 1 rows 4-7)
+#pragma unroll
+          for (int r = 0; r < 4; ++r) {
+            __global const uint* ap = (__global const uint*)(aq + (size_t)RG_B(tokl[tg], hg * 4 + r) * K + s * 256 + j * 64);
+            al[r] = as_int(intel_sub_group_block_read(ap));
+            ah[r] = as_int(intel_sub_group_block_read(ap + 8));
+          }
+          const int8 x0 = intel_sub_group_i8_i8_split_matrix_mad_k32((int4)(al[0], al[1], al[2], al[3]), blo, (int8)(0));
+          const int8 x1 = intel_sub_group_i8_i8_split_matrix_mad_k32((int4)(ah[0], ah[1], ah[2], ah[3]), bhi, (int8)(0));
+#else
           int al[8], ah[8];
 #pragma unroll
           for (int r = 0; r < 8; ++r) {
@@ -646,6 +667,7 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
           }
           const int8 x0 = rg8_mad((int8)(al[0], al[1], al[2], al[3], al[4], al[5], al[6], al[7]), blo);
           const int8 x1 = rg8_mad((int8)(ah[0], ah[1], ah[2], ah[3], ah[4], ah[5], ah[6], ah[7]), bhi);
+#endif
           const int cv0[8] = {x0.s0, x0.s1, x0.s2, x0.s3, x0.s4, x0.s5, x0.s6, x0.s7};
           const int cv1[8] = {x1.s0, x1.s1, x1.s2, x1.s3, x1.s4, x1.s5, x1.s6, x1.s7};
 #pragma unroll
