@@ -526,7 +526,11 @@
     //  register file (twice the threads an EU; the output alone holds 128 registers at 256 dims, so it may spill). The
     //  same results: the start-up check runs on each form, as for ARC_ATTN_FX_WG)
     static const int pfd_n = getenv("ARC_ATTN_FX_PFD") ? std::clamp(atoi(getenv("ARC_ATTN_FX_PFD")), 1, 4) : 1;
-    static const bool grf128 = getenv("ARC_ATTN_FX_GRF") && std::string(getenv("ARC_ATTN_FX_GRF")) == "128";
+    // (the Max 1550's default since 2026-11-24, hibagus #48: attention at 32K 8,050 -> 6,232 ms, the 262K prompt 428 ->
+    //  529 tok/s with the 128-register file alone, the deeper prefetch adding 0.3 %; every form passed the start
+    //  check. ARC_ATTN_FX_GRF=256 the former form there, =128 on any GPU. The B-series keep 256 until they measure it)
+    const char* grf_e = getenv("ARC_ATTN_FX_GRF");
+    const bool grf128 = grf_e ? std::string(grf_e) == "128" : xehpc_on();
     const std::string pfd = (pf ? " -DFX_PF" : "") + (pfd_n != 1 ? " -DFX_PFD=" + std::to_string(pfd_n) : std::string());
     return std::string(grf128 ? "" : "-cl-intel-256-GRF-per-thread ") + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
            " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;

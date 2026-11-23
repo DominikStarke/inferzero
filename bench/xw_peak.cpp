@@ -370,9 +370,18 @@ int main(int argc, char** argv) {
            "this GPU's gemm_xw.\n");
     return 0;
   }
+  // (16 lanes without --all: the 16-lane GEMM's forms on the given shapes at --m, as --all --ms M: what `xw_peak
+  //  --shape ...` means on a B-series card. It stopped with "--lanes 16 is for --all" before, and both B-series owners
+  //  hit it (#92, #4, 2026-11-24). --probe stays the 8-lane kernel's)
   if (lanes == 16 && !all_mode) {
-    printf("--lanes 16 is for --all (the 16-lane GEMM's forms); the default and --probe are the 8-lane kernel's\n");
-    return 2;
+    if (probe) {
+      printf("--probe is the 8-lane kernel's; on 16 lanes: xw_peak --all --ms %d [--shape NxK]...\n", M);
+      return 2;
+    }
+    all_mode = true;
+    if (Ms.empty() || (Ms.size() == 3 && Ms[0] == 128 && Ms[1] == 512 && Ms[2] == 4096)) Ms = {M};
+    printf("16 lanes: the 16-lane GEMM's forms on %zu shape(s) at %d tokens (the same as xw_peak --all --ms %d%s)\n",
+           shapes.size(), M, M, shapes.size() ? " --shape ..." : "");
   }
   // (16 lanes: emulated where the GPU has no 16-lane XMX, as the engine's xw_emu_: no XMX, or 8-lane DPAS only)
   const bool emu = force_emu || !cl.xmx || (lanes == 16 && cl.sg8);

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-24: the Max 1550's prompt attention; xw_peak on 16-lane cards
+
+- **Data Center GPU Max: long prompts about a quarter faster** (hibagus, #48): the prompt attention runs with the 128-register file by default there. One Max 1550 stack, the 27B: attention at 32K 8,050 -> 6,232 ms, the 262K prompt 428 -> 529 tok/s. `ARC_ATTN_FX_GRF=256` gives the former form; other GPUs keep it until they measure it (`ARC_ATTN_FX_GRF=128` to try).
+- **`xw_peak --shape NxK` on a 16-lane card** (B-series, Lunar Lake / Panther Lake, a Max) runs the 16-lane GEMM's forms on those shapes at `--m` tokens, as `--all --ms M` does; it stopped with "--lanes 16 is for --all" before (#92, #4).
+
 ## 2026-11-24: Inkling 2 in the server
 
 - **`serverz` runs Inkling 2** (it refused the model before). Its own chat format: the prompt as the model's template writes it, the reasoning and the answer streamed apart, tool calls returned once their message ends, and the model's end-of-answer token as the stop. `reasoning_effort` sets the model's thinking effort (a name such as `low` / `high`, or a number from 0 to 0.99); thinking off is effort 0. `tool_choice: "none"` works; a required tool call is not forced yet, and the tool-call check that Qwen and Gemma get is not there yet. Images are refused.
