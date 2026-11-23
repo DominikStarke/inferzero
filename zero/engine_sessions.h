@@ -525,6 +525,24 @@
   size_t host_left_ = 0, host_bytes_ = 0;  // (weights still to put in host memory; put there)
   std::vector<void*> host_ptrs_;           // (freed by release_all)
   int swa_margin() const { return tight_ ? std::min(max_chunk, 4096) : 4096; }
+  // (plan_tight copies the load's rules for the KV it will allocate (engine_load_gemma.h's int8 rows, the rings): after
+  //  the load, a tight model's estimate against what ctx_bytes counts, one slot, the KV alone, so the copies cannot
+  //  drift apart unseen; a W line past 2 %. The Researcher's review of aa6f021)
+  double kv_est_tight_ = -1;
+  void kv_drift_check() {
+    if (kv_est_tight_ < 0 || !tight_ || zrt::integrated() || opt.dry || hp.ds41 || hp.moe) return;
+    if (opt.pp_begin > 0 || (opt.pp_end >= 0 && opt.pp_end < hp.n_layer)) return;  // (a stage: layers_ are the stage's)
+    double real = (double)ctx_bytes(ctx) - (double)ctx_buf_bytes((ctx + 15) / 16 * 16);
+    if (!hp.swa_rings) {
+      real -= (double)mtp_kv_bytes(ctx);  // (ctx_bytes counts the MTP layer's KV; the estimate has it apart, mtp_part)
+      real -= (double)hp.n_qsa * qsa_blocks((ctx + 15) / 16 * 16) * hp.qsa_dim * 4;  // (QSA's pooled keys: not KV)
+    }
+    if (real <= 0) return;
+    const double d = (kv_est_tight_ - real) / real;
+    if (std::fabs(d) > 0.02)
+      LOG_WRN("inferzero: the tight plan's KV estimate %.3f GiB against %.3f GiB allocated (%+.1f %%): plan_tight's copy "
+              "of the load's rules has drifted (please report)\n", kv_est_tight_ / 1073741824.0, real / 1073741824.0, 100 * d);
+  }
   void plan_tight() {
     if (opt.tp_size > 1 || hp.moe || stream_) return;
     double total = 0;
@@ -697,6 +715,7 @@
       //  GiB against 2.5), and a card that pages is slower than one with more of the weights in RAM. Below it (d-dorok's
       //  B580, the 27B at 4K, one slot: ~0.9) the same room as before)
       const double room = std::max(0.0, need + mtp_part + apart - credit);
+      kv_est_tight_ = kv_est(ctx, true);  // (for the check against ctx_bytes after the load: kv_drift_check)
       if (getenv("ARC_FIT_PARTS") && !opt.dry)  // (diagnostics: the tight plan's room by part, with runz's memory line)
         zlog::eprintf("inferzero: room %.3f GiB = fixed %.2f + activations %.3f + staging %.3f + residual %.3f + states %.3f + "
                       "KV %.3f + MTP %.3f + partials %.3f + reserve %.3f - driver credit %.3f (the old rule's %.2f)\n", room / GiB,

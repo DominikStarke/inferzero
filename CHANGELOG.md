@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-23: a check on the memory plan's KV estimate
+
+- After a model that cannot fit the card loads, the plan's KV estimate is compared with what was allocated. Past
+  2 % apart, a warning says the plan's copy of the load's rules has drifted. One GPU only, no change to what is planned.
+
 ## 2026-11-23: the data folder without HOME
 
 - **Fixed:** without `HOME` (or with it empty), the data folder was `./.inferzero`, relative to wherever serverz was
