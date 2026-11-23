@@ -78,6 +78,15 @@
       </tbody>
     </table></div>
     <p class="note">Generation reads its weights at ~84 % of what this machine's memory delivers, near its limit.</p>
+    <p class="setup">A second Arc 140T: Core Ultra 7 255H, 32 GB DDR5-5600, Windows 10 · mejoudeh, <a href="https://github.com/rizagp/inferzero/issues/84">issue #84</a>, release 2026.11.21.10, 4-bit files, against llama.cpp b12189 Vulkan on the same machine</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 2K / 4K / 8K</th><th class="n">llama.cpp</th><th class="n">Generation (drafting)</th><th class="n">llama.cpp</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.8 27B Q4_K_S</td><td class="n">250 / 305 / 313</td><td class="n">135 / 116 / 88</td><td class="n">3.9 (7.0-8.1 MTP)</td><td class="n">3.7 (4.8-5.0)</td></tr>
+        <tr><td>Gemma 4 26B-A4B MXFP4</td><td class="n">205 / 199 / 188</td><td class="n">301 / 240 / 165</td><td class="n">13.3-14.0 (14.9-16.4 drafter)</td><td class="n">12.3-12.9 (9.5-13.4)</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">On a 19K-token document the 27B's prompt runs 5.5x llama.cpp's (271 against 50 tok/s). In the server at a 65,536 context, a 60K-token prompt took 300 s against 3,373 s, and a 16-turn coding session replay 579 s against 4,626 s. Short prompts (128 tokens) and Gemma up to 4K are still slower than llama.cpp here.</p>
   </div>
 </section>
 
