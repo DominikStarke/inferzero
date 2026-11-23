@@ -533,7 +533,8 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    runz only, `--dspark FILE`):** `zero/engine_dspark.h` (loading, the taps, the drafter's caches, the block and the
    top-K Markov chain, the 8-row verification, the conv-state rollback), `ops_inkling.cl`'s `dsp_*` and
    `ink_conv_commit` kernels, the conv states in one arena, `make_tiny_inkling2 --dspark` (a tiny drafter in the real
-   file's layout). The tiny file, 48 tokens: the greedy text with drafting equals plain decoding with the random drafter
+   file's layout). The tiny file, 48 tokens (as far as the 8-row verification pass rounds as the one-token path does,
+   as for MTP's verification: a test, not a guarantee): the greedy text with drafting equals plain decoding with the random drafter
    (0 accepted), the exact chain (`ARC_DSP_TOPK=0`), and oracle drafts (`ARC_DSP_ORACLE`: the accepted count cycling 0,
    1, ..., all; 28 / 60 at 3 drafts, 35 / 91 at 7); `ARC_DSP_CHECK=1` compared the conv arena after every rollback with
    `ink_conv_state` over the same inputs: the same bit for bit in all 33 verifications. Not known until the real file

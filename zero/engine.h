@@ -116,7 +116,7 @@ struct EngineOptions {
   // (a mtp_model that is not this model's head or drafter: false (runz) an error, true (the server, which may switch to
   //  another model) a line saying so, and the head or drafter next to the model as without it. Audit 2026-11-17)
   bool mtp_model_soft = false;
-  std::string dspark;         // Inkling 2's DSpark drafter (dspark-*.gguf, zero/engine_dspark.h): drafts with --mtp
+  std::string dspark;         // Inkling 2's DSpark drafter (dspark-*.gguf, zero/engine_dspark.h): set, it drafts (greedy)
   std::string dflash;         // DFlash2 block drafter (a z-lab DFlash2 folder or its model.safetensors): with mtp, it
                               // drafts instead of the MTP block (Qwen3.8 27B)
   bool mtp_block = true;      // with dflash: false = the MTP block is not loaded, DFlash2 drafts every step (--draft
@@ -398,7 +398,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       if (opt.mtp) zlog::eprintf("inferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
       opt.mtp_block = true;
     }
-    if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dspark.empty() ? dsp_drafts_default() : !opt.dflash.empty() ? 7 : xe2_mtp_drafts(mtp_block_drafts());
+    if (!opt.dspark.empty() && !hp.inkling)  // (the DSpark drafter is Inkling 2's: loaded only there)
+      LOG_WRN("--dspark: this model is not Inkling 2; the drafter is not loaded\n");
+    if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dspark.empty() && hp.inkling ? dsp_drafts_default() : !opt.dflash.empty() ? 7 : xe2_mtp_drafts(mtp_block_drafts());
     auto t0 = std::chrono::steady_clock::now();
     plan_weights();
     stream_ = hp.moe_std && opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM");

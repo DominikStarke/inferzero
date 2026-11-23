@@ -51,6 +51,7 @@
   cl_mem dsp_x_ = nullptr, dsp_xn_ = nullptr, dsp_q_ = nullptr, dsp_kb_ = nullptr, dsp_vb_ = nullptr, dsp_att_ = nullptr,
          dsp_t_ = nullptr, dsp_gu_ = nullptr, dsp_h_ = nullptr;  // (the block's rows)
   std::vector<cl_mem> dsp_hrow_;          // (rows of dsp_h_)
+  cl_mem dsp_hmask_ = nullptr;            // (its rows 1 .. B - 1)
   cl_mem dsp_ctx_ = nullptr, dsp_kk_ = nullptr, dsp_vv_ = nullptr;  // (a commit's rows, 8 at a time)
   cl_mem dsp_feat_ = nullptr, dsp_state_ = nullptr, dsp_z_ = nullptr, dsp_g_ = nullptr, dsp_lat_ = nullptr,
          dsp_u_ = nullptr, dsp_w1row_ = nullptr;
@@ -179,6 +180,7 @@
     dsp_gu_ = buf((size_t)B * 2 * dsp_F_ * 4);
     dsp_h_ = buf((size_t)B * E * 4);
     for (int r = 0; r < B; ++r) dsp_hrow_.push_back(ink_sub(dsp_h_, (size_t)r * E * 4, (size_t)E * 4));
+    dsp_hmask_ = ink_sub(dsp_h_, (size_t)E * 4, (size_t)(B - 1) * E * 4);  // (the 7 mask rows, for the head pass)
     dsp_ctx_ = buf((size_t)8 * E * 4);
     dsp_kk_ = buf((size_t)8 * KG * 4);
     dsp_vv_ = buf((size_t)8 * KG * 4);
@@ -325,7 +327,7 @@
     ink_rmsnorm(dsp_x_, E, dsp_onorm_, dsp_h_, B);
     // the 7 mask rows' base logits, one head pass (capped by the head's epilogue: un-capped on the host)
     cur_T_ = nd;
-    quant_rows(dsp_hrow_[1], E, 16, nd, 1);
+    quant_rows(dsp_hmask_, E, 16, nd, 1);
     matmul("dsp_head", lm_head_, 16, dsp_logits_, nl, 0, 0, true);
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_logits_, CL_TRUE, 0, (size_t)nd * nl * 4, dsp_lg_.data(), 0, nullptr, nullptr));
     const float cap = hp.softcap;
@@ -440,7 +442,9 @@
   // the target's pass over [tok, drafts...] (as verify): the conv states kept and their inputs saved (spec_)
   const std::vector<float>& dsp_verify(int tok, const std::vector<int>& drafts) {
     const int T = 1 + (int)drafts.size();
-    if (drafts.empty() || T > dsp_B_) throw std::runtime_error("DSpark verify: " + std::to_string(drafts.size()) + " drafts");
+    // (spec_logits_host_ holds 1 + max_drafts() rows, as verify() checks; and the block's B rows bound the saves)
+    if (drafts.empty() || (int)drafts.size() > max_drafts() || T > dsp_B_)
+      throw std::runtime_error("DSpark verify: " + std::to_string(drafts.size()) + " drafts");
     if (pos + T > ctx) throw std::runtime_error("context overflow");
     std::vector<int> toks{tok};
     toks.insert(toks.end(), drafts.begin(), drafts.end());
@@ -461,6 +465,8 @@
   // the first `accepted` drafts were right: the conv states moved on by accepted + 1 rows, the position back, the
   // accepted rows into the drafter's context
   void dsp_verify_done(int accepted) {
+    // (no verification pending: nothing to move on; the saves would be another pass's rows. As verify_done)
+    if (last_drafts_.empty()) return;
     const int nd = (int)last_drafts_.size();
     accepted = std::clamp(accepted, 0, nd);
     const int rows = accepted + 1;
