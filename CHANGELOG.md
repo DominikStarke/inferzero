@@ -1,9 +1,11 @@
 # Changelog
 
-## 2026-11-23: pruned Flash Next files accepted; MoE errors name the dimensions
+## 2026-11-23: pruned Flash Next files load again; MoE errors name the dimensions
 
-- **Flash Next with fewer than 512 experts** (an expert-pruned file such as ISTA-DASLab's Qwen3.8-Flash-Next-GSQ-RCO-Coder,
-  gee456, #1) is accepted: 16..512 experts, routed with masked lanes as the pruned Qwen MoE models are. Not run here yet.
+- **Fixed (a regression since 2026-11-20):** an expert-pruned Flash Next, such as ISTA-DASLab's
+  Qwen3.8-Flash-Next-GSQ-RCO-Coder (gee456, #1), stopped with "unsupported MoE dimensions". It loaded before. The check
+  for pruned Qwen MoE models (b8824ac) took Flash Next at exactly 512 experts, where 256 had been accepted too. Flash
+  Next now takes 16..512, routed with masked lanes as the pruned Qwen models are.
 - **`unsupported MoE dimensions`** now names the values (experts, experts used, the expert and shared FFN widths, the
   expert format) and the ranges taken.
 
