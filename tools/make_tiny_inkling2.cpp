@@ -265,9 +265,9 @@ std::vector<ScaleAt> scale_fields(uint32_t t) {
     default: return {};
   }
 }
-void put_scale(uint8_t* b, const std::vector<ScaleAt>& fs, float d, int e) {
+void put_scale(uint8_t* b, const std::vector<ScaleAt>& fs, float d, int e, float zf = 0.0f) {
   for (const ScaleAt& s : fs) {
-    if (s.kind == 'z') { const uint16_t z = 0; memcpy(b + s.off, &z, 2); }
+    if (s.kind == 'z') { const uint16_t z = f32_to_fp16(zf); memcpy(b + s.off, &z, 2); }
     if (s.kind == 'd') { const uint16_t h = f32_to_fp16(d); memcpy(b + s.off, &h, 2); }
     if (s.kind == 'e') b[s.off] = (uint8_t)std::clamp(e, 1, 254);
     if (s.kind == 'm') {
@@ -309,7 +309,27 @@ std::vector<uint8_t> encode_random(const F& x, uint32_t type) {
       for (float v : back) got += (double)v * v;
       got = std::sqrt(got / blk) + 1e-12;
     }
-    put_scale(p, fs, (float)(want / got), 127 + (int)std::lround(std::log2(want / got)));
+    // (the offset field (Q4_1 / Q5_1's m, a K-quant's dmin): the one that makes the block's mean zero, values being
+    //  linear in it; with it 0 every value had one sign, the matrices biased and the tiny model flat)
+    float zc = 0.0f;
+    bool hz = false;
+    for (const ScaleAt& s : fs) hz = hz || s.kind == 'z';
+    if (hz) {
+      std::vector<float> v1(blk);
+      put_scale(p, fs, 1.0f, 127, 0.0f);
+      dequant_row(type, p, blk, back.data());
+      put_scale(p, fs, 1.0f, 127, 1.0f);
+      dequant_row(type, p, blk, v1.data());
+      double m0 = 0, dm = 0;
+      for (int i = 0; i < blk; ++i) m0 += back[i], dm += v1[i] - back[i];
+      if (std::fabs(dm) > 1e-9) zc = (float)(-m0 / dm);
+      put_scale(p, fs, 1.0f, 127, zc);
+      dequant_row(type, p, blk, back.data());
+      got = 0;
+      for (float v : back) got += (double)v * v;
+      got = std::sqrt(got / blk) + 1e-12;
+    }
+    put_scale(p, fs, (float)(want / got), 127 + (int)std::lround(std::log2(want / got)), (float)(zc * want / got));
     dequant_row(type, p, blk, back.data());
     for (float v : back)
       if (!std::isfinite(v)) throw std::runtime_error(std::string("encode: ") + ggml_type_name(type) + " gave a non-finite value");
