@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-23: model folders from the window and the command line; runz's BOS; clearer start-up lines
+
+- **New: model folders without editing a file (#81).** A folder of models elsewhere, e.g. `D:\ai\models`, was found
+  only by writing it into `model-dirs.txt` by hand. Now:
+  - `zero-server model-dirs` lists the folders, and `-Add D` / `-Remove D` change them (the folder is checked to
+    exist);
+  - the launcher window has **More > Model folders...**, with Add (a folder picker) and Remove, and the model list
+    reads again;
+  - `./zero-launcher.sh --model-dirs` / `--add-model-dir D` / `--remove-model-dir D` on Linux.
+  - With no models found, `zero-server list` and the window say how to add a folder.
+- **Fixed:** a `model-dirs.txt` saved with a BOM (Windows PowerShell 5.1's `Set-Content -Encoding UTF8`, Notepad's
+  "UTF-8 with BOM") lost its first folder.
+- **Fixed: runz gives a model that expects BOS (Gemma) its BOS for every text prompt,** as llama.cpp does. It was
+  added for `--dump-ids` only, so a run of the same text went without it (#84: "prompt: 19529 tokens" for 19,530
+  dumped ids). The server was not affected: its chat templates add BOS.
+- **The start-up log names the OpenCL platform that compiles the kernels**, with the device, the driver and every
+  platform found. A non-Intel stack (Mesa's rusticl, PoCL) chosen there is a warning.
+- **`--mtp` on a file without the MTP block, with a DFlash2 drafter:** the log says the drafter is used instead
+  of MTP. The MTP steps stayed at 0 without a word (#81).
+- `zero-server -DryRun` on a model started by its path says the server sizes it at the start, not "no memory
+  estimate for this model".
+
 ## 2026-11-23: the server keeps a log file by default, on Linux too
 
 - **New:** serverz writes its log to `~/.inferzero/logs/server.log` (`%USERPROFILE%\.inferzero\logs\server.log` on

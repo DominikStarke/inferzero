@@ -14,7 +14,8 @@
 # limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's
 # best measured settings for this PC), --no-browser, --yes (no
 # questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
-# last lines), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
+# last lines), --model-dirs / --add-model-dir D / --remove-model-dir D (folders searched for .gguf models),
+# --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to
 # serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
@@ -974,10 +975,40 @@ menu() {
   start_key "${keys[$((s - 1))]}"
 }
 
-usage() { sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; }
+# the folders searched for models besides the Hugging Face cache: ~/.inferzero/model-dirs.txt, one a line, '#'
+# comments (serverz reads it, tools/server_catalog.h); --add-model-dir D / --remove-model-dir D change it (#81)
+model_dirs() {  # ADD REMOVE
+  local f="$STATE_DIR/model-dirs.txt" add=$1 rm=$2 d tmp
+  mkdir -p "$STATE_DIR" || return 1
+  [ -f "$f" ] || : > "$f"
+  if [ -n "$add" ]; then
+    [ -d "$add" ] || { err "zero-launcher: not a folder: $add"; return 2; }
+    add=$(cd "$add" && pwd -P)
+    if sed 's/^\xEF\xBB\xBF//; s/[[:space:]]*$//' "$f" | grep -Fxq -- "$add"; then say "already listed: $add"
+    else printf '%s\n' "$add" >> "$f"; say "added: $add"; fi
+  fi
+  if [ -n "$rm" ]; then
+    rm=${rm%/}
+    tmp=$(mktemp "$STATE_DIR/.model-dirs-XXXXXX") || return 1
+    sed 's/^\xEF\xBB\xBF//' "$f" | awk -v r="$rm" '{ t = $0; sub(/[[:space:]]+$/, "", t); sub(/\/$/, "", t); if (t != r) print }' > "$tmp"
+    if cmp -s "$tmp" "$f"; then rm -f "$tmp"; say "not listed: $rm"; else mv -f "$tmp" "$f"; say "removed: $rm"; fi
+  fi
+  say "model folders ($f), searched with the Hugging Face cache and $STATE_DIR/models:"
+  local n=0
+  while IFS= read -r d || [ -n "$d" ]; do
+    d=${d#$'\xEF\xBB\xBF'}; d=${d%$'\r'}
+    case "$d" in ''|'#'*) continue;; esac
+    n=$((n + 1))
+    if [ -d "$d" ]; then say "  $d"; else say "  $d   (not found)"; fi
+  done < "$f"
+  [ $n -gt 0 ] || say "  none (add one: ./zero-launcher.sh --add-model-dir /path/to/models)"
+  [ -n "${ARC_MODEL_DIRS:-}" ] && say "  and ARC_MODEL_DIRS: $ARC_MODEL_DIRS"
+  return 0
+}
+usage() { sed -n '2,21p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
-  local mode="" arg_model="" arg_dl=""
+  local mode="" arg_model="" arg_dl="" md_add="" md_rm=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
   THINK=8192; SESS_GB=8; CHUNK=""; NO_AUTO=0  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
   REPLACE_SERVICE=0; EXTRA=()
@@ -1002,6 +1033,9 @@ main() {
       --session-cache-gb) SESS_GB=${2:-}; shift;;
       --chunk) CHUNK=${2:-}; shift;;
       --log-dir) LOG_DIR=${2:-}; shift;;
+      --model-dirs) mode=model_dirs;;
+      --add-model-dir) md_add=${2:-}; shift; mode=model_dirs;;
+      --remove-model-dir) md_rm=${2:-}; shift; mode=model_dirs;;
       --logs) mode=logs;;
       --no-auto) NO_AUTO=1;;
       --no-browser) NO_BROWSER=1;;
@@ -1049,6 +1083,7 @@ main() {
   fi
   case "$mode" in
     options) opt_list; return $?;;
+    model_dirs) model_dirs "$md_add" "$md_rm"; return $?;;
     logs)  # (the server's log: the last 40 lines, its path first)
       local lf; lf="$(logs_dir)/server.log"
       if [ ! -f "$lf" ]; then say "no log yet ($lf): the server has not been started"; return 0; fi

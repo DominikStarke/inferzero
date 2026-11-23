@@ -109,7 +109,7 @@ projector; `35b-gsq` is converted by `bin\convert_gsq.exe`, `flash-ar4` imported
 and
 connects Pi (`zero-pi`, `zero-server`, Pi's model list with each model's context). Running it again only does what
 is missing: a model the server already finds (in the Hugging Face cache, as a package in
-`%USERPROFILE%\.inferzero\zero\models` or in a folder of `model-dirs.txt`) is not downloaded again. Double-clicked,
+`%USERPROFILE%\.inferzero\zero\models` or in a folder of `model-dirs.txt`, which `zero-server model-dirs -Add D:\ai\models` or the launcher's **More > Model folders...** adds) is not downloaded again. Double-clicked,
 its window stays open at the end so the result can be read; it ends with setup's exit code (1 when a step failed).
 Afterwards the easiest start is `zero-launcher.cmd` (see the package's steps above). Steps 1–10 describe the same by
 hand.

@@ -647,18 +647,23 @@ static int run_main(int argc, char** argv) {
     else { zlog::eprintf("unknown option %s (--help: the options)\n", a.c_str()); return 1; }
   }
   std::vector<int> toks = parse_ids(tokens_arg);
+  // (a model that expects BOS, Gemma, gets it first, like llama.cpp's tokenizer: without it the KL against ref_forward
+  //  measured an off-distribution prompt, Gemma 26B 0.093 instead of 0.004. Every text prompt since 2026-11-23: it was
+  //  added for --dump-ids only, so a run of the same text went without it (mejoudeh's 140T, #84: "prompt: 19529
+  //  tokens" for 19,530 dumped ids). Ids given with --tokens stay as given, but --dump-ids, as before)
+  auto bos_first = [&]() {
+    GgufFile g(model);
+    Vocab v(g);
+    if (g.get_int("tokenizer.ggml.add_bos_token", 0) != 0 && v.bos >= 0 && (toks.empty() || toks[0] != v.bos))
+      toks.insert(toks.begin(), v.bos);
+  };
   if (!text_prompt.empty()) {  // the vocabulary is read from the GGUF before the engine loads
     GgufFile g(model);
     toks = Vocab(g).encode(text_prompt);
+    bos_first();
   }
   if (!dump_ids.empty()) {
-    {  // (a model that expects BOS, Gemma, gets it first, like llama.cpp's tokenizer: without it the KL against
-       //  ref_forward measured an off-distribution prompt, Gemma 26B 0.093 instead of 0.004)
-      GgufFile g(model);
-      Vocab v(g);
-      if (g.get_int("tokenizer.ggml.add_bos_token", 0) != 0 && v.bos >= 0 && (toks.empty() || toks[0] != v.bos))
-        toks.insert(toks.begin(), v.bos);
-    }
+    bos_first();  // (ids from --tokens too, as before)
     FILE* fo = fopen(dump_ids.c_str(), "w");
     for (size_t i = 0; i < toks.size(); ++i) fprintf(fo, i ? ",%d" : "%d", toks[i]);
     fclose(fo);

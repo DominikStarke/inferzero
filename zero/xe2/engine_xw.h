@@ -327,7 +327,7 @@
         //  sweep asked for to 32 x 32 4,4 CPS 1; the Researcher's review of 277d809)
         // (4 x 8 on discrete 8-lane cards, Alchemist, with the split barrier since 2026-11-23: skipzx-lab's A770, the
         //  27B 4K 1,594 -> 1,701 with the split on the per-GEMM shapes, 1,710 with every GEMM at 4 x 8 (gdn_recur and
-        //  attention back to 343 / 133.5 ms); Windows to confirm (hansong80). ARC_GEMM_XW_SLM_WG=4,4 and
+        //  attention back to 343 / 133.5 ms); Windows confirmed (hansong80: 1,653 -> 1,760 against SPLIT=0). ARC_GEMM_XW_SLM_WG=4,4 and
         //  ARC_GEMM_XW_SLM_WG_GU=4,8 give the shapes of before; ARC_GEMM_XW_SPLIT=0 gives them too)
         b.y = 8;
       }
@@ -379,7 +379,7 @@
       } else if (!getenv("ARC_GEMM_XW_SLM_WG") && !zrt::integrated() && b.x == 4 && b.y == 4 && b.cps == 1 && b.tm == 32 &&
                  b.nc == 2) {
         // (the default on discrete 8-lane cards, Alchemist, since 2026-11-23: the gate / up at 4 x 8, the rest at 4 x 4;
-        //  skipzx-lab's A770 (Linux, #45); Windows to confirm (hansong80); docs/before-after.md)
+        //  skipzx-lab's A770 (Linux, #45); Windows confirmed (hansong80: 1,653 -> 1,760 against SPLIT=0); docs/before-after.md)
         b.y = 8;
       }
       return b;
@@ -457,7 +457,7 @@
   // where that fails or does not build (no cl_intel_split_work_group_barrier), checked again without it
   bool xw_split_ = false;  // (set by xw_init: the env, then the check)
   // (on by default on discrete 8-lane cards, Alchemist, since 2026-11-23: skipzx-lab's A770 (Linux, #45), xw_peak +11.9 %
-  //  / +13.8 % at 4x4 / 4x8, the 27B 4K 1,594 -> 1,710 tok/s with the big tile 4x8; Windows to confirm (hansong80);
+  //  / +13.8 % at 4x4 / 4x8, the 27B 4K 1,594 -> 1,710 tok/s with the big tile 4x8; Windows confirmed (hansong80: 1,653 -> 1,760 against SPLIT=0);
   //  =0 off. Where the start check fails: the plain barrier, as before)
   static bool xw_split_env() {
     static const int e = getenv("ARC_GEMM_XW_SPLIT") ? atoi(getenv("ARC_GEMM_XW_SPLIT")) : -1;

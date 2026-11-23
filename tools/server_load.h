@@ -115,7 +115,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     eo.mtp_block = true;
   }
   if (eo.mtp && !eo.dflash.empty())
-    zlog::eprintf("drafting: %s\n", eo.mtp_block ? "DFlash2 and the MTP block, picked per step" : "DFlash2 only (no MTP block)");
+    zlog::eprintf("drafting: %s\n", eo.mtp_block ? "DFlash2 and the MTP block (where the file has one), picked per step"
+                                                 : "DFlash2 only (no MTP block)");
   // Gemma 4 with an image projector: an image's tokens attend to each other both ways, so one image is one forward
   // step; the steps must hold the largest image (resident E4B weights otherwise step through prompts in 512s)
   if (so.mmproj != "-") {

@@ -35,7 +35,7 @@
 #      files itself where it is started some other way (src/server_log.h)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
-    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "options", "help", "--help", "-h")] [string]$Action = "start",
+    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "options", "model-dirs", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
   [string]$Ctx = "",
   [int]$Chunk = 0,
@@ -92,6 +92,8 @@ param(
   # (added last: the positions of the options above stay as they were)
   [string]$Preset = "",   # start / restart: the options of a saved preset; save-preset: its name
   [string]$LogDir = "",   # the logs folder (default %USERPROFILE%\.inferzero\logs; also ARC_LOG_DIR)
+  [string]$Add = "",      # model-dirs: a model folder to add
+  [string]$Remove = "",   # model-dirs: a model folder to remove
   [switch]$DryRun,        # start / restart: print the command and the memory estimate, start nothing
   [switch]$Json,          # status, list, doctor, version, presets, -DryRun: JSON for scripts
   [switch]$Follow,        # logs: keep printing new lines
@@ -435,6 +437,7 @@ clients. Options take one dash or two, any case.
   zero-server restart [options]     restart with other options          zero-server stop      stop, free the GPU memory
   zero-server status [-Json]        what runs, its command line         zero-server list      the models on this PC
   zero-server logs [-Follow]        the server's log                    zero-server doctor    a check to paste into a bug report
+  zero-server model-dirs [-Add D] [-Remove D]   the folders searched for models (with the Hugging Face cache)
   zero-server version [-Check]      this package, and whether a newer one is out
   zero-server pull <keys>           download models: 4b 9b 35b 27b g12 g31 e4b asr whisper (pull alone lists them)
   zero-server presets               the saved presets;  save-preset -Preset <name> [options] saves one
@@ -883,7 +886,38 @@ switch ($Action) {
     }
     $skip = @($all | Where-Object { -not $_.supported })
     if ($skip.Count) { Write-Host ("not supported: " + (($skip | ForEach-Object { "$($_.file) [$($_.arch)]" }) -join ", ")) }
-    Write-Host "$($ok.Count) models / variants. Start one: zero-server start -Model <id or shortcut>"
+    if (-not $ok.Count) {
+      Write-Host "no models found: add your model folder (zero-server model-dirs -Add D:\ai\models, or More > Model folders in the window), or start with -Model <path to a .gguf>" -ForegroundColor Yellow
+    } else { Write-Host "$($ok.Count) models / variants. Start one: zero-server start -Model <id or shortcut>" }
+    return
+  }
+  "model-dirs" {
+    # (the folders searched for models besides the Hugging Face cache and .inferzero\models: model-dirs.txt, one a
+    #  line, '#' comments; serverz reads it, tools/server_catalog.h. 2026-11-23, #81: a D:\ai\models nobody could add)
+    $f = Join-Path $stateDir "model-dirs.txt"
+    $mdLines = @(if (Test-Path -LiteralPath $f) { Get-Content -Encoding UTF8 -LiteralPath $f | ForEach-Object { $_.TrimStart([char]0xFEFF) } })
+    $norm = { param($p) $p.Trim().TrimEnd('\', '/').ToLowerInvariant() }
+    $save = {
+      New-Item -ItemType Directory -Force $stateDir | Out-Null
+      [IO.File]::WriteAllText($f, (($mdLines | ForEach-Object { $_ }) -join "`n") + "`n", (New-Object Text.UTF8Encoding $false))
+    }
+    if ($Add) {
+      $full = $null
+      try { $full = (Resolve-Path -LiteralPath $Add -ErrorAction Stop).ProviderPath } catch {}
+      if (-not $full -or -not (Test-Path -LiteralPath $full -PathType Container)) { Write-Host "not a folder: $Add" -ForegroundColor Red; exit 1 }
+      if ($full.Length -gt 3) { $full = $full.TrimEnd('\', '/') }  # (not a drive's root, D:\)
+      if (@($mdLines | Where-Object { (& $norm $_) -eq (& $norm $full) }).Count) { Say "already listed: $full" }
+      else { $mdLines += $full; & $save; Say "added: $full" }
+    }
+    if ($Remove) {
+      $keep = @($mdLines | Where-Object { $_.Trim().StartsWith("#") -or (& $norm $_) -ne (& $norm $Remove) })
+      if ($keep.Count -eq $mdLines.Count) { Say "not listed: $Remove" } else { $mdLines = $keep; & $save; Say "removed: $Remove" }
+    }
+    $dirs = @($mdLines | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("#") })
+    Write-Host "Model folders ($f), searched with the Hugging Face cache and $(Join-Path $stateDir 'models'):"
+    if (-not $dirs.Count) { Write-Host "  none (add one: zero-server model-dirs -Add D:\ai\models)" }
+    foreach ($d in $dirs) { Write-Host ("  {0}{1}" -f $d, $(if (Test-Path -LiteralPath $d -PathType Container) { "" } else { "   (not found)" })) }
+    if ($env:ARC_MODEL_DIRS) { Write-Host "  and ARC_MODEL_DIRS: $env:ARC_MODEL_DIRS" }
     return
   }
   { $_ -in "logs", "log" } {
@@ -1373,7 +1407,9 @@ function Get-Estimate {
 }
 $est = if ($m -ne $none) { Get-Estimate } else { $null }
 function Est-Text($e) {
-  if (-not $e) { return "no memory estimate for this model" }
+  # (info, not a warning: a model started by its path is not in the model list, whose entries carry the estimate;
+  #  the server sizes it itself at the start. cjm801, #81, read it as a problem)
+  if (-not $e) { return "memory: the server sizes this model when it starts (an estimate here only for models in the list)" }
   "GPU memory estimate: {0:N1} of {1:N1} GiB (weights and buffers {2:N1}, context {3:N1}{4}){5}: {6}" -f ($e.need / 1GB), ($e.free / 1GB),
   ($e.fixed / 1GB), ($e.context / 1GB), $(if ($e.speech) { ", speech {0:N1}" -f ($e.speech / 1GB) } else { "" }), ("" + $(if ($e.slots -gt 1) { ", $($e.slots) slots" } else { "" }) + $(if ($Gpus -gt 1) { ", on each of $Gpus GPUs" } else { "" })), $e.note
 }

@@ -839,6 +839,11 @@
     // DFlash2 (with or without the MTP block: with both, mtp_draft picks one per step; Flash Next: the features are the
     // means of the residual streams, the PLE / QSA state rolled back in verify_done)
     if (!opt.dflash.empty()) load_dflash(opt.dflash);
+    // (--mtp with a DFlash2 drafter, an auto-found one too, on a file without the MTP block: the drafter drafts alone.
+    //  The start-up line said "DFlash2 and the MTP block" and the stats showed 0 MTP steps; cjm801, #81, 2026-11-23)
+    if (opt.mtp && !opt.dflash.empty() && opt.mtp_block && pp_last() && !mtp_block_ && !opt.dry)
+      LOG_INF("--mtp: this model file has no MTP block, so the DFlash2 drafter is used instead of MTP (--no-dflash: plain "
+              "decoding)\n");
     // (--mtp on a file without the MTP block and no drafter: said, not plain decoding in silence. Unsloth's
     //  Qwen3.6-35B-A3B-UD-Q4_K_M.gguf has none: a B390 owner saw --mtp run at plain speed with no MTP line, issue #75)
     if (opt.mtp && opt.mtp_block && pp_last() && !has_mtp && !opt.dry && !opt.copy_draft) {

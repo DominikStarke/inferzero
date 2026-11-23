@@ -1406,7 +1406,8 @@ function Show-List {
     if ($selRow -ge 0) { $grid.Rows[$selRow].Selected = $true; $grid.FirstDisplayedScrollingRowIndex = $selRow }
   } finally { $script:listing = $false }
   $n = @($script:groups.Values | Where-Object { $_.entries[0].supported }).Count
-  $msg.Text = "$n models can run. Select one, choose its switches on the right, and Start (or double-click it). The server keeps running when this window is closed."
+  $msg.Text = if ($n -eq 0) { "No models found: add your model folder (More > Model folders...), or download one." }
+              else { "$n models can run. Select one, choose its switches on the right, and Start (or double-click it). The server keeps running when this window is closed." }
   Refresh-Model
   Show-Detail
   Fill-Defaults
@@ -1962,6 +1963,57 @@ $form.Add_Resize({
 $script:speechItem = Add-Item $more "Start speech to text only" { Start-Selected -Speech }
 [void](Add-Item $more "Copy the start command" { Copy-StartCommand })
 Add-Sep $more
+# the folders searched for models besides the Hugging Face cache (model-dirs.txt in the data folder, one a line, '#'
+# comments; serverz reads it, tools/server_catalog.h): listed, with Add (a folder picker) and Remove; the model list
+# read again when it changed (2026-11-23, #81: a D:\ai\models folder had no way in from the window)
+function Edit-ModelDirs {
+  $f = Join-Path $stateDir "model-dirs.txt"
+  $lines = New-Object System.Collections.ArrayList
+  if (Test-Path -LiteralPath $f) { foreach ($l in (Get-Content -Encoding UTF8 -LiteralPath $f)) { [void]$lines.Add($l.TrimStart([char]0xFEFF)) } }
+  $dlg = New-Object System.Windows.Forms.Form
+  $dlg.Text = "Model folders"; $dlg.StartPosition = "CenterParent"; $dlg.Width = 620; $dlg.Height = 340
+  $dlg.FormBorderStyle = "FixedDialog"; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false
+  $lbl = New-Object System.Windows.Forms.Label
+  $lbl.Text = "Searched for .gguf files (and Hugging Face cache folders), with the Hugging Face cache and $(Join-Path $stateDir 'models'):"
+  $lbl.SetBounds(12, 10, 590, 34)
+  $box = New-Object System.Windows.Forms.ListBox
+  $box.SetBounds(12, 46, 480, 230)
+  $fill = { $box.Items.Clear(); foreach ($l in $lines) { $t = $l.Trim(); if ($t -and -not $t.StartsWith("#")) { [void]$box.Items.Add($t) } } }
+  & $fill
+  $st = @{ changed = $false }  # (a table: the click handlers change it in place)
+  $save = {
+    New-Item -ItemType Directory -Force $stateDir | Out-Null
+    [IO.File]::WriteAllText($f, ((@($lines) -join "`n") + "`n"), (New-Object Text.UTF8Encoding $false))
+  }
+  $addB = New-Object System.Windows.Forms.Button
+  $addB.Text = "Add..."; $addB.SetBounds(504, 46, 90, 28)
+  $addB.Add_Click({
+      $fb = New-Object System.Windows.Forms.FolderBrowserDialog
+      $fb.Description = "A folder with .gguf models"
+      if ($fb.ShowDialog($dlg) -eq "OK" -and $fb.SelectedPath) {
+        $p = $fb.SelectedPath
+        if (@($box.Items | Where-Object { $_.TrimEnd('\').ToLowerInvariant() -eq $p.TrimEnd('\').ToLowerInvariant() }).Count -eq 0) {
+          [void]$lines.Add($p); & $save; & $fill; $st.changed = $true
+        }
+      }
+    })
+  $remB = New-Object System.Windows.Forms.Button
+  $remB.Text = "Remove"; $remB.SetBounds(504, 80, 90, 28)
+  $remB.Add_Click({
+      if ($null -eq $box.SelectedItem) { return }
+      $s = [string]$box.SelectedItem
+      foreach ($l in @($lines)) { if ($l.Trim() -eq $s) { $lines.Remove($l) } }
+      & $save; & $fill; $st.changed = $true
+    })
+  $okB = New-Object System.Windows.Forms.Button
+  $okB.Text = "Close"; $okB.SetBounds(504, 248, 90, 28); $okB.DialogResult = "OK"
+  $dlg.Controls.AddRange(@($lbl, $box, $addB, $remB, $okB))
+  $dlg.AcceptButton = $okB
+  [void]$dlg.ShowDialog($form)
+  $dlg.Dispose()
+  if ($st.changed) { Start-List }
+}
+[void](Add-Item $more "Model folders..." { Edit-ModelDirs })
 [void](Add-Item $more "Set as default (model and options)" { Set-AsDefault })
 [void](Add-Item $more "Reset options" { Reset-Options })
 [void](Add-Item $more "Refresh the model list" { Start-List })

@@ -64,6 +64,9 @@ static std::string hf_hub_dir() {
 static std::vector<std::string> extra_model_dirs() {
   std::vector<std::string> extra;
   auto add = [&](std::string d) {
+    // (a UTF-8 BOM in front: a file written by PowerShell 5.1's Set-Content / Add-Content -Encoding UTF8 or Notepad's
+    //  "UTF-8 with BOM" made the first folder "\xEF\xBB\xBFD:\..." and it was never found)
+    if (d.size() >= 3 && (unsigned char)d[0] == 0xEF && (unsigned char)d[1] == 0xBB && (unsigned char)d[2] == 0xBF) d.erase(0, 3);
     while (!d.empty() && (d.back() == '\r' || d.back() == ' ' || d.back() == '\t')) d.pop_back();
     while (!d.empty() && (d.front() == ' ' || d.front() == '\t')) d.erase(d.begin());
     if (!d.empty() && d[0] != '#') extra.push_back(d);

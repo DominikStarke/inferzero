@@ -145,6 +145,9 @@ struct Dev {
   //  that driver's context, which its memory, modules, lists and events are made in; null: the shared ctx)
   ze_context_handle_t zctx = nullptr;
   ze_driver_handle_t zdrv = nullptr;  // (that driver; null: zrt::driver's, as GPU 0)
+  // (batch_append_for's answer for this GPU, looked up once: batching() asks it at every launch)
+  mutable std::atomic<void*> batch_app{nullptr};
+  mutable std::atomic<int> batch_app_known{0};
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -267,11 +270,17 @@ inline BatchAppend batch_append_for(const Dev& d) {
   BatchFns& b = batch_fns();
   if (!b.ok) return nullptr;
   if (b.loader_append || !d.zdrv || d.zdrv == driver) return b.append;
+  if (d.batch_app_known.load(std::memory_order_acquire)) return (BatchAppend)d.batch_app.load(std::memory_order_relaxed);
   static std::mutex mu;
   static std::vector<std::pair<ze_driver_handle_t, BatchAppend>> by_drv;
   std::lock_guard<std::mutex> g(mu);
+  auto keep = [&d](BatchAppend f) {
+    d.batch_app.store((void*)f, std::memory_order_relaxed);
+    d.batch_app_known.store(1, std::memory_order_release);
+    return f;
+  };
   for (auto& [dh, f] : by_drv)
-    if (dh == d.zdrv) return f;
+    if (dh == d.zdrv) return keep(f);
   BatchAppend f = nullptr;
   typedef ze_result_t(__stdcall * PFN_ext)(ze_driver_handle_t, const char*, void**);
   void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
@@ -280,7 +289,7 @@ inline BatchAppend batch_append_for(const Dev& d) {
   if (ext && ext(d.zdrv, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) f = (BatchAppend)p;
   if (!f) zlog::eprintf("inferzero: GPU %d's driver cannot append lists to an immediate list: ARC_BATCH off there\n", d.index);
   by_drv.push_back({d.zdrv, f});
-  return f;
+  return keep(f);
 }
 inline bool batching(const Dev& d) { return batch_max(d) > 0 && batch_append_for(d) != nullptr; }
 inline bool batching() { return batching(D()); }
@@ -845,6 +854,23 @@ inline bool load(const char* want_name = nullptr, uint32_t want_id = 0) {
   cl_int err = 0;
   context = createContext(nullptr, 1, &device, nullptr, nullptr, &err);
   if (err != 0 || !context) return fail();
+  {  // (which OpenCL platform compiles the kernels, and which were there: a Mesa rusticl or PoCL mix-up shows at
+     //  once in the log; 2026-11-23, a B580 under CachyOS with rusticl next to Intel's lost its GPU)
+    void* pl = nullptr;
+    char dname[256] = {}, dver[128] = {};
+    getDeviceInfo(device, 0x1031 /* CL_DEVICE_PLATFORM */, sizeof pl, &pl, nullptr);
+    getDeviceInfo(device, 0x102B /* CL_DEVICE_NAME */, sizeof(dname) - 1, dname, nullptr);
+    getDeviceInfo(device, 0x102D /* CL_DRIVER_VERSION */, sizeof(dver) - 1, dver, nullptr);
+    const std::string pn = pl ? platform_name(pl) : std::string();
+    std::string all;
+    for (void* p : plats) all += (all.empty() ? "" : ", ") + platform_name(p);
+    if (foreign_platform(pn))
+      LOG_WRN("inferzero: the kernels compile on OpenCL platform \"%s\" (%s, driver %s), not Intel's: install Intel's "
+              "compute runtime (platforms: %s)\n", pn.c_str(), dname, dver, all.c_str());
+    else
+      zlog::eprintf("inferzero: kernels compiled by OpenCL platform \"%s\" (%s, driver %s); platforms: %s\n", pn.c_str(),
+                    dname, dver, all.c_str());
+  }
   return true;
 }
 // The compiler's device and context for another Level Zero GPU (P0, 2026-11-22: a layer split over unlike cards, each
