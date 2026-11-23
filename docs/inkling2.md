@@ -367,12 +367,19 @@ they are, with nothing of its own but the record recipe:
   memory is the RAM, so the expert cache itself is the RAM tier. Two tiers: the cache (~14 GiB of the GPU share
   holding ~95 % of the 14.7 GiB of experts) and the SSD (the rest, and the cold start).
 - **On a discrete card,** all three:
-  - B580 12 GB with 32 GB RAM: ~9.5 GiB cached; the automatic tier (~10 GiB on a machine with ~20 GiB free) holds the
-    other ~5 GiB, so the SSD is read only at the cold start.
+  - B580 12 GB with 32 GB+ RAM: ~9.5 GiB cached; the automatic tier (~10 GiB on a machine with ~20 GiB free) holds the
+    other ~5 GiB, so the SSD is read only at the cold start. On a 16 GB PC the tier's automatic size,
+    max(free - 16 GiB, min(free / 2, free - 4 GiB)), leaves little or nothing (a B580 user's 15.4 GiB): there it is
+    the GPU cache plus the SSD.
   - A770 16 GB: ~13 GiB cached, the tier holds the other ~2 GiB.
   - B60 / B65 / B70: every expert in VRAM.
   - With `ARC_XCPU=1` a miss in the GPU cache is computed on the CPU from the RAM tier (NVFP4 and Q8_0 CPU dots, situ
     plus the gate-up scale), so the loop's later passes don't wait on a copy.
+- **The expert file's place:** next to the GGUF when the model is inside the data folder
+  (`%USERPROFILE%\.inferzero`, or `ARC_DATA_DIR` when set), else in the data folder's `zero\models\<gguf name>\`, as
+  for the 35B (`zero/expert_store.h`). The SSD tier is only as fast as that drive. A data folder on a slow or USB
+  drive makes every miss slow; on this laptop the models and the data folder stay on C: (D: hangs under random
+  access).
 - **Fill order:** a prompt's experts go into the GPU cache's transient end, and into the RAM tier only where the tier
   can't hold every expert anyway (`ARC_XRAM_FILL`, the default since 2026-11-21). Generation's misses go to the front
   of the LRU, and to the tier.
@@ -383,7 +390,9 @@ they are, with nothing of its own but the record recipe:
   - on the tiny file, a cache forced small (`ARC_XCACHE_GB`) with a RAM tier (`ARC_XRAM_GB`) and with none, so that
     every tier serves records;
   - the same top tokens across the three: GPU only, GPU + SSD, GPU + RAM + SSD with and without `ARC_XCPU`;
-  - the expert statistics line (`expert_stats`: hits per tier, SSD bytes) on the laptop with the real file.
+  - the expert statistics line (`expert_stats`: hits per tier, SSD bytes) on the laptop with the real file;
+  - one cold start: the first prompt after a restart, the expert file not in Windows' file cache, the SSD tier's
+    worst case, which warm runs would hide.
 
 **Expected on the laptop** (estimates, to be measured; Xe-LPG, 75 GB/s, ~11 TOPS DP4a):
 - **Generation:** ~3.6 GB read a token (attention 1.4 GB over the 48 passes, experts ~1.7 GB, head 0.5 GB): a ceiling
