@@ -526,6 +526,10 @@ int main(int argc, char** argv) {
       {"slm 32x32 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
       {"slm 32x16 4x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 1, true, true, 4, false, 4},
       {"slm 32x48 8x4 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR", 32, 3, true, true, 8, false, 4},
+      // (2026-11-23, S1 of the A770's 4K to 2,200: with the split barrier, as the engine runs it; ocloc dg2-g10 at 256
+      //  registers: the K loop spill-free, 4.2 instructions a DPAS against 32 x 32 4 x 8's 5.5, 84 scratch messages in
+      //  the epilogue only)
+      {"slm 32x48 8x4 e2 p split", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXW_PTR -DXS_SPLIT", 32, 3, true, true, 8, false, 4},
       {"slm 32x32 4x4 c2 e2 p", "-DXW_PACKA -DXW_PACKW -DXW_SLM -DXW_EPI2 -DXS_CPS=2 -DXW_PTR", 32, 2, true, true, 4, false, 4},
       // (2026-11-22, the A770 plan's step 4) " wgl": A and B in the work-group's order (gemm_xw8.cl -DXS_WGL), a
       // work-group's chunk one contiguous run of each; the data rearranged here from the packed copies, per variant
