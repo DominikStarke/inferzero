@@ -59,6 +59,7 @@
   // step 5 gives the physical layers their expert fields (layers_[il].ex_*) and the streamed path; until then
   // ink_layer keeps I1.5's exact experts
   bool ink_fast_moe_ = false;
+  bool ink_defer_combine_ = false;  // (I2 step 1: layer_moe leaves the one token's combine to ink_moe_out)
   cl_mem ink_ones_ = nullptr, ink_zeros_ = nullptr;
   cl_mem ink_esc_gu(int il) const { return inkl_[il].gu_scale ? inkl_[il].gu_scale : ink_ones_; }
   cl_mem ink_esc_dn(int il) const { return inkl_[il].dn_scale ? inkl_[il].dn_scale : ink_ones_; }
@@ -458,14 +459,16 @@
     ink_run1("ink_take", kk, (size_t)E * T);
   }
   // llama's convolve over the chunk with the slot's state, then the state moved on (out != cur)
-  void ink_conv(cl_mem cur, cl_mem w, cl_mem dyn, cl_mem state, cl_mem out, int C, int T) {
+  // (add: then add = add + out, ink_add's step; one token in the same launch)
+  void ink_conv(cl_mem cur, cl_mem w, cl_mem dyn, cl_mem state, cl_mem out, int C, int T, cl_mem add = nullptr) {
     cl_kernel kk = ink_k("ink_conv");
     int has = dyn ? 1 : 0, nh = hp.n_head_kv, NC = ink_.nc;
     float sc = 1.0f / std::sqrt((float)((dyn ? 2 : 1) * NC + 1));
     static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
     if (T == 1 && !unfused) {  // (I2 step 1: one token, the conv and its state's move in one launch)
       cl_kernel k1 = ink_k("ink_conv1");
-      set_args(k1, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, NC, sc);
+      int ha = add ? 1 : 0;
+      set_args(k1, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, NC, sc, add ? add : ink_dummy_, ha);
       ink_run1("ink_conv1", k1, C);
       return;
     }
@@ -474,6 +477,7 @@
     cl_kernel ks = ink_k("ink_conv_state");
     set_args(ks, 0, cur, state, C, T, NC);
     ink_run1("ink_conv_state", ks, C);
+    if (add) ink_add(add, out, add, C * T);
   }
   // the controller of input c (0..3: q, k, v, ffn) on x: x - tanh(forget) x + tanh(gain) message
   void ink_control(const InkLayer& L, cl_mem x, int c, int T, int Mp) {
@@ -626,15 +630,15 @@
     }
     ink_dump("att", ip, ink_att_, (size_t)T * H * D, T);
     ink_mm("ink_o", L.o, ink_att_, ink_ao_, T, Mp);
-    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T);
+    // a block's first layer: the stream before it joins the blocks, the attention output starts a new one; else the
+    // output is added to the stream (in the conv's launch, ink_conv's add)
+    const bool bstart = ip % k.block == 0;
+    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_);
     ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
-    // a block's first layer: the stream before it joins the blocks, the attention output starts a new one
-    if (ip % k.block == 0) {
+    if (bstart) {
       ink_copy(ink_cur_, 0, ink_blocks_, (size_t)nb * max_chunk * rowE, rowE * T);
       ++nb;
       ink_copy(ink_tmp_, 0, ink_cur_, 0, rowE * T);
-    } else {
-      ink_add(ink_cur_, ink_tmp_, ink_cur_, E * T);
     }
     // the MoE: its input a mix over the blocks (with the new one) and the stream, the controller, ffn_norm
     ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
@@ -650,6 +654,8 @@
       // (I1.7 step 4: the engine's shared MoE path, streamed experts and all: the input quantized per 32 into aq_ /
       //  asc_ as every model's, the router's f32 logits in ink_rl_; layer_moe writes ink_mo_)
       // (aq_ / asc_ hold ink_xm_'s rows: ink_rmsnorm_q above)
+      static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+      ink_defer_combine_ = T == 1 && !unfused && !tp_moe();
       layer_moe(layers_[ip], T, Mp);
     } else {
       cl_kernel kr = ink_k("ink_route");
@@ -677,9 +683,19 @@
       set_args(kx, 0, ink_de_, ink_ids_, ink_w_, L.dn_scale ? L.dn_scale : ink_dummy_, hd, ink_mo_, EE, NU, TT);
       ink_run1("ink_expert_sum", kx, (size_t)E * T);
     }
-    ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
-    ink_conv(ink_mo_, L.ffn_conv, nullptr, S.conv[3], ink_tmp_, E, T);
-    ink_add(ink_cur_, ink_tmp_, ink_cur_, E * T);
+    if (ink_defer_combine_) {
+      // (I2 step 1: moe_combine's sum for the one token, the FFN conv and the residual in one launch)
+      ink_defer_combine_ = false;
+      cl_kernel ko = ink_k("ink_moe_out");
+      int EE = E, NC = k.nc, NU = hp.n_expert_used;
+      float sc = 1.0f / std::sqrt((float)(NC + 1));
+      set_args(ko, 0, my_, minv_, sgate_, ink_mo_, L.ffn_conv, S.conv[3], ink_tmp_, ink_cur_, EE, NC, sc, NU);
+      ink_run1("ink_moe_out", ko, E);
+      ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
+    } else {
+      ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
+      ink_conv(ink_mo_, L.ffn_conv, nullptr, S.conv[3], ink_tmp_, E, T, ink_cur_);
+    }
     ink_dump("out", ip, ink_cur_, (size_t)T * E, T);
   }
 

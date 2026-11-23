@@ -202,21 +202,50 @@ __kernel void ink_conv(__global const float* cur, __global const float* w, __glo
 
 // (I2 step 1, 2026-11-24) one token (generation): ink_conv and ink_conv_state in one launch, one work-item per channel:
 // the conv as ink_conv's (reading the old state), then the state moved on as ink_conv_state's. The same values
-__kernel void ink_conv1(__global const float* cur, __global const float* w, __global const float* dyn, int has_dyn, int nh,
-                        __global float* state, __global float* out, int C, int NC, float scale) {
-  const int c = get_global_id(0);
-  if (c >= C) return;
+// (channel c's conv of its one input xc; returns the output and moves the state on)
+inline float ink_conv1_c(float xc, __global const float* w, __global const float* dyn, int has_dyn, int nh,
+                         __global float* state, int c, int C, int NC, float scale) {
   __global float* s = state + (size_t)c * (NC - 1);
-#define INK_X1(tt) ((tt) >= 0 ? cur[c] : s[(NC - 1) + (tt)])
+#define INK_X1(tt) ((tt) >= 0 ? xc : s[(NC - 1) + (tt)])
   float acc = 0.0f;
   for (int k = 0; k < NC; ++k) acc += w[(size_t)c * NC + k] * INK_X1(-(NC - 1) + k);
   if (has_dyn) {
     __global const float* dt = dyn + (size_t)(c / (C / nh)) * NC;
     for (int lag = 0; lag < NC; ++lag) acc += INK_X1(-lag) * dt[lag];
   }
-  out[c] = (cur[c] + acc) * scale;
+  const float o = (xc + acc) * scale;
 #undef INK_X1
-  for (int k = 0; k < NC - 1; ++k) s[k] = k == NC - 2 ? cur[c] : s[k + 1];
+  for (int k = 0; k < NC - 1; ++k) s[k] = k == NC - 2 ? xc : s[k + 1];
+  return o;
+}
+// (has_add: also add[c] = add[c] + out[c], ink_add's step: the stream's residual in the same launch)
+__kernel void ink_conv1(__global const float* cur, __global const float* w, __global const float* dyn, int has_dyn, int nh,
+                        __global float* state, __global float* out, int C, int NC, float scale, __global float* add,
+                        int has_add) {
+  const int c = get_global_id(0);
+  if (c >= C) return;
+  const float o = ink_conv1_c(cur[c], w, dyn, has_dyn, nh, state, c, C, NC, scale);
+  out[c] = o;
+  // (the add reads the stored, rounded output back (volatile): with -cl-mad-enable the compiler would otherwise fuse
+  //  the conv's last multiply and this add into one fma, another rounding than ink_conv1 + ink_add)
+  if (has_add) add[c] = add[c] + ((volatile __global float*)out)[c];
+}
+// (I2 step 1) one token's MoE output, its FFN conv and the residual in one launch, one work-item per channel: the
+// experts' sum as moe_combine forms it for Inkling (x zeroed, x += v + sgate sh with the zero gate and sh = x = 0),
+// written to mo; then ink_conv1's conv into out; then cur[c] = cur[c] + out[c] (ink_add). The same values
+__kernel void ink_moe_out(__global const float* y, __global const int* inv, __global const float* sgate,
+                          __global float* mo, __global const float* w, __global float* state, __global float* out,
+                          __global float* cur, int C, int NC, float scale, int NU) {
+  const int c = get_global_id(0);
+  if (c >= C) return;
+  float v = 0.0f;
+  for (int k = 0; k < NU; ++k) v += y[(size_t)inv[k] * C + c];
+  float x = 0.0f;
+  x += v + sgate[0] * 0.0f;
+  mo[c] = x;
+  const float o = ink_conv1_c(x, w, w, 0, 1, state, c, C, NC, scale);
+  out[c] = o;
+  cur[c] = cur[c] + ((volatile __global float*)out)[c];  // (as ink_conv1's add: no fma across the two)
 }
 
 // the slot's conv state after a chunk: the last NC - 1 inputs, oldest first (one work-item per channel; in place,

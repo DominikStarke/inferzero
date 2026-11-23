@@ -457,6 +457,8 @@
     if (!xmiss.empty()) xcpu_run(L, xmiss, Mp, q2f && xcpu_q2());  // (ARC_XCPU_Q2=0: one pass on the CPU)  // (the CPU's slots copied into my_ ahead of moe_combine)
     if (tp_moe()) {
       tp_moe_combine(T);  // (this GPU's experts + the shared expert on GPU 0, summed over the GPUs)
+    } else if (ink && ink_defer_combine_) {
+      // (Inkling, one token, I2 step 1: ink_layer sums my_ with its FFN conv and residual in one launch, ink_moe_out)
     } else {
       cl_kernel k = kernel("moe", defs, "moe_combine");
       // (Flash Next, DeepSeek-V4.1: the block output alone, combined into the streams after)
