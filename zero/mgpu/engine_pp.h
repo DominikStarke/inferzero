@@ -59,6 +59,13 @@ class PpEngine {
     so.pp_end = c[r + 1];
     so.pp_size = (int)c.size() - 1;
     if (r + 2 < (int)c.size()) so.mtp = false;
+    // (said once: the stages do not drive MTP or a drafter yet, so a layer split decodes plainly; #92)
+    if (o.mtp || !o.dflash.empty()) {
+      static std::once_flag said;
+      std::call_once(said, [] {
+        zlog::eprintf("inferzero: MTP / drafting is not used on a split model yet (--gpus 2 or more): plain decoding\n");
+      });
+    }
     so.npu = 0;
     return so;
   }

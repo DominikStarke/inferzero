@@ -1112,7 +1112,13 @@ class TpEngine {
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
     comm_.ev_n.reset(new std::atomic<int64_t>[n]);
     for (int r = 0; r < n; ++r) comm_.ev_n[r] = 0;
-    if (getenv("ARC_TP_EVSUM") && atoi(getenv("ARC_TP_EVSUM")) != 0) make_events(n);
+    if (getenv("ARC_TP_EVSUM") && atoi(getenv("ARC_TP_EVSUM")) != 0) {
+      // (hibagus, #89: INVALID_ARGUMENT at the wait barrier on older drivers, a hang and a crash on 2 x B70 with 26.40.
+      //  Not found yet; ARC_TP_DEVSYNC (#90) is to replace it)
+      zlog::eprintf("inferzero: warning: ARC_TP_EVSUM is known to hang or fail on some drivers (#89); without it the sums "
+                    "go through the host as by default\n");
+      make_events(n);
+    }
     // (each GPU's host staging buffer (zrt::staging) at a prompt chunk's input now, one GPU at a time. Grown later,
     //  during the first long prompt, the shards' threads allocated pinned host memory at the same moment, and with
     //  four Data Center GPU Max 1550 stacks (driver 25.18) zeMemAllocHost failed now and then with out of device

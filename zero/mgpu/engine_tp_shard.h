@@ -154,6 +154,14 @@
     hp.n_head_kv = (int)(tpkv_.second - tpkv_.first);
     hp.n_head = tp_att_qsplit_ ? (int)(tpq_.second - tpq_.first) : hp.n_head_kv * hpg;
     hp.n_ff = (int)(tpf_.second - tpf_.first);
+    // (said once: drafting asked for and dropped. hibagus's 2 x B70 ran --gpus 2 --mtp plainly with no line, #92; one B70
+    //  with MTP 69.3 tok/s against two without it 52.7)
+    if (opt.mtp || !opt.dflash.empty()) {
+      static std::once_flag said;
+      std::call_once(said, [] {
+        zlog::eprintf("inferzero: MTP / drafting is not used on a split model yet (--gpus 2 or more): plain decoding\n");
+      });
+    }
     opt.mtp = false;
     opt.dflash.clear();
     opt.npu = 0;  // (slots stay: batched decoding over a split model, TpEngine::forward_batch)

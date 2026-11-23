@@ -347,8 +347,11 @@
   // the full sweep's D phase: plain 22.02 tok/s; drafts 2 / 3 / 4 / 5 / 6 / 7 42.06 / 45.56 / 46.08 / 45.11 / 43.74 /
   // 40.75 (7 accepted 60.4 %, 4 76.8 %), every text the plain one's (skipzx-lab, issue #45). Its verify pass costs more
   // than a B-series card's (83.7 ms against a B60's 53.6), so its best count sits between theirs and the laptop's
+  // A Data Center GPU Max (xehpc_on) 5 since 2026-11-23: hibagus's Max 1550 (#89 / #92), 5 drafts +7.5 % on the mean
+  // against 4, the 5th draft costing 0-0.6 ms a pass there (its verify pass is cheap: wide XMX, HBM)
   int xe2_mtp_drafts(int d) const {
     if (d != 7 || zrt::integrated() || !cl_.xmx) return d;
+    if (xehpc_on()) return 5;
     return cl_.sg8 || xe2_t1280() ? 4 : 3;  // (1,280 threads or fewer: 4, see xe2_t1280)
   }
   int xe2_gdn_l1pf() const {
@@ -549,10 +552,16 @@
     //  2026-11-22)
     const char* xd = getenv("ARC_ATTN_FX_DEFS");
     const std::string extra = xd ? std::string(" ") + xd : std::string();
+    // (2026-11-23, knobs for the Max 1550's sweep (attn_fx at a third of a B70's rate there, 86.8 % of its 262K prompt;
+    //  hibagus, #89): ARC_ATTN_FX_PFD=N the L1 prefetch N spans ahead (1-4, default 1), ARC_ATTN_FX_GRF=128 the default
+    //  register file (twice the threads an EU; the output alone holds 128 registers at 256 dims, so it may spill). The
+    //  same results: the start-up check runs on each form, as for ARC_ATTN_FX_WG)
+    static const int pfd_n = getenv("ARC_ATTN_FX_PFD") ? std::clamp(atoi(getenv("ARC_ATTN_FX_PFD")), 1, 4) : 1;
+    static const bool grf128 = getenv("ARC_ATTN_FX_GRF") && std::string(getenv("ARC_ATTN_FX_GRF")) == "128";
     const std::string pfd = fx_x8_ ? (pf ? " -DX8_PF" : "") + std::string(attnx8_mode() == 2 ? " -DX8_EMU" : "") +
                                          (x8_psh_env() ? " -DX8_LEAN -DX8_PSH" : "") + (x8_lazy_env() ? " -DX8_LAZY" : "")
-                                   : (pf ? " -DFX_PF" : "");
-    return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
+                                   : (pf ? " -DFX_PF" : "") + (pfd_n != 1 ? " -DFX_PFD=" + std::to_string(pfd_n) : std::string());
+    return std::string(grf128 && !fx_x8_ ? "" : "-cl-intel-256-GRF-per-thread ") + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
            " -DNT=" + std::to_string(fx_nt_) + " -DNH=" + std::to_string(fx_nh_) + pfd + extra;
   }
   const char* attnfx_which() const { return fx_x8_ ? "attnx8" : "attnfx"; }

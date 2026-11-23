@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-23: from hibagus's 2 x B70 and Max 1550 reports
+
+- **A split model now says it decodes without drafting:** `--gpus 2 --mtp` (or a DFlash2 drafter) printed nothing and ran
+  plainly. It now prints "MTP / drafting is not used on a split model yet" at start (#92). Drafting over several GPUs
+  is queued: one B70 with MTP ran 69.3 tok/s against 52.7 for two without it.
+- **Data Center GPU Max: 5 MTP drafts a step by default** (was 3): hibagus's Max 1550, +7.5 % on the mean, the 5th draft
+  costing 0-0.6 ms a pass. `--mtp-drafts N` overrides it.
+- **New knobs for the prompt attention's sweep on the Max** (attn_fx runs at a third of a B70's rate there):
+  `ARC_ATTN_FX_PFD=N` (the prefetch 1-4 spans ahead, default 1) and `ARC_ATTN_FX_GRF=128` (the default register file).
+  The same results; the start-up check runs on each form.
+- **`ARC_TP_EVSUM` warns at start** that it is known to hang or fail on some drivers (#89).
+
 ## 2026-11-23: fixes from the day's reports, and faster long-context generation on Arc A-series
 
 - **Faster on Arc A-series (Alchemist) cards at long contexts:** past 16,384 tokens of context, the Qwen models' decode

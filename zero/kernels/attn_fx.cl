@@ -137,8 +137,13 @@ __kernel void attn_fx(__global const char* qi, __global const float* qsc, __glob
     __global const uint* kp1 = kq + o1 * FX_BU;
 #if defined(FX_PF) && defined(cl_intel_subgroup_buffer_prefetch)
     // the next span's K and V blocks (4 x 4 KB = 32 pieces of 512 B) into L1, the pieces shared by the sub-groups
-    if (s + 1 < nsp) {
-      const int nb0 = 2 * s + 2, nb1 = min(2 * s + 3, bl);
+    // (-DFX_PFD=N, 2026-11-23, ARC_ATTN_FX_PFD: the span N ahead, default 1 (the same blocks as before); a knob for the
+    //  Max 1550, whose attn_fx runs at a third of a B70's rate, #89. Only which blocks go to L1: the same results)
+#ifndef FX_PFD
+#define FX_PFD 1
+#endif
+    if (s + FX_PFD < nsp) {
+      const int nb0 = 2 * (s + FX_PFD), nb1 = min(2 * (s + FX_PFD) + 1, bl);
       for (int p = sg; p < 32; p += FX_NSG) {
         const size_t ob = blk0 + (size_t)(((p & 8) ? nb1 : nb0) % nbc);
         __global const uint* base = (p & 16) ? (__global const uint*)vq : kq;
