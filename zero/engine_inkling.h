@@ -542,13 +542,35 @@
 
   // The whole chunk (run_layer's first layer runs it; x_ holds the embeddings, and on return the output mix's rows,
   // which head() then normalizes with output_norm and multiplies by the head)
+  // (the execution order of the physical layers for this forward, the position in it, the layer after the current
+  //  one, and the forward count: I1.7 step 2, read by engine_stream.h / engine_moe.h for Inkling only)
+  std::vector<int> ink_order_;
+  size_t ink_pos_ = 0;
+  int ink_next_il_ = -1;
+  uint64_t ink_seq_ = 0, ink_seq_xall_ = 0, ink_seq_xcpu_ = 0;
   void ink_forward(int T, int Mp) {
     const InkHp& k = ink_;
     const int E = hp.n_embd;
     const size_t rowE = (size_t)E * 4, blockB = (size_t)max_chunk * rowE;
     ink_rmsnorm(x_, E, ink_tok_norm_, ink_cur_, T);
+    // (I1.7 step 2: the expert cache follows the execution order, not the layer index. ink_next_il_ is the physical
+    //  layer that runs after the one about to run (-1 after the last): the prefetch reads its missing experts, and after
+    //  layer end - 1 of an earlier pass that is layer start, not end. ink_seq_ counts the forward calls, so the MoE
+    //  path's token boundary does not come from a layer index going down, which the loop does three times a token)
+    ++ink_seq_;
+    ink_order_.clear();
+    for (int il = 0; il < k.start; ++il) ink_order_.push_back(il);
+    for (int pass = 0; pass < (k.start < k.end ? k.passes : 0); ++pass)
+      for (int ip = k.start; ip < k.end; ++ip) ink_order_.push_back(ip);
+    for (int il = k.end; il < hp.n_layer; ++il) ink_order_.push_back(il);
+    ink_pos_ = 0;
     int nb = 0;
-    for (int il = 0; il < k.start; ++il) ink_layer(il, T, Mp, false, nb);
+    auto run_layer_at = [&](int slot, bool msgs) {
+      ink_next_il_ = ink_pos_ + 1 < ink_order_.size() ? ink_order_[ink_pos_ + 1] : -1;
+      ++ink_pos_;
+      ink_layer(slot, T, Mp, msgs, nb);
+    };
+    for (int il = 0; il < k.start; ++il) run_layer_at(il, false);
     if (k.start < k.end) {
       const int np = nb;
       ink_copy(ink_cur_, 0, ink_prelude_, 0, rowE * T);
@@ -564,11 +586,12 @@
         for (int ip = k.start; ip < k.end; ++ip) {
           const int slot = pass == 0 ? ip : hp.n_layer + (pass - 1) * (k.end - k.start) + (ip - k.start);
           if (pass > 0) ink_mix(nbank ? ink_bank_ : nullptr, nbank, ink_bank_out_, inkl_[ip].msg_q, 4, ink_msgs_, T);
-          ink_layer(slot, T, Mp, pass > 0, nb);
+          run_layer_at(slot, pass > 0);
         }
       }
     }
-    for (int il = k.end; il < hp.n_layer; ++il) ink_layer(il, T, Mp, false, nb);
+    for (int il = k.end; il < hp.n_layer; ++il) run_layer_at(il, false);
+    ink_next_il_ = -1;
     // the output's mix, into x_ (head(): output_norm, the head, the softcap)
     ink_mix(ink_blocks_, nb, ink_cur_, ink_out_res_q_, 1, x_, T);
     ink_dump("fin", 99, x_, (size_t)T * E, T);

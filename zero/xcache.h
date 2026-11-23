@@ -1013,6 +1013,11 @@ struct XCache {
     }
     return r;
   }
+  // (keep_front, set by the engine before an ensure(): this layer runs again later in the same forward, so a prompt's
+  //  experts of it go to the front of the list like generation's, not to the back. Inkling's loop runs layers 6-17
+  //  three times a chunk; at the back, the later layers of a pass took them before the next pass came back to them.
+  //  I1.7 step 2; false for every other model, so their order is as before)
+  bool keep_front = false;
   void ensure(int l, const int* ids, size_t n, bool prompt, bool dummy_rest) {
     trace_ensure(l, ids, n, prompt);
     // (a deep prefetch of another layer keeps running, unless it uses this layer's staging half)
@@ -1044,7 +1049,7 @@ struct XCache {
       if (prompt) ++p_hits; else ++hits;
       uint8_t& fr = fresh_[(size_t)l * NE + e];
       unlink(P, s);
-      if (prompt && fr) push_back(P, s); else push_front(P, s);
+      if (prompt && fr && !keep_front) push_back(P, s); else push_front(P, s);
       fr = 0;
       xa[e] = (uint64_t)P.addr[s];
     }
@@ -1086,7 +1091,7 @@ struct XCache {
       const size_t key = (size_t)l * NE + e;
       P.key[s] = (int)key;
       where[key] = s;
-      if (prompt) push_back(P, s); else push_front(P, s);
+      if (prompt && !keep_front) push_back(P, s); else push_front(P, s);
       xa[e] = (uint64_t)P.addr[s];
     }
     keyed = true;

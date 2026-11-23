@@ -289,8 +289,11 @@
     // (a pinned layer, the MTP head from a file of its own: every expert resident, its table row fixed, no ensure())
     bool skip_x = xc_ && xc_->pinned(L.il);
     if (!skip_x && xall && xc_ && T == 1 && !use_gemm && hp.moe_std && !tp_moe()) {
-      if (L.il <= xall_prev_il_) xc_->all_in();
+      // (a token's first MoE layer: the layer index going down, or for Inkling a new forward, since its loop runs
+      //  layers 6-17 three times a token; I1.7 step 2)
+      if (hp.inkling ? ink_seq_ != ink_seq_xall_ : L.il <= xall_prev_il_) xc_->all_in();
       xall_prev_il_ = L.il;
+      ink_seq_xall_ = ink_seq_;
       skip_x = xc_->all_in_ok;
       if (skip_x) xc_->skip_layer(L.il, NU);
     }
@@ -307,8 +310,10 @@
       xt_miss_h_.assign(1, 0);
       if (xcpu) {  // (the background fills of this layer from earlier tokens: cached from here on, xcache.h fill_commit_at)
         const auto tf = std::chrono::steady_clock::now();
-        if (L.il <= xcpu_prev_il_) ++xcpu_tok_;  // (a layer at or below the last one: the next token)
+        // (a layer at or below the last one: the next token; Inkling: a new forward, I1.7 step 2)
+        if (hp.inkling ? ink_seq_ != ink_seq_xcpu_ : L.il <= xcpu_prev_il_) ++xcpu_tok_;
         xcpu_prev_il_ = L.il;
+        ink_seq_xcpu_ = ink_seq_;
         xc_->fill_commit_at(L.il, xcpu_tok_);
         xcpu_fill_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf).count();
       }

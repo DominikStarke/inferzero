@@ -280,7 +280,8 @@ this is an MoE model I want it to work like 35B so this laptop can run it"). **P
   the recipe in the file's fingerprint only when set, so every other model's expert file keeps its name and bytes.
   `engine_stream.h` lets Inkling's float experts through and sets the flag. Nothing reaches it yet: Inkling does not take
   the streamed path (`hp.moe` / `stream_`) until steps 2-6.
-- **Left:** steps 2-7 below (the loop's `ensure()` per pass and the prefetch in pass order, `ROUTE_SIG`, `MOE_SITU` and the
+- **Step 2 done (2026-11-23):** the expert cache follows the execution order. `ink_forward` keeps the order of the physical layers (`ink_order_`) and the one after the current (`ink_next_il_`), so the prefetch after a pass's layer 17 reads layer 6; `ink_seq_` gives the MoE path its token boundary (`all_in` / `ARC_XCPU`'s token count) instead of a layer index going down; `XCache::keep_front` keeps a prompt's experts of a layer that runs again in the forward at the list's front. Dormant until step 5 calls `layer_moe`. Checked: the 4B 709A33CF..., the 35B 1CFAD0B5... and the tiny Inkling FCD10220... the same before and after.
+- **Left:** steps 3-7 below (the loop's `ensure()` per pass and the prefetch in pass order, `ROUTE_SIG`, `MOE_SITU` and the
   gate-up scale table, the combine into `ink_mo_`, the plan and the tiers, `ARC_INK_RESIDENT`), then the tiny file streamed
   against resident (a small cache, a cold start) and the real file.
 - **Before it, I1.5 was run on the laptop (2026-11-23):** a crash fixed (`tok_embd_` unset); the tiny file's 3-pass loop with
@@ -450,10 +451,15 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
     token, ~9 % of its peak; Inkling needs ~1.8x that. In its favour: 8 of 128 experts (the 35B: 8 of 256), so each
     expert gets ~512 rows at chunk 8,192 and the XMX tiles fill better, and NVFP4 decodes more cheaply than IQ4_XS.
     6,000 needs the expert GEMM near the dense GEMMs' efficiency at chunk 8,192; the 35B-like baseline is measured first.
-  - **The A770: 6,000 is a stretch; ~3,500-4,500 is the realistic estimate** with the 8-lane XMX expert GEMM (the
-    Researcher, 2026-11-23). Its 35B runs 2,538 tok/s at 4K, ~15 TOPS (6.6 % of its peak) with DP4a experts, and its
-    whole dense 27B prompt is ~41 % of peak. 26 % for Inkling needs the expert GEMM close to the big tile's efficiency,
-    no decode_w8 pass (12-15 % of the 35B's prompt today), and the routing, scatter and combine kept small.
+  - **The A770: the target stays 6,000** (the user, 2026-11-23: "Keep 6,000"; the Researcher's first estimate was
+    3,500-4,500). Its 35B runs 2,538 tok/s at 4K, ~15 TOPS (6.6 % of its peak) with DP4a experts, and its whole dense
+    27B prompt is ~41 % of peak, so 26 % for Inkling is what the plan builds for:
+    - **the 8-lane XMX expert GEMM near the big tile's efficiency**, with dpasw;
+    - **no separate decode_w8 pass for the experts** (12-15 % of the 35B's prompt today): the NVFP4 rows decoded in the
+      GEMM's own loads, or read raw into the XMX operands as `MOE_Q` reads them;
+    - **routing, scatter and combine fused and small**;
+    - **the chunk as large as the expert cache allows.**
+    Each of these is measured against 6,000 in its before-after row, with the A770's `--prof` share beside it.
 
 **The steps, for every card unless a card is named** (each its own commit and before-after row):
 1. **Fused layer kernels (generation first).** The controller (`ink_rms2` + `ink_ctrl_apply`), the K / V rows and

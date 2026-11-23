@@ -203,7 +203,11 @@
     const auto h1 = hclk::now();
     const double sync_ms = std::chrono::duration<double, std::milli>(h1 - h0).count();
     hst_sync_ms_ += sync_ms;
+    // (Inkling: whether this layer runs again in this forward, a later loop pass: its experts kept at the list's front)
+    xc_->keep_front = hp.inkling && std::find(ink_order_.begin() + std::min(ink_pos_, ink_order_.size()), ink_order_.end(), L.il) !=
+                                        ink_order_.end();
     xc_->ensure(L.il, ids.data(), ids.size(), T > 8, gemm);
+    xc_->keep_front = false;
     const double ens_ms = hms(h1);
     hst_ensure_ms_ += ens_ms;
     if (T == 1) gen_sync_ms_ += sync_ms, gen_ensure_ms_ += ens_ms, ++gen_waits_;
@@ -238,9 +242,12 @@
     // prompt chunks use nearly every expert (128 tokens: ~98 %): read the next layer's missing ones while the GPU
     // works on this one (not across the chunk's end: the next chunk's layer 0 has this layer's parity at times)
     static const int pf_min = getenv("ARC_XPF_MIN") ? atoi(getenv("ARC_XPF_MIN")) : 128;
-    const int next = L.il + 1;
+    // (Inkling: the layer that runs next, which after a loop pass's last layer is the loop's first; -1 after the last
+    //  layer. I1.7 step 2, engine_inkling.h ink_forward. Other models: the next index, as before)
+    const int next = hp.inkling ? ink_next_il_ : L.il + 1;
     // (the tokens that go through the next layer before the layer after it: a layer-major segment's, else the chunk's)
-    if (T >= pf_min && (next < hp.n_layer || (next == hp.n_layer && mtp_block_))) xc_->prefetch(next, seg_n_ ? seg_n_ : T);
+    if (T >= pf_min && next >= 0 && (next < hp.n_layer || (next == hp.n_layer && mtp_block_)))
+      xc_->prefetch(next, seg_n_ ? seg_n_ : T);
   }
  public:
   // expert cache statistics (empty without streaming)
