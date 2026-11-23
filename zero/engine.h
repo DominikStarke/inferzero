@@ -129,6 +129,9 @@ struct EngineOptions {
   // RAM tier between the expert cache and the SSD (zero/expert_store.h set_ram), GiB: < 0 automatic (a GPU with
   // memory of its own: the free RAM less 16 GiB, shared by a split model's GPUs; an iGPU: none), 0 none
   double expert_ram_gb = -1;
+  // (expert_ram_gb set by a layer split's PpEngine from its one budget for all the stages, not by the user: capped
+  //  as an automatic size is, and never warned of as a hand-set one; zero/engine_stream.h, the audit of 2026-11-23)
+  bool expert_ram_auto = false;
   size_t stream_reserve = 0;  // bytes the automatic cache size leaves for GPU memory allocated later (image encoders)
   int state_snaps = 0;  // recurrent-state snapshots the caller keeps per slot (serverz 3, runz none): plan_tight's room
   int slots = 1;  // conversations held at once (server --slots): each further one its own KV caches and states

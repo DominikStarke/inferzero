@@ -76,7 +76,11 @@
       if (zrt::video_budget(nb, nu, true)) {
         const uint64_t margin = 4ull << 30, room = (nb > nu + margin ? nb - nu - margin : 0) / std::max(1, opt.tp_size);
         char b[200];
-        if (ram > room && ram_gb < 0) {
+        // (an automatic size: the engine's own, or a layer split's stage share (opt.expert_ram_auto); a size the user
+        //  set is kept with the warning. A stage's share was taken for a hand-set one: no cap, and a warning naming
+        //  options never given, issue #82's failure on a split; the audit of 2026-11-23)
+        const bool auto_size = ram_gb < 0 || opt.expert_ram_auto;
+        if (ram > room && auto_size) {
           ram = room;
           snprintf(b, sizeof b, " (capped by what Windows lets the GPU map of RAM: %.1f GiB, %.1f in use)", nb / 1073741824.0,
                    nu / 1073741824.0);
@@ -119,7 +123,9 @@
       // driver_slack() for the driver: the share is the user's setting, the rest of the RAM what they leave to Windows
       // (the user's rule since 2026-10-22; before: also RAM - a 14 GB Windows reserve, which held a 20.4 GiB share to
       // 17.7). (With 1.13 GiB left a kernel launch once failed with out of device memory, 35B at 262K.)
-      const uint64_t share = zrt::D().global_mem, slack = (uint64_t)driver_slack();
+      // (device_mem(): this engine's GPU (a layer split's stage, not the thread's default) and ARC_GPU_MEM_GB, as the fit
+      //  checks; zrt::D().global_mem ignored the cap, the audit of 2026-11-23)
+      const uint64_t share = device_mem(), slack = (uint64_t)driver_slack();
       uint64_t limit = share > slack ? share - slack : 0;
       // (ARC_TP_SIM: every shard on GPU 0, each with its part of the memory)
       if (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0) limit /= opt.tp_size;

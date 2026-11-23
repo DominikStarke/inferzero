@@ -90,7 +90,14 @@ class PpEngine {
     std::vector<double> ram_gb(n, -1.0);
     if (o.expert_ram_gb < 0 && !getenv("ARC_XRAM_GB") && !zrt::integrated()) {
       const double GiB = 1073741824.0, keep = 16 * GiB, avail = (double)plat::ram_available();
-      const double total = avail > keep ? std::min((avail - keep) / 2, 128 * GiB) : 0.0;
+      double total = avail > keep ? std::min((avail - keep) / 2, 128 * GiB) : 0.0;
+      // (Windows: what it lets the GPUs map of RAM (the non-local budget, less what is in use and 4 GiB), measured once
+      //  here for all the stages, not by each against the whole: together they could pass it; the audit of 2026-11-23)
+      uint64_t nb = 0, nu = 0;
+      if (zrt::video_budget(nb, nu, true)) {
+        const double room = nb > nu + (4ull << 30) ? (double)(nb - nu - (4ull << 30)) : 0.0;
+        total = std::min(total, room);
+      }
       const int nl = std::max(1, c[n] - c[0]);
       for (int r = 0; r < n; ++r)
         ram_gb[r] = std::min(32 * GiB, total * (double)(c[r + 1] - c[r]) / nl) / GiB;
@@ -100,7 +107,7 @@ class PpEngine {
         zrt::cur = zrt::devs[gpu_of(r, n)];
         EngineOptions so = stage_options(o, c, r);
         if (r < (int)host_gb.size() && host_gb[r] >= 0 && so.host_weights_gb < 0) so.host_weights_gb = host_gb[r];
-        if (ram_gb[r] >= 0) so.expert_ram_gb = ram_gb[r];  // (0: no tier, as the option means)
+        if (ram_gb[r] >= 0) so.expert_ram_gb = ram_gb[r], so.expert_ram_auto = true;  // (0: no tier; automatic, not hand-set)
         stages_.push_back(std::make_unique<Engine>(path, so));
       }
     } catch (...) {

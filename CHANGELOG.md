@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: a layer split's RAM tier capped as an automatic size, one budget for all the stages
+
+- **Fixed (Windows, a layer split of MoE models):** each stage's automatic RAM tier was taken for a size set by hand.
+  It got no cap against what Windows lets the GPU map of RAM, and its warning named `--expert-ram-gb` /
+  `ARC_XRAM_GB`, which nobody had set (issue #82's failure, on a split).
+  - The split now measures that budget once for all the stages and shares it by their layers.
+  - Each stage's share is capped as an automatic size.
+- **Fixed:** `ARC_GPU_MEM_GB` (and a stage's own GPU) is now respected by the expert cache's size too.
+
 ## 2026-11-23: a layer split says which stage a context does not fit
 
 - `serverz --gpus N --split layer --ctx C`: when C does not fit a stage's GPU, a warning names that GPU and its layers,
