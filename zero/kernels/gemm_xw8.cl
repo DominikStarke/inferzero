@@ -823,6 +823,30 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define EPI_RD(p) intel_sub_group_block_read8(p)
 #define EPI_WR(p, v) intel_sub_group_block_write8((p), (v))
 #endif
+  // (-DXW_EPI3, 2026-11-23, the A770 GEMM plan step 4; ARC_GEMM_XW_EPI3: a row's words in an array of XW_NH uints with
+  //  constant indices, copied from and into the block's vector, instead of a pointer into the vector, (uint*)&o: the users'
+  //  ocloc 26.40 (dg2-g10) spilled the 32 x 48 tile's epilogue (107-119 scratch messages, none in the K loop). The same
+  //  values through the same operations: bit for bit)
+#ifdef XW_EPI3
+#define EPI_OW_DECL uint ow[XW_NH];
+#if XW_NH == 6
+#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; ow[2] = o.s2; ow[3] = o.s3; ow[4] = o.s4; ow[5] = o.s5; }
+#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; o.s2 = ow[2]; o.s3 = ow[3]; o.s4 = ow[4]; o.s5 = ow[5]; }
+#elif XW_NH == 4
+#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; ow[2] = o.s2; ow[3] = o.s3; }
+#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; o.s2 = ow[2]; o.s3 = ow[3]; }
+#elif XW_NH == 2
+#define EPI_OW_FROM_O { ow[0] = o.s0; ow[1] = o.s1; }
+#define EPI_OW_TO_O { o.s0 = ow[0]; o.s1 = ow[1]; }
+#else
+#define EPI_OW_FROM_O { for (int q_ = 0; q_ < 8; ++q_) ow[q_] = o[q_]; }
+#define EPI_OW_TO_O { for (int q_ = 0; q_ < 8; ++q_) o[q_] = ow[q_]; }
+#endif
+#else
+#define EPI_OW_DECL uint* ow = (uint*)&o;
+#define EPI_OW_FROM_O
+#define EPI_OW_TO_O
+#endif
   float dc[XW_NH];
 #pragma unroll
   for (int h = 0; h < XW_NH; ++h)
@@ -833,8 +857,9 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       const float as = BCAST(av[t], r);                                                                    \
       __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + 8 * t + r) * ldc + (size_t)g0 * LS); \
       EPI_T o;                                                                                             \
-      uint* ow = (uint*)&o;                                                                                \
+      EPI_OW_DECL                                                                                          \
       MODE##_LOAD                                                                                          \
+      EPI_OW_FROM_O                                                                                        \
       _Pragma("unroll") for (int h = 0; h < XW_NH; ++h) {                                                  \
         const int8 x = xacc[t][h];                                                                         \
         const int is[8] = {x.s0, x.s1, x.s2, x.s3, x.s4, x.s5, x.s6, x.s7};                                \
@@ -842,6 +867,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
         MODE##_OP                                                                                          \
         ow[h] = as_uint(v);                                                                                \
       }                                                                                                    \
+      EPI_OW_TO_O                                                                                          \
       EPI_WR(cp, o);                                                                                       \
     }                                                                                                      \
   }

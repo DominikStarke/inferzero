@@ -614,6 +614,9 @@
   // (the start check's verdict on these local-layout forms, per key; false after a check failed with one: plain)
   bool xw_lay_ok_ = true;
   bool xw_lay_on() const { return xw_lay_ok_ && (xw_dpasw_env() || xw_ul_env()); }
+  // (the start line's "checked" with DPASW: only where the big tile's own work-group has an even wgx, so a key whose kernel
+  //  built the plain form says so instead; the Researcher's review of 287604b)
+  bool xw_dpasw_built() const { return xw_dpasw_env() && xw_lay_ok_ && xw_big_cfg().x % 2 == 0; }
   // (the build options of the local-layout form for a kernel of wgx column sub-groups a work-group)
   std::string xw_dpasw_opt(int wgx) const {
     if (!xw_lay_ok_) return std::string();
@@ -1136,7 +1139,8 @@
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
       if (ok && xw_lay_on() && xw_big_on())
-        zlog::eprintf(xw_dpasw_env() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
+        zlog::eprintf(xw_dpasw_env() ? (xw_dpasw_built() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
+                                                       : "inferzero: ARC_GEMM_XW_DPASW: the big tile's work-group has an odd count of column sub-groups: the plain DPAS\n")
                                      : "inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
       if (ok && !xw_lsc_opt().empty() && xw_big_on())
         zlog::eprintf("inferzero: gemm_xw8: the big tile's loads with the compiler's cache policy %s (ARC_GEMM_XW_LSC)\n",
