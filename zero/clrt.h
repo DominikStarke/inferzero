@@ -1806,3 +1806,13 @@ template <typename T, typename... R> inline void set_args(cl_kernel k, cl_uint i
   set_args(k, i, v);
   set_args(k, i + 1, rest...);
 }
+// the kernel's last argument, at the index its compiled signature has (Level Zero's numKernelArgs): for an argument a
+// build option appends, such as Inkling's -DMOE_SITU table, whose index hand counts got wrong (117c938, the
+// Researcher's review: moe_gateup_q's at 13 / 16 for 11 / 14). Throws on a kernel without arguments
+template <typename T> inline void set_last_arg(cl_kernel k, const T& v) {
+  ze_kernel_properties_t kp{};
+  kp.stype = (ze_structure_type_t)0x1e;  // (ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES, as the ARC_ZE_KPROPS line)
+  ZE_CHECK(zeKernelGetProperties(k->k, &kp));
+  if (kp.numKernelArgs == 0) throw std::runtime_error("set_last_arg: a kernel without arguments");
+  set_args(k, kp.numKernelArgs - 1, v);
+}

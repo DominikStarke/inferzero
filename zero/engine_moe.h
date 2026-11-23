@@ -251,7 +251,7 @@
       } else {
         set_args(k, 0, L.ex_q[0], L.ex_q[1], FF, K, tabs_, aq_, sc, M, tiles, stok_, mh_);
       }
-      if (ink) set_args(k, xc_ ? 16 : 13, ink_esc_gu(L.il));  // (-DMOE_SITU's gate-up scales: the last argument)
+      if (ink) set_last_arg(k, ink_esc_gu(L.il));  // (-DMOE_SITU's gate-up scales: the last argument, 11 / 14)
       size_t gws[2] = {((size_t)(F + grows - 1) / grows * 16 + 255) / 256 * 256, max_tiles}, lws[2] = {256, 1};
       run("moe_gateup", k, 2, gws, lws);
     };
@@ -557,8 +557,8 @@
       cl_kernel k = kernel("decode", rg_opts, "moe_rg");
       // (ARC_MOE_RG_XMX, zero/xe2/engine_moe_xw.h: the XMX form for this type; at its first use checked against k)
       const std::string xdefs = rgx_defs(L, i);
-      cl_kernel kx = xdefs.empty() ? nullptr : rgx_kernel(L.ex_type[i], rg_opts + xdefs);
-      const bool x_check = kx && rgx_state_[L.ex_type[i]] == 0;
+      cl_kernel kx = xdefs.empty() ? nullptr : rgx_kernel(rgx_key(L, i), rg_opts + xdefs);
+      const bool x_check = kx && rgx_state_[rgx_key(L, i)] == 0;
       // (Flash Next: h rows of Fp = 768 for F = 640 values; the down projection's rows padded to Fp with zeros)
       const int Fp = hp.n_ff_exp_pad;
       int N = i == 2 ? E : F, K = i == 2 ? Fp : E, M = i == 2 ? slots_ : Mp, ldc = i == 2 ? E : Fp,
@@ -580,15 +580,15 @@
                      kv, xc_->xtab[L.il], xoff(L, i));
           else
             set_args(kk, 0, L.ex_q[i], N, K, tabs_, a, as, cc, M, ldc, ac, mtiles_, mtstart_, ne, stok_, um, swt_, us, kv);
-          if (ink_up) set_args(kk, xc_ ? 21 : 19, ink_esc_gu(L.il));  // (-DMOE_SITU: the last argument)
+          if (ink_up) set_last_arg(kk, ink_esc_gu(L.il));  // (-DMOE_SITU: the last argument, 18 / 20)
           size_t gws[2] = {(size_t)N, ny}, lws[2] = {16, 1};
           run(i == 2 ? "moe_down" : "moe_gateup", kk, 2, gws, lws);
         };
         if (x_check && ps == 0) {
           // (c whole: a row per slot (gate / up mh_ / mh2_, down my_), slots_ x ldc floats, engine_alloc.h)
-          rgx_first_use(L.ex_type[i], c, (size_t)slots_ * ldc * 4, k, kx, launch);
+          rgx_first_use(rgx_key(L, i), c, (size_t)slots_ * ldc * 4, k, kx, launch);
         } else {
-          launch(kx && rgx_state_[L.ex_type[i]] == 1 ? kx : k, c);
+          launch(kx && rgx_state_[rgx_key(L, i)] == 1 ? kx : k, c);
         }
       }
       if (q2_ && q2mm_ && i == 1) {
@@ -643,7 +643,7 @@
             us = i == 2 ? 1 : 0;
         set_args(k, 0, moe_wq_, moe_wh_, i == 2 ? mhq_ : aq_, i == 2 ? mhsc_ : asc_, absum_, i == 2 ? my_ : mh_, M, NN,
                  KK, ldc, acc, mtiles_, mtstart_, e0, e1, stok_, um, swt_, us);
-        if (ink_up) set_args(k, 19, ink_esc_gu(L.il));  // (gemm.cl -DMOE_SITU: the last argument)
+        if (ink_up) set_last_arg(k, ink_esc_gu(L.il));  // (gemm.cl -DMOE_SITU: the last argument, 19)
         size_t gws[2] = {(size_t)N, ny}, lws[2] = {16 * (size_t)cg, (size_t)mwy};
         run(i == 2 ? "moe_down" : "moe_gateup", k, 2, gws, lws);
       }

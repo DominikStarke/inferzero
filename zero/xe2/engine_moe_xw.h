@@ -29,13 +29,17 @@
   static bool rgx_type(uint32_t t) {
     return t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS || is_per32_type(t);
   }
-  std::map<uint32_t, int> rgx_state_;  // (per expert type: 0 not checked yet, 1 the XMX form passed, -1 it differed)
+  std::map<uint32_t, int> rgx_state_;  // (per form, rgx_key: 0 not checked yet, 1 the XMX form passed, -1 it differed)
+  // (the form: the expert type x 2, + 1 for Inkling 2's up pass, built with -DMOE_SITU (I1.7 step 4), so that variant
+  //  gets its own first-use check; keyed by the type alone, the gate pass's check stood for it. The Researcher's review
+  //  of 117c938. Other models: one form a type, as before)
+  uint32_t rgx_key(const Layer& L, int i) const { return L.ex_type[i] * 2u + (hp.inkling && i == 1 ? 1u : 0u); }
   cl_mem rgx_scratch_ = nullptr;
   size_t rgx_scratch_bytes_ = 0;
   // the layer takes moe_rg for this matrix on XMX (or will check it now)
   bool rgx_part(const Layer& L, int i) const {
     if (!moe_rgx_on() || !rgx_type(L.ex_type[i])) return false;
-    const auto it = rgx_state_.find(L.ex_type[i]);
+    const auto it = rgx_state_.find(rgx_key(L, i));
     return it == rgx_state_.end() || it->second >= 0;
   }
   // a whole layer through moe_rg instead of decode + GEMM: all three matrices on XMX (a type on DP4a moe_rg would be
@@ -45,15 +49,16 @@
     return moe_rgx_on() && moe_rg_layer_ok(L) && rgx_part(L, 0) && rgx_part(L, 1) && rgx_part(L, 2);
   }
   // the XMX kernel, built without ending the process if the driver cannot (cl_.soft_fail): DP4a kept for the type
-  cl_kernel rgx_kernel(uint32_t type, const std::string& opts) {
+  cl_kernel rgx_kernel(uint32_t key, const std::string& opts) {
+    const uint32_t type = key / 2;
     struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
     cl_.soft_fail = true;
     try {
       return kernel("decode", opts, "moe_rg");
     } catch (const std::exception& e) {
-      rgx_state_[type] = -1;
-      zlog::eprintf("inferzero: moe_rg on XMX for %s experts does not build (%s): DP4a kept (please report)\n",
-                    ggml_type_name(type), e.what());
+      rgx_state_[key] = -1;
+      zlog::eprintf("inferzero: moe_rg on XMX for %s experts%s does not build (%s): DP4a kept (please report)\n",
+                    ggml_type_name(type), key & 1 ? " (situ)" : "", e.what());
       return nullptr;
     }
   }
@@ -65,7 +70,8 @@
   // either ran, then compare the two buffers whole (the same tiles, rows and columns written by both). run(k) sets the
   // arguments with the C it is given and launches.
   template <class Run>
-  void rgx_first_use(uint32_t type, cl_mem C, size_t cbytes, cl_kernel k_dp4a, cl_kernel k_xmx, const Run& run) {
+  void rgx_first_use(uint32_t key, cl_mem C, size_t cbytes, cl_kernel k_dp4a, cl_kernel k_xmx, const Run& run) {
+    const uint32_t type = key / 2;  // (rgx_key: the type x 2, + 1 for Inkling's situ up pass)
     // (the copy is outside the memory plan: on a nearly full card its allocation may fail, which ends the process
     //  unless zrt::oom_throws is set; so it throws here and a failure keeps DP4a for this type, as a failed build
     //  does; freed on every way out, an exception from a run or a read included. A Gemini review, 2026-11-17)
@@ -81,7 +87,7 @@
       }
     }
     if (!sc) {
-      rgx_state_[type] = -1;
+      rgx_state_[key] = -1;
       zlog::eprintf("inferzero: moe_rg on XMX for %s experts: no room for its check's copy (%.0f MiB): DP4a kept\n",
                     ggml_type_name(type), cbytes / 1048576.0);
       run(k_dp4a, C);
@@ -105,11 +111,11 @@
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, C, CL_TRUE, 0, cbytes, a.data(), 0, nullptr, nullptr));
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, rgx_scratch_, CL_TRUE, 0, cbytes, b.data(), 0, nullptr, nullptr));
     const bool same = a == b;
-    rgx_state_[type] = same ? 1 : -1;
+    rgx_state_[key] = same ? 1 : -1;
     // (the copy only lives for a check: up to slots x max(n_embd, Fp) floats, 128 MiB for the 35B at 2,048-token chunks,
     //  outside the memory plan; freed at once by free_after, audit 2026-11-17)
     static std::once_flag said;
     std::call_once(said, [] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1)\n"); });
-    zlog::eprintf("inferzero: moe_rg on XMX for %s experts: %s\n", ggml_type_name(type),
+    zlog::eprintf("inferzero: moe_rg on XMX for %s experts%s: %s\n", ggml_type_name(type), key & 1 ? " (situ)" : "",
                   same ? "the same results as DP4a bit for bit" : "DIFFERS from DP4a: DP4a kept for this type (please report)");
   }
