@@ -501,7 +501,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt();
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -590,6 +590,16 @@
   // A770's GEMM question (xw_peak --probe's local-memory rows; xw_peak "slm 32x32 4x4 e2 p wgl bg"). The same words in
   // the same order: bit for bit, checked at start (xw_check's forms 27 / 31, xw_gu_check8); a difference turns off
   // only this. Pack bit 16, only where the weights are in the work-group order (bit 8)
+  // ARC_GEMM_XW_LSC=N (2026-11-23, opt-in; the A770's cache question, #45: with the removed ARC_GEMM_XW_AG, which kept
+  // less in L3, gdn_recur fell 342 -> 306 ms and attention 133 -> 118 though neither changed): the big tile's loads
+  // built with the compiler's load cache policy N (-igc_opts 'LscLoadCacheControlOverride=N'; the users' ocloc 26.40,
+  // dg2-g10, L1.L3: 1 uc.uc, 2 uc.ca, 3 ca.uc, 5 st.uc, 6 st.ca, 7 ri.ca). For every load of that kernel, A and B
+  // alike. Only the cache policy changes: bit for bit (the laptop's 4B with H8 and the big tile forced, XMX emulated:
+  // 1, 3 and 5 the same hash). 0 / unset: the compiler's default
+  static std::string xw_lsc_opt() {
+    static const int e = getenv("ARC_GEMM_XW_LSC") ? atoi(getenv("ARC_GEMM_XW_LSC")) : 0;
+    return e >= 1 && e <= 7 ? " -igc_opts 'LscLoadCacheControlOverride=" + std::to_string(e) + "'" : std::string();
+  }
   static bool xw_bg_env() {
     static const bool on = getenv("ARC_GEMM_XW_BG") && atoi(getenv("ARC_GEMM_XW_BG")) != 0;
     return on;
@@ -674,7 +684,7 @@
                            (xw_emu_ ? " -DXW_EMU" : "") + " -DXW_PACKA -DXW_PACKW" +
                            (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) + " -DXW_SLM -DXW_WGY=" +
                            std::to_string(b.y) + " -DXW_EPI2 -DXW_PTR -DXW_GU" +
-                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "");
+                           ((wgl & 4) ? " -DXS_WGLA" : "") + ((wgl & 8) ? " -DXS_WGLB" : "") + ((wgl & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt();
     cl_kernel k = kernel("xw8", sd, "gemm_xw8");
     size_t gws[2] = {(size_t)8 * nb * (M / 32 / b.y), (size_t)b.y}, lws[2] = {(size_t)8 * wgx, (size_t)b.y};
     int MM = M, NN = N, KK = K, ld = ldc, co = c_off, a = 2, rg = rgroup, s0 = 0, s1 = K / 256;
@@ -1085,6 +1095,9 @@
         zlog::eprintf(wglk[key] ? "inferzero: gemm_xw8: the big tile's operands in its work-group order (ARC_GEMM_XW_WGL, results "
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
+      if (ok && !xw_lsc_opt().empty() && xw_big_on())
+        zlog::eprintf("inferzero: gemm_xw8: the big tile's loads with the compiler's cache policy %s (ARC_GEMM_XW_LSC)\n",
+                      getenv("ARC_GEMM_XW_LSC"));
       if (ok) {
         zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s%s\n",
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
