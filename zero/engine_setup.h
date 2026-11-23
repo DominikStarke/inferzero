@@ -70,10 +70,17 @@
       if (hp.hc) hp.n_ff_shexp = padded_k(hp.n_ff_shexp);
       // (16..256 experts: a pruned Qwen3.6 MoE (e.g. 184 experts) routes with masked lanes, kernels/moe.cl NEV;
       //  Flash Next 512; the scan's work-group is NE wide)
-      const bool ne_ok = hp.hc ? hp.n_expert == 512 : hp.n_expert >= 16 && hp.n_expert <= 256;
+      // (Flash Next 16..512 since 2026-11-23: a pruned one routes as the pruned Qwen MoE does (NEV, masked lanes,
+      //  moe_group_ a divisor of NE), the scan's work-group as wide as the 512 it runs today at most. ISTA-DASLab's
+      //  Qwen3.8-Flash-Next-GSQ-RCO-Coder IQ1_M (expert-pruning) was refused, gee456, #1; not yet run here)
+      const bool ne_ok = hp.hc ? hp.n_expert >= 16 && hp.n_expert <= 512 : hp.n_expert >= 16 && hp.n_expert <= 256;
       if (!ne_ok || hp.n_expert_used < 1 || hp.n_expert_used > std::min(16, hp.n_expert) ||
           (hp.n_ff_exp % 256 && !hp.hc) || hp.n_ff_shexp % 256 || (hp.hc && !hp.moe_std))
-        throw std::runtime_error("unsupported MoE dimensions");
+        throw std::runtime_error("unsupported MoE dimensions: " + std::to_string(hp.n_expert) + " experts (" +
+                                 (hp.hc ? "Flash Next: 16..512" : "16..256") + "), " + std::to_string(hp.n_expert_used) +
+                                 " used (1..16), expert FFN " + std::to_string(hp.n_ff_exp) + ", shared FFN " +
+                                 std::to_string(hp.n_ff_shexp) + " (multiples of 256), " +
+                                 (hp.moe_std ? "standard GGUF experts" : "GSQ 2-bit experts"));
     }
     if (hp.hc) {
       hp.hc_n = I("hyper_connection.count");
