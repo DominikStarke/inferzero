@@ -381,7 +381,8 @@ static std::vector<ModelInfo> scan_models() {
       {"gemma-4-E4B_q4_0-it.gguf", {"gemma4-e4b", "e4b"}},
       {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}},
       {"gemma-4-31B_q4_0-it.gguf", {"gemma4-31b", "g31"}},
-      // (Unsloth's Inkling 2 Mini, the mainline file: listed, not supported by the server yet, docs/inkling2.md I1.6)
+      // (Unsloth's Inkling 2 Mini, the mainline file: listed; the server runs it with -m FILE, offered here once the
+      //  real file passes its KL, docs/inkling2.md)
       {"Inkling-2-Mini-UD-Q8_K_XL.gguf", {"inkling-2-mini", "inkling"}}};
   std::vector<ModelInfo> out;
   for (size_t i = 0; i < cands.size(); ++i) {

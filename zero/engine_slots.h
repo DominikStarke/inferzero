@@ -76,6 +76,7 @@
   }
   // GPU bytes of the server's two recurrent-state snapshots
   size_t snapshot_bytes() const {
+    if (hp.inkling) return 2 * (ink_conv_bytes() + (size_t)hp.n_embd * 4);  // (the conv arena, the drafter's row)
     size_t n = 0;
     for (const Layer& L : layers_)
       if (hp.recurrent(L.il)) n += state_bytes() + conv_bytes();
@@ -129,7 +130,7 @@
   void snapshot_host() {
     TP_MIRROR(snapshot_host(), TpMirror::kNone, 0);
     hsnap_.S.clear();
-    if (hp.inkling) return;  // (Inkling 2: no snapshots yet; restore_host refuses, so a conversation starts afresh)
+    if (hp.inkling) return ink_snapshot_host();  // (zero/engine_inkling.h)
     if (hp.ds41) {  // (DeepSeek-V4.1: see snapshot())
       ds_save(hsnap_.ds, hsnap_.dsh);
       hsnap_.pos = pos;
@@ -154,7 +155,7 @@
   bool restore_host() {
     TP_MIRROR(restore_host(), TpMirror::kNone, 0);
     if (hsnap_.pos < 0) return false;
-    if (hp.inkling) return false;  // (no snapshot of its slots yet: snapshot_host keeps none)
+    if (hp.inkling) return ink_restore_host();
     if (hp.ds41) {
       ds_load(hsnap_.ds, hsnap_.dsh);
       pos = hsnap_.pos;

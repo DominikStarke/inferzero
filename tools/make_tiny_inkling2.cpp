@@ -23,7 +23,7 @@
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -40,6 +40,7 @@ namespace {
 
 int E = 256, NL = 8, H = 6, HKV = 2, D = 128, NREL = 16, SWA = 16, EXT = 32, NC = 4, BLOCK = 2;
 double g_init = 1.0;  // (--scale S)
+bool g_byte_vocab = false;  // (--byte-vocab: tokens 0..255 are GPT-2's byte characters, so text encodes: serverz tests)
 int NE = 8, NU = 2, FF = 128, RANK = 16, LSTART = 2, LEND = 6, PASSES = 3, NV = 500, NVP = 512;
 const std::vector<int> GLOBAL = {1, 5, 7};
 const int NVFP4_LAYERS = 6;  // (experts of layers 0..5 NVFP4, the rest BF16)
@@ -234,7 +235,7 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S] [--byte-vocab]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
@@ -252,6 +253,7 @@ int main(int argc, char** argv) {
     else if (a == "--all-experts") NU = NE;
     else if (a == "--scale" && i + 1 < argc) g_init = std::max(0.01, atof(argv[++i]));
     else if (a == "--dspark" && i + 1 < argc) dspark_out = argv[++i];
+    else if (a == "--byte-vocab") g_byte_vocab = true;
     else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
     else { fprintf(stderr, "make_tiny_inkling2: unknown option %s\n", a.c_str()); return 2; }
   }
@@ -329,7 +331,20 @@ int main(int argc, char** argv) {
                               "<|message_tool|>", "<|content_text|>", "<|content_model_end_sampling|>",
                               "<|content_thinking|>", "<|end_message|>", "<|content_invoke_tool_json|>"};
     const int nsp = (int)(sizeof(specials) / sizeof(specials[0]));
-    for (int i = 0; i < NV - nsp; ++i) { toks.push_back("t" + std::to_string(i)); ttype.push_back(1); }
+    // (--byte-vocab: the first 256 named as GPT-2's byte-level characters, as src/tokenizer.h maps them: any text
+    //  encodes byte by byte and decodes back; the weights are the same)
+    for (int i = 0, n = 0; i < NV - nsp; ++i) {
+      std::string s = "t" + std::to_string(i);
+      if (g_byte_vocab && i < 256) {
+        const bool pr = (i >= 33 && i <= 126) || (i >= 161 && i <= 172) || (i >= 174 && i <= 255);
+        const uint32_t cp = pr ? (uint32_t)i : 256u + (uint32_t)n++;
+        s.clear();
+        if (cp < 0x80) s.push_back((char)cp);
+        else { s.push_back((char)(0xC0 | (cp >> 6))); s.push_back((char)(0x80 | (cp & 0x3F))); }
+      }
+      toks.push_back(s);
+      ttype.push_back(1);
+    }
     for (int i = 0; i < nsp; ++i) { toks.push_back(specials[i]); ttype.push_back(3); }
     w.str("tokenizer.ggml.model", "gpt2");
     w.str("tokenizer.ggml.pre", "inkling2");

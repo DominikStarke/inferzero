@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-24: Inkling 2 in the server
+
+- **`serverz` runs Inkling 2** (it refused the model before). Its own chat format: the prompt as the model's template writes it, the reasoning and the answer streamed apart, tool calls returned once their message ends, and the model's end-of-answer token as the stop. `reasoning_effort` sets the model's thinking effort (a name such as `low` / `high`, or a number from 0 to 0.99); thinking off is effort 0. `tool_choice: "none"` works; a required tool call is not forced yet, and the tool-call check that Qwen and Gemma get is not there yet. Images are refused. Not tested on the real model yet (that run waits); tested on a small test model.
+- **Follow-up requests reuse the cached prompt**, as with Qwen: the state at the end of the last prompt and at the end of the system prompt is kept and resumed (the conv states, and the sliding-window caches' last 1,024 positions, copied to RAM only when the next tokens would overwrite them: about 170 MB each on Inkling 2 Mini). Saved conversations on disk and `--slots` above 1 are not supported for Inkling yet (one slot).
+- **`serverz --dspark FILE`**: drafting with the DSpark drafter, for greedy requests (temperature 0). A request with a temperature above 0 decodes without drafts, and the log says so once (`ARC_DSP_SAMPLED=1` drafts anyway: the text then still follows the model's own distribution, but few drafts are accepted). The drafter's one-time start-up cost (~150-200 ms in runz) is paid while the server loads, not by the first answer. The drafter's sliding-window caches hold one prompt chunk more than before (6 MB on the laptop, up to ~66 MB with 8,192-token chunks), so a resumed prompt still finds them.
+
 ## 2026-11-24: `--ctx N` after `--ctx auto` is kept (#39); the Linux launcher's menu (#81)
 
 - **The last `--ctx` decides** (#39): `serverz ... --ctx auto ... --ctx 50000` ran with the automatic context, so a context given to the Linux launcher after `--` (which it passes after its own `--ctx auto`) was ignored. Now 50,000 is used; `--ctx 3000 --ctx auto` gives auto, as written.

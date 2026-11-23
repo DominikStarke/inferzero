@@ -59,7 +59,7 @@
     const bool no_calls = body["tool_choice"].str() == "none";
     int no_call_tok = -1;
     if (no_calls && tools.is_array() && tools.size()) {
-      const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : "<tool_call>", true);
+      const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : ink_ ? "<|content_invoke_tool_json|>" : "<tool_call>", true);
       if (o.size() == 1) no_call_tok = o[0];
       else tools = Json();  // (not one token: the tools left out, as before)
     } else if (no_calls) {
@@ -78,7 +78,8 @@
         for (const Json& t : tools.items()) known = known || t["function"]["name"].str(t["name"].str()) == fname;
         if (!known) fname.clear();
       }
-      if (tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty() ||
+      // (Inkling 2: not forced yet; its call is a message of its own, src/chat_inkling.h)
+      if (!ink_ && tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty() ||
                                               !tc["function"]["name"].str(tc["name"].str()).empty())) {
         force_tool_on = true;
         force_tool = gemma_ ? "<|tool_call>call:" + (fname.empty() ? std::string() : fname + "{")
@@ -101,7 +102,7 @@
       const char* e = getenv("ARC_TOOL_CONSTRAINT");
       if (tools.is_array() && tools.size() && !no_calls && !(e && std::string(e) == "0")) {
         if (gemma_) tcc = std::make_unique<tcon::GemmaCall>(tools);
-        else tcc = std::make_unique<tcon::QwenCall>(tools);
+        else if (!ink_) tcc = std::make_unique<tcon::QwenCall>(tools);  // (Inkling 2: no constraint yet)
         if (tcc && tcc->empty()) tcc.reset();
       }
     }
@@ -128,7 +129,7 @@
     // Qwen's reasoning: presence_penalty 1.5 unless the request sets one (Qwen's recommendation for thinking, against
     // endless reasoning: the 35B once circled "Let's run." for 7,000 tokens without closing </think>); the answer and
     // its tool calls keep the request's value (0: code is not penalized for reusing its tokens)
-    const float think_pp = !gemma_ && !body["presence_penalty"].is_number() ? 1.5f : sp.presence_penalty;
+    const float think_pp = !gemma_ && !ink_ && !body["presence_penalty"].is_number() ? 1.5f : sp.presence_penalty;
     if (body["frequency_penalty"].is_number()) sp.frequency_penalty = (float)body["frequency_penalty"].as_number();
     if (body["repeat_penalty"].is_number()) sp.repeat_penalty = (float)body["repeat_penalty"].as_number();
     if (body["repeat_last_n"].is_number()) sp.repeat_last_n = (int)body["repeat_last_n"].as_clamped(64, -1, INT_MAX);
@@ -169,8 +170,17 @@
       tools = Json();
       co.enable_thinking = false;
     }
+    // (Inkling 2: its effort message; thinking off is effort 0 ("none"), else the request's reasoning_effort, a name or
+    //  a number, and none given the template's default 0.9. A name the format does not know is a 400, as there)
+    Json ink_effort;
+    if (ink_) {
+      const Json& re = body["reasoning_effort"].is_null() ? body["chat_template_kwargs"]["reasoning_effort"] : body["reasoning_effort"];
+      if (!co.enable_thinking) ink_effort = Json("none");
+      else if (re.is_number() || (re.is_string() && !re.as_string().empty())) ink_effort = re;
+    }
     try {
       prompt = raw_prompt ? body["__raw_prompt"].str()
+               : ink_     ? inkling::render(messages, tools, ink_effort)
                : jinja_   ? jinja_->render(rmsgs, tools, true, co.enable_thinking)
                           : chat::render(messages, tools, co, q38_);
     } catch (const std::exception& e) {
@@ -357,13 +367,15 @@
     // start of the last turn header "<|im_start|>assistant\n" (Gemma: "<|turn>model\n"). The next request of the
     // conversation diverges after it (the reply as the template renders it) or, after an aborted or failed reply that
     // the client drops (Pi does), right inside it: a snapshot here serves both.
-    size_t gen_cut = 0;
-    for (size_t i = P.size(); i-- > 0;)
+    // (Inkling 2: no generation prompt, the model writes its own <|message_model|>: the turn starts at the prompt's end,
+    //  whose snapshot (slot 1) serves both)
+    size_t gen_cut = ink_ ? P.size() : 0;
+    for (size_t i = P.size(); !ink_ && i-- > 0;)
       if (P[i] == im_start_) { gen_cut = i; break; }
     // Qwen: the start of the first assistant turn after the user's last message (tool results come as user messages
     // starting with <tool_response>, which do not count); a snapshot there survives the turn's tool calls
     size_t turn_cut = 0;
-    if (!jinja_ && im_start_ >= 0)
+    if (!jinja_ && !ink_ && im_start_ >= 0)
       for (size_t i = gen_cut; i-- > 0;) {
         if (P[i] != im_start_ || i + 1 >= P.size() || tok_.piece(P[i + 1]) != "user") continue;
         std::string head;
@@ -546,6 +558,7 @@
       const bool in_thought = prompt.size() >= opened.size() && prompt.compare(prompt.size() - opened.size(), opened.size(), opened) == 0;
       parser_p = std::make_unique<gemma4::OutputParser>(in_thought, tools);
     }
+    else if (ink_) parser_p = std::make_unique<inkling::OutputParser>();  // (Inkling 2: src/chat_inkling.h)
     else parser_p = std::make_unique<chat::OutputParser>(co.enable_thinking, tools);
     chat::OutputParserBase& parser = *parser_p;
     std::vector<int> gen;
@@ -653,14 +666,26 @@
       d0.set("content", "");
       rs.sse_event(chunk(id, created, d0, Json()).dump());
     }
-    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : "\n</think>\n\n", true);
+    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : ink_ ? "<|end_message|><|message_model|><|content_text|>"
+                                                                             : "\n</think>\n\n", true);
     bool in_think = co.enable_thinking;
     int think_n = 0;
     std::vector<int> forced;  // tokens to emit instead of sampling (budget-forced end of reasoning)
     // Speculative decoding with the MTP block: after a token is chosen, the block drafts the following one and the
     // model processes both in one pass. The next token is still sampled from the model's own distribution; the
     // draft is kept only if it is exactly that token, so the output distribution is unchanged.
-    const bool spec = eng_.has_mtp;
+    // (Inkling 2's DSpark drafts greedily: for a sampled request (temperature > 0) few drafts would be the sampled
+    //  token, and each verification runs its rows through the experts, so it decodes without drafts unless
+    //  ARC_DSP_SAMPLED=1; the output is the model's own distribution either way)
+    static const bool dsp_sampled = getenv("ARC_DSP_SAMPLED") && atoi(getenv("ARC_DSP_SAMPLED")) != 0;
+    const bool dsp_off = eng_.dsp_on() && sp.temperature > 0.0f && !dsp_sampled;
+    if (dsp_off) {
+      static std::atomic<bool> said{false};
+      if (!said.exchange(true))
+        LOG_INF("DSpark drafts for greedy requests (temperature 0) only: a sampled request decodes without drafts "
+                "(ARC_DSP_SAMPLED=1: drafts anyway; said once)\n");
+    }
+    const bool spec = eng_.has_mtp && !dsp_off;
     const size_t V = eng_.hp.n_vocab;
     std::vector<int> drafts;  // drafts processed by the last verification, checked against the next sampled tokens
     size_t acc = 0;           // how many of them matched so far
@@ -901,7 +926,7 @@
     // ARC_LOG_TOOLCALLS=file: every answer that writes a tool call, raw text and parsed calls (to see what a model
     // wrote when a call fails), one JSON line each
     if (const char* lf = getenv("ARC_LOG_TOOLCALLS")) {
-      if (text.find(gemma_ ? "<|tool_call>" : "<tool_call>") != std::string::npos) {
+      if (text.find(gemma_ ? "<|tool_call>" : ink_ ? "<|content_invoke_tool" : "<tool_call>") != std::string::npos) {
         Json j = Json::object(), pc = Json::array();
         for (const auto& c : calls) {
           Json o = Json::object();

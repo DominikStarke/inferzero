@@ -120,12 +120,6 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   L->alias = alias;
   L->path = model;
   zlog::eprintf("inferzero-server: loading %s\n", model.c_str());
-  {  // (Inkling 2: the engine runs it in runz only for now; the server's chat format and saved prompts are not done,
-     //  and a chat would continue on another one's state: docs/inkling2.md I1.6. Refused before any GPU memory)
-    const std::string arch = gguf_arch_peek(model);
-    if (arch == "inkling2" || arch == "inkling2_loop")
-      throw std::runtime_error("Inkling 2 is not supported by the server yet (runz only, for the accuracy checks)");
-  }
   const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
     // (said, not dropped silently: --mmproj was accepted with --gpus 2 and /props said vision: false with no line
@@ -386,6 +380,18 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if ((warmed = eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt)))
       zlog::eprintf("kernels warmed up for this model in %.1f s (once after an update)\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
+    // (Inkling 2's DSpark drafter: its first draft in a process costs ~150-200 ms, every start, the kernel cache
+    //  warm or not (zero/engine_dspark.h, docs/inkling2.md): paid here, not by the first answer. runz keeps it)
+    if (eng.dsp_on() && eng.ctx > 16) {
+      const int t = L->tok->encode("Hi", false)[0];
+      eng.forward(&t, 1);
+      const std::vector<int> d = eng.mtp_draft(t, eng.opt.mtp_drafts);
+      if (!d.empty()) {
+        eng.verify(t, d);
+        eng.verify_done(0);
+      }
+      eng.reset();
+    }
   }
   if (const char* f = getenv("ARC_FAIL_PASS")) eng.fail_after = atol(f);  // (tests: a pass that throws, see Engine)
   L->srv = std::make_unique<Server>(eng, *L->tok, alias, so.webui);

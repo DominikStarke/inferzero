@@ -21,6 +21,7 @@
 #include "../src/tokenizer.h"
 #include "../src/chat.h"
 #include "../src/chat_gemma4.h"
+#include "../src/chat_inkling.h"  // (Inkling 2)
 #include "../src/chat_jinja.h"
 #include "../src/image.h"
 #include "../src/audio.h"
@@ -293,6 +294,15 @@ class Server {
         if (tid >= 0) stop_ids_.push_back(tid);
       }
       think_close_ = "<channel|>";
+    } else if (e.hp.inkling) {
+      // Inkling 2: its own format (src/chat_inkling.h); a model message starts <|message_model|>, the answer ends with
+      // <|content_model_end_sampling|> (the end-of-generation token); the reasoning is a <|content_thinking|> message
+      ink_ = true;
+      im_start_ = tok_.token("<|message_model|>");
+      ink_user_ = tok_.token("<|message_user|>");
+      const int tid = tok_.token("<|content_model_end_sampling|>");
+      if (tid >= 0) stop_ids_.push_back(tid);
+      think_close_ = "<|content_text|>";  // (the answer has begun: a text message)
     } else {
       im_start_ = tok_.token("<|im_start|>");
       for (const char* s : {"<|im_end|>", "<|endoftext|>"}) {
@@ -488,7 +498,8 @@ class Server {
   Engine& eng_;
   Tokenizer& tok_;
   std::string model_id_, webui_;
-  bool q38_ = false, gemma_ = false;
+  bool q38_ = false, gemma_ = false, ink_ = false;  // (ink_: Inkling 2, src/chat_inkling.h)
+  int ink_user_ = -1;  // (Inkling 2: <|message_user|>)
   bool rings_ = false;  // (ring caches, no recurrent state: a prefix is reused by rewind(), not snapshots)
 
  public:
@@ -620,6 +631,11 @@ class Server {
   // end of the system prompt (the start of the second turn; Gemma's first turn follows <bos>): every conversation of
   // a client (Pi: its system prompt and tool list, ~4K tokens) shares it
   size_t system_end(const std::vector<int>& P) const {
+    if (ink_) {  // (Inkling 2: the tool list, the system messages and the effort message come before the first user one)
+      for (size_t i = 0; i < P.size(); ++i)
+        if (P[i] == ink_user_) return i;
+      return 0;
+    }
     size_t i0 = 0;
     while (i0 < P.size() && i0 < 2 && P[i0] != im_start_) ++i0;
     if (i0 + 1 < P.size() && P[i0] == im_start_ && tok_.piece(P[i0 + 1]) == "system")
@@ -1031,7 +1047,7 @@ static int server_main(int argc, char** argv) {
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"}, {"--driver-reserve-gb", "GiB, 0 to 8, e.g. 0.5"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
       {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--fast", ""}, {"--npu", "on, off or force"},
-      {"--mtp", ""}, {"--mtp-model", "an MTP head .gguf"}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
+      {"--mtp", ""}, {"--mtp-model", "an MTP head .gguf"}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--dspark", "a DSpark drafter .gguf"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
       {"--mtp-drafts", "a number, e.g. 3"}, {"--copy-draft", ""}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
@@ -1145,6 +1161,7 @@ static int server_main(int argc, char** argv) {
     //  server only looks for an mtp-*.gguf in the model's folder. gee456, issue #31, 2026-11-17)
     else if (a == "--mtp-model") { so.eo.mtp_model = next(); so.eo.mtp = true; }
     else if (a == "--dflash") { so.eo.dflash = next(); so.eo.mtp = true; }
+    else if (a == "--dspark") so.eo.dspark = next();  // (Inkling 2: its DSpark drafter, zero/engine_dspark.h)
     else if (a == "--no-dflash") { so.eo.dflash.clear(); so.dflash_auto = false; }
     else if (a == "--draft") {  // (the drafter of the -nodf / -df variants)
       const std::string d = next();
@@ -1280,6 +1297,7 @@ static int server_main(int argc, char** argv) {
     if (model == "none" && !swap) throw std::runtime_error("-m none: a chat model loads later on request, which --no-swap turns off");
     if (!so.mmproj.empty() && so.mmproj != "-") check("--mmproj", so.mmproj, false, ".gguf");
     if (!so.eo.dflash.empty()) check("--dflash", so.eo.dflash, true, "model.safetensors");
+    if (!so.eo.dspark.empty()) check("--dspark", so.eo.dspark, false, ".gguf");
     if (!so.webui.empty()) check("--webui", so.webui, true, "index.html");
     if (!word(whisper_opt)) check("--whisper", whisper_opt, true, "model.bin");
     if (!word(asr_opt)) check("--asr", asr_opt, false, ".gguf");
@@ -1371,6 +1389,9 @@ static int server_main(int argc, char** argv) {
             "                        for the model in the Hugging Face cache or the extra model folders, if any\n"
             "                        (incoai Qwen3.8 Flash Next: with --dflash DIR only; no faster on an SSD-bound laptop)\n"
             "  --no-dflash           no DFlash2 drafter (--mtp: the model's MTP block only)\n"
+            "  --dspark FILE         Inkling 2: speculative decoding with its DSpark drafter (unsloth's\n"
+            "                        dspark-Inkling-2-Mini-Q8_0.gguf; 3 drafts per step), for greedy requests\n"
+            "                        (temperature 0); a sampled one decodes without drafts (ARC_DSP_SAMPLED=1: drafts)\n"
             "  --draft auto|mtp|dflash  with --mtp and a DFlash2 drafter: both, picked per step (auto, default), the MTP\n"
             "                        block only (= --no-dflash), or DFlash2 only (the MTP block is not loaded: more\n"
             "                        expert cache); the catalog's -nodf / -df variants\n"

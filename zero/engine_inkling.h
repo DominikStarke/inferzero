@@ -431,6 +431,140 @@
     dsp_cn_ = 0;  // (DSpark: its context starts again with the sequence)
   }
 
+  // ---- snapshots (the server's prefix cache, Engine::snapshot / restore)
+  // A snapshot at position p holds the conv arena and the drafter's feature row (GPU copies, ~4 MB on Inkling 2
+  // Mini), and the sliding rings' window before p: the 40 sliding slots' K / V and the drafter's sliding layers,
+  // positions [p - W, p). The global slots keep every position, as Qwen's caches. The window is copied to host
+  // memory only when a pass is about to overwrite it (ink_ring_guard; ~168 MB on Inkling 2 Mini at a window of
+  // 1,024): a turn whose answer and next prompt stay within the rings' spare chunk never copies it, as Gemma's
+  // rings (Engine::ring_guard)
+  size_t ink_conv_bytes() const {  // (the arena's bytes, by load_weights_inkling's layout)
+    const int E = hp.n_embd, KG = hp.n_head_kv * hp.head_dim, ch[4] = {KG, KG, E, E};
+    size_t n = 0;
+    for (int c = 0; c < 4; ++c) n += ((size_t)ch[c] * (ink_.nc - 1) * 4 + 255) / 256 * 256;
+    return n * ink_.nslot;
+  }
+  int ink_window() const { return std::max(hp.n_swa, dsp_ ? dsp_win_ : 0); }
+  int ink_ring_cap() const {  // (the smallest sliding ring: the target's slots, the drafter's layers)
+    int c = ctx;
+    for (const auto& S : inks_)
+      if (!inkl_[S.ip].glob) c = std::min(c, S.cap);
+    for (const auto& L : dsp_l_)
+      if (L.local) c = std::min(c, L.cap);
+    return c;
+  }
+  int ink_ring_lo(int p) const { return std::max(0, p - ink_window()); }
+  // the rings still hold [p - W, p) of this sequence
+  bool ink_ring_intact(int p) const {
+    const int lo = ink_ring_lo(p);
+    if (lo >= p) return true;
+    if (swa_lo_ > 0 && lo < swa_lo_) return false;  // (below it the slots hold an abandoned sequence: ink_restore)
+    return written_hi_ - ink_ring_cap() <= lo;
+  }
+  struct InkSeg {
+    cl_mem b;
+    size_t off, n;
+  };
+  std::vector<InkSeg> ink_ring_segs(int p) const {
+    std::vector<InkSeg> v;
+    const int lo = ink_ring_lo(p), n = p - lo;
+    if (n <= 0) return v;
+    auto add = [&](cl_mem b, int cap, size_t rb) {
+      const int a = lo % cap, n1 = std::min(n, cap - a);
+      v.push_back({b, (size_t)a * rb, (size_t)n1 * rb});
+      if (n1 < n) v.push_back({b, 0, (size_t)(n - n1) * rb});
+    };
+    const size_t rb = (size_t)hp.n_head_kv * hp.head_dim * 2;
+    for (const auto& S : inks_)
+      if (!inkl_[S.ip].glob) { add(S.kc, S.cap, rb); add(S.vc, S.cap, rb); }
+    const size_t drb = (size_t)dsp_HKV_ * hp.head_dim * 2;
+    for (const auto& L : dsp_l_)
+      if (L.local) { add(L.kc, L.cap, drb); add(L.vc, L.cap, drb); }
+    return v;
+  }
+  void ink_ring_read(int p, std::vector<std::vector<uint8_t>>& out) {
+    const auto segs = ink_ring_segs(p);
+    out.resize(segs.size());
+    for (size_t i = 0; i < segs.size(); ++i) {
+      out[i].resize(segs[i].n);
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, segs[i].b, CL_FALSE, segs[i].off, segs[i].n, out[i].data(), 0, nullptr, nullptr));
+    }
+    clFinish(cl_.queue);
+  }
+  bool ink_ring_write(int p, const std::vector<std::vector<uint8_t>>& in) {
+    const auto segs = ink_ring_segs(p);
+    if (segs.size() != in.size()) return false;
+    for (size_t i = 0; i < segs.size(); ++i)  // (every size first: nothing written when one does not match)
+      if (segs[i].n != in[i].size()) return false;
+    for (size_t i = 0; i < segs.size(); ++i)
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, segs[i].b, CL_FALSE, segs[i].off, segs[i].n, in[i].data(), 0, nullptr, nullptr));
+    clFinish(cl_.queue);
+    return true;
+  }
+  // before a pass writes [pos, pos + T): a snapshot whose window those writes would overwrite gets its copy now
+  void ink_ring_guard(int T) {
+    const int cap = ink_ring_cap();
+    for (Snap& s : snaps_) {
+      if (s.pos < 0 || !s.ring_want || s.ring_ok) continue;
+      if (pos + T - 1 - cap < ink_ring_lo(s.pos)) continue;  // (not reached yet)
+      s.ring_want = false;
+      if (!ink_ring_intact(s.pos)) continue;  // (gone)
+      ink_ring_read(s.pos, s.ring);
+      s.ring_ok = true;
+    }
+  }
+  void ink_snapshot(Snap& s) {
+    const size_t cb = ink_conv_bytes(), fb = (size_t)hp.n_embd * 4;
+    if (s.conv.empty()) s.conv = {buf(cb), buf(fb)};
+    CL_CHECK(clEnqueueCopyBuffer(cl_.queue, ink_conv_arena_, s.conv[0], 0, 0, cb, 0, nullptr, nullptr));
+    if (dsp_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, dsp_feat_, s.conv[1], 0, 0, fb, 0, nullptr, nullptr));
+    s.pos = pos;
+    s.ink_dcn = dsp_cn_;
+    s.ring.clear();
+    s.ring_ok = false;
+    s.ring_want = ink_ring_intact(pos);  // (a sequence restored below its rings' copy: none to take)
+  }
+  // the state back to s (its window from the host copy, or still in the rings); false and nothing changed otherwise
+  bool ink_restore(Snap& s) {
+    if (s.ring_ok) {
+      if (!ink_ring_write(s.pos, s.ring)) return false;
+      written_hi_ = s.pos;  // (the ring slots past it hold the abandoned positions: never taken as this sequence's)
+      swa_lo_ = std::max(swa_lo_, ink_ring_lo(s.pos));
+    } else if (!s.ring_want || !ink_ring_intact(s.pos)) {
+      return false;
+    }
+    const size_t cb = ink_conv_bytes(), fb = (size_t)hp.n_embd * 4;
+    CL_CHECK(clEnqueueCopyBuffer(cl_.queue, s.conv[0], ink_conv_arena_, 0, 0, cb, 0, nullptr, nullptr));
+    if (dsp_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, s.conv[1], dsp_feat_, 0, 0, fb, 0, nullptr, nullptr));
+    pos = s.pos;
+    dsp_cn_ = s.ink_dcn;
+    last_drafts_.clear();
+    return true;
+  }
+  // the host snapshot (the system prompt's end): everything in host memory at once
+  void ink_snapshot_host() {
+    hsnap_ = HostSnap();
+    hsnap_.S = {read_buf(ink_conv_arena_, ink_conv_bytes())};
+    if (dsp_) hsnap_.S.push_back(read_buf(dsp_feat_, (size_t)hp.n_embd * 4));
+    hsnap_.ring.clear();
+    if (!ink_ring_intact(pos)) return;  // (no window to copy: no host snapshot)
+    ink_ring_read(pos, hsnap_.ring);
+    hsnap_.ink_dcn = dsp_cn_;
+    hsnap_.pos = pos;
+  }
+  bool ink_restore_host() {
+    if (hsnap_.S.size() != (dsp_ ? 2u : 1u) || !ink_ring_write(hsnap_.pos, hsnap_.ring)) return false;
+    written_hi_ = hsnap_.pos;
+    swa_lo_ = std::max(swa_lo_, ink_ring_lo(hsnap_.pos));
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_conv_arena_, CL_TRUE, 0, hsnap_.S[0].size(), hsnap_.S[0].data(), 0, nullptr, nullptr));
+    if (dsp_)
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_feat_, CL_TRUE, 0, hsnap_.S[1].size(), hsnap_.S[1].data(), 0, nullptr, nullptr));
+    pos = hsnap_.pos;
+    dsp_cn_ = hsnap_.ink_dcn;
+    last_drafts_.clear();
+    return true;
+  }
+
   // ---- launches
   void ink_run1(const char* name, cl_kernel kk, size_t n) {  // (element-wise kernels: any size, bounds-checked)
     size_t gws[1] = {(n + 63) / 64 * 64}, lws[1] = {64};
@@ -783,6 +917,7 @@
   uint64_t ink_seq_ = 0, ink_seq_xall_ = 0, ink_seq_xcpu_ = 0;
   void ink_forward(int T, int Mp) {
     const InkHp& k = ink_;
+    ink_ring_guard(T);  // (a snapshot's window copied before this pass overwrites it)
     const int E = hp.n_embd;
     const size_t rowE = (size_t)E * 4, blockB = (size_t)max_chunk * rowE;
     ink_rmsnorm(x_, E, ink_tok_norm_, ink_cur_, T);
@@ -830,6 +965,7 @@
     ink_mix(ink_blocks_, nb, ink_cur_, ink_out_res_q_, 1, x_, T);
     ink_dump("fin", 99, x_, (size_t)T * E, T);
     if (dsp_) dsp_after_forward(T);  // (DSpark: the last tap, the head's input; outside verification the context)
+    written_hi_ = std::max(written_hi_, pos + T);  // (the rings' slots written: ink_ring_intact)
   }
 
   // the tokens' count (vocab_size_unpadded): the logits that are tokens, the head's first rows (runz --kl-ref)

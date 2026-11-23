@@ -195,7 +195,9 @@
     dsp_u_ = buf((size_t)E * 4);
     dsp_w1row_ = buf((size_t)dsp_R_ * 4);
     for (DspLayer& L : dsp_l_) {
-      L.cap = L.local ? dsp_win_ : ctx;
+      // (a sliding layer's ring holds the window and a chunk more, as the target's sliding slots (swa_ring_cap): a
+      //  snapshot's window is still there after a chunk past it, Engine::snapshot)
+      L.cap = L.local ? std::min(ctx, (dsp_win_ + max_chunk + 255) / 256 * 256) : ctx;
       L.kc = buf((size_t)L.cap * KG * 2);
       L.vc = buf((size_t)L.cap * KG * 2);
     }

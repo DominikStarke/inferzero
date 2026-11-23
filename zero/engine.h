@@ -581,6 +581,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     kv_drift_check();  // (a tight model: plan_tight's KV estimate against what was allocated, engine_sessions.h)
     h8_e2e_check();  // (one H8 prompt GEMM replayed end to end on random rows, engine_h8.h)
     npu_setup();  // (ARC_NPU=1 only)
+    if (opt.slots > 1 && hp.inkling) {  // (its 48 cache slots and conv states are not among a slot's state buffers)
+      LOG_WRN("Inkling 2: --slots %d is not supported yet; one conversation slot\n", opt.slots);
+      opt.slots = 1;
+    }
     if (opt.slots > 1) add_slots(opt.slots);  // (before the expert cache takes what is left)
     w8_part_auto();  // (ARC_W8_PARTIAL_GB=auto: resident W8 in the room the context left, engine_load.h)
     if (xc_) size_expert_cache();
@@ -1073,7 +1077,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void snapshot(int slot) {
     TP_MIRROR(snapshot(slot), TpMirror::kNone, 0);
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
-    if (hp.inkling) throw std::runtime_error("Inkling 2: snapshots are not supported yet");
+    if (hp.inkling) return ink_snapshot(snaps_[slot]);  // (zero/engine_inkling.h)
     Snap& s = snaps_[slot];
     // (DeepSeek-V4.1: its compressed rows are position-indexed like a KV cache; the window rings, the pending
     //  compressor rows and the Engram history are copied, ~10 MB on the real model)
@@ -1145,11 +1149,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   void drop_snapshot(int slot) {
     TP_MIRROR(drop_snapshot(slot), TpMirror::kNone, 0);
-    if (slot < (int)snaps_.size()) snaps_[slot].pos = -1;
+    if (slot < (int)snaps_.size()) {
+      snaps_[slot].pos = -1;
+      if (hp.inkling) snaps_[slot].ring = {};  // (Inkling 2: its window's host copy, ~168 MB, freed with it)
+    }
   }
   bool restore(int slot) {
     TP_MIRROR(restore(slot), TpMirror::kNone, 0);
-    if (hp.inkling) return false;  // (no snapshots yet: snapshot() refuses)
+    if (hp.inkling) return snapshot_pos(slot) >= 0 && ink_restore(snaps_[slot]);
     if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
     if (hp.ds41) {  // (see snapshot())

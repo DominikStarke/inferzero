@@ -183,6 +183,7 @@
     bool ring_want = false;  // (to be taken before the rings overwrite it: ring_guard)
     std::vector<std::vector<uint8_t>> ds;  // DeepSeek-V4.1: the window rings and pending rows (ds_save)
     std::vector<int> dsh;                  // (and the Engram token history)
+    int ink_dcn = 0;                       // Inkling 2: the drafter's context positions (DSpark, dsp_cn_)
   };
   std::vector<Snap> snaps_;
   static constexpr int32_t kStateMagic = 0x53435241;  // "ARCS"
@@ -192,6 +193,8 @@
     std::vector<uint8_t> h;
     std::vector<std::vector<uint8_t>> ds;  // DeepSeek-V4.1 (ds_save)
     std::vector<int> dsh;
+    std::vector<std::vector<uint8_t>> ring;  // Inkling 2: the sliding rings' window before pos (ink_ring_segs)
+    int ink_dcn = 0;
   };
   HostSnap hsnap_;
   // ---- conversation slots (see bind): the state buffers' fields, each slot's device addresses for them, the views

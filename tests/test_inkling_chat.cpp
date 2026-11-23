@@ -112,6 +112,40 @@ int main() {
   const auto u = inkling::parse("<|message_model|>get<|content_invo");
   check(u.content.empty() && u.tool_calls.empty(), "parse: a stream stopped inside a header");
 
+  {  // the server's parser fed piece by piece (markers whole, as single tokens): the deltas add up to the final split,
+     // nothing of a call is content while it is written, the call comes whole once its message ends
+    const std::vector<std::string> pieces = {"<|message_model|>", "<|content_thinking|>", "Th", "ink", "<|end_message|>",
+                                             "<|message_model|>", "<|content_text|>", "Ans", "wer", "<|end_message|>",
+                                             "<|message_model|>", "get", "<|content_invoke_tool_json|>", "{\"name\":\"get\",",
+                                             "\"args\":{\"a\":1}}", "<|end_message|>"};
+    inkling::OutputParser op;
+    std::string text, dr, dc, all_r, all_c;
+    bool call_as_content = false;
+    size_t calls_before_end = 0;
+    for (size_t i = 0; i < pieces.size(); ++i) {
+      text += pieces[i];
+      op.update(text, false, dr, dc);
+      all_r += dr;
+      all_c += dc;
+      call_as_content = call_as_content || dc.find("name") != std::string::npos;
+      if (i + 1 < pieces.size()) calls_before_end += op.partial_tool_calls(text, false).size();
+    }
+    op.update(text, true, dr, dc);
+    all_r += dr;
+    all_c += dc;
+    const auto calls = op.tool_calls(text);
+    const auto pc = op.partial_tool_calls(text, true);
+    check(all_r == "Think" && all_c == "Answer" && !call_as_content && calls_before_end == 0 && calls.size() == 1 &&
+              calls[0].name == "get" && pc.size() == 1 && pc[0].done && pc[0].args == "{\"a\":1}",
+          "OutputParser: streamed thinking, text and a tool call");
+    inkling::OutputParser op2;  // (a stream stopped inside a call: its text is content at the end)
+    const std::string cut = "<|message_model|>get<|content_invoke_tool_json|>{\"name\":\"get\",\"ar";
+    op2.update(cut, false, dr, dc);
+    const bool none_yet = dc.empty();
+    op2.update(cut, true, dr, dc);
+    check(none_yet && dc == "{\"name\":\"get\",\"ar", "OutputParser: an unfinished call becomes content at the end");
+  }
+
   if (fails) { std::printf("test_inkling_chat: %d failed\n", fails); return 1; }
   std::printf("test_inkling_chat: all passed\n");
   return 0;

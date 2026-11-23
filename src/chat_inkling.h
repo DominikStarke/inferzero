@@ -197,7 +197,9 @@ struct Parsed {
 // {"name":..., "args":{...}} -> a tool call (a body that is not such an object is kept as content, so nothing is
 // lost). <|content_invoke_tool_text|>: its body as the call's single "text" argument (the format is not documented).
 // Text outside any message (a model that skipped its role token) counts as content.
-inline Parsed parse(const std::string& s) {
+// Streaming (final false): a tool call's message still being written gives nothing yet (its body is not content
+// until it is known not to be a call), so every part only grows as the text grows.
+inline Parsed parse(const std::string& s, bool final = true) {
   Parsed r;
   static const std::string kModel = "<|message_model|>", kEnd = "<|end_message|>", kStop = "<|content_model_end_sampling|>",
                            kThink = "<|content_thinking|>", kText = "<|content_text|>",
@@ -223,6 +225,7 @@ inline Parsed parse(const std::string& s) {
     const std::string kind = t.substr(k, ke + 2 - k);
     const size_t be = t.find(kEnd, ke + 2);
     const std::string body = t.substr(ke + 2, be == std::string::npos ? std::string::npos : be - ke - 2);
+    if (be == std::string::npos && !final && (kind == kToolJ || kind == kToolT)) break;  // (a call still being written)
     if (kind == kThink) r.reasoning += body;
     else if (kind == kText) r.content += body;
     else if (kind == kToolJ) {
@@ -248,5 +251,36 @@ inline Parsed parse(const std::string& s) {
   }
   return r;
 }
+
+// The server's parser (chat::OutputParserBase) over parse(): the stream sends each part's new end. The format's
+// markers are single tokens, so no text is held back for a marker still being written; a tool call comes whole
+// once its message ends.
+class OutputParser : public chat::OutputParserBase {
+ public:
+  void update(const std::string& text, bool final, std::string& d_reason, std::string& d_content) override {
+    const Parsed p = parse(text, final);
+    d_reason = p.reasoning.size() > sent_r_ ? p.reasoning.substr(sent_r_) : std::string();
+    d_content = p.content.size() > sent_c_ ? p.content.substr(sent_c_) : std::string();
+    sent_r_ = std::max(sent_r_, p.reasoning.size());
+    sent_c_ = std::max(sent_c_, p.content.size());
+  }
+  std::string reasoning_text(const std::string& text) const override { return parse(text).reasoning; }
+  std::string content_text(const std::string& text) const override { return parse(text).content; }
+  std::vector<chat::ToolCall> tool_calls(const std::string& text) const override { return parse(text).tool_calls; }
+  std::vector<chat::PartialToolCall> partial_tool_calls(const std::string& text, bool final) const override {
+    std::vector<chat::PartialToolCall> v;
+    for (const auto& tc : parse(text, final).tool_calls) {
+      chat::PartialToolCall c;
+      c.name = tc.name;
+      c.args = tc.arguments.dump();
+      c.done = true;
+      v.push_back(std::move(c));
+    }
+    return v;
+  }
+
+ private:
+  size_t sent_r_ = 0, sent_c_ = 0;
+};
 
 }  // namespace inkling

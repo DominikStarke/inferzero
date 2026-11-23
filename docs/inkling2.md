@@ -266,16 +266,22 @@ Developer cuts them.
      - The mainline file is known as `inkling-2-mini` / `inkling`, with the engine's chunk of 512.
      - It is **listed but not supported** by the server yet: `m.supported` stays false, as for DeepSeek-V4.1.
      - The DSpark drafter (`dspark-*.gguf`, GGUF `dflash`) isn't taken as a drafter; it is step I2's work.
-   - **What the server still needs**, before `m.supported` (a step of its own after the tiny file's KL passes):
-     - **Prompts:** render them with `inkling::render` (src/chat_inkling.h). The effort comes from the request's
-       `reasoning_effort` and the tools from `tools`.
-     - **Generation:** no generation prompt, since the model writes `<|message_model|>`. Stop at token 200006 and at
-       `<|end_message|>` only when the turn ends there.
-     - **Streaming:** the thinking (`<|content_thinking|>`) as reasoning, the text as content, and the calls from
-       `<|content_invoke_tool_json|>` via `inkling::parse`.
-     - **Snapshots:** the prefix cache needs them, i.e. the 48 slots' K / V and their conv states saved and restored
-       (`snapshot()` refuses now), and `save_state` for saved conversations (engine_sessions.h, out of this phase's
-       files).
+   - **The server runs it** (I2 step 7, 2026-11-24; `m.supported` stays false until the real file passes its KL, so
+     the catalog does not offer it yet; `-m FILE` loads it):
+     - **Prompts:** `inkling::render` with the request's `reasoning_effort` (a name or a number; thinking off is
+       effort 0) and `tools`. No generation prompt: the model writes `<|message_model|>`. Stop at token 200006.
+     - **Streaming:** `inkling::OutputParser` over `inkling::parse(text, final)`: the thinking messages as reasoning,
+       the text ones as content, a `<|content_invoke_tool_json|>` message as a call once its message ends (nothing of
+       it is content while it is written). `tool_choice: "none"` bans that marker; a required call is not forced and
+       the tool-call constraint is Qwen / Gemma only.
+     - **Snapshots** (`ink_snapshot` / `ink_restore`, engine_inkling.h): the conv arena and the drafter's feature
+       row on the GPU; the global slots keep every position; the sliding slots' and the drafter's sliding layers'
+       window before the snapshot copied to host memory only when a pass would overwrite it (`ink_ring_guard`, as
+       Gemma's `ring_guard`), else still in the rings (`written_hi_` / `swa_lo_` decide). The server takes them at
+       the prompt's end (the turn starts there) and the system prompt's end (the first `<|message_user|>`, after the
+       tools, the system messages and the effort message, which a change of thinking effort changes).
+     - **Not yet:** saved conversations on disk (`save_state`), `--slots` above 1 (the 48 slots' K / V and the conv
+       arena are not among a slot's state buffers: the engine falls back to one slot), a layer split.
    - **Runs it waits on:** `serverz` lists the file as unsupported (no load); `runz --ctx auto` dry-run sizes on the
      real file (no GPU work beyond the dry plan).
 
@@ -694,8 +700,11 @@ the engine follows that file's structure closely, NOTICE gets an ollama credit.
    tests). The drafts never touch the target's numbers.
 6. **The drafts a step per family:** `ARC_DSP_DRAFTS`. Default 3 until measured, as Unsloth runs it. The per-family
    rule follows `xe2_mtp_drafts` once the owners' runs say where acceptance pays: the A770 first, where 130 needs it.
-7. **The server:** Inkling is runz-only today (the server refuses it); drafting comes to runz first (`--draft dspark`,
-   found next to the model as the DFlash2 drafters are), the server after Inkling's server support.
+7. **The server** (done 2026-11-24): `serverz --dspark FILE`, for greedy requests. A sampled request (temperature
+   above 0) decodes without drafts unless `ARC_DSP_SAMPLED=1`: a greedy draft is rarely the sampled token, and each
+   verification runs its rows through the experts (the text follows the model's distribution either way, since a
+   draft is kept only when it is the sampled token). A warm-up draft at load pays the one-time ~150-200 ms. The
+   drafter is not found next to the model yet; `--dspark` names it.
 
 **On a split model** (once Inkling runs split; it does not yet):
 - The drafter is small (0.36 GB) and runs on the stage that holds the head, the last one: it needs `lm_head`, and the
