@@ -47,7 +47,7 @@ the engine or the kernels.
 
 **The rules a change is held to:**
 - **Accuracy.** Every model's next-token KL against the f32 reference (`tools/ref_forward.cpp`, `runz --kl-ref`) stays
-  at or below 0.015. A change meant to give the same results is checked bit for bit: `runz --dump-logits` before and
+  below 0.01 (0.015 before 2026-11-23). A change meant to give the same results is checked bit for bit: `runz --dump-logits` before and
   after, the files identical.
 - **Discrete-card code** goes in `zero/xe2/` and kernel files of its own; multi-GPU code in `zero/mgpu/`. The iGPU
   path must stay bit-identical.
