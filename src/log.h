@@ -39,7 +39,13 @@ struct Config {
   bool colors = false;   // (ANSI colors for W / E / D on a console)
   bool disabled = false; // (--log-disable: nothing at all; a crash report still is)
   FILE* file = nullptr;  // (--log-file: every line there too)
+  // (the server's own log, logs/server.log, src/server_log.h: every line there too, opened by serverz unless its
+  //  stderr already goes there (zero-server.ps1) or --log-disable; its path for the failsafe's messages)
+  FILE* dfile = nullptr;
+  char dfile_path[1024] = "";
 };
+// the log file the server writes by default, or "" (src/gpu_fail.h names it in the marker and the refusal)
+inline const char* default_log_path();
 inline Config& cfg() {
   static Config c;
   return c;
@@ -96,6 +102,10 @@ inline void emit(int lvl, const char* s, size_t n) noexcept {
   if (c.file) {
     fprintf(c.file, "%s%.*s\n", pre, len, s);
     fflush(c.file);
+  }
+  if (c.dfile) {
+    fprintf(c.dfile, "%s%.*s\n", pre, len, s);
+    fflush(c.dfile);
   }
   if (locked) mu().unlock();
 }
@@ -199,9 +209,10 @@ inline void log(int lvl, const char* fmt, ...) noexcept {
 inline void raw(const char* fmt, ...) noexcept {
   Config& c = cfg();
   if (c.disabled && c.on) return;
-  va_list ap, a2;
+  va_list ap, a2, a3;
   va_start(ap, fmt);
   va_copy(a2, ap);
+  va_copy(a3, ap);
   bool locked = false;
   if (c.on) try {
       mu().lock();
@@ -213,7 +224,12 @@ inline void raw(const char* fmt, ...) noexcept {
     vfprintf(c.file, fmt, a2);
     fflush(c.file);
   }
+  if (c.on && c.dfile) {  // (as zero-server.ps1's redirect had them: the server log holds stderr's every line)
+    vfprintf(c.dfile, fmt, a3);
+    fflush(c.dfile);
+  }
   if (locked) mu().unlock();
+  va_end(a3);
   va_end(a2);
   va_end(ap);
 }
@@ -224,6 +240,7 @@ inline bool level_name(const std::string& s, int& out) {
     if (s == names[i]) { out = i; return true; }
   return false;
 }
+inline const char* default_log_path() { return cfg().dfile_path; }
 // the server's start: prefixes on; ARC_LOG_LEVEL (0-3 or error / warn / info / debug) read here, the options after
 inline void start() {
   Config& c = cfg();

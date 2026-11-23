@@ -50,6 +50,7 @@
 #include "server_metrics.h"  // (GET /metrics: Prometheus, vLLM's names)
 #include "server_startup.h"  // (the log's first lines)
 #include "../src/crash_log.h"  // (a crash names its stack in the log)
+#include "../src/server_log.h"  // (the log file by default, logs/server.log)
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -997,6 +998,7 @@ static int server_main(int argc, char** argv) {
     }
   zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;
+  std::string log_dir_opt;  // (--log-dir: src/server_log.h)
   int port = 8090;  // (the port zero-server, both launchers and Docker use; 8080 before 2026-11-19, launcher review)
   bool help_all = false;  // (--help all: every option; --help alone: the short page)
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false, fast = false;
@@ -1041,7 +1043,7 @@ static int server_main(int argc, char** argv) {
       {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
       {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""}, {"--help-all", ""},
       {"--log-verbosity", "0 errors, 1 warnings, 2 info, 3 debug (or error / warn / info / debug)"},
-      {"--log-timestamps", "on or off"}, {"--log-colors", "auto, on or off"}, {"--log-file", "a file"}, {"--log-disable", ""}};
+      {"--log-timestamps", "on or off"}, {"--log-colors", "auto, on or off"}, {"--log-file", "a file"}, {"--log-dir", "a folder"}, {"--log-disable", ""}};
   auto takes = [&](std::string o) {  // (what option o takes, as " (...)")
     if (o == "-m") o = "--model";
     if (o == "-c") o = "--ctx";
@@ -1083,7 +1085,8 @@ static int server_main(int argc, char** argv) {
                                  "already); name another file, or leave the option out");
       }
       zlog::cfg().file = lf;
-    } else if (a == "--log-disable") zlog::cfg().disabled = true;
+    } else if (a == "--log-dir") log_dir_opt = next();  // (the logs folder: src/server_log.h)
+    else if (a == "--log-disable") zlog::cfg().disabled = true;
     else if (a == "--host") host = next();
     else if (a == "--port") port = to_int(a, next());
     else if (a == "--ctx" || a == "-c") {
@@ -1422,8 +1425,11 @@ static int server_main(int argc, char** argv) {
             "  --log-verbosity N, -lv N  the log: 0 errors, 1 + warnings, 2 + info (default), 3 + debug (every\n"
             "                        request's access line, llama.cpp's timing lines); also ARC_LOG_LEVEL\n"
             "  --log-timestamps on|off  the date and time in front of each line (default on);  --log-colors auto|on|off\n"
-            "  --log-file F          every line to F as well;  --log-disable  no log at all (docs/logging.md; GET /metrics:\n"
-            "                        Prometheus, vLLM's names with inferzero:)\n"
+            "  --log-dir D           the log file's folder (also ARC_LOG_DIR; default <data folder>/logs, ~/.inferzero/logs):\n"
+            "                        D/server.log this run, D/server_<date>_<time>.log earlier ones (the newest 10, older\n"
+            "                        zipped)\n"
+            "  --log-file F          every line to F as well;  --log-disable  no log at all, no file (docs/logging.md; GET\n"
+            "                        /metrics: Prometheus, vLLM's names with inferzero:)\n"
             "  --session-cache-gb N  disk space for saved conversations, all models together (default 0 = off; zero-server\n"
             "                        and the launcher: 8): switching between conversations loads the other one's state\n"
             "                        instead of processing its prompt again (other models' go first, oldest first)\n"
@@ -1471,6 +1477,7 @@ static int server_main(int argc, char** argv) {
   };
   if (so.eo.kernel_dir == "kernels" || so.eo.kernel_dir == "zero/kernels") so.eo.kernel_dir = find_dir(so.eo.kernel_dir);
   if (so.webui.empty()) so.webui = find_dir("webui");
+  slog::open_default(log_dir_opt);  // (the log file by default: logs/server.log, src/server_log.h)
   srvstart::print(exe_dir, false);  // (the log's first lines: build, system, switches; tools/server_startup.h)
   srvstart::print_options(exe_dir, std::vector<std::string>(argv + 1, argv + argc));  // (the catalog's options, in words)
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();

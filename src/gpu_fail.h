@@ -111,6 +111,7 @@ inline bool write_marker(Kind k, const char* kernel, const char* extra = nullptr
   if (!f) return false;
   fprintf(f, "time=%s\nprogram=%s\nkernel=%s\nkind=%s\ngpu=%s\nboot=%s\n", utc_now().c_str(), program().c_str(),
           kernel && *kernel ? kernel : "(none)", kind_name(k), gpu_name, boot_id().c_str());
+  if (*zlog::default_log_path()) fprintf(f, "log=%s\n", zlog::default_log_path());  // (the server's log of that run)
   if (extra) fprintf(f, "%s\n", extra);
   const bool ok = fclose(f) == 0;
   if (!ok || !plat::replace_file(tmp.c_str(), p.c_str())) {
@@ -176,8 +177,27 @@ inline void check_marker() {
   LOG_ERR("inferzero: a GPU %s at %s in %s (%s): restart the computer (Restart, not Shut down) before using the GPU again (or delete %s, run "
           "runz --clear-hang, or set ARC_IGNORE_HANG=1)\n",
           kv["kind"].c_str(), when.c_str(), kv["kernel"].c_str(), kv["program"].c_str(), path.c_str());
+  if (!kv["log"].empty()) LOG_ERR("inferzero: the log of that run: %s\n", kv["log"].c_str());
   fflush(stderr);
   _Exit(Hang);
+}
+
+// (Linux, after a hang or a lost device: the kernel's last lines into the log, best effort. The xe / i915 driver's
+//  "job timedout" or "GT reset" tell a timeout from a fault. Not where the journal or dmesg are not permitted: then
+//  nothing, quietly. A child process, no GPU call)
+inline void kernel_lines() {
+#ifndef _WIN32
+  FILE* p = popen("{ timeout 5 journalctl -k -n 30 --no-pager -q 2>/dev/null || timeout 5 dmesg 2>/dev/null | tail -n 30; } "
+                  "2>/dev/null", "r");
+  if (!p) return;
+  char line[512];
+  int n = 0;
+  while (fgets(line, sizeof line, p)) {
+    if (!n++) LOG_ERR("inferzero: the kernel's last lines (journalctl -k / dmesg):\n");
+    zlog::raw("  %s", line);
+  }
+  pclose(p);
+#endif
 }
 
 // The one way out after a GPU fault (see the top). detail: what was being waited for or done
@@ -192,10 +212,30 @@ inline void check_marker() {
               marker_path().c_str());
     else
       LOG_ERR("inferzero: the hang marker %s could not be written\n", marker_path().c_str());
+    kernel_lines();
   }
   fflush(stdout);
   fflush(stderr);
+  if (FILE* f = zlog::cfg().dfile) fflush(f);  // (the server's log file: every line flushed already; once more)
   _Exit(k);
+}
+// the marker's log= line moved with the log it names (src/server_log.h's rotation at the next start)
+inline void marker_log_moved(const std::string& from, const std::string& to) {
+  std::map<std::string, std::string> kv;
+  if (!read_marker(kv) || kv["log"] != from) return;
+  std::ifstream in(marker_path(), std::ios::binary);
+  std::string s, line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    s += (line.rfind("log=", 0) == 0 ? "log=" + to : line) + "\n";
+  }
+  in.close();
+  const std::string p = marker_path(), tmp = p + ".tmp";
+  if (FILE* f = fopen(tmp.c_str(), "wb")) {
+    const bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
+    if (fclose(f) == 0 && ok) plat::replace_file(tmp.c_str(), p.c_str());
+    else plat::remove_file(tmp.c_str());
+  }
 }
 
 // A Level Zero result that ends the process: a lost device (code 4) or another failure (code 5)

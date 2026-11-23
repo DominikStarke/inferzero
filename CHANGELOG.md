@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-11-23: the server keeps a log file by default, on Linux too
+
+- **New:** serverz writes its log to `~/.inferzero/logs/server.log` (`%USERPROFILE%\.inferzero\logs\server.log` on
+  Windows) as well as to stderr. Before, on Linux the log was only on the terminal, the journal or `docker logs`.
+  A B580 owner who lost the GPU found no log to send.
+- **Earlier runs** are kept next to it as `server_<date>_<time>.log`. The newest 10 stay as they are; older ones
+  are zipped, and zips older than 90 days or past 200 MB together are removed. This is the scheme `zero-server`
+  used on Windows, now with every log in the `logs` folder.
+  - The old `%USERPROFILE%\.inferzero\server.log` moves in as an earlier run at the first start.
+  - `server.out.log` moves into `logs` too.
+- **Another folder:**
+  - `--log-dir D` (serverz and `zero-launcher.sh`; it goes into a systemd unit too);
+  - `zero-server -LogDir D`;
+  - or `ARC_LOG_DIR`.
+  A folder that cannot be written gives a warning and the default; the server runs on in any case.
+- **Logs after a GPU fault:** the error lines and the crash report go into the file. The hang marker names the log
+  of that run (`log=`), and the next start's refusal says where it is. On Linux, after a hang or a lost GPU, the
+  kernel's last lines (`journalctl -k` or `dmesg`, where readable) go in too.
+- `zero-server logs`, `zero-server doctor` and `./zero-launcher.sh --logs` show the path. `--log-disable` turns the
+  file off as well.
+
 ## 2026-11-23: audit follow-ups: the room without the old cap, a mixed process's GPUs each their own
 
 - **The long-context room is no longer capped at the old rule's** on a card that cannot hold the model. Where the

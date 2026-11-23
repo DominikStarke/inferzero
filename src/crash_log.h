@@ -10,27 +10,42 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #pragma comment(lib, "dbghelp.lib")
 
 namespace crashlog {
 inline void (*extra)() = nullptr;  // (the program's own notes, printed after the exception line)
+// (to stderr and the server's log file too, src/server_log.h: a crash used to leave its report in the terminal only)
+inline void out(const char* fmt, ...) {
+  va_list ap, a2;
+  va_start(ap, fmt);
+  va_copy(a2, ap);
+  vfprintf(stderr, fmt, ap);
+  if (FILE* f = zlog::cfg().dfile) vfprintf(f, fmt, a2);
+  va_end(a2);
+  va_end(ap);
+}
+inline void out_flush() {
+  fflush(stderr);
+  if (FILE* f = zlog::cfg().dfile) fflush(f);
+}
 inline LONG WINAPI filter(EXCEPTION_POINTERS* ep) {
   static volatile LONG once = 0;
   if (InterlockedExchange(&once, 1)) return EXCEPTION_CONTINUE_SEARCH;  // (a crash in here, or a second thread)
   const HANDLE proc = GetCurrentProcess(), th = GetCurrentThread();
   const EXCEPTION_RECORD* er = ep->ExceptionRecord;
-  fprintf(stderr, "inferzero: crashed: exception 0x%08lx at %p", (unsigned long)er->ExceptionCode, er->ExceptionAddress);
+  out("inferzero: crashed: exception 0x%08lx at %p", (unsigned long)er->ExceptionCode, er->ExceptionAddress);
   if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
     const ULONG_PTR how = er->ExceptionInformation[0];
-    fprintf(stderr, " (%s %p)", how == 0 ? "reading" : how == 1 ? "writing" : "executing", (void*)er->ExceptionInformation[1]);
+    out(" (%s %p)", how == 0 ? "reading" : how == 1 ? "writing" : "executing", (void*)er->ExceptionInformation[1]);
   }
-  fprintf(stderr, ", thread %lu\n", (unsigned long)GetCurrentThreadId());
-  fflush(stderr);
+  out(", thread %lu\n", (unsigned long)GetCurrentThreadId());
+  out_flush();
   if (extra) extra();
-  fprintf(stderr, "  its stack:\n");
-  fflush(stderr);
+  out("  its stack:\n");
+  out_flush();
   SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
   SymInitialize(proc, nullptr, TRUE);
   CONTEXT ctx = *ep->ContextRecord;
@@ -62,15 +77,15 @@ inline LONG WINAPI filter(EXCEPTION_POINTERS* ep) {
     DWORD ldisp = 0;
     if (SymFromAddr(proc, pc, &disp, s)) {
       if (SymGetLineFromAddr64(proc, pc, &ldisp, &ln))
-        fprintf(stderr, "  #%d %s!%s+0x%llx (%s:%lu)\n", i, mod, s->Name, (unsigned long long)disp, ln.FileName,
+        out("  #%d %s!%s+0x%llx (%s:%lu)\n", i, mod, s->Name, (unsigned long long)disp, ln.FileName,
                 (unsigned long)ln.LineNumber);
       else
-        fprintf(stderr, "  #%d %s!%s+0x%llx\n", i, mod, s->Name, (unsigned long long)disp);
+        out("  #%d %s!%s+0x%llx\n", i, mod, s->Name, (unsigned long long)disp);
     } else {
-      fprintf(stderr, "  #%d %s+0x%llx\n", i, mod, (unsigned long long)(base ? pc - base : pc));
+      out("  #%d %s+0x%llx\n", i, mod, (unsigned long long)(base ? pc - base : pc));
     }
   }
-  fflush(stderr);
+  out_flush();
   return EXCEPTION_CONTINUE_SEARCH;
 }
 inline void install() { SetUnhandledExceptionFilter(filter); }
@@ -89,12 +104,21 @@ inline void install() { SetUnhandledExceptionFilter(filter); }
 #include <unistd.h>
 namespace crashlog {
 inline void (*extra)() = nullptr;  // (the program's own notes, printed after the stack)
-inline void put(const char* s) {
+// (to stderr and the server's log file too, src/server_log.h; its descriptor read here, a plain field: no lock)
+inline int log_fd() {
+  FILE* f = zlog::cfg().dfile;
+  return f ? fileno(f) : -1;
+}
+inline void put_fd(int fd, const char* s) {
   for (size_t n = strlen(s); n;) {
-    const ssize_t w = write(STDERR_FILENO, s, n);
+    const ssize_t w = write(fd, s, n);
     if (w <= 0) return;
     s += w, n -= (size_t)w;
   }
+}
+inline void put(const char* s) {
+  put_fd(STDERR_FILENO, s);
+  if (const int fd = log_fd(); fd >= 0) put_fd(fd, s);
 }
 inline void put_num(unsigned long long v, int base) {
   char b[32];
@@ -122,6 +146,7 @@ inline void on_signal(int sig, siginfo_t* si, void*) {
     void* frames[64];
     const int n = backtrace(frames, 64);  // (libgcc's unwinder loaded at install: no allocation here)
     backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    if (const int fd = log_fd(); fd >= 0) backtrace_symbols_fd(frames, n, fd);
     if (extra) extra();  // (best effort, see above)
   }
   signal(sig, SIG_DFL);  // (then raised again: the default action, which ends the process)

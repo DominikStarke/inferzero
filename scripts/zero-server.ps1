@@ -29,9 +29,10 @@
 # 3 not ready within 10 minutes, 4 the port is used by another program.
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
-# Log: %USERPROFILE%\.inferzero\server.log (written anew at each start; the previous ones in
-#      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10; older ones as .zip,
-#      90 days / 200 MB at most)
+# Log: %USERPROFILE%\.inferzero\logs\server.log (written anew at each start; the previous ones next to it as
+#      server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10; older ones as .zip, 90 days /
+#      200 MB at most). -LogDir D (or ARC_LOG_DIR): D\server.log and the earlier ones in D. serverz keeps the same
+#      files itself where it is started some other way (src/server_log.h)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
     "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "options", "help", "--help", "-h")] [string]$Action = "start",
@@ -90,6 +91,7 @@ param(
   [switch]$Quiet,
   # (added last: the positions of the options above stay as they were)
   [string]$Preset = "",   # start / restart: the options of a saved preset; save-preset: its name
+  [string]$LogDir = "",   # the logs folder (default %USERPROFILE%\.inferzero\logs; also ARC_LOG_DIR)
   [switch]$DryRun,        # start / restart: print the command and the memory estimate, start nothing
   [switch]$Json,          # status, list, doctor, version, presets, -DryRun: JSON for scripts
   [switch]$Follow,        # logs: keep printing new lines
@@ -306,7 +308,10 @@ function Engine-Text([string]$e, [bool]$moe = $false) {
   }
 }
 $exe = Join-Path $root "bin\serverz.exe"
-$log = Join-Path $stateDir "server.log"
+# (every log in one folder since 2026-11-23, the user: "it's under the logs folder": logs\server.log this run's,
+#  logs\server_<date>_<time>.log earlier ones; -LogDir / ARC_LOG_DIR another folder, src/server_log.h's scheme)
+$logsDir = if ($LogDir) { $LogDir } elseif ($env:ARC_LOG_DIR) { $env:ARC_LOG_DIR } else { Join-Path $stateDir "logs" }
+$log = Join-Path $logsDir "server.log"
 $stateFile = Join-Path $stateDir "server.json"
 $base = "http://127.0.0.1:$Port"
 # saved conversations (server --session-cache-gb, default 8 GB)
@@ -655,7 +660,7 @@ The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;
 its other options (bin\serverz.exe --help all) keep their defaults.
 
-Log: $log (earlier starts': logs\server_<date>_<time>.log next to it, the newest 10; older ones .zip)
+Log: $log (earlier starts': server_<date>_<time>.log next to it, the newest 10; older ones .zip; -LogDir D: another folder)
 Everything (Pi launcher, server options, files): zero-pi --help
 "@
   # help <topic>: a part of the full text (its sections start at these lines)
@@ -883,6 +888,7 @@ switch ($Action) {
   }
   { $_ -in "logs", "log" } {
     if (-not (Test-Path $log)) { Say "No log yet ($log): the server has not been started."; return }
+    Write-Host "($log; earlier runs' next to it)" -ForegroundColor DarkGray  # (the host, not the output: a pipe gets the lines only)
     if ($Follow) { Get-Content -Encoding UTF8 -LiteralPath $log -Tail ([math]::Max(1, $Lines)) -Wait }
     else { Get-Content -Encoding UTF8 -LiteralPath $log -Tail ([math]::Max(1, $Lines)) }
     return
@@ -1052,6 +1058,7 @@ switch ($Action) {
     if ($procs.Count -gt 1) { Add-Check "process" "warn" "$($procs.Count) GPU programs run at once: they share the GPU memory (a cause of device-lost errors)" }
     $onPath = [bool](Get-Command zero-server -ErrorAction SilentlyContinue)
     Add-Check "commands" $(if ($onPath) { "ok" } else { "info" }) $(if ($onPath) { "zero-server is on PATH" } else { "zero-server is not on PATH: run it as $root\zero-server.cmd (setup offers to add the folder)" })
+    Add-Check "log" "info" "$log (earlier runs' next to it)"
     if (Test-Path $log) {
       $errs = @(Get-Content -Encoding UTF8 -LiteralPath $log -Tail 400 -ErrorAction SilentlyContinue | Where-Object { $_ -match '(?i)error|device lost|failed|out of memory' } | Select-Object -Last 5)
       foreach ($e in $errs) { Add-Check "log" "warn" $e }
@@ -1422,14 +1429,30 @@ try {
 # time), the newest 10 kept: each start writes server.log anew, and what happened before a restart or a crash was
 # lost with it. (A log still open by a process that has not let go: left as it is; the new server's then fails to
 # open and the start says so below.)
+$logDir = $logsDir
+try { New-Item -ItemType Directory -Force $logDir | Out-Null } catch {}
+# an earlier run's log moved in as server_<its time>.log; a GPU fault's marker naming it (log=, src/gpu_fail.h)
+# follows it, so its refusal names the right file
+function Move-EarlierLog([string]$src) {
+  $stamp = (Get-Item -LiteralPath $src).LastWriteTime.ToString("yyyy-MM-dd_HH-mm-ss", [Globalization.CultureInfo]::InvariantCulture)
+  $dest = Join-Path $logDir "server_$stamp.log"
+  for ($k = 2; Test-Path -LiteralPath $dest; ++$k) { $dest = Join-Path $logDir "server_$stamp ($k).log" }  # (same second)
+  Move-Item -LiteralPath $src -Destination $dest -ErrorAction Stop
+  $mk = Join-Path $stateDir "gpu_hang.txt"
+  if (Test-Path -LiteralPath $mk) {
+    $ml = @(Get-Content -Encoding UTF8 -LiteralPath $mk)
+    if ($ml -contains "log=$src") {
+      $ml = $ml | ForEach-Object { if ($_ -eq "log=$src") { "log=$dest" } else { $_ } }
+      [IO.File]::WriteAllText($mk, (($ml -join "`n") + "`n"), (New-Object Text.UTF8Encoding $false))
+    }
+  }
+}
+# (the place before 2026-11-23, the data folder's top: that log an earlier run now)
+$oldTop = Join-Path $stateDir "server.log"
+if ((Test-Path -LiteralPath $oldTop) -and ($oldTop -ne $log)) { try { Move-EarlierLog $oldTop } catch {} }
 if (Test-Path -LiteralPath $log) {
   try {
-    $logDir = Join-Path $stateDir "logs"
-    New-Item -ItemType Directory -Force $logDir | Out-Null
-    $stamp = (Get-Item -LiteralPath $log).LastWriteTime.ToString("yyyy-MM-dd_HH-mm-ss", [Globalization.CultureInfo]::InvariantCulture)
-    $dest = Join-Path $logDir "server_$stamp.log"
-    for ($k = 2; Test-Path -LiteralPath $dest; ++$k) { $dest = Join-Path $logDir "server_$stamp ($k).log" }  # (same second)
-    Move-Item -LiteralPath $log -Destination $dest -ErrorAction Stop
+    Move-EarlierLog $log
     # (the newest 10 as they are; older ones each in a .zip of the same name (server_<date>_<time>.zip: every
     #  Windows opens it with a double-click, ~10x smaller), with its time; zips older than 90 days, or past 200 MB
     #  together, removed oldest first)
@@ -1466,10 +1489,13 @@ if (Test-Path -LiteralPath $log) {
 # (the chosen options' environment variables: in this process only while the server starts, which inherits them)
 $envBefore = @{}
 foreach ($k in $optFx.envs.Keys) { $envBefore[$k] = [Environment]::GetEnvironmentVariable($k); Set-Item "Env:$k" $optFx.envs[$k] }
+# (the logs folder to serverz too: it sees that its stderr is that server.log and neither rotates nor opens it again)
+if (-not $envBefore.ContainsKey("ARC_LOG_DIR")) { $envBefore["ARC_LOG_DIR"] = [Environment]::GetEnvironmentVariable("ARC_LOG_DIR") }
+$env:ARC_LOG_DIR = $logsDir
 if ($optFx.words.Count) { Say "  options: $($optFx.words -join ', ')" }
 try {
   $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
-    -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
+    -RedirectStandardError $log -RedirectStandardOutput (Join-Path $logsDir "server.out.log")
   $null = $p.Handle  # (cached now: 5.1 gives no ExitCode after the exit without it, the GPU failsafe's 3 / 4 below)
 } finally {
   foreach ($k in $envBefore.Keys) { if ($null -eq $envBefore[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } else { Set-Item "Env:$k" $envBefore[$k] } }

@@ -53,7 +53,7 @@ New-Item -ItemType Directory -Force $stateDir | Out-Null
 function Exe { Join-Path $root "bin\serverz.exe" }
 $exe = Exe
 $stateFile = Join-Path $stateDir "server.json"
-$serverLog = Join-Path $stateDir "server.log"
+$serverLog = Join-Path ($(if ($env:ARC_LOG_DIR) { $env:ARC_LOG_DIR } else { Join-Path $stateDir "logs" })) "server.log"  # (logs\server.log since 2026-11-23, zero-server.ps1)
 $presetDir = Join-Path $stateDir "presets"
 $updateFile = Join-Path $stateDir "update-check.json"
 $shell = (Get-Process -Id $PID).Path  # the PowerShell running this window (pwsh or powershell)

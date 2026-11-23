@@ -179,8 +179,9 @@ zero-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other op
 zero-server help                # the common commands and options; help options / writing / errors / all for the rest
 ```
 
-The server log is `%USERPROFILE%\.inferzero\server.log`. Each start writes it anew; the earlier servers' logs are
-kept in `logs\` next to it, named by the local date and time of their last line
+The server log is `%USERPROFILE%\.inferzero\logs\server.log` (on Linux `~/.inferzero/logs/server.log`;
+`-LogDir D` or `ARC_LOG_DIR` another folder). Each start writes it anew; the earlier servers' logs are
+kept next to it, named by the local date and time of their last line
 (`server_2026-11-09_14-13-48.log`), the newest 10; older ones in a zip each (`server_<date>_<time>.zip`), kept 90 days
 or 200 MB at most. The log's format, its options and `/metrics`: [docs/logging.md](docs/logging.md). The server uses port 8090. For scripts, `zero-server`'s
 exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
@@ -714,7 +715,7 @@ Only the `zero-pi` / `zero-server` shortcut commands store the folder location; 
 |---|---|
 | `zero-pi` is not recognized | Run `setup.cmd` (section 1), then open a new terminal. |
 | Setup fails at the build step | Visual Studio Build Tools (C++) is not installed; setup shows how to install it. The compiler output is in `%USERPROFILE%\.inferzero\build.log`. |
-| "The server stopped while loading", or another model fails to start | Look at the log it shows (`%USERPROFILE%\.inferzero\server.log`). Usually there is not enough GPU memory: another inferzero server or a llama.cpp process holds it (`zero-server stop`, close other GPU programs), or use `--ctx 32768` / a smaller model. |
+| "The server stopped while loading", or another model fails to start | Look at the log it shows (`%USERPROFILE%\.inferzero\logs\server.log`). Usually there is not enough GPU memory: another inferzero server or a llama.cpp process holds it (`zero-server stop`, close other GPU programs), or use `--ctx 32768` / a smaller model. |
 | Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5; seen at 20 GB on a 32 GB laptop): lower it in Intel Graphics Software, then `zero-server restart`. |
 | Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
@@ -727,7 +728,7 @@ Only the `zero-pi` / `zero-server` shortcut commands store the folder location; 
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.inferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an inferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
-| Want to see what is happening | `zero-server status`, and the log: `zero-server logs -Follow`, the launcher's Log tab, or `%USERPROFILE%\.inferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
+| Want to see what is happening | `zero-server status`, and the log: `zero-server logs -Follow`, the launcher's Log tab, or `%USERPROFILE%\.inferzero\logs\server.log` (prompt processing time, speed, MTP statistics per request). |
 | Something else does not work | `zero-server doctor` (or the launcher's More > "Check this PC") checks the exes, the GPU driver, the NPU, memory and disk, the port and other GPU programs; paste its report into a GitHub issue. |
 
 ## 9. Rebuilding from source

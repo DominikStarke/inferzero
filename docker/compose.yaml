@@ -33,5 +33,6 @@ services:
       OPTIONS: ""                   # speed and accuracy options (docs/options.md), e.g. "copy_draft,xcpu=off,budget=12"
     volumes:   # (${HOME}: yours when you are in the docker group; under sudo it is root's, so the models go there)
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # the models (shared with a host install)
-      - ${HOME}/.inferzero:/root/.inferzero                   # compiled kernels, expert files, settings
+      - ${HOME}/.inferzero:/root/.inferzero                   # compiled kernels, expert files, settings, the
+                                                              #  server's log (logs/server.log; earlier runs next to it)
       # (files written there belong to root on the host; a folder missing on the host is made by Docker)

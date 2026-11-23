@@ -1,11 +1,35 @@
 # The server's log and metrics
 
-The server (`serverz`) writes its log to stderr. `zero-server` and the launcher send it to
-`%USERPROFILE%\.inferzero\server.log`. It is written anew at each start, and earlier starts are kept in `logs\` next to it.
-On Linux `zero-launcher.sh` leaves it on the terminal, and its systemd service sends it to the journal
-(`journalctl --user -u inferzero -f`); `--log-file F` keeps a copy in a file on either system.
+The server (`serverz`) writes its log to stderr and, since 2026-11-23, to a file by default on both systems:
+
+| | Windows | Linux |
+|---|---|---|
+| this run | `%USERPROFILE%\.inferzero\logs\server.log` | `~/.inferzero/logs/server.log` |
+| earlier runs | `server_<date>_<time>.log` / `.zip` in the same folder | the same |
+
+- The file is written anew at each start (see [Old logs](#old-logs)).
+- `--log-dir D` (serverz, `zero-launcher.sh`, `zero-server -LogDir D`) or `ARC_LOG_DIR=D` puts all of them in D.
+  `ARC_DATA_DIR` moves the default folder with the rest of the data. A folder that cannot be written gives a `W`
+  line and the default one; when that cannot be written either, the log stays on stderr only.
+- stderr still gets every line: the terminal, `journalctl --user -u inferzero -f` for the systemd service, and
+  `docker logs` show it as before.
+- `zero-server logs`, `./zero-launcher.sh --logs` and the launcher's Log tab read the file.
+- `--log-file F` keeps one more copy, appended. `--log-disable` turns the log and the file off.
+- **Docker:** `compose.yaml` mounts `~/.inferzero`, so `~/.inferzero/logs` survives the container. An
+  `ARC_LOG_DIR` must point inside a mounted folder to survive it too.
+
+When the GPU fails, the error lines and a crash report go into the file too. The hang marker names the log of that
+run (`log=`), and the next start's refusal says where it is. On Linux, after a hang or a lost GPU, the kernel's last
+lines (`journalctl -k`, or `dmesg`, where readable) follow. The xe / i915 driver's "job timedout" or "GT reset" lines
+there tell a timeout from a fault. To see them yourself after a GPU loss:
+
+```bash
+journalctl -k -n 50 --no-pager | grep -iE 'xe|i915|gpu|drm'
+```
+
 `GET /metrics` gives the same numbers in Prometheus' format. The code is in `src/log.h` (the log),
-`tools/server_startup.h` (the first lines) and `tools/server_metrics.h` (the metrics).
+`src/server_log.h` (the file and its rotation), `tools/server_startup.h` (the first lines) and
+`tools/server_metrics.h` (the metrics).
 
 ## A line
 
@@ -27,8 +51,9 @@ On Linux `zero-launcher.sh` leaves it on the terminal, and its systemd service s
 | `--log-verbosity N`, `-lv N` | 0 errors only, 1 + warnings, 2 + info (default), 3 + debug. Names work too: `error`, `warn`, `info`, `debug`. `ARC_LOG_LEVEL` sets the same. |
 | `--log-timestamps on\|off` | the date and time in front (default on); off leaves the level letter |
 | `--log-colors auto\|on\|off` | colors for W / E / D; auto: in Windows Terminal only (on Linux a terminal whose `TERM` is not `dumb`), never in a redirected log; on: always, a redirected `server.log` too |
-| `--log-file F` | every line to F as well (appended), except a crash report: that goes to stderr only (`server.log`). Not rotated: it grows for as long as servers append to it, so point it at a file you clear yourself. Refused when F is the file stderr already goes to (zero-server's `server.log`) |
-| `--log-disable` | no log, not even the `progress:` lines (zero-server's and the launcher's bars stay empty); a crash report is still written |
+| `--log-dir D` | the log file's folder (also `ARC_LOG_DIR`): `D/server.log` this run, the earlier runs next to it (above) |
+| `--log-file F` | every line to F as well (appended), except a crash report: that goes to stderr and `server.log` only. Not rotated: it grows for as long as servers append to it, so point it at a file you clear yourself. Refused when F is the file stderr already goes to (zero-server's `server.log`) |
+| `--log-disable` | no log and no log file, not even the `progress:` lines (zero-server's and the launcher's bars stay empty); a crash report is still written |
 
 runz and the other tools print as before, byte for byte: the bench scripts parse their output.
 
@@ -95,12 +120,19 @@ lines (the first 40, which name the build, system, GPU and switches, and the las
 
 ## Old logs
 
-`zero-server` moves the last log to `logs\server_<date>_<time>.log` at each start, for example
-`server_2026-11-12_14-13-48.log`. The names sort by time, and they keep `.log`, so a double-click opens them.
+At each start the last log moves to `server_<date>_<time>.log` in the same folder, named by its last line's local
+time, for example `server_2026-11-12_14-13-48.log`. The names sort by time, and they keep `.log`, so a double-click
+opens them.
 - The newest 10 stay as they are (if zipping fails, the logs stay unzipped, 30 at most).
-- Older ones each go into a zip of the same name (`server_2026-11-12_14-13-48.zip`), about 10x smaller, keeping
-  their time. Every Windows opens a zip with a double-click.
+- Older ones each go into a zip of the same name (`server_2026-11-12_14-13-48.zip`), keeping their time.
+  `zero-server` compresses them (about 10x smaller); serverz itself stores them uncompressed. Every Windows, and
+  `unzip` on Linux, opens them.
 - A zip older than 90 days, or past 200 MB together, is removed, oldest first.
+- `zero-server` rotates before it starts serverz and sends serverz's stderr into `server.log`. serverz sees that and
+  leaves the file alone. Started any other way (`zero-launcher.sh`, systemd, docker, by hand), serverz rotates and
+  opens the file itself.
+- Before 2026-11-23 the current log was `%USERPROFILE%\.inferzero\server.log`, at the folder's top. The first start
+  after the update moves it into `logs` as an earlier run.
 
 ## `GET /metrics`
 

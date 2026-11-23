@@ -13,7 +13,8 @@
 # Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no
 # limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's
 # best measured settings for this PC), --no-browser, --yes (no
-# questions), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
+# questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
+# last lines), --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to
 # serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
@@ -295,6 +296,9 @@ port_busy() {  # HOST PORT: something already answers there (another server woul
 # ({"copy_draft": "on", "xcpu": "off", "budget": "12"}; an option not in it keeps the engine's default). An env option
 # goes into the server's environment, a flag onto its command line; --install-service writes both into the unit
 STATE_DIR=${ARC_DATA_DIR:-$HOME/.inferzero}
+# (the server's log: <logs folder>/server.log, earlier runs next to it (src/server_log.h); --log-dir or ARC_LOG_DIR)
+LOG_DIR=${ARC_LOG_DIR:-}
+logs_dir() { printf '%s' "${LOG_DIR:-$STATE_DIR/logs}"; }
 OPT_TSV="$ROOT/scripts/options.tsv"
 declare -A OPTC=()
 OPT_ENV=(); OPT_FLAGS=(); OPT_WORDS=()
@@ -756,6 +760,7 @@ cli_check() {  # KEY
 server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT off / mtp / both / dflash, SEL_IMG 0 / 1)
   CMD=("$SERVERZ" -m "$1" --port "$PORT" --ctx auto --think-budget "${THINK:-8192}" --session-cache-gb "${SESS_GB:-8}")
   [ -n "${CHUNK:-}" ] && CMD+=(--chunk "$CHUNK")
+  [ -n "${LOG_DIR:-}" ] && CMD+=(--log-dir "$LOG_DIR")  # (the logs folder: also in a unit made by --install-service)
   case "${SEL_DRAFT:-}" in
     off) ;;
     mtp) CMD+=(--mtp --draft mtp);;
@@ -996,6 +1001,8 @@ main() {
       --think-budget) THINK=${2:-}; shift;;
       --session-cache-gb) SESS_GB=${2:-}; shift;;
       --chunk) CHUNK=${2:-}; shift;;
+      --log-dir) LOG_DIR=${2:-}; shift;;
+      --logs) mode=logs;;
       --no-auto) NO_AUTO=1;;
       --no-browser) NO_BROWSER=1;;
       --yes) YES=1;;
@@ -1042,6 +1049,10 @@ main() {
   fi
   case "$mode" in
     options) opt_list; return $?;;
+    logs)  # (the server's log: the last 40 lines, its path first)
+      local lf; lf="$(logs_dir)/server.log"
+      if [ ! -f "$lf" ]; then say "no log yet ($lf): the server has not been started"; return 0; fi
+      say "($lf; earlier runs' next to it)"; tail -n 40 "$lf"; return 0;;
     check) print_check; return $?;;
     list) list_models; return 0;;
     download)
