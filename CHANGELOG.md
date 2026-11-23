@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: a layer split says which stage a context does not fit
+
+- `serverz --gpus N --split layer --ctx C`: when C does not fit a stage's GPU, a warning names that GPU and its layers,
+  what it needs against its share, its weights in RAM if any, and the context that stage would fit. Before, a split
+  checked nothing here and a stage past its card paged unseen. `--ctx auto` is unchanged (the smallest over the stages).
+
 ## 2026-11-23: the DeltaNet's prompt steps over 2 or 4 work-items a column (opt-in, to measure on an A770)
 
 - **New, opt-in: `ARC_GDN_SPLIT=2` / `4`.** The prompt's DeltaNet (`gdn_recur`) runs with 2 or 4 work-items per

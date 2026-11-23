@@ -268,6 +268,28 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
             fit > 0 ? ("--ctx " + std::to_string(fit) + " (every weight on the GPU) or --ctx auto fits").c_str()
                     : "no context fits: a smaller model, or --ctx auto");
   }
+  // (a layer split with --ctx given: the same check per stage, each on its own GPU (zrt::cur: device_mem reads the
+  //  thread's GPU). It said nothing before, and a --ctx past a stage's card paged there unseen; QUEUE's layer-split
+  //  memory row, 2026-11-23. The stage's weights in RAM, if any, are said with it)
+  if (!so.ctx_auto && L->pp) {
+    const double GiB = 1073741824.0;
+    zrt::Dev* const was = zrt::cur;
+    const int n = L->pp->stages();
+    for (int r = 0; r < n; ++r) {
+      zrt::cur = zrt::devs[PpEngine::gpu_of(r, n)];
+      Engine& se = L->pp->stage(r);
+      if (se.fits_share()) continue;
+      const int fit = se.max_fitting_ctx();
+      LOG_WRN("does not fit on GPU %d (the stage of layers %d-%d): %.2f GiB of its %.2f GiB share less %.1f for the driver "
+              "for a context of %d%s; expect paging there (%s)\n",
+              PpEngine::gpu_of(r, n), std::max(0, se.opt.pp_begin), (se.opt.pp_end < 0 ? se.hp.n_layer : se.opt.pp_end) - 1,
+              se.gpu_bytes / GiB, se.device_mem() / GiB, Engine::driver_slack() / GiB, se.ctx,
+              se.host_weight_bytes() ? (", " + std::to_string((int)(se.host_weight_bytes() / 1048576)) + " MiB of its weights in host memory").c_str() : "",
+              fit > 0 ? ("this stage fits --ctx " + std::to_string(fit) + "; --ctx auto takes the smallest over the stages").c_str()
+                      : "no context fits this stage: --tensor-split for fewer of its layers, or --ctx auto");
+    }
+    zrt::cur = was;
+  }
   try {  // (the log's model and memory lines, docs/logging.md; /metrics' model_info: never a reason the load fails)
     const auto& h = eng.hp;
     // (general.file_type as llama.cpp names it: the main quant; a mixed file such as UD-Q4_K_XL says its base)
