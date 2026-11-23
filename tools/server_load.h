@@ -76,6 +76,44 @@ struct Loaded {  // destroyed in reverse order: the server before the tokenizer 
   std::unique_ptr<Server> srv;
   std::string alias, path;
 };
+// general.architecture from the start of a GGUF's header, without parsing the rest: converters write general.* first,
+// so the read stops there, at most 32 keys in (a value it skips by its size; an array of strings, the vocabulary, is
+// never reached in practice: it ends the search). "" when not found or not a GGUF.
+static std::string gguf_arch_peek(const std::string& path) {
+  FILE* f = plat::fopen_path(std::filesystem::path(path), "rb");  // (the narrow name, as GgufFile opens it)
+  if (!f) return "";
+  struct Close { FILE* f; ~Close() { fclose(f); } } close{f};
+  auto rd = [&](void* p, size_t n) { return fread(p, 1, n, f) == n; };
+  char magic[4];
+  uint32_t ver = 0;
+  uint64_t nt = 0, nkv = 0;
+  if (!rd(magic, 4) || memcmp(magic, "GGUF", 4) || !rd(&ver, 4) || !rd(&nt, 8) || !rd(&nkv, 8)) return "";
+  auto str = [&](std::string& s) {
+    uint64_t n = 0;
+    if (!rd(&n, 8) || n > 4096) return false;
+    s.resize((size_t)n);
+    return n == 0 || rd(&s[0], (size_t)n);
+  };
+  static const int sizes[13] = {1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8};  // (by GGUF value type; 8 string, 9 array)
+  for (uint64_t i = 0; i < nkv && i < 32; ++i) {
+    std::string key, val;
+    uint32_t t = 0;
+    if (!str(key) || !rd(&t, 4) || t > 12) return "";
+    if (t == 8) {
+      if (!str(val)) return "";
+      if (key == "general.architecture") return val;
+    } else if (t == 9) {
+      uint32_t et = 0;
+      uint64_t n = 0;
+      if (!rd(&et, 4) || !rd(&n, 8) || et > 12 || et == 8 || et == 9) return "";  // (strings / nested: stop)
+      if (fseek(f, (long)(n * sizes[et]), SEEK_CUR)) return "";
+    } else if (fseek(f, sizes[t], SEEK_CUR)) {
+      return "";
+    }
+  }
+  return "";
+}
+
 static std::unique_ptr<Loaded> load_model(const std::string& model, const std::string& alias, ServeOpts so) {
   auto L = std::make_unique<Loaded>();
   L->alias = alias;
@@ -83,8 +121,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   zlog::eprintf("inferzero-server: loading %s\n", model.c_str());
   {  // (Inkling 2: the engine runs it in runz only for now; the server's chat format and saved prompts are not done,
      //  and a chat would continue on another one's state: docs/inkling2.md I1.6. Refused before any GPU memory)
-    std::string arch;
-    try { arch = GgufFile(model).get_str("general.architecture", ""); } catch (const std::exception&) {}
+    const std::string arch = gguf_arch_peek(model);
     if (arch == "inkling2" || arch == "inkling2_loop")
       throw std::runtime_error("Inkling 2 is not supported by the server yet (runz only, for the accuracy checks)");
   }

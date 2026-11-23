@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-23: Inkling 2 kept out of the server for now; review fixes
+
+- **`serverz` refuses an Inkling 2 file** with a clear message, before taking any GPU memory, until the server's chat
+  format and saved prompts are done. Otherwise a new conversation could have continued on another one's state, since
+  Inkling's prompts can't be saved yet. To find a model's kind it reads only the start of the file's header.
+- **`runz --kl-ref` / `--kl-decode`** on one GPU compare Inkling's real vocabulary (200,058 tokens), not its head's
+  201,024 padded rows.
+- The Inkling loader refuses more file shapes it can't run yet, with a message naming them
+  ([docs/inkling2.md](docs/inkling2.md)). Other models are unchanged.
+
 ## 2026-11-23: Inkling 2's memory plan and catalog entry (step I1.6; not run yet)
 
 - **`--ctx auto`** counts Inkling 2's caches: 48 layer passes, the 8 global ones holding the whole context and the
