@@ -216,6 +216,7 @@
     if (prefix_writer_ && prefix_writer_->joinable()) prefix_writer_->join();
   }
   void save_prefix(const std::vector<int>& P, size_t n, const std::string& folder) {
+    if (eng_.hp.inkling && eng_.saved_size(0) == 0) return;  // (Inkling 2: no saved state yet, engine_sessions.h)
     if (prefix_dir_.empty() || n < 256 || eng_.pos != (int)n) return;
     prefix_written();
     const std::string group = folder_group(folder), file = prefix_file(P, n, group);
@@ -391,6 +392,8 @@
   // (2 GiB left over) the state is copied to host memory and written to disk in the background while the next
   // request is served; otherwise it is written to disk first.
   void save_current() {
+    // (Inkling 2: no saved state yet: nothing written, and its prompt-end snapshot (slot 1, its turn start) kept)
+    if (eng_.hp.inkling && eng_.saved_size(0) == 0) return;
     const auto t0 = clk::now();
     // the snapshot at the end of the last prompt is a few tokens after the one at its assistant turn start: not worth
     // its space (Qwen3.8 27B: 157 MB); the request being served diverges before both anyway

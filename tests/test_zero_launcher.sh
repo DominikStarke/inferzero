@@ -140,6 +140,15 @@ EXTRA=(); server_cmd /m.gguf 0; c="${CMD[*]}"; SEL_DRAFT=""
   [[ "$a" == *"--session-cache-gb 8"* ]] && [[ "$b" != *"--ctx auto"* ]] && [[ "$b" != *"--session-cache-gb 8"* ]] &&
   [[ "$b" == *"--think-budget 8192"* ]] && [[ "$c" == *"--ctx auto"* ]] && [[ "$c" == *"--think-budget 8192"* ]]
 ok $? "the user's --ctx / --think-budget / --session-cache-gb after -- replace the launcher's ($a | $b | $c)"
+# 16d. #39: the launcher's own --ctx N takes the place of --ctx auto (an --ctx after -- still wins); a bad value is
+#      refused; --help points to serverz's own options
+SEL_DRAFT=off; CTX=32768; EXTRA=(); server_cmd /m.gguf 0; a="${CMD[*]}"
+EXTRA=(--ctx 4096); server_cmd /m.gguf 0; b="${CMD[*]}"; CTX=""; EXTRA=(); SEL_DRAFT=""
+OUT=$(bash "$root/zero-launcher.sh" --ctx lots --check 2>&1); rc=$?
+H=$(bash "$root/zero-launcher.sh" --help 2>&1)
+[[ "$a" == *"--ctx 32768"* ]] && [[ "$a" != *"--ctx auto"* ]] && [[ "$b" == *"--ctx 4096"* ]] && [[ "$b" != *"32768"* ]] &&
+  [ $rc -eq 2 ] && [[ "$OUT" == *"--ctx: a number of tokens"* ]] && [[ "$H" == *"--ctx N"* ]] && [[ "$H" == *"serverz --help all"* ]]
+ok $? "--ctx N of the launcher ($a | $b), a bad --ctx refused, --help names serverz --help all"
 # 17. --opt with --model: an option the model cannot take is refused with the reason, before options.json is written
 T=$(mktemp -d); OUT=$(ARC_DATA_DIR="$T" bash "$root/zero-launcher.sh" --opt copy_draft --model flash 2>&1); rc=$?
 [ $rc -eq 2 ] && [[ "$OUT" == *"--opt copy_draft: for models with MTP only"* ]] && [ ! -f "$T/options.json" ]; ok $? "--opt refused for the model"

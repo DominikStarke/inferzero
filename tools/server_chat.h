@@ -57,11 +57,15 @@
     // the web UI's last answer after its tool rounds processed the whole chat again without them), and the call's
     // open marker is never drawn (no_call_tok, below)
     const bool no_calls = body["tool_choice"].str() == "none";
-    int no_call_tok = -1;
+    int no_call_tok = -1, no_call_tok2 = -1;  // (no_call_tok2: Inkling 2's call as text, which parse() takes too)
     if (no_calls && tools.is_array() && tools.size()) {
       const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : ink_ ? "<|content_invoke_tool_json|>" : "<tool_call>", true);
       if (o.size() == 1) no_call_tok = o[0];
       else tools = Json();  // (not one token: the tools left out, as before)
+      if (ink_) {
+        const int t2 = tok_.token("<|content_invoke_tool_text|>");
+        if (t2 >= 0) no_call_tok2 = t2;
+      }
     } else if (no_calls) {
       tools = Json();
     }
@@ -715,6 +719,7 @@
         forced.erase(forced.begin());
       } else {
         if (no_call_tok >= 0 && (size_t)no_call_tok < logits.size()) logits[(size_t)no_call_tok] = -1e30f;  // (tool_choice none; not -INFINITY: fast math)
+        if (no_call_tok2 >= 0 && (size_t)no_call_tok2 < logits.size()) logits[(size_t)no_call_tok2] = -1e30f;
         // the answer has begun: no reasoning, or the reasoning block is closed
         const size_t tclose = co.enable_thinking ? text.find(think_close_) : 0;
         const bool answering = tclose != std::string::npos;
@@ -821,7 +826,10 @@
         lp_pending.push(e);
       }
       if (in_think) {
-        if (text.find(think_close_) != std::string::npos) in_think = false;
+        // (Inkling 2: a thinking message may be followed by a call alone, no text message: its call ends the reasoning
+        //  too, else a thinking budget forced the text message's header into the call's JSON)
+        if (text.find(think_close_) != std::string::npos || (ink_ && text.find("<|content_invoke_tool") != std::string::npos))
+          in_think = false;
         else if (think_budget >= 0 && ++think_n > think_budget && forced.empty()) {
           forced = close_think;  // budget exhausted: close the reasoning block and let the model answer
           t = forced.front();

@@ -27,6 +27,12 @@
   bool dsp_on() const { return dsp_; }
   // (runz: the draft steps' acceptance, per step and over the run)
   uint64_t dsp_drafted_ = 0, dsp_accepted_ = 0, dsp_steps_ = 0;
+  // (the counts to zero: after Engine::warm_up_once, whose drafts (a marker missing: the first start after an update or
+  //  another ARC_* switch) were counted in the run's, ARC_DSP_CMP's 145 / 146 against 138 / 139 without them)
+  void dsp_stats_reset() {
+    dsp_drafted_ = dsp_accepted_ = dsp_steps_ = 0;
+    dsp_checks_ = dsp_check_bad_ = dsp_cmp_n_ = dsp_cmp_same_ = 0;
+  }
  private:
   struct DspLayer {
     bool local = false;
@@ -417,6 +423,7 @@
       static const bool cmp = getenv("ARC_DSP_CMP") && atoi(getenv("ARC_DSP_CMP")) != 0;
       if (!cmp) {
         cur_T_ = saved;
+        dsp_dump(drafts, nullptr);
         dsp_oracle(drafts);
         collect_profile();
         return drafts;
@@ -478,6 +485,7 @@
     }
     cur_T_ = saved;
     if (!dsp_cmp_gpu_.empty()) {
+      dsp_dump(dsp_cmp_gpu_, &drafts);
       // (the chain's drafts the same as the host's: row by row until the first that differs, as acceptance would)
       for (size_t i = 0; i < drafts.size() && i < dsp_cmp_gpu_.size(); ++i) {
         ++dsp_cmp_n_;
@@ -489,6 +497,22 @@
     dsp_oracle(drafts);
     collect_profile();
     return drafts;
+  }
+  // (tests, ARC_DSP_DUMP=FILE: each step's position and draft ids appended, the GPU chain's and, with ARC_DSP_CMP=1,
+  //  the host's after a bar: runs compared line by line)
+  void dsp_dump(const std::vector<int>& g, const std::vector<int>* h) {
+    static const char* path = getenv("ARC_DSP_DUMP");
+    if (!path) return;
+    if (FILE* f = fopen(path, "ab")) {
+      fprintf(f, "%d:", pos);
+      for (int d : g) fprintf(f, " %d", d);
+      if (h) {
+        fprintf(f, " |");
+        for (int d : *h) fprintf(f, " %d", d);
+      }
+      fprintf(f, "\n");
+      fclose(f);
+    }
   }
   // (tests, ARC_DSP_ORACLE=FILE: the drafts replaced by the plain run's tokens (FILE: the prompt's ids and the plain
   //  greedy text, position by position), the one at index steps % (drafts + 1) made wrong, so the accepted count cycles

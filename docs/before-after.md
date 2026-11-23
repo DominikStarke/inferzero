@@ -1,4 +1,4 @@
-# Before and after
+`ARC_DSP_CMP` gave 145 of 146 or 138 of 139 by run: not a run-to-run difference of the drafts (`ARC_DSP_DUMP`: the GPU chain's ids the same on every run, 4 runs) but runz's warm-up, whose drafts (7, all the same) were counted when it ran in full (its marker missing: an `ARC_*` switch changed); the counts are now reset after it. Review fixes (the Researcher's, the same day): after a restore the rings' floor is set to its window (it only rose before, so a later conversation's snapshots below an earlier one's restore went unused); `--slots` above 1 falls back to one slot (the hparams check refused it first); a tool call after a thinking message ends the reasoning (a thinking budget forced the text header into the call); `tool_choice: "none"` bans `<|content_invoke_tool_text|>` too; no session-cache write for Inkling (none possible; it dropped the prompt-end snapshot and logged a failure) |# Before and after
 
 Every change that moves speed, memory or accuracy gets a row here with the numbers before and after, measured the
 same way, and the check that the answers did not change. Newest first. The long story is in

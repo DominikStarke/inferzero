@@ -173,8 +173,8 @@
     if (k.loop && (k.passes < 2 || k.rank < 1 || k.start < 1 || k.start >= k.end || k.end > hp.n_layer ||
                    k.start % k.block || k.end % k.block))
       throw std::runtime_error("inkling2: invalid loop core");
-    if (opt.slots > 1 || opt.mtp || !opt.dflash.empty() || opt.tp_size > 1)
-      throw std::runtime_error("Inkling 2: slots, drafters and several GPUs are not supported yet");
+    if (opt.mtp || !opt.dflash.empty() || opt.tp_size > 1)
+      throw std::runtime_error("Inkling 2: the MTP / DFlash2 drafters and several GPUs are not supported (--slots: one slot, engine.h)");
     for (const GgufTensor& t : f_.tensors)
       if (t.name.size() > 12 && t.name.compare(t.name.size() - 12, 12, ".input_scale") == 0)
         throw std::runtime_error("Inkling 2: activation scales (" + t.name + ") are not supported");
@@ -529,7 +529,7 @@
     if (s.ring_ok) {
       if (!ink_ring_write(s.pos, s.ring)) return false;
       written_hi_ = s.pos;  // (the ring slots past it hold the abandoned positions: never taken as this sequence's)
-      swa_lo_ = std::max(swa_lo_, ink_ring_lo(s.pos));
+      swa_lo_ = ink_ring_lo(s.pos);  // (the rings hold [p - W, p) of this sequence now: the floor is there, lower or higher than before)
     } else if (!s.ring_want || !ink_ring_intact(s.pos)) {
       return false;
     }
@@ -555,7 +555,7 @@
   bool ink_restore_host() {
     if (hsnap_.S.size() != (dsp_ ? 2u : 1u) || !ink_ring_write(hsnap_.pos, hsnap_.ring)) return false;
     written_hi_ = hsnap_.pos;
-    swa_lo_ = std::max(swa_lo_, ink_ring_lo(hsnap_.pos));
+    swa_lo_ = ink_ring_lo(hsnap_.pos);  // (as ink_restore)
     CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_conv_arena_, CL_TRUE, 0, hsnap_.S[0].size(), hsnap_.S[0].data(), 0, nullptr, nullptr));
     if (dsp_)
       CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_feat_, CL_TRUE, 0, hsnap_.S[1].size(), hsnap_.S[1].data(), 0, nullptr, nullptr));

@@ -10,15 +10,16 @@
 #   ./zero-launcher.sh --model 4b --install-service   a systemd user service for it instead of starting it here
 #   ./zero-launcher.sh --options          the speed and accuracy options (scripts/options.tsv) and what is chosen
 #   ./zero-launcher.sh --opt copy_draft --no-opt xcpu --opt budget=12 --model 27b   choose some (kept for later starts)
-# Options: --port N (8090), --host H (127.0.0.1), --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no
-# limit), --session-cache-gb N (8; 0 off), --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's
-# best measured settings for this PC), --no-browser, --yes (no
-# questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
+# Options: --port N (8090), --host H (127.0.0.1), --ctx N (a context of N tokens; default auto, the largest that fits),
+# --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no limit), --session-cache-gb N (8; 0 off),
+# --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's best measured settings for this PC),
+# --no-browser, --yes (no questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
 # last lines), --model-dirs / --add-model-dir D / --remove-model-dir D (folders searched for .gguf models),
 # --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
 # ones given, nothing saved); anything after `--` goes to
-# serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
+# serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know); ./bin/serverz --help all lists
+# the server's options.
 # The catalog below follows scripts/model-catalog.ps1 (tests/check_catalog_sync.sh checks that they agree). Flash
 # Next's AutoRound import and the speech models are setup.ps1's on Windows and not offered here.
 # (A symlink to this file, e.g. in ~/bin, is followed to the package; a relative --model path stays relative to where
@@ -943,7 +944,7 @@ server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT
   # (the launcher's own --ctx auto / --think-budget / --session-cache-gb only where the arguments after -- give none:
   #  the user's then stand alone in the command, #39; serverz takes the last --ctx in any case)
   CMD=("$SERVERZ" -m "$1" --port "$PORT")
-  extra_has --ctx -c || CMD+=(--ctx auto)
+  extra_has --ctx -c || CMD+=(--ctx "${CTX:-auto}")  # (--ctx N of the launcher, else auto)
   extra_has --think-budget || CMD+=(--think-budget "${THINK:-8192}")
   extra_has --session-cache-gb || CMD+=(--session-cache-gb "${SESS_GB:-8}")
   [ -n "${CHUNK:-}" ] && CMD+=(--chunk "$CHUNK")
@@ -1191,12 +1192,12 @@ model_dirs() {  # ADD REMOVE
   [ -n "${ARC_MODEL_DIRS:-}" ] && say "  and ARC_MODEL_DIRS: $ARC_MODEL_DIRS"
   return 0
 }
-usage() { sed -n '2,21p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl="" md_add="" md_rm=""
   PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
-  THINK=8192; SESS_GB=8; CHUNK=""; NO_AUTO=0  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
+  THINK=8192; SESS_GB=8; CHUNK=""; CTX=""; NO_AUTO=0  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
   REPLACE_SERVICE=0; EXTRA=()
   local opt_args=() a no_saved=0
   opt_load
@@ -1218,6 +1219,7 @@ main() {
       --think-budget) THINK=${2:-}; shift;;
       --session-cache-gb) SESS_GB=${2:-}; shift;;
       --chunk) CHUNK=${2:-}; shift;;
+      --ctx|-c) CTX=${2:-}; shift;;
       --log-dir) LOG_DIR=${2:-}; shift; case "$LOG_DIR" in ''|/*) ;; *) LOG_DIR="$PWD/$LOG_DIR";; esac;;  # (absolute: serverz runs in the package folder)
       --model-dirs) mode=model_dirs;;
       --add-model-dir) md_add=${2:-}; shift; mode=model_dirs;;
@@ -1243,6 +1245,7 @@ main() {
   [[ "$GPUS" =~ ^[0-9]+$ ]] || { err "zero-launcher: --gpus: a number"; return 2; }
   [[ "$THINK" =~ ^-?[0-9]+$ ]] || { err "zero-launcher: --think-budget: a number of tokens (-1: no limit)"; return 2; }
   [[ "$SESS_GB" =~ ^[0-9]+([.][0-9]+)?$ ]] || { err "zero-launcher: --session-cache-gb: GB (0: off)"; return 2; }
+  [ -z "$CTX" ] || [ "$CTX" = auto ] || [[ "$CTX" =~ ^[0-9]+$ ]] || { err "zero-launcher: --ctx: a number of tokens, or auto"; return 2; }
   [ -z "$CHUNK" ] || [[ "$CHUNK" =~ ^[0-9]+$ ]] || { err "zero-launcher: --chunk: a number of tokens"; return 2; }
   [ "$REPLACE_SERVICE" = 1 ] && [ "$INSTALL_SERVICE" != 1 ] && { err "zero-launcher: --replace-service needs --install-service"; return 2; }
   # (--opt id[=value] / --no-opt id / --default-opt id, each a comma list too: kept in options.json for later starts,

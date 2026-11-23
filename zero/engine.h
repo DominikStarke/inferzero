@@ -1009,6 +1009,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       }
       forward(&tok, 1);
       reset();
+      dsp_stats_reset();
       return false;
     }
     std::vector<int> t(std::max(nwarm, 8), tok);  // (the 2-8 row passes below read up to 8: a context under 20 made nwarm < 8)
@@ -1039,6 +1040,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       if (pos + 2 < ctx) mtp_draft(tok, 1);
     }
     reset();
+    dsp_stats_reset();  // (DSpark: runz's counts are the run's, not the warm-up's drafts)
     dfl_ema_ = 4.0;
     dfl_wait_ = 0;
     dfl_gap_ = 8;
