@@ -106,7 +106,8 @@ static std::string gguf_arch_peek(const std::string& path) {
       uint32_t et = 0;
       uint64_t n = 0;
       if (!rd(&et, 4) || !rd(&n, 8) || et > 12 || et == 8 || et == 9) return "";  // (strings / nested: stop)
-      if (fseek(f, (long)(n * sizes[et]), SEEK_CUR)) return "";
+      // (fseek's offset is a 32-bit long on Windows: an array over 1 GiB ends the search instead)
+      if (n > (1ull << 30) / sizes[et] || fseek(f, (long)(n * sizes[et]), SEEK_CUR)) return "";
     } else if (fseek(f, sizes[t], SEEK_CUR)) {
       return "";
     }
