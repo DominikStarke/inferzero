@@ -331,6 +331,13 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
   brought nothing for code (36.5 vs 36.6 tok/s MTP only) and cost Indonesian 19.2 vs 23.4.
 - **Logit differences at ~0.0003 KL are noise** from int8 rounding flips (±15–30 % run to run); judge accuracy over
   many positions and prompts. Changing only the 27B's score rounding moved its KL 0.000355 -> 0.000414.
+- **Fusing two kernels can change the rounding: `-cl-mad-enable` makes one fma across the old boundary**
+  (2026-11-24, Inkling 2's I2 step 1). Kernel A ended in `o = t * s` and stored o; kernel B read it and added
+  `x + o`. In one kernel the compiler fused the multiply and the add into `fma(t, s, x)`, one rounding instead of two,
+  and the tiny model's 23rd generated token changed. The fix: the add reads the stored value back through a
+  `volatile` pointer, so it gets the rounded o as kernel B did. **Rule: every fusion whose first half ends in a
+  multiply and whose second half adds to it needs that guard (or a KL check, if it may round differently).** A
+  plain `#pragma OPENCL FP_CONTRACT OFF` is not enough with `-cl-mad-enable`.
 
 **Process**
 

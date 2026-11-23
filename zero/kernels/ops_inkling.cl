@@ -560,6 +560,23 @@ __kernel void ink_take(__global const float* src, int nq, int j, __global float*
 // y[t][n] = sum_k W[n][k] x[t][k] with an f32 W (any size; one work-item per (t, n)): the matrices whose shapes the
 // int8 GEMM does not take (N not a multiple of 16 or K of 256: the sinks' 24 rows, the controllers' rank-64 inputs)
 // and the router, kept f32 as llama.cpp keeps it (expert_router_f32)
+// (I2 step 2, 2026-11-24) the same product with one 16-lane sub-group per output: the lanes take every 16th value of
+// the row and the sub-group sums their parts (sub_group_reduce_add). Another order of the sums than ink_mm_f32's: KL,
+// not bit for bit. For the few-row matrices (the 24-row sinks, the 128-row router), where one work-item per output left
+// the GPU nearly idle: 24 / 128 work-items each running 2,304 multiply-adds in a row. grid: N T 16 (rounded up to the
+// work-group), local 64
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void ink_mm_f32_sg(__global const float* W, __global const float* x, __global float* y, int N, int K, int T) {
+  const int o = get_global_id(0) / 16, lane = get_sub_group_local_id();
+  if (o >= N * T) return;  // (a whole sub-group: o is the same for its 16 lanes)
+  const int t = o / N, n = o % N;
+  __global const float* w = W + (size_t)n * K;
+  __global const float* xr = x + (size_t)t * K;
+  float acc = 0.0f;
+  for (int k = lane; k < K; k += 16) acc += w[k] * xr[k];
+  acc = sub_group_reduce_add(acc);
+  if (lane == 0) y[o] = acc;
+}
 __kernel void ink_mm_f32(__global const float* W, __global const float* x, __global float* y, int N, int K, int T) {
   const int i = get_global_id(0);
   if (i >= N * T) return;

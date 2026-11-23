@@ -398,6 +398,16 @@
   int ink_q_k_ = 0;
   void ink_mm(const char* name, const InkMat& m, cl_mem x, cl_mem y, int T, int Mp, bool reuse = false) {
     if (m.f) {
+      // (I2 step 2: one sub-group an output where K is long enough to share: ink_mm_f32_sg; ARC_INK_F32SG=0 the
+      //  one work-item an output of before. Another sum order: KL-checked)
+      static const bool sg = !(getenv("ARC_INK_F32SG") && atoi(getenv("ARC_INK_F32SG")) == 0);
+      if (sg && m.K >= 256) {
+        cl_kernel ks = ink_k("ink_mm_f32_sg");
+        set_args(ks, 0, m.f, x, y, m.N, m.K, T);
+        size_t gws[1] = {((size_t)m.N * T * 16 + 63) / 64 * 64}, lws[1] = {64};
+        run(name, ks, 1, gws, lws);
+        return;
+      }
       cl_kernel kk = ink_k("ink_mm_f32");
       set_args(kk, 0, m.f, x, y, m.N, m.K, T);
       ink_run1(name, kk, (size_t)m.N * T);

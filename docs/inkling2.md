@@ -496,6 +496,18 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    item). Generation: the GEMV defaults per family (B-series `ARC_GEMV_DB` / `PF`, Alchemist `ARC_GVROWS=1`), the
    per-pass matrices of a loop layer being the same weights three times, so passes 2 and 3 may hit L2 on the B70 (18 MB).
    The rank-64 controllers and the 24-row sinks stay f32 (`ink_mm_f32`) until a GEMV form takes their shapes.
+   **State (2026-11-24):**
+   - The int8 matrices already go through the engine's `matmul`, as every model's do: the one-token GEMV with the
+     family's defaults (they key on the GPU and the weight's type, not the model), the prompt GEMMs on XMX where its
+     start check passed (`gemm_x8` on 8 lanes). Nothing in those paths excludes Inkling; H8 stays off for it.
+   - The f32 matrices with long rows (the 24-row sinks and the 128-row router, K = n_embd) now run one 16-lane
+     sub-group per output (`ink_mm_f32_sg`), where one work-item per output had left the GPU nearly idle. Tiny file:
+     ink_sink 11.4 -> 5.0 ms, ink_router 11.7 -> 4.8 ms over 32 tokens, at K = 256 (the real model's K is 2,304). KL
+     against ref_forward unchanged: unsloth's types 0.00043 / 0.00042 (prompt / decode; before 0.00043 / 0.00044),
+     ggml-org's 0.00022 / 0.00021 (before 0.00020 / 0.00020). `ARC_INK_F32SG=0`: the one work-item an output of
+     before. The rank-64 gain / forget are in `ink_ctrl_fused`.
+   - Per family, to measure with the real file: the GEMV switches (`ARC_GEMV_DB`, `ARC_GEMV_PF`, `ARC_GVROWS`) on
+     `--prof-gen`, and the prompt's dense GEMMs with XMX on and off (`ARC_NO_XMX=1`) on `--bench-pp` / `--prof`.
 3. **The experts, prompt:**
    - B-series and the B390 (16 lanes): decode_w8 + gemm.cl's XMX tiles (the 35B's default), against `moe_rg` on XMX
      straight from the NVFP4 rows (`ARC_MOE_RG_XMX`: slower for the 35B on a B70, but Inkling's experts are smaller and
