@@ -236,7 +236,23 @@
     const GgufTensor& lt = tp_head(f_.find("output.weight") ? f_.get("output.weight") : *tok_embd_);
     lm_head_.N = (int)lt.dims[1];
     lm_head_.K = (int)lt.dims[0];
-    if (lt.type == GGML_F32 || lt.type == GGML_F16 || lt.type == GGML_BF16) {
+    // (ARC_HEAD_Q=q4_0 / q5_0, 2026-11-24, Inkling 2's I2 step 5, opt-in with its own KL run: the head requantized
+    //  to 4.5 / 5.5 bits from any type it has, 0.49 -> 0.26 / 0.32 GB on Inkling 2 Mini, read once a token;
+    //  ARC_HEAD_Q4 = q4_0, float heads only as before)
+    static const std::string hq = getenv("ARC_HEAD_Q") ? getenv("ARC_HEAD_Q") : "";
+    const uint32_t want = hq == "q4_0" ? GGML_Q4_0 : hq == "q5_0" ? GGML_Q5_0 : 0;
+    if (!hq.empty() && !want) throw std::runtime_error("ARC_HEAD_Q: q4_0 or q5_0");
+    if (want && lt.type != want && lm_head_.K % 32 == 0) {
+      std::vector<float> v((size_t)lm_head_.N * lm_head_.K);
+      dequant_row(lt.type, lt.data, (int)v.size(), v.data());
+      auto qh = want == GGML_Q4_0 ? quantize_rows_q4_0(v.data(), lm_head_.N, lm_head_.K)
+                                  : quantize_rows_q5_0(v.data(), lm_head_.N, lm_head_.K);
+      lm_head_.type = want;
+      lm_head_.raw = upload_padded(want, qh.data(), qh.size());
+      load_draft_head(want, qh.data(), qh.size());
+      LOG_INF("output head: %s requantized to %s (ARC_HEAD_Q), %.2f GB\n", ggml_type_name(lt.type), ggml_type_name(want),
+              qh.size() / 1e9);
+    } else if (lt.type == GGML_F32 || lt.type == GGML_F16 || lt.type == GGML_BF16) {
       std::vector<float> v((size_t)lm_head_.N * lm_head_.K);
       dequant_row(lt.type, lt.data, (int)v.size(), v.data());
       const bool q4 = getenv("ARC_HEAD_Q4") != nullptr;

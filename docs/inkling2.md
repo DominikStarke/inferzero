@@ -525,6 +525,11 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
 4. **The experts, generation:** `MOE_Q` reads NVFP4's raw rows (4.5 bits) and Q8_0, so no decode pass. The GEMV rows
    per sub-group (`ARC_MOE_GR_GU` / `_DN`) swept per family with `bench\decode_try.ps1`, as for the 35B.
 5. **The head:** 0.49 GB of 3.6 a token (14 %). Q8_0 by default; a Q6_K / Q4_K head is an opt-in with its own KL run.
+   **Done (2026-11-24) as `ARC_HEAD_Q=q5_0` / `q4_0`** (any model; the head requantized at load from whatever type it
+   has, 0.49 -> 0.32 / 0.26 GB on Inkling 2 Mini): per-32 types, not Q6_K / Q4_K, because the engine has those
+   quantizers and runs both types on the GPU in their own form, and no K-quant quantizer. The tiny file, KL against
+   ref_forward prompt / decode: Q8_0 0.00043 / 0.00042, Q5_0 0.00061 / 0.00061, Q4_0 0.00120 / 0.00119. The real file's
+   KL decides whether either is fit to be a default anywhere. (`ARC_HEAD_Q4`: Q4_0 for float heads only, as before.)
 6. **Drafting with DSpark** (the drafter in the HF cache, GGUF arch `dflash`): the engine's DFlash2 path, taught the
    drafter's own architecture. Each verified token costs one main pass for several tokens, so it is the lever where
    bandwidth caps: the A770 (130 needs ~1.2 tokens a pass at 100 % of its bandwidth, ~1.6 at a realistic 75 %), the

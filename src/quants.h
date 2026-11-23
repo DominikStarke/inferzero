@@ -463,6 +463,31 @@ inline std::vector<uint8_t> quantize_rows_q4_0(const float* src, int N, int K) {
   return out;
 }
 
+// rows of K floats to Q5_0 blocks, as ggml's reference: d = the value of largest magnitude / -16, q = x / d + 16.5
+// truncated, at most 31; the fifth bits in qh (bit i: value i), the low four in qs (value j low, j + 16 high)
+inline std::vector<uint8_t> quantize_rows_q5_0(const float* src, int N, int K) {
+  std::vector<uint8_t> out((size_t)N * (K / 32) * 22);
+  for (size_t b = 0; b < (size_t)N * (K / 32); ++b) {
+    const float* v = src + b * 32;
+    float amax = 0, mx = 0;
+    for (int i = 0; i < 32; ++i)
+      if (std::fabs(v[i]) > amax) amax = std::fabs(v[i]), mx = v[i];
+    const float d = mx / -16.0f, id = d != 0 ? 1.0f / d : 0.0f;
+    uint8_t* blk = out.data() + b * 22;
+    const uint16_t dh = f32_to_fp16(d);
+    memcpy(blk, &dh, 2);
+    uint32_t qh = 0;
+    for (int i = 0; i < 16; ++i) {
+      const int q0 = std::min(31, (int)(v[i] * id + 16.5f)), q1 = std::min(31, (int)(v[i + 16] * id + 16.5f));
+      blk[6 + i] = (uint8_t)((q0 & 15) | ((q1 & 15) << 4));
+      qh |= (uint32_t)((q0 >> 4) & 1) << i;
+      qh |= (uint32_t)((q1 >> 4) & 1) << (i + 16);
+    }
+    memcpy(blk + 2, &qh, 4);
+  }
+  return out;
+}
+
 // Q3_K superblock (hmask[32], qs[64], 12 bytes of 6-bit scales, f16 d) to 256 floats, as llama.cpp.
 inline void dequant_q3_k(const uint8_t* p, float* y) {
   const uint8_t *hm = p, *q = p + 32;
