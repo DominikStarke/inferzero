@@ -1460,6 +1460,37 @@ static int run_main(int argc, char** argv) {
     if (!eng.expert_stats().empty()) printf("%s\n", eng.expert_stats().c_str());
   } else {
     if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
+    if (kl_decode && getenv("ARC_KL_SAVE")) {
+      // (ARC_KL_SAVE=F, 2026-11-23: this run's own log-probs of every decoded position, f32 x vocab, the file --kl-ref
+      //  reads: a long-context reference made by the GPU's default path, for a switch's KL against it where an f32 CPU
+      //  reference of 16K+ tokens would take hours (bench/dec_attn_kl.ps1). ARC_KL_FROM=N: the first N tokens as a
+      //  prompt, positions N.. decoded one by one and saved)
+      const size_t V = VK;
+      const size_t from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0;
+      // (each position is the whole vocabulary in f32, ~1 MB for the 27B: at most 2,048 of them, so a missing ARC_KL_FROM
+      //  does not write 16 GB; the Researcher's review)
+      if (toks.size() - from > 2048) {
+        zlog::eprintf("ARC_KL_SAVE: %zu positions to save (give ARC_KL_FROM so that at most 2,048 are)\n", toks.size() - from);
+        return 1;
+      }
+      FILE* fo = fopen(getenv("ARC_KL_SAVE"), "wb");
+      if (!fo) { zlog::eprintf("cannot write %s\n", getenv("ARC_KL_SAVE")); return 1; }
+      if (from > 0) eng.forward(toks.data(), (int)from);
+      std::vector<float> lp(V);
+      for (size_t r = from; r < toks.size(); ++r) {
+        const auto& l = eng.forward(&toks[r], 1);
+        const double mx = *std::max_element(l.begin(), l.begin() + V);
+        double z = 0;
+        for (size_t i = 0; i < V; ++i) z += std::exp((double)l[i] - mx);
+        const double lz = std::log(z);
+        for (size_t i = 0; i < V; ++i) lp[i] = (float)((double)l[i] - mx - lz);
+        if (fwrite(lp.data(), 4, V, fo) != V) { fclose(fo); zlog::eprintf("cannot write %s\n", getenv("ARC_KL_SAVE")); return 1; }
+      }
+      fclose(fo);
+      printf("ARC_KL_SAVE: %zu positions (%zu..%zu) of %zu log-probs written to %s\n", toks.size() - from, from,
+             toks.size() - 1, V, getenv("ARC_KL_SAVE"));
+      return 0;
+    }
     if (kl_decode) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
       const size_t V = VK;

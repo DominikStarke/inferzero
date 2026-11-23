@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-23: a long-context accuracy check for the decode attention's switches
+
+- **New: `bench/dec_attn_kl.ps1` / `.sh`.** For a card at a long context, it decodes a few hundred positions one by one after
+  a long prompt with `ARC_QWEN_DSPLIT=1`, `ARC_ATTN_DEC_SMAX=512` and both, and gives each one's KL and top-token
+  agreement against the default path at the same positions. runz's `ARC_KL_SAVE=F` writes that reference (at most 2,048
+  positions). An A770's 92K generation was faster with both switches (#45); they become defaults only if they pass.
+
 ## 2026-11-23: the A770 GEMM plan, steps 4 and 5 (opt-in, to measure)
 
 - **New, opt-in: `ARC_GEMM_XW_K32=1`** (8-lane discrete cards, the big prompt tile): the tile works through its input
