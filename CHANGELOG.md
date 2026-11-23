@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: Inkling 2's tokenizer and chat format (step I1.2; not run yet)
+
+- **Tokenizer:** the GGUF's pre-tokenizer `inkling2`, which is GPT-4o's split as llama.cpp runs it, plus llama.cpp's
+  "ignore merges" (a word that is a whole token is that token) and no BOS. Other tokenizers are unchanged.
+- **Chat format** (`src/chat_inkling.h`): Inkling 2's template, written out natively because minja can't run it. It
+  covers turns, thinking, the thinking-effort message, tool declarations and calls, and parses the model's output back
+  into reasoning, content and tool calls. The server doesn't use it yet; that comes once the engine loads the model
+  ([docs/inkling2.md](docs/inkling2.md), I1.6).
+
 ## 2026-11-23: NVFP4 weights (Inkling 2 Mini, step I1.1; not run yet)
 
 - **New weight type NVFP4** (ggml type 40, blocks of 64 with a UE4M3 scale per 16), the experts of Unsloth's Inkling 2

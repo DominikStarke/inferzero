@@ -84,6 +84,32 @@ Developer cuts them.
      KL of I1.5 (if it is too large, the experts' prompt path can decode per 16 instead).
 2. **The tokenizer:** pre `inkling2` in the tokenizer code, and the chat template.
    - Waits on: token ids against llama.cpp's on a few texts.
+
+   **Written (2026-11-23):**
+   - llama.cpp maps pre `inkling2` to GPT-4o's split (`LLAMA_VOCAB_PRE_TYPE_GPT4O`) with `ignore_merges` and no BOS. It
+     has no hand-written splitter for that regex: it runs std::regex on its "collapsed" text, where a non-ASCII
+     codepoint becomes its class, so `[^a-z]` / `[^A-Z]` tell case apart for ASCII only.
+   - `src/tokenizer.h`: `pretokenize_gpt4o` follows that regex alternative by alternative (ECMAScript order, greedy
+     with the one backtrack that matters: `U*` gives characters back until `Lo+` can start); `ignore_merges` (a word
+     that is a token as a whole is that token); `bos = -1`. Other models' tokenizers unchanged (the flags are set only
+     for pre `inkling2`).
+   - `src/chat_inkling.h`: the GGUF's template written out natively, because it uses what minja lacks
+     (`{% generation %}`, `tojson(sort_keys=..., separators=...)`, `dictsort(case_sensitive=...)`). It renders as Hugging
+     Face does (`tojson` = json.dumps with ensure_ascii=False). Tools are declared first in a `tool_declare` system
+     message, keys sorted. The thinking effort is a system message before the first non-system message: a name (none
+     0, minimal 0.1, low 0.2, medium 0.7, high 0.9, xhigh / max 0.99) or a number, 0.9 by default. Tool calls are
+     `<|message_model|>NAME<|content_invoke_tool_json|>{"name":...,"args":{sorted}}`, and an assistant turn ends with
+     `<|content_model_end_sampling|>`, token 200006, the end of generation. **There is no generation prompt:** the
+     model writes its own `<|message_model|>`. `inkling::parse` turns the output back into reasoning, content and tool
+     calls. Images raise an error: the inkling2v projector isn't built.
+   - `tests/test_inkling_chat.cpp`: 12 splits worked from the regex by hand, the rendered prompts against the
+     template worked by hand (turns, effort, tools, calls, the tool's name from its call), the parser.
+   - Not yet: the server's use of it (the format's stop token, streaming the thinking and the calls). That goes with
+     the catalog entry (I1.6), once the engine loads the model.
+   - **Runs it waits on:** `bin\test_inkling_chat.exe` (CPU, instant); token ids against `llama-tokenize` on the real
+     file for a few texts (English, code, CJK, emoji, numbers, contractions, runs of spaces and newlines); one rendered
+     conversation against llama.cpp's own rendering (`llama-server` `/apply-template`), since its Jinja engine is the
+     reference here.
 3. **ref_forward's `inkling2_loop` graph** (f32, `tools/ref_forward.cpp` or a part of its own): every operation above,
    mirroring PR #32704 line by line, the weights dequantized per row as today.
    - Waits on: ref_forward against llama.cpp on a short prompt (KL, top token), then the engine against ref_forward.

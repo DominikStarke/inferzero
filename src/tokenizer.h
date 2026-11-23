@@ -83,6 +83,11 @@ class Tokenizer {
     // DeepSeek-V4.1 (joyai-llm, llama.cpp's name for DeepSeek-V3's split): pretokenize_ds3
     const std::string pre = f.get_str("tokenizer.ggml.pre");
     ds3_ = pre == "joyai-llm" || pre == "deepseek-v3";
+    // Inkling 2 (llama.cpp: pre "inkling2" = GPT-4o's split, ignore_merges, no BOS): pretokenize_gpt4o, and a word
+    // that is a token as a whole is that token, before any merge
+    gpt4o_ = pre == "inkling2";
+    ignore_merges_ = gpt4o_;
+    if (gpt4o_) bos = -1;
     static const std::vector<std::string> none;
     auto m = f.get_strs("tokenizer.ggml.merges");
     init(m ? *m : none);
@@ -94,6 +99,17 @@ class Tokenizer {
     types = std::move(tys);
     gpt2_ = gpt2;
     init(merges);
+  }
+  // GPT-4o's pre-tokenizer split of text (Inkling 2), the words as text: for tests
+  static std::vector<std::string> split_gpt4o(const std::string& text) {
+    std::vector<uint32_t> cps;
+    std::vector<size_t> offs;
+    uni::utf8_decode(text, cps, offs);
+    std::vector<std::pair<size_t, size_t>> words;
+    pretokenize_gpt4o(cps, words);
+    std::vector<std::string> out;
+    for (auto& [a, b] : words) out.push_back(text.substr(offs[a], offs[b] - offs[a]));
+    return out;
   }
   // the most bytes of text one token stands for, at most: the longest token string (byte-level BPE writes a byte as
   // 1-2 UTF-8 bytes, SentencePiece a space as U+2581 and a lone byte as <0xXX>: never shorter than the text)
@@ -207,7 +223,108 @@ class Tokenizer {
   }
 
  private:
-  bool spm_ = false, gpt2_ = false, ds3_ = false;
+  bool spm_ = false, gpt2_ = false, ds3_ = false, gpt4o_ = false, ignore_merges_ = false;
+
+  // GPT-4o's pre-tokenizer (Inkling 2), as llama.cpp runs it (LLAMA_VOCAB_PRE_TYPE_GPT4O: no custom splitter, std::regex
+  // on its "collapsed" text, src/unicode.cpp), the regex
+  //   A [^\r\n\p{L}\p{N}]?((?=[\p{L}\p{M}])([^a-z]))*((?=[\p{L}\p{M}])([^A-Z]))+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?
+  //   B |[^\r\n\p{L}\p{N}]?((?=[\p{L}\p{M}])([^a-z]))+((?=[\p{L}\p{M}])([^A-Z]))*(?:...the same...)?
+  //   C |\p{N}{1,3}   D | ?[^\s\p{L}\p{N}]+[\r\n/]*   E |\s*[\r\n]+   F |\s+(?!\S)   G |\s+
+  // Collapsed: ASCII stays itself; another codepoint becomes its class (whitespace first, then N / L / P / M / S,
+  // anything else a class of its own), so [^a-z] / [^A-Z] tell case apart for ASCII only: a non-ASCII letter or mark
+  // is "upper" (U, A's first run) and "lower" (Lo, its second) at once. ECMAScript alternation: the first alternative
+  // that matches, its quantifiers greedy with backtracking (A's U* gives back characters until Lo+ can start).
+  static void pretokenize_gpt4o(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words) {
+    const size_t n = c.size();
+    enum : uint8_t { kOther, kWs, kN, kL, kM, kP, kS };
+    std::vector<uint8_t> k(n);
+    for (size_t i = 0; i < n; ++i) {
+      const uint32_t x = c[i];
+      if (x < 128) {
+        k[i] = x == ' ' || (x >= 9 && x <= 13) ? kWs : (x >= '0' && x <= '9') ? kN
+             : ((x | 0x20) >= 'a' && (x | 0x20) <= 'z') ? kL : kOther;
+        continue;
+      }
+      if (uni::is_ws(x)) { k[i] = kWs; continue; }
+      const uint16_t f = uni::flags(x);
+      k[i] = f & uni::NUMBER ? kN : f & uni::LETTER ? kL : f & uni::PUNCT ? kP : f & uni::MARK ? kM
+           : f & uni::SYMBOL ? kS : kOther;
+    }
+    auto lm = [&](size_t i) { return i < n && (k[i] == kL || k[i] == kM); };
+    auto up = [&](size_t i) { return lm(i) && !(c[i] >= 'a' && c[i] <= 'z'); };  // ((?=[\p{L}\p{M}])([^a-z]))
+    auto lo = [&](size_t i) { return lm(i) && !(c[i] >= 'A' && c[i] <= 'Z'); };  // ((?=[\p{L}\p{M}])([^A-Z]))
+    auto ws = [&](size_t i) { return i < n && k[i] == kWs; };
+    auto nl = [&](size_t i) { return i < n && (c[i] == '\r' || c[i] == '\n'); };
+    // [^\r\n\p{L}\p{N}] (a mark or whitespace other than \r \n may lead a word)
+    auto pre = [&](size_t i) { return i < n && !nl(i) && k[i] != kL && k[i] != kN; };
+    auto pd = [&](size_t i) { return i < n && k[i] != kWs && k[i] != kL && k[i] != kN; };  // [^\s\p{L}\p{N}]
+    auto lower = [&](size_t i) -> uint32_t { return i < n && c[i] < 128 ? (uint32_t)tolower((int)c[i]) : 0; };
+    auto contraction = [&](size_t e) -> size_t {  // (?:'s|'t|'re|'ve|'m|'ll|'d)? after a letter run
+      if (e >= n || c[e] != '\'') return e;
+      const uint32_t a = lower(e + 1), b = lower(e + 2);
+      if (a == 's' || a == 't' || a == 'm' || a == 'd') return e + 2;
+      if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l')) return e + 3;
+      return e;
+    };
+    auto alt_a = [&](size_t s) -> size_t {  // U* Lo+ from s, 0 when it does not match
+      size_t u = s;
+      while (up(u)) ++u;
+      for (size_t j = u + 1; j-- > s;)  // U* gives back one character at a time until Lo+ can start
+        if (lo(j)) {
+          size_t e = j;
+          while (lo(e)) ++e;
+          return e;
+        }
+      return 0;
+    };
+    auto alt_b = [&](size_t s) -> size_t {  // U+ Lo*
+      if (!up(s)) return 0;
+      size_t e = s;
+      while (up(e)) ++e;
+      while (lo(e)) ++e;
+      return e;
+    };
+    size_t gap = 0, i = 0;
+    while (i < n) {
+      size_t m = 0;
+      for (auto alt : {+0, +1}) {  // A, then B; each with the optional leading character first
+        if (m) break;
+        for (int with = 1; with >= 0 && !m; --with) {
+          if (with && !pre(i)) continue;
+          const size_t e = alt == 0 ? alt_a(i + with) : alt_b(i + with);
+          if (e) m = contraction(e);
+        }
+      }
+      if (!m && k[i] == kN) {  // C
+        m = i;
+        while (m < n && m - i < 3 && k[m] == kN) ++m;
+      }
+      if (!m) {  // D
+        size_t j = c[i] == ' ' && pd(i + 1) ? i + 1 : pd(i) ? i : n + 1;
+        if (j <= n) {
+          while (pd(j)) ++j;
+          while (j < n && (c[j] == '\r' || c[j] == '\n' || c[j] == '/')) ++j;
+          m = j;
+        }
+      }
+      if (!m && ws(i)) {  // E, F, G
+        size_t j = i;
+        while (ws(j)) ++j;
+        size_t last_nl = n;
+        for (size_t q = i; q < j; ++q)
+          if (nl(q)) last_nl = q;
+        if (last_nl < n) m = last_nl + 1;  // \s*[\r\n]+
+        else if (j == n) m = j;            // \s+(?!\S) at the end
+        else if (j - i >= 2) m = j - 1;    // \s+(?!\S)
+        else m = j;                        // \s+
+      }
+      if (!m) { ++i; continue; }  // (no alternative matches here: part of the text between matches)
+      if (gap < i) words.push_back({gap, i});
+      words.push_back({i, m});
+      i = gap = m;
+    }
+    if (gap < n) words.push_back({gap, n});
+  }
 
   // DeepSeek-V3's pre-tokenizer (GGUF tokenizer.ggml.pre "joyai-llm" / "deepseek-v3"), as llama.cpp applies it: three
   // regexes in turn, each splitting the pieces of the one before (its matches and the text between them both pieces):
@@ -469,6 +586,12 @@ class Tokenizer {
     // symbols = byte-level characters of the word
     std::vector<std::string> sym;
     for (unsigned char b : word) sym.push_back(byte_to_str_[b]);
+    if (ignore_merges_) {  // (llama.cpp: a word that is a token as a whole, text_to_token, before the merges)
+      std::string whole;
+      for (const auto& s : sym) whole += s;
+      const int id = token(whole);
+      if (id >= 0) { out.push_back(id); return; }
+    }
     merge_symbols(sym);
     for (const auto& s : sym) {
       auto it = token_id_.find(s);
@@ -535,6 +658,7 @@ class Tokenizer {
     std::vector<std::pair<size_t, size_t>> words;
     if (gpt2_) pretokenize_gpt2(cps, words);
     else if (ds3_) pretokenize_ds3(cps, words);
+    else if (gpt4o_) pretokenize_gpt4o(cps, words);
     else pretokenize(cps, words);
     for (auto& [a, b] : words) bpe_word(text.substr(offs[a], offs[b] - offs[a]), out);
   }
