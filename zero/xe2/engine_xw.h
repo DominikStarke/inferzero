@@ -195,6 +195,12 @@
     static const bool v = getenv("ARC_GEMM_XW_LOCK") && atoi(getenv("ARC_GEMM_XW_LOCK")) != 0;
     return v;
   }
+  // ARC_GEMM_XW_K128=1 (16 lanes, with ARC_GEMM_XW_LOCK=1, 2026-11-24, opt-in): in step every 128 values instead of
+  // every 64 (gemm_xw.cl -DXW_K128), oneDNN's k128 on a B70 (hibagus #92). Only the barriers move: the same sums
+  bool xw_k128() const {
+    static const bool v = getenv("ARC_GEMM_XW_K128") && atoi(getenv("ARC_GEMM_XW_K128")) != 0;
+    return v && xw_lock() && xw_lanes() == 16;
+  }
   // ARC_GEMM_XW_2D (2026-11-17, 16 lanes with the 2D block loads): gemm_xw.cl -DXW_2D, the same bytes in the
   // same DPAS operands in fewer messages (the 32 activation rows in one read, a column group's weights in one, C in
   // 8-row blocks): 16 -> 9 a chunk in the loop at 32 x 64, the epilogue's 128 -> 16. Checked at start as every shape.
@@ -529,7 +535,7 @@
                              (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
                              (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "") +
                              (wgx > 1 ? " -DXW_WGX=" + std::to_string(wgx) : std::string()) +
-                             (xw_lock() ? " -DXW_LOCK" : "") + (gu ? " -DXW_GU" : "") +
+                             (xw_lock() ? " -DXW_LOCK" : "") + (xw_k128() ? " -DXW_K128" : "") + (gu ? " -DXW_GU" : "") +
                              (xw_lanes() == 8 && (pack & 3) == 3 && xw_db(tm ? tm : xw_tm()) ? (xw_db_env() == 2 ? " -DXW_DB -DXW_DB2" : " -DXW_DB") : "") +
                              (xw_lanes() == 8 && xw_epi2() && !gu ? " -DXW_EPI2" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
@@ -1159,7 +1165,7 @@
                         xw_tm(), 16 * xw_nc_e());
         if (xw_wgx() > 1 || xw_lock())
           zlog::eprintf("inferzero: gemm_xw work-groups of up to %d column sub-groups%s\n", xw_wgx(),
-                        xw_lock() ? ", in step each 64-value chunk (ARC_GEMM_XW_LOCK=1)" : "");
+                        xw_lock() ? (xw_k128() ? ", in step each 128 values (ARC_GEMM_XW_LOCK=1, ARC_GEMM_XW_K128=1)" : ", in step each 64-value chunk (ARC_GEMM_XW_LOCK=1)") : "");
         if (xw_slm_wgy() && xw_lanes() == 8)  // (skipzx-lab, #45: nothing said it was on)
           zlog::eprintf("inferzero: gemm_xw8: operands through local memory, %d token sub-groups a work-group where they "
                         "divide the tokens (ARC_GEMM_XW_SLM)\n", xw_slm_wgy());

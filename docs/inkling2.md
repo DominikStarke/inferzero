@@ -268,7 +268,15 @@ Developer cuts them.
      - The DSpark drafter (`dspark-*.gguf`, GGUF `dflash`) isn't taken as a drafter; it is step I2's work.
    - **The server runs it** (I2 step 7, 2026-11-24). **The real file passed its KL** the same day (ref_forward over a
      chat prompt and 64 generated tokens: 0.0048 prompt path, 0.0043 token by token, the top token 88 / 88 and 87 / 88),
-     so the catalog offers it (`m.supported`); packages (`--pack`) work as for the other MoE models:
+     so the catalog offers it (`m.supported`); packages (`--pack`) work as for the other MoE models.
+     **Over a longer answer** (a 41-token prompt and 300 generated tokens, 341 positions): KL 0.0080 prompt path,
+     0.0049 token by token (largest 0.41 / 0.19); the same top token 335 / 341 and 333 / 341 strictly (98.2 / 97.7 %),
+     and 328 / 331 and 326 / 331 (99.1 / 98.5 %) without the reference's near-ties (its own top two within 0.08 nats,
+     the user's rule of 2026-11-24): **it passes**. Where the flips come from: routing near-ties (a layer's third expert
+     a hair apart) flipped by ~1 % of drift a layer from the int8 activations, layer 19 at position 24 going from 3 % to
+     41 % at its experts' output; not the NVFP4 fold (exact experts, `ARC_INK_RESIDENT=1`, flip as much). The engine
+     is no closer to a reference that copies its roundings (`REF_INK_Q8=2`, `REF_INK_W8=1`: 0.0050 / 0.0059 / 0.0070),
+     so the ~0.005 is the spread between nearby numerics on this text, not one error to remove:
      - **Prompts:** `inkling::render` with the request's `reasoning_effort` (a name or a number; thinking off is
        effort 0) and `tools`. No generation prompt: the model writes `<|message_model|>`. Stop at token 200006.
      - **Streaming:** `inkling::OutputParser` over `inkling::parse(text, final)`: the thinking messages as reasoning,

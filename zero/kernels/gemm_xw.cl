@@ -29,6 +29,8 @@
 // work-group's sub-groups side by side on the columns too, WGX column blocks of 16 * XW_NC, so the WGY token sub-groups
 // share their weights and the WGX column sub-groups their activations in L1. Each sub-group computes what it did
 // before, in the same order: the same results bit for bit.
+// -DXW_K128 (with XW_LOCK, ARC_GEMM_XW_K128=1, 2026-11-24): the split barrier around each 128 values (two chunks)
+// instead of each 64, oneDNN's k128 on a B70 (hibagus #92): half the barriers, the same loads and DPAS in the same order.
 // -DXW_LOCK (ARC_GEMM_XW_LOCK=1): the work-group in step, a split barrier around each 64-value chunk (arrive before its
 // loads, wait after its DPAS), so the sub-groups that share a chunk's lines read them while they are in L1. Changes
 // no value.
@@ -178,7 +180,11 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
+#ifdef XW_K128  // (in step every 128 values, two chunks, as oneDNN's k128 on a B70: half the barriers; the same sums)
+      if ((j & 1) == 0) XW_ARRIVE();
+#else
       XW_ARRIVE();
+#endif
 #if XW_PF && defined(XW_PFL)
       // ---- -DXW_PFL (2026-11-21, the leaner prefetch; opt-in ARC_GEMM_XW_PFL=1): the same prefetches without tests
       //      or address arithmetic in the loop. The chunk index is clamped to the piece's last chunk (a prefetch of it
@@ -286,7 +292,11 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
 #pragma unroll
         for (int t = 0; t < XW_TG; ++t) xacc[t][c] = xw_mad(ah[t], hi, xw_mad(al[t], lo, xacc[t][c]));
       }
+#ifdef XW_K128
+      if (j & 1) XW_WAIT();
+#else
       XW_WAIT();
+#endif
     }
   }
 

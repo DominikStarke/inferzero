@@ -50,7 +50,7 @@ struct Cand {
   //  XW_C_RND), lock XW_LOCK; pf0 the prefetch the engine builds a form with when none is asked: both parts 2 ahead
   //  with the 2D loads, xw_pf_2d_def)
   int lanes = 8, d2 = 0;
-  bool lock = false;
+  bool lock = false, k128 = false;  // (k128: with lock, XW_K128, in step every 128 values, oneDNN's k128)
   std::string pf0;
   cl_kernel k = nullptr;
   size_t spill = 0, bin = 0;
@@ -59,7 +59,7 @@ struct Cand {
   std::string env() const {  // (the engine's switches for this form: zero/xe2/engine_xw.h)
     if (lanes == 16)
       return "ARC_GEMM_XW_TM=" + std::to_string(tm) + " ARC_GEMM_XW_NC=" + std::to_string(nc) + " ARC_GEMM_XW_WGX=" +
-             std::to_string(wgx) + " ARC_GEMM_XW_LOCK=" + std::to_string(lock ? 1 : 0) + " ARC_GEMM_XW_2D=" +
+             std::to_string(wgx) + " ARC_GEMM_XW_LOCK=" + std::to_string(lock ? 1 : 0) + (k128 ? " ARC_GEMM_XW_K128=1" : "") + " ARC_GEMM_XW_2D=" +
              std::to_string(d2 == 3 ? 1 : d2) + (d2 == 3 ? " ARC_GEMM_XW_C_RND=1" : d2 == 1 ? " ARC_GEMM_XW_C_RND=0" : "") +
              (pf >= 0 ? " ARC_GEMM_XW_PF=" + std::to_string(pf) + " ARC_GEMM_XW_PFD=" + std::to_string(pfd) : std::string());
     std::string e = "ARC_GEMM_XW_EPI2=" + std::to_string(epi2 ? 1 : 0);
@@ -131,13 +131,13 @@ static std::vector<Cand> all_cands16(const AllSel& s, bool can2d) {
         for (int d2 : {0, 2, 1, 3}) {
           if (d2 && (!can2d || nc == 6 || !AllSel::in(s.family, std::string("2d")))) continue;
           if (!d2 && !AllSel::in(s.family, std::string("plain"))) continue;
-          for (int lock : {0, 1}) {
+          for (int lock : {0, 1, 2}) {  // (2: the lock every 128 values, XW_K128, 2026-11-24)
             Cand c;
-            c.lanes = 16, c.tm = tm, c.nc = nc, c.wgx = wgx, c.d2 = d2, c.lock = lock;
+            c.lanes = 16, c.tm = tm, c.nc = nc, c.wgx = wgx, c.d2 = d2, c.lock = lock != 0, c.k128 = lock == 2;
             static const char* dn[] = {"", " 2dc", " 2d", " 2dc rnd"};
-            c.name = t + " w" + std::to_string(wgx) + dn[d2] + (lock ? " L" : "");
+            c.name = t + " w" + std::to_string(wgx) + dn[d2] + (lock == 2 ? " L128" : lock ? " L" : "");
             c.defs = std::string(d2 ? " -DX2D -DXW_2D" : "") + (d2 == 1 || d2 == 3 ? " -DXW_2D_C" : "") +
-                     (d2 == 3 ? " -DXW_C_RND" : "") + (lock ? " -DXW_LOCK" : "");
+                     (d2 == 3 ? " -DXW_C_RND" : "") + (lock ? " -DXW_LOCK" : "") + (lock == 2 ? " -DXW_K128" : "");
             c.pf0 = d2 ? " -DXW_PF=3 -DXW_PFD=2" : "";
             v.push_back(c);
           }
