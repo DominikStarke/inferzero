@@ -364,6 +364,12 @@ struct ExpertStore {
   // prefixes[i]: the GGUF tensor prefix of layer i ("blk.7.") when it has routed experts, else "".
   // fixed_path: write / use the expert file there (a package being made). A package GGUF ("inferzero.package")
   // has no expert data: its expert file next to it is used as it is (never rebuilt).
+  // (2026-11-23, Inkling 2's streamed experts, docs/inkling2.md I1.7: float experts (BF16 / F16 / F32) written as Q8_0
+  //  records, the rows dequantized and requantized as they are written; set by the engine before open_or_build. Its
+  //  recipe joins the file's fingerprint only when set, so every other model's expert file keeps its name and bytes)
+  bool float_to_q8 = false;
+  static bool is_float_type(uint32_t t) { return t == GGML_BF16 || t == GGML_F16 || t == GGML_F32; }
+  uint32_t rec_type(uint32_t t) const { return float_to_q8 && is_float_type(t) ? (uint32_t)GGML_Q8_0 : t; }
   void open_or_build(const GgufFile& f, const std::string& gguf_path, const std::vector<std::string>& prefixes, int n_exp,
                      const std::string& fixed_path = "") {
     n_expert = n_exp;
@@ -379,6 +385,7 @@ struct ExpertStore {
     mix(&gtime, sizeof(gtime));
     mix(name.data(), name.size());
     mix(&kVersion, 4);
+    if (float_to_q8) mix("float experts as Q8_0", 21);
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)fp);
     const std::string file = name + "-" + std::string(hex).substr(0, 8) + ".experts";
@@ -404,11 +411,11 @@ struct ExpertStore {
       for (int i = 0; i < 3; ++i) {
         const Src m = src(f, prefixes[l], i);
         const GgufTensor& t = *m.t;
-        L.type[i] = t.type;
+        L.type[i] = rec_type(t.type);  // (the record's type: the source's, or Q8_0 for a float one, float_to_q8)
         // (a 32-value block type whose rows are not whole superblocks, Flash Next's K = 640 and Gemma 4 26B's 704
         // down rows, is padded with zero blocks to padded_k: quants.h pad_small_block_rows)
         const uint64_t rows = m.rows, nsb = (uint64_t)padded_k((int)t.dims[0]) / 256;
-        L.part[i] = rows * nsb * (uint64_t)raw_padded_sb_bytes(t.type);
+        L.part[i] = rows * nsb * (uint64_t)raw_padded_sb_bytes(L.type[i]);
         sum += L.part[i];
       }
       L.rec = (sum + kAlign - 1) / kAlign * kAlign;
@@ -889,7 +896,7 @@ struct ExpertStore {
         while (k < n_sp && sp[k].t != t[i]) ++k;
         if (k == n_sp) {
           sp[k].t = t[i];
-          const uint32_t ty = L.type[i];
+          const uint32_t ty = t[i]->type;  // (the source's row bytes; the record's type may differ, float_to_q8)
           const uint64_t K = t[i]->dims[0];
           int blk = 0, bytes = 0;
           if (K % 256) ggml_block_info(ty, blk, bytes);
@@ -956,6 +963,25 @@ struct ExpertStore {
           for (int i = 0; i < 3; ++i) {
             const uint32_t ty = L.type[i];
             const size_t sbb = gguf_sb_bytes(ty), bp = raw_padded_sb_bytes(ty);
+            if (t[i]->type != ty) {  // (float_to_q8: a float source written as Q8_0 rows, row by row)
+              const int K = (int)t[i]->dims[0], rows = (int)m[i].rows;
+              const size_t row1 = (size_t)(e0 + j) * m[i].per + m[i].row0 - lo_row[i];
+              // (a row of K values is K / blk x bytes in the source; K not a multiple of 256 (the tiny file's FFN 128) padded
+              //  with zeros to padded_k, as the GPU form's whole superblocks are, pad_small_block_rows)
+              int sblk = 0, sbytes = 0;
+              ggml_block_info(t[i]->type, sblk, sbytes);
+              const size_t srow = (size_t)(K / sblk) * sbytes;
+              const int Kp = padded_k(K), nsr = Kp / 256;
+              std::vector<float> fr((size_t)Kp, 0.0f);
+              std::vector<uint8_t> q;
+              for (int r = 0; r < rows; ++r) {
+                dequant_row(t[i]->type, base[i] + (row1 + r) * srow, K, fr.data());
+                q = quantize_rows_q8_0(fr.data(), 1, Kp);
+                for (int sb = 0; sb < nsr; ++sb) gpu_raw_sb(ty, q.data() + (size_t)sb * sbb, dst + ((size_t)r * nsr + sb) * bp);
+              }
+              dst += L.part[i];
+              continue;
+            }
             const size_t nsb = L.part[i] / bp;  // superblocks of one expert matrix
             const int K = (int)t[i]->dims[0], rows = (int)m[i].rows;
             // the expert's first row of this matrix, counted from the first row `base[i]` holds

@@ -274,7 +274,22 @@ Developer cuts them.
      real file (no GPU work beyond the dry plan).
 
 **I1.7. Experts streamed, as the 35B-A3B: Inkling on the laptop and on 16 GB cards** (the user, 2026-11-23: "as
-this is an MoE model I want it to work like 35B so this laptop can run it"). Design; not written yet.
+this is an MoE model I want it to work like 35B so this laptop can run it"). **Paused (the user, 2026-11-23: "pause inkling"), at this state:**
+- **Done, compiling, not run:** step 1, the expert file's builder: `ExpertStore::float_to_q8` writes BF16 / F16 / F32
+  experts as Q8_0 records (each row dequantized, padded to whole superblocks, `quantize_rows_q8_0`, `gpu_raw_sb`), with
+  the recipe in the file's fingerprint only when set, so every other model's expert file keeps its name and bytes.
+  `engine_stream.h` lets Inkling's float experts through and sets the flag. Nothing reaches it yet: Inkling does not take
+  the streamed path (`hp.moe` / `stream_`) until steps 2-6.
+- **Left:** steps 2-7 below (the loop's `ensure()` per pass and the prefetch in pass order, `ROUTE_SIG`, `MOE_SITU` and the
+  gate-up scale table, the combine into `ink_mo_`, the plan and the tiers, `ARC_INK_RESIDENT`), then the tiny file streamed
+  against resident (a small cache, a cold start) and the real file.
+- **Before it, I1.5 was run on the laptop (2026-11-23):** a crash fixed (`tok_embd_` unset); the tiny file's 3-pass loop with
+  all experts at `make_tiny_inkling2 --scale 0.3` against ref_forward, token by token over 200 positions: KL 0.00017 mean,
+  0.00089 max, 186 / 200 top tokens. The default random file's larger KL is its saturated router and controllers
+  amplifying int8 rounding, and its top-2 near ties (`--all-experts`, `--scale`, `REF_INK_Q8`, `ARC_INK_DUMP` /
+  `REF_INK_DUMP` were made to show it). The 4B and the 35B: the same logits before the Inkling commits and after.
+
+Design; not written yet.
 
 Why it fits: the experts are 18.3 GiB of the file's 21.3, and a token uses 8 of 128 per layer. The rest the GPU keeps
 for good is ~1.2 GiB (attention, controllers, router, conv taps in Q8_0 / f32, the head in Q8_0) plus the KV cache.

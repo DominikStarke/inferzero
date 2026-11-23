@@ -18,11 +18,13 @@
         if (p.empty()) continue;
         for (const char* n : {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight", "ffn_gate_up_exps.weight"}) {
           const GgufTensor* t = f_.find(p + n);
-          if (t && !is_w8_type(t->type))
+          // (Inkling 2: its BF16 experts written as Q8_0 records, ExpertStore::float_to_q8, docs/inkling2.md I1.7)
+          if (t && !is_w8_type(t->type) && !(hp.inkling && ExpertStore::is_float_type(t->type)))
             throw std::runtime_error("unsupported expert tensor " + t->name + " (" + ggml_type_name(t->type) +
                                      "): the experts run in a quantized type only (Q8_0 is close to the unquantized model)");
         }
       }
+    xc_->st.float_to_q8 = hp.inkling;
     xc_->st.open_or_build(f_, path_, pre, hp.n_expert);
     // (staging records per half: ARC_XSTAGE, default 64 = 8 verification tokens x 8 experts)
     // (a layer split's stage: the cache for its own layers' experts, and the MTP block's on the last stage)
