@@ -554,7 +554,16 @@
     ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T);
     ink_conv(ink_v0_, L.v_conv, L.glob ? ink_vd_ : nullptr, S.conv[1], ink_vc_, KG, T);
     // clips (q, r: per-head scales; global: the log-length factor), K's clip, V's RMS norm
-    {
+    static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+    if (!unfused) {
+      // (I2 step 1: the four row passes below and the cache store in one launch, ink_rows_kv)
+      cl_kernel kr = ink_k("ink_rows_kv");
+      int HH = H, HK = HKV, DD = D, NR = k.nrel, gt = L.glob ? 1 : 0, p0 = pos, cap = S.cap, TT = T;
+      float qt = k.qk_clip, rt = k.rel_clip, al = k.log_alpha, lf = k.log_floor, eps = hp.eps;
+      set_args(kr, 0, ink_q_, ink_r_, ink_kc_, ink_vc_, HH, HK, DD, NR, L.q_clip, L.rel_clip, qt, rt, gt, al, lf, p0, eps,
+               S.kc, S.vc, cap, TT);
+      ink_rung("ink_rows_kv", kr, (size_t)T * (2 * H + 2 * HKV), 256);
+    } else {
       cl_kernel kr = ink_k("ink_rows");
       const int gt = L.glob ? 1 : 0;  // (llama: tau on q and r of the global layers, whatever alpha's sign)
       auto rows = [&](cl_mem x, int nrow, int n, cl_mem sc, float thr, int tau, int mode) {
@@ -573,10 +582,13 @@
     ink_dump("kc", ip, ink_kc_, (size_t)T * KG, T);
     ink_dump("vc", ip, ink_vc_, (size_t)T * KG, T);
     {  // the slot's cache, then the attention over it (gated)
-      cl_kernel ks = ink_k("ink_kv_store");
-      int kg = KG, TT = T, p0 = pos, cap = S.cap;
-      set_args(ks, 0, ink_kc_, ink_vc_, S.kc, S.vc, kg, TT, p0, cap);
-      ink_run1("ink_kv_store", ks, (size_t)KG * T);
+      int p0 = pos, cap = S.cap;
+      if (unfused) {  // (fused: ink_rows_kv stored them)
+        cl_kernel ks = ink_k("ink_kv_store");
+        int kg = KG, TT = T;
+        set_args(ks, 0, ink_kc_, ink_vc_, S.kc, S.vc, kg, TT, p0, cap);
+        ink_run1("ink_kv_store", ks, (size_t)KG * T);
+      }
       cl_kernel ka = ink_k("ink_attn");
       int ext = L.ext, nrel = k.nrel, HH = H, HK = HKV, win = L.glob ? 0 : k.swa;
       set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);

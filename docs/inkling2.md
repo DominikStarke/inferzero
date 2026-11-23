@@ -479,9 +479,10 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    less there; B-series has no such default (it measured neutral), so fusion is what counts there.
    **First part done (2026-11-24), bit for bit:** the depth mix writes its rows where the layer reads them (no
    `ink_take`), each attention input quantized once for all its projections, the controller's gain / forget / apply in
-   one kernel (`ink_ctrl_fused`), one token's conv and its state's move in one (`ink_conv1`). The tiny file: ~905 ->
-   ~698 launches a token (~57 -> ~44 a layer pass). Left: `ink_rms2` with the controller's quantization, the rows /
-   store, the router and the MoE glue, the block copies; `ARC_INK_FUSE=0` gives the controller and conv of before.
+   one kernel (`ink_ctrl_fused`), one token's conv and its state's move in one (`ink_conv1`), the q / r / k / v rows
+   and the cache store in one (`ink_rows_kv`). The tiny file: ~905 -> ~634 launches a token (~57 -> ~40 a layer pass),
+   80.9 -> 95.0 tok/s on the laptop. Left: `ink_rms2` with the controller's quantization, the router and the MoE glue,
+   the norms, the block copies; `ARC_INK_FUSE=0` gives the fused groups' launches of before.
 2. **The dense matrices on the engine's fast paths.** Prompt: gemm.cl on XMX (16 lanes) or gemm_x8 (8 lanes), as the
    Qwen models' non-H8 GEMMs; H8 is Qwen-only and stays so until its rotation is checked for Inkling's shapes (a later
    item). Generation: the GEMV defaults per family (B-series `ARC_GEMV_DB` / `PF`, Alchemist `ARC_GVROWS=1`), the

@@ -200,11 +200,10 @@ __kernel void ink_conv_state(__global const float* cur, __global float* state, i
 // (scale: nrow rows of n, or has_scale 0), scaled down to an L2 norm of at most thr (factor clamp(thr / (norm + 1e-6),
 // 0, 1)); then, when use_tau (q and r of the global layers, whatever log_alpha's sign), times
 // tau = 1 + log_alpha log(max(1, (pos0 + t + 1) / log_floor)). mode 1: an RMS norm instead (V: eps, no weight)
-__kernel void ink_rows(__global float* x, int nrow, int n, __global const float* scale, int has_scale, float thr,
-                       int use_tau, float log_alpha, float log_floor, int pos0, int mode, float eps) {
-  __local float red[INK_LS];
-  const int g = get_group_id(0), l = get_local_id(0), t = g / nrow, r = g % nrow;
-  __global float* v = x + (size_t)g * n;
+// (one row r of token t at v; returns this work-item's new value, written back)
+inline float ink_row1(__global float* v, int r, int t, int n, __global const float* scale, int has_scale, float thr,
+                      int use_tau, float log_alpha, float log_floor, int pos0, int mode, float eps, __local float* red) {
+  const int l = get_local_id(0);
   float a = 0.0f;
   if (l < n) {
     a = v[l];
@@ -215,7 +214,43 @@ __kernel void ink_rows(__global float* x, int nrow, int n, __global const float*
   if (mode == 1) f = rsqrt(ss / (float)n + eps);
   else f = clamp(thr / (sqrt(ss) + 1e-6f), 0.0f, 1.0f);
   if (use_tau) f *= 1.0f + log_alpha * log(fmax(1.0f, (float)(pos0 + t + 1) / log_floor));
-  if (l < n) v[l] = a * f;
+  const float o = a * f;
+  if (l < n) v[l] = o;
+  return o;
+}
+__kernel void ink_rows(__global float* x, int nrow, int n, __global const float* scale, int has_scale, float thr,
+                       int use_tau, float log_alpha, float log_floor, int pos0, int mode, float eps) {
+  __local float red[INK_LS];
+  const int g = get_group_id(0), t = g / nrow, r = g % nrow;
+  ink_row1(x + (size_t)g * n, r, t, n, scale, has_scale, thr, use_tau, log_alpha, log_floor, pos0, mode, eps, red);
+}
+// (I2 step 1, 2026-11-24) ink_rows on q, r, k and v, then ink_kv_store, in one launch: work-groups 0 .. T H - 1 the q
+// rows (D values, q_clip, qk_clip, tau), then T H rows of r (NREL, rel_clip, rel_clip's threshold, tau), T HKV of k
+// (D, qk_clip), T HKV of v (D, the RMS norm); a k / v row also stored into the slot's f16 cache at its position, as
+// ink_kv_store does. Each row ink_rows' own steps: the same values
+__kernel void ink_rows_kv(__global float* q, __global float* rr, __global float* kc, __global float* vc, int H, int HKV,
+                          int D, int NREL, __global const float* qsc, __global const float* rsc, float qthr, float rthr,
+                          int tau, float log_alpha, float log_floor, int pos0, float eps, __global half* kcache,
+                          __global half* vcache, int cap, int T) {
+  __local float red[INK_LS];
+  int g = get_group_id(0);
+  const int l = get_local_id(0);
+  if (g < T * H) {
+    ink_row1(q + (size_t)g * D, g % H, g / H, D, qsc, 1, qthr, tau, log_alpha, log_floor, pos0, 0, eps, red);
+    return;
+  }
+  g -= T * H;
+  if (g < T * H) {
+    ink_row1(rr + (size_t)g * NREL, g % H, g / H, NREL, rsc, 1, rthr, tau, log_alpha, log_floor, pos0, 0, eps, red);
+    return;
+  }
+  g -= T * H;
+  const int isv = g >= T * HKV;
+  if (isv) g -= T * HKV;
+  const int t = g / HKV, r = g % HKV;
+  const float o = ink_row1((isv ? vc : kc) + (size_t)g * D, r, t, D, qsc, 0, qthr, 0, log_alpha, log_floor, pos0,
+                           isv ? 1 : 0, eps, red);
+  if (l < D) vstore_half(o, (size_t)((pos0 + t) % cap) * HKV * D + (size_t)r * D + l, isv ? vcache : kcache);
 }
 
 // K and V of a chunk into the slot's f16 cache (any size): row of position pos0 + t at (pos0 + t) % cap, HKV x D each
