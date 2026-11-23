@@ -414,6 +414,24 @@
     set_args(kk, 0, x, xstride, w, out, E, eps);
     ink_rung("ink_rmsnorm", kk, T, 256);
   }
+  // (I2 step 1: the norm and the next GEMM's quantization of its rows in one launch; out's rows then count as
+  //  quantized for ink_mm's reuse. ARC_INK_FUSE=0: the two launches)
+  void ink_rmsnorm_q(cl_mem x, int xstride, cl_mem w, cl_mem out, int T, int Mp) {
+    static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+    const int E = hp.n_embd;
+    if (unfused || E % 256) {
+      ink_rmsnorm(x, xstride, w, out, T);
+      quant_rows(out, E, Mp, T, 1);
+    } else {
+      cl_kernel kk = ink_k("ink_rmsnorm_quant");
+      int EE = E, xs = xstride, MM = Mp, TT = T, a32 = 1;
+      float eps = hp.eps;
+      set_args(kk, 0, x, xs, w, out, EE, eps, MM, TT, aq_, asc_, absum_, a32);
+      size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+      run("ink_rmsnorm_quant", kk, 2, gws, lws);
+    }
+    ink_q_x_ = out, ink_q_k_ = E;
+  }
   void ink_add(cl_mem a, cl_mem b, cl_mem out, int n) {
     cl_kernel kk = ink_k("ink_add");
     set_args(kk, 0, a, b, out, n);
@@ -525,25 +543,26 @@
     }
     if (msgs)
       for (int j = 0; j < 3; ++j) ink_control(L, in[j], j, T, Mp);
+    // (I2 step 1: in[0]'s norm last, with its quantization for the q / rel / sink / gate GEMMs in the same launch)
     if (!L.glob) {
       if (msgs) {
-        for (int j = 0; j < 3; ++j) ink_rmsnorm(in[j], E, L.an, ink_in_[j], T);
+        for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.an, ink_in_[j], T);
+        ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       } else {
-        ink_rmsnorm(in[0], E, L.an, ink_in_[0], T);
+        ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         in[0] = in[1] = in[2] = ink_in_[0];
       }
     } else {
-      for (int j = 0; j < 3; ++j) {
-        ink_rmsnorm(in[j], E, L.inorm[j], ink_in_[j], T);
-        in[j] = ink_in_[j];
-      }
+      for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.inorm[j], ink_in_[j], T);
+      ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
+      for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
     }
     // the projections; K and V through their convolutions (global: the input-dependent taps)
     // (I2 step 1: grouped by input, each input quantized once: in[0] for q / rel / sink / gate, in[1] for k / kcp,
     //  in[2] for v / vcp; a sliding layer outside the loop has one input for all. Independent outputs: the order of
     //  the launches changes no sum)
-    ink_mm("ink_q", L.q, in[0], ink_q_, T, Mp);
+    ink_mm("ink_q", L.q, in[0], ink_q_, T, Mp, true);  // (quantized by ink_rmsnorm_q)
     ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp, true);
     ink_mm("ink_sink", L.sink, in[0], ink_s_, T, Mp, true);
     ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp, true);
@@ -609,14 +628,17 @@
     // the MoE: its input a mix over the blocks (with the new one) and the stream, the controller, ffn_norm
     ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
     if (msgs) ink_control(L, ink_xm_, 3, T, Mp);
-    ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
+    // (I2 step 1: on the streamed path the norm also quantizes its rows for the experts, layer_moe's aq_ / asc_; the
+    //  router between them is f32 and leaves them alone)
+    if (ink_fast_moe_) ink_rmsnorm_q(ink_xm_, E, L.fn, ink_xm_, T, Mp);
+    else ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
     ink_dump("xm", ip, ink_xm_, (size_t)T * E, T);
     ink_mm("ink_router", L.router, ink_xm_, ink_rl_, T, Mp);
     ink_dump("rl", ip, ink_rl_, (size_t)T * hp.n_expert, T);
     if (ink_fast_moe_) {
       // (I1.7 step 4: the engine's shared MoE path, streamed experts and all: the input quantized per 32 into aq_ /
       //  asc_ as every model's, the router's f32 logits in ink_rl_; layer_moe writes ink_mo_)
-      quant_rows(ink_xm_, E, Mp, T, 1);
+      // (aq_ / asc_ hold ink_xm_'s rows: ink_rmsnorm_q above)
       layer_moe(layers_[ip], T, Mp);
     } else {
       cl_kernel kr = ink_k("ink_route");

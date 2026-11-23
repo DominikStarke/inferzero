@@ -445,6 +445,41 @@ __kernel void ink_rmsnorm(__global const float* x, int xstride, __global const f
   for (int i = l; i < E; i += n) out[(size_t)t * E + i] = a[i] * r * w[i];
 }
 
+// (I2 step 1, 2026-11-24) ink_rmsnorm, then the next GEMM's quantization of its rows, in one launch: row m's norm as
+// ink_rmsnorm computes it (work-groups of 256, ink_wg_sum), written to out (in place allowed), then its superblocks
+// quantized from out as swiglu_quant does (quant_store16, per-32 or per-256 scales by act32); rows >= M_valid quantize
+// as zeros and write no f32 row, as quant_rows' pad rows. grid (256, Mp), local (256, 1)
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global const float* w, __global float* out, int E,
+                                float eps, int M, int M_valid, __global char* aq, __global float* asc,
+                                __global ushort* absum, int act32) {
+  __local float red[INK_LS];
+  const int t = get_group_id(1), l = get_local_id(0), n = get_local_size(0), lane = get_sub_group_local_id();
+  const bool valid = t < M_valid;
+  if (valid) {  // (the work-group's own row: the same branch for all of it)
+    __global const float* a = x + (size_t)t * xstride;
+    float ss = 0.0f;
+    for (int i = l; i < E; i += n) ss += a[i] * a[i];
+    const float r = rsqrt(ink_wg_sum(ss, red) / (float)E + eps);
+    for (int i = l; i < E; i += n) out[(size_t)t * E + i] = a[i] * r * w[i];
+    barrier(CLK_GLOBAL_MEM_FENCE);
+  }
+  __global const float* gr = out + (size_t)t * E;
+  for (int s = get_sub_group_id(); s < E / 256; s += get_num_sub_groups()) {
+    float v[16];
+    if (!valid) {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    } else {
+      const float16 g = vload16(0, gr + s * 256 + 16 * lane);
+      const float gv[16] = {g.s0, g.s1, g.s2, g.s3, g.s4, g.s5, g.s6, g.s7, g.s8, g.s9, g.sa, g.sb, g.sc, g.sd, g.se, g.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = gv[i];
+    }
+    quant_store16(v, s, t, M, E, aq, asc, absum, act32);
+  }
+}
+
 // out = a + b, element-wise (any size; in place allowed)
 __kernel void ink_add(__global const float* a, __global const float* b, __global float* out, int n) {
   const int i = get_global_id(0);
