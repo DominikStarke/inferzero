@@ -249,6 +249,7 @@
         w->wq = buf(qb);
         w->wh = buf(hb);
         decode_w8(*w, w->wq, w->wh);
+        h8_res_rot_.erase(w);  // (a fresh, unrotated copy: H8 rotates it at its first use, engine_h8.h)
         room -= (double)(qb + hb);
         w8_part_bytes_ += (double)(qb + hb);
         ++w8_part_n_;

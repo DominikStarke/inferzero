@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: fixed, wrong prompt results with resident W8 copies since 2026-11-23.18
+
+- **Fixed (a regression in 2026.11.23.18):** on a discrete card running a dense Qwen with H8 and the automatic resident
+  W8 copies (`ARC_W8_PARTIAL_GB=auto`, the default there), every prompt of 48+ tokens gave wrong results
+  (StealthDrifter's B580, #80). The new start-up check of the H8 GEMMs left a record behind that made one matrix look
+  already prepared after it was made resident, so layer 0's first GEMM used unprepared weights. The check now leaves
+  everything as it found it, and a resident copy keeps its own record of being prepared. Cards and models without
+  those resident copies (the A-series preset, MoE models, iGPUs) were not affected. Use 2026.11.23.19.
+
 ## 2026-11-23: a long-context accuracy check for the decode attention's switches
 
 - **New: `bench/dec_attn_kl.ps1` / `.sh`.** For a card at a long context, it decodes a few hundred positions one by one after

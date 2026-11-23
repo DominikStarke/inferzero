@@ -162,6 +162,12 @@
   }
   // H8R: a weight's column scales (N floats), computed once from its decoded form, then the weight rotated in place
   std::map<const GpuWeight*, cl_mem> h8_col_;
+  // (the resident copies (w.wq) rotated in place for H8R: their own record, not h8_col_'s entries, which the staged path
+  //  also makes (its column scales, reused at each decode of the stage buffer). 2026-11-23, StealthDrifter's B580, #80:
+  //  the start replay (h8_e2e_check) ran layer 0's qkv through the staged path, w8_part_auto then made it resident from a
+  //  fresh decode, and the resident branch took the scales' entry for "rotated": rotated activations times unrotated
+  //  weights, every prompt of 48+ tokens wrong. w8_part_auto drops a weight from this record when it decodes it anew)
+  std::set<const GpuWeight*> h8_res_rot_;
   cl_mem h8r_weights(const GpuWeight& w, cl_mem wq, cl_mem wh, bool packed = false) {
     const int hb = h8_block(w.K);
     int K = w.K;
@@ -398,6 +404,23 @@
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, C, CL_TRUE, 0, c.size() * 4, c.data(), 0, nullptr, nullptr));
       return c;
     };
+    // (the state the replay leaves as it found it: the column-scale entries and the stage it made are dropped, so a
+    //  later residency change (w8_part_auto) or the first real prompt starts as without the check; #80)
+    std::set<const GpuWeight*> had;
+    for (const auto& e : h8_col_) had.insert(e.first);
+    struct Restore {
+      Engine* e;
+      std::set<const GpuWeight*>& had;
+      ~Restore() {
+        for (auto it = e->h8_col_.begin(); it != e->h8_col_.end();) {
+          if (had.count(it->first)) { ++it; continue; }
+          e->free_buf(it->second);
+          e->h8_res_rot_.erase(it->first);
+          it = e->h8_col_.erase(it);
+        }
+        for (int r = 0; r < kRoles; ++r) e->stage_owner_[r] = nullptr, e->stage_h8_[r] = false;
+      }
+    } restore{this, had};
     const std::vector<float> c1 = pass(xa), c2 = pass(xb), c3 = pass(xa);
     double d = 0, n = 0;
     bool finite = true;
@@ -455,8 +478,12 @@
   int h8_prepare(const GpuWeight& w, cl_mem& wq, cl_mem& hh, int packed = 0) {
     if (w.wq && h8_row() && !p140_res_) {  // (p140_res_: the resident copy stays unrotated for the short chunks)
       if (packed) throw std::logic_error("h8_prepare: a resident weight in the packed order");
-      auto it = h8_col_.find(&w);
-      hh = it != h8_col_.end() ? it->second : h8r_weights(w, w.wq, w.wh);
+      if (!h8_res_rot_.count(&w)) {  // (rotate this resident copy once; h8r_weights reuses column scales it finds)
+        hh = h8r_weights(w, w.wq, w.wh);
+        h8_res_rot_.insert(&w);
+      } else {
+        hh = h8_col_.at(&w);
+      }
       wq = w.wq;
       return 0;
     }
