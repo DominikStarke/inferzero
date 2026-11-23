@@ -421,6 +421,15 @@
           continue;
         }
         b.x = x, b.y = y;
+        // (dn and attn: their inputs are also read by GEMMs outside the group (ssm_alpha and the shared slot read the
+        //  DeltaNet's input, attn_gate is in the attention layers too), which recompute the input's block size under
+        //  their own role, so a shape other than the default gave wrong logits there (the audit of 2026-11-23, M9).
+        //  Refused until the reader takes the writer's: QUEUE. ffn, down and out are read by their group alone)
+        if ((g == 0 || g == 1) && (b.x != xw_big_cfg().x || b.y != xw_big_cfg().y)) {
+          zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG_ROLES: '%s' refused: GEMMs outside the group read that input "
+                        "(the default shape kept)\n", item.c_str());
+          continue;
+        }
         r.set[g] = true, r.b[g] = b;
         r.key += std::string(names[g]) + std::to_string(x) + "x" + std::to_string(y);
       }

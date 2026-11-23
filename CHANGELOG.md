@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-23: an opt-in tile setting refused where it gave wrong logits
+
+- `ARC_GEMM_XW_SLM_WG_ROLES` (an opt-in test of the A770's per-GEMM tile shapes): a `dn` or `attn` entry with a
+  shape other than the default is refused with a warning. GEMMs outside those groups read the same input and gave
+  wrong logits with it. `ffn`, `down` and `out` work as before.
+
 ## 2026-11-23: a small spill to RAM traded for smaller prompt chunks
 
 - **Faster generation where only a little of the model spills to RAM (to be measured):** a card that would keep at
