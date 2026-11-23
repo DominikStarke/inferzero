@@ -79,8 +79,9 @@
           (hp.n_ff_exp % 256 && !hp.hc) || hp.n_ff_shexp % 256 || (hp.hc && !hp.moe_std))
         throw std::runtime_error("unsupported MoE dimensions: " + std::to_string(hp.n_expert) + " experts (" +
                                  (hp.hc ? "Flash Next: 16..512" : "16..256") + "), " + std::to_string(hp.n_expert_used) +
-                                 " used (1..16), expert FFN " + std::to_string(hp.n_ff_exp) + ", shared FFN " +
-                                 std::to_string(hp.n_ff_shexp) + " (multiples of 256), " +
+                                 " used (1..16), expert FFN " + std::to_string(hp.n_ff_exp) +
+                                 (hp.hc ? " (any)" : " (a multiple of 256)") + ", shared FFN " +
+                                 std::to_string(hp.n_ff_shexp) + " (a multiple of 256), " +
                                  (hp.moe_std ? "standard GGUF experts" : "GSQ 2-bit experts"));
     }
     if (hp.hc) {
