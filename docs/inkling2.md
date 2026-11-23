@@ -326,6 +326,31 @@ The token embedding table stays in the mapped file and is read on the CPU, as fo
 7. **A switch:** `ARC_INK_RESIDENT=1` (or a card where everything fits, with the plan's choice) keeps the I1.5 path,
    which is exact and resident. It stays the accuracy reference for the streamed path on the tiny file.
 
+**From the Researcher's review (2026-11-23):**
+- **The loop's passes and misses:** each pass routes on its own input, so passes 2 and 3 may choose experts pass 1
+  didn't.
+  - On the laptop, with ~95 % cached, that's rare.
+  - On a 12-16 GB card (60-90 %), each of the 48 `ensure()` calls a token can wait on the host, the cost QUEUE's
+    `ARC_XCPU` host-wait row is about.
+  - So the existing `ARC_XCPU` path (the CPU computes a missing expert from its RAM-tier copy instead of the GPU
+    waiting for it) takes Inkling's MoE too: its CPU dot products exist for Q8_0 (`zero/xe2/cpu_experts.h`), NVFP4
+    gets one (the per-16 exact form), and situ plus the gate-up scale join its SwiGLU on the CPU.
+- **Prefetch in pass order:** the 35B prefetches the next *layer's* misses. In the loop, layer 17 of pass 1 is
+  followed by layer 6 of pass 2, so the prefetch follows the order of execution (the slot sequence of `ink_forward`),
+  not the layer index.
+- **The down scale's order:** the combine computes `y = sum_k (w_k x s_down[e_k]) x down_k`. The product
+  `w_k x s_down[e_k]` is formed first in f32 and multiplies the expert's output before the sum, as the reference's
+  `w x (down x s)` does up to f32 rounding (a scalar product's order). The gate-up scale multiplies each gate and up
+  value in the epilogue, before situ.
+- **The expert file's name:** its fingerprint includes the record recipe (here: BF16 experts as Q8_0), so a change of
+  recipe rebuilds the file instead of reusing a stale one.
+- **Accuracy runs:** streamed against I1.5's exact path on the tiny file mixes NVFP4's per-32 fold and the BF16 ->
+  Q8_0 requant. One more run with `--nvfp4-equal` (the fold then exact) shows the requant's KL alone.
+- **The laptop's room:** 31.7 GB RAM; C: has 77 GB free for the 14.7 GB expert file.
+- **Files:** `expert_store.h`, `xcache.h`, `engine_stream.h`, `engine_moe.h`, `moe.cl`, `decode_moe.cl`,
+  `xe2/cpu_experts.h`, each change under `hp.inkling`. A change to `plan_weights` / `size_expert_cache` in
+  `engine_sessions.h` (the Developer's file) goes through the Researcher.
+
 **Expected on the laptop** (estimates, to be measured; Xe-LPG, 75 GB/s, ~11 TOPS DP4a):
 - **Generation:** ~3.6 GB read a token (attention 1.4 GB over the 48 passes, experts ~1.7 GB, head 0.5 GB): a ceiling
   of ~20 tok/s, likely 10-15 once the cache is warm, about the 35B's 21.6.
