@@ -201,8 +201,8 @@ engine, with switches of their own in `zero/xe2/` that the laptop's iGPU never t
     kept in RAM (the default since 2026.11.16.16): 512-token prompt 24.0 tok/s, generation 9.25 (3.55 without).
   - 2 Arc A770s on Windows (hansong80, issue #35, release 2026.11.18.02, no peer access): the 27B's 4K prompt
     1,126 tok/s against one card's 1,169, generation 12.2 against 12.6-12.8: the 128 sums a token waited 73.5 ms of
-    81, a host round trip each. `ARC_TP_EVSUM=1` (opt-in since 2026.11.18.05) lets the GPUs meet on events instead;
-    not measured on two cards yet.
+    81, a host round trip each. `ARC_TP_DEVSYNC=1` (opt-in since 2026.11.24.02, hibagus) lets the GPUs meet on their
+    own (two Pro B70s with `ARC_TP_P2P=1`: +7-10 %); not measured on two A770s yet (no peer access there).
   - A slow link sets the pace: with one card in an x4 slot at 2.4 GB/s (issue #19, the 27B UD-Q5_K_XL) the prompt over
     2 cards is half of one card's (620 against 1,223 tok/s). A layer split for such links is planned, not built.
   - Batched slots work over a split model.

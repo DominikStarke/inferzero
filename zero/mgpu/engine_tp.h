@@ -363,13 +363,6 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   if (n > c.slot_floats) throw std::runtime_error("tensor parallel: more rows than the shared buffer holds");
   tp_build();      // (the sum thread: both made before it starts, tpo_begin)
   tp_wrap_host();
-  // (ARC_TP_EVSUM: an event sum here, every shard alike, as they decide from the same rows and switches)
-  const bool ev = c.evsum && !a.bg && !tp_rs_rows(rows, c.n);
-  if (tp_ev_live_ && !ev) {  // (from event sums to another kind: this GPU idle and every shard at a barrier first)
-    zrt::sync();
-    c.barrier(opt.tp_rank);
-    tp_ev_live_ = false;
-  }
   if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows, a);
   const TpKs ks = tp_ks(a);
   const int h = c.half[r];
@@ -384,29 +377,6 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
       ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.inbox[k] + (off + (size_t)r * stride) * 4, a.part->ptr, n * 4, nullptr, 0, nullptr));
   } else {
     ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
-  }
-  if (ev) {  // (the copies' end signals this shard's event of the sum; the list then waits for every shard's)
-    const int64_t s = c.ev_n[r].load(std::memory_order_relaxed);
-    const size_t i = (size_t)(s % TpComm::kEvRing), half_ev = TpComm::kEvRing / 2;
-    if (i % half_ev == 0) {  // (a half of the ring starts: see TpComm::evsum)
-      zrt::sync();
-      for (size_t j = i; j < i + half_ev; ++j) ZE_CHECK(zeEventHostReset(c.ev[(size_t)r * TpComm::kEvRing + j]));
-      c.barrier(opt.tp_rank);
-    }
-    ze_event_handle_t mine = c.ev[(size_t)r * TpComm::kEvRing + i];
-    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), mine, 0, nullptr));
-    ze_event_handle_t all[64];
-    for (int k = 0; k < c.n; ++k) all[k] = c.ev[(size_t)k * TpComm::kEvRing + i];
-    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), nullptr, (uint32_t)c.n, all));
-    c.ev_n[r].store(s + 1, std::memory_order_relaxed);
-    tp_ev_live_ = true;
-    ++c.reduces[r];
-    int nn = (int)n, np = c.n;
-    if (p2p) tp_inbox_fence(c, r, h);
-    set_args(ks.add, 0, a.x, p2p ? tp_in_ : tp_host_, off, nn, np, stride);
-    tp_run(a, "tp_add", ks.add, (n + 255) / 256 * 256, 256);
-    c.half[r] = h ^ 1;
-    return;
   }
   if (p2p && c.devsync) {  // (ARC_TP_DEVSYNC: the GPUs meet on their own, TpComm::devsync)
     // (the 32-bit wait compares sem >= q: before q passes 2^31 (ARC_TP_DEVSYNC_WRAP for tests), every GPU idle and
@@ -1162,13 +1132,11 @@ class TpEngine {
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
     comm_.ev_n.reset(new std::atomic<int64_t>[n]);
     for (int r = 0; r < n; ++r) comm_.ev_n[r] = 0;
-    if (getenv("ARC_TP_EVSUM") && atoi(getenv("ARC_TP_EVSUM")) != 0) {
-      // (hibagus, #89: INVALID_ARGUMENT at the wait barrier on older drivers, a hang and a crash on 2 x B70 with 26.40.
-      //  Not found yet; ARC_TP_DEVSYNC (#90) is to replace it)
-      zlog::eprintf("inferzero: warning: ARC_TP_EVSUM is known to hang or fail on some drivers (#89); without it the sums "
-                    "go through the host as by default\n");
-      make_events(n);
-    }
+    // (ARC_TP_EVSUM, events between the GPUs for a generated token's sums, removed 2026-11-24 (#89): it hung or
+    //  failed on several drivers, and ARC_TP_DEVSYNC=1 (#90, memory semaphores) does the same and passed on 2 B70s)
+    if (getenv("ARC_TP_EVSUM") && atoi(getenv("ARC_TP_EVSUM")) != 0)
+      zlog::eprintf("inferzero: ARC_TP_EVSUM was removed (#89): ARC_TP_DEVSYNC=1 meets a generated token's sums on the GPUs "
+                    "instead; the sums go as without it\n");
     // (each GPU's host staging buffer (zrt::staging) at a prompt chunk's input now, one GPU at a time. Grown later,
     //  during the first long prompt, the shards' threads allocated pinned host memory at the same moment, and with
     //  four Data Center GPU Max 1550 stacks (driver 25.18) zeMemAllocHost failed now and then with out of device
@@ -1193,40 +1161,7 @@ class TpEngine {
     for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
     logits_.assign(vocab, 0.0f);
   }
-  // ARC_TP_EVSUM's events (TpComm::evsum): one pool for every device of the split (ARC_TP_SIM: device 0 once), so a
-  // shard's list can wait on another GPU's event. A pool the driver refuses: the host sums, as without the switch
-  void make_events(int n) {
-    // (two shards on one queue, ARC_TP_SIM with fewer queues than shards: a wait on the other's event would hold up
-    //  the queue that signals it, a deadlock. Real GPUs each have their own queues)
-    for (int a = 0; a < n; ++a)
-      for (int b = a + 1; b < n; ++b)
-        if (zrt::devs[a]->dev == zrt::devs[b]->dev && zrt::devs[a]->q_ord == zrt::devs[b]->q_ord &&
-            zrt::devs[a]->q_idx == zrt::devs[b]->q_idx) {
-          zlog::eprintf("inferzero: ARC_TP_EVSUM: shards %d and %d share a queue (ARC_TP_SIM on a GPU with too few): "
-                        "the sums through the host\n", a, b);
-          return;
-        }
-    std::vector<ze_device_handle_t> devs;
-    for (int r = 0; r < n; ++r)
-      if (std::find(devs.begin(), devs.end(), zrt::devs[r]->dev) == devs.end()) devs.push_back(zrt::devs[r]->dev);
-    ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)(n * TpComm::kEvRing)};
-    if (zeEventPoolCreate(zrt::ctx, &pd, (uint32_t)devs.size(), devs.data(), &comm_.ev_pool) != ZE_RESULT_SUCCESS) {
-      comm_.ev_pool = nullptr;
-      zlog::eprintf("inferzero: ARC_TP_EVSUM: no event pool for the GPUs together: the sums through the host\n");
-      return;
-    }
-    comm_.ev.assign((size_t)n * TpComm::kEvRing, nullptr);
-    for (uint32_t k = 0; k < (uint32_t)comm_.ev.size(); ++k) {
-      ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
-      if (zeEventCreate(comm_.ev_pool, &ed, &comm_.ev[k]) != ZE_RESULT_SUCCESS) {
-        free_events();
-        zlog::eprintf("inferzero: ARC_TP_EVSUM: the events could not be made: the sums through the host\n");
-        return;
-      }
-    }
-    comm_.evsum = true;
-    zlog::eprintf("inferzero: generation's sums wait on the GPUs' events, not on the host (ARC_TP_EVSUM)\n");
-  }
+  // (ARC_TP_EVSUM's events: removed 2026-11-24, #89; nothing makes them now, the release and free calls are no-ops)
   void free_events() {
     for (ze_event_handle_t e : comm_.ev)
       if (e) zeEventDestroy(e);
@@ -1451,6 +1386,13 @@ class TpEngine {
     //  -> 46.8-47.3 (=1 had 44.8-45.1); the logits the same either way. Below 0.5 of host memory: host memory, as before)
     bool prompt_auto = false;
     if (want < 0 && !use && peer && timed && direct >= 0.5 * host) use = prompt_auto = true;
+    // (ARC_TP_DEVSYNC=1 needs the direct path for generated tokens: with the link check alone, a host path measured
+    //  faster sent them through host memory and DEVSYNC did nothing; hibagus's 27B on 2 B70s was on in 2 of 3 runs
+    //  (#90). A generated token's sums are small and latency-bound, so set, they go direct where the GPUs can reach
+    //  each other, whatever the bandwidth check says; ARC_TP_P2P=0 / =prompt still decide)
+    const char* dsw = getenv("ARC_TP_DEVSYNC");
+    bool devsync_forced = false;
+    if (dsw && atoi(dsw) != 0 && want < 0 && peer && !sim && (!use || prompt_auto)) use = devsync_forced = true, prompt_auto = false;
     std::string why;
     char b[160];
     if (want == 0) why = "ARC_TP_P2P=0";
@@ -1460,6 +1402,7 @@ class TpEngine {
     else if (sim && !time_sim) why = "ARC_TP_SIM: one GPU; ARC_TP_P2P=1 tests the direct path";
     else if (!timed) why = "the links could not be timed";
     else snprintf(b, sizeof b, "%.1f GB/s directly against %.1f through host memory", direct, host), why = b;
+    if (devsync_forced) why = "ARC_TP_DEVSYNC=1 takes the direct path for generated tokens; the link check: " + why;
     if (use && tpo_wanted()) use = false, why = "ARC_TP_OVERLAP keeps them in host memory";
     if (use) {
       comm_.half_b = (size_t)(n + 1) * comm_.slot_floats * 2;
@@ -1533,8 +1476,16 @@ class TpEngine {
       // (the zex descriptors have no stype / version: the layout of today's zex_common.h, checked on Linux compute
       //  runtimes 25.18 and 26.40 only; the driver's version is in the log's "kernels compiled" line, to tell a later
       //  driver's change from a bug)
+      // (the form named: 32-bit waits, the semaphores zeroed before the numbers reach 2^31, tp_reduce_at; the 64-bit
+      //  wait is not used)
       zlog::eprintf("inferzero: ARC_TP_DEVSYNC: %s (checked on Linux compute runtimes 25.18 / 26.40 only: the driver "
-                    "above)\n", no ? no : "a generated token's sums meet on the GPUs (memory semaphores)");
+                    "above)\n", no ? no : "a generated token's sums meet on the GPUs (memory semaphores: 32-bit waits, "
+                                          "zeroed before they reach 2^31)");
+    } else if (const char* ds2 = getenv("ARC_TP_DEVSYNC"); ds2 && atoi(ds2) != 0) {
+      // (set, but not taken: said, not left silent; a run that does not use it measures nothing of it, #90)
+      zlog::eprintf("inferzero: ARC_TP_DEVSYNC: not used (%s)\n",
+                    sim ? "ARC_TP_SIM: one GPU" : n < 2 ? "one GPU" : !use ? "the sums go through host memory"
+                                                                         : "ARC_TP_P2P=prompt: generated tokens through host memory");
     }
     // (a slow link: the prompt's sums wait on it; docs/multi-gpu.md says what helps)
     const double eff = use ? direct : host;
