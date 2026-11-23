@@ -529,7 +529,8 @@
   //  the load, a tight model's estimate against what ctx_bytes counts, one slot, the KV alone, so the copies cannot
   //  drift apart unseen; a W line past 2 %. The Researcher's review of aa6f021)
   double kv_est_tight_ = -1;
-  bool small_plan_ = false;  // (plan_tight: 512-token chunks and 8K residual segments instead of a small spill to RAM)
+  bool small_plan_ = false;  // (plan_tight: smaller chunks and residual segments instead of a small spill to RAM)
+  int small_chunk_ = 512, small_seg_ = 8192;  // (the small plan's chunk and segment: 512 / 8K or 256 / 4K)
   void kv_drift_check() {
     if (kv_est_tight_ < 0 || !tight_ || small_plan_ || zrt::integrated() || opt.dry || hp.ds41 || hp.moe) return;  // (small_plan_: its rings for another chunk)
     if (opt.pp_begin > 0 || (opt.pp_end >= 0 && opt.pp_end < hp.n_layer)) return;  // (a stage: layers_ are the stage's)
@@ -546,6 +547,7 @@
   }
   void plan_tight() {
     small_plan_ = false;
+    small_chunk_ = 512, small_seg_ = 8192;
     if (opt.tp_size > 1 || hp.moe || stream_) return;
     double total = 0;
     const bool tied = !f_.find("output.weight");
@@ -754,15 +756,29 @@
       //  tok/s against 22.4 with none), the smaller chunk ~5-10 % of the prompt. Only with the automatic room, no chunk
       //  asked; ARC_TIGHT_SMALL=0: the weights in RAM as before. The Researcher's #45 item 1, 2026-11-23)
       const char* ts = getenv("ARC_TIGHT_SMALL");
-      if (want > 0 && want <= 0.5 * GiB && keep == keep_auto && opt.chunk <= 0 && opt.min_chunk <= 512 &&
-          !(ts && atoi(ts) == 0)) {
-        const double room_s = room_for(512.0, 8192.0, true);
-        if (total <= budget - room_s) {
+      if (want > 0 && want <= 0.5 * GiB && keep == keep_auto && opt.chunk <= 0 && !(ts && atoi(ts) == 0)) {
+        // (two steps, the first that leaves every weight on the card: 512-token chunks and 8K segments, then 256 and
+        //  4K (skipzx-lab's 27B at 92,688, #45: 0.39 GiB in RAM, the first step short; generation 10.0 tok/s against
+        //  22.4 with none, so a slower prompt is the better trade). ARC_FIT_PARTS says each step's room)
+        const double steps[2][2] = {{512.0, 8192.0}, {256.0, 4096.0}};
+        for (const auto& st : steps) {
+          if (opt.min_chunk > (int)st[0]) continue;
+          const double room_s = room_for(st[0], st[1], true);
+          const bool fits = total <= budget - room_s;
+          if (getenv("ARC_FIT_PARTS") && !opt.dry)
+            zlog::eprintf("inferzero: the small plan at chunks of %d and %dK segments: room %.3f GiB, %s %.3f GiB\n",
+                          (int)st[0], (int)st[1] / 1024, room_s / GiB, fits ? "fits, with" : "short by",
+                          std::fabs(budget - room_s - total) / GiB);
+          if (!fits) continue;
           if (!opt.dry)
-            LOG_INF("inferzero: the tight plan: prompt chunks of 512 and residual segments of 8K tokens instead of %.2f GiB "
-                    "of the weights in RAM (ARC_TIGHT_SMALL=0: the weights in RAM)\n", want / GiB);
+            zlog::eprintf("inferzero: the tight plan: prompt chunks of %d and residual segments of %dK tokens instead of %.2f "
+                          "GiB of the weights in RAM (ARC_TIGHT_SMALL=0: the weights in RAM)\n", (int)st[0], (int)st[1] / 1024,
+                          want / GiB);
+          small_chunk_ = (int)st[0];
+          small_seg_ = (int)st[1];
           small_plan_ = true;
           want = 0;
+          break;
         }
       }
     } else if (opt.host_weights_gb < 0 && tight_) {

@@ -143,9 +143,11 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   for (int b = 0; b < nb; ++b) ad[b] = hcpu_sc_[(size_t)b * M];
   float* y = hcpu_y_.data();
   const int8_t* a = hcpu_q_.data();
-  // (ARC_HOST_CPU_THREADS=N: the threads of this loop, for an A / B of cores against hyperthreads (skipzx-lab's Xeon,
-  //  #45: ~19 GB/s of the int8 copy against ~60 the RAM gives); unset: OpenMP's default, every logical processor)
-  static const int nthr = getenv("ARC_HOST_CPU_THREADS") ? std::max(0, atoi(getenv("ARC_HOST_CPU_THREADS"))) : 0;
+  // (the threads of this loop: the CPU's physical cores since 2026-11-23, not every logical processor: skipzx-lab's
+  //  Xeon W-2155 (10 cores, 20 threads), the 27B at 92K, #45: 9.96 / 9.66 tok/s with OpenMP's 20, 11.43 with 10.
+  //  ARC_HOST_CPU_THREADS=N sets it; 0 or a count that cannot be read: OpenMP's default)
+  static const int nthr = getenv("ARC_HOST_CPU_THREADS") ? std::max(0, atoi(getenv("ARC_HOST_CPU_THREADS")))
+                                                         : plat::physical_cores();
   auto row = [&](int n) {
     const float s = host_dot(h.q.data() + (size_t)n * K, h.d.data() + (size_t)n * nb, a, ad.data(), nb);
     y[n] = acc ? y[n] + s : s;

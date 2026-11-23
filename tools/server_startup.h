@@ -118,8 +118,9 @@ inline std::string switches() {
 }
 inline void print_head(const std::filesystem::path& exe_dir) {
   LOG_INF("%s\n", version(exe_dir).c_str());
-  LOG_INF("system: %s, %s, %u logical processors, RAM %.1f GiB (%.1f free)\n", windows().c_str(), cpu().c_str(),
-          std::thread::hardware_concurrency(), plat::ram_total() / 1073741824.0, plat::ram_available() / 1073741824.0);
+  LOG_INF("system: %s, %s, %u logical processors (%d cores), RAM %.1f GiB (%.1f free)\n", windows().c_str(), cpu().c_str(),
+          std::thread::hardware_concurrency(), plat::physical_cores(), plat::ram_total() / 1073741824.0,
+          plat::ram_available() / 1073741824.0);
   LOG_INF("ARC_* switches set: %s\n", switches().c_str());
 }
 // (the GPU runtime started here: after the NPU's zeInit(0), see server.cpp)

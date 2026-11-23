@@ -3,6 +3,7 @@
 // call is the Win32 call the code made before, unchanged (the Windows build stays bit-identical). Started 2026-11-13
 // with the GPU runtimes' loading and the user's home folder; files, mapping, sockets and processes follow.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,8 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -877,6 +880,53 @@ inline bool same_file(FILE* a, FILE* b) {
   struct stat sa{}, sb{};
   return fstat(fileno(a), &sa) == 0 && fstat(fileno(b), &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
 #endif
+}
+
+// The CPU's physical cores (not its logical processors: hyperthreads count once); 0 when it cannot be read.
+// (2026-11-23: the host CPU path for weights in RAM ran 15 % faster on a Xeon W-2155's 10 cores than on its 20 logical
+//  processors, skipzx-lab, #45)
+inline int physical_cores() {
+  static const int n = [] {
+#ifdef _WIN32
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (!len) return 0;
+    std::string buf(len, '\0');
+    auto* p = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)&buf[0];
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, p, &len)) return 0;
+    int cores = 0;
+    for (DWORD off = 0; off < len;) {
+      auto* e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(&buf[0] + off);
+      if (e->Relationship == RelationProcessorCore) ++cores;
+      if (!e->Size) break;
+      off += e->Size;
+    }
+    return cores;
+#else
+    std::vector<std::pair<int, int>> seen;  // (package, core)
+    for (int c = 0, misses = 0; c < 4096 && misses < 64; ++c) {  // (CPU numbers can have gaps: offline ones)
+      const std::string d = "/sys/devices/system/cpu/cpu" + std::to_string(c) + "/topology/";
+      FILE* fp = fopen((d + "core_id").c_str(), "r");
+      if (!fp) {
+        ++misses;
+        continue;
+      }
+      misses = 0;
+      int core = -1, pkg = 0;
+      if (fscanf(fp, "%d", &core) != 1) core = -1;
+      fclose(fp);
+      if (FILE* fq = fopen((d + "physical_package_id").c_str(), "r")) {
+        if (fscanf(fq, "%d", &pkg) != 1) pkg = 0;
+        fclose(fq);
+      }
+      if (core < 0) continue;
+      const std::pair<int, int> k{pkg, core};
+      if (std::find(seen.begin(), seen.end(), k) == seen.end()) seen.push_back(k);
+    }
+    return (int)seen.size();
+#endif
+  }();
+  return n;
 }
 
 // The user's home folder, absolute: %USERPROFILE% on Windows, $HOME on Linux, and where that is unset or empty the

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: weights in host memory: the CPU's physical cores by default; a second, smaller tight plan
+
+- **Faster generation with weights in host memory:** the CPU's matrix loop runs on the physical cores, not every logical
+  processor (`ARC_HOST_CPU_THREADS` still sets it). skipzx-lab's Xeon W-2155 (10 cores, 20 threads), the 27B at 92K on
+  his A770: 9.96 / 9.66 tok/s with 20 threads, 11.43 with 10 (#45). The log's system line shows the core count.
+- **The small plan's second step:** where 512-token chunks with 8K segments still leave a small spill (at most 0.5
+  GiB), 256-token chunks with 4K segments are tried before the weights go to RAM. `ARC_FIT_PARTS` prints each step's room.
+  His 92K run was 0.35 GiB short at the first step.
+
 ## 2026-11-23: a layer split's RAM tier capped as an automatic size, one budget for all the stages
 
 - **Fixed (Windows, a layer split of MoE models):** each stage's automatic RAM tier was taken for a size set by hand.
