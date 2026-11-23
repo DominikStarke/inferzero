@@ -704,7 +704,9 @@
       if (ou > 1) ou = h8_prepare(uw, wqu, whu, 1);
     }
     if (og != ou) throw std::logic_error("ARC_GEMM_XW_GU: the gate's and the up's weights in two orders");
+    const uint64_t act0 = h8_act_calls_;
     h8_act(Mp, gw.K, act32);
+    h8_input_check(act0, "gemm_gateup");
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     xw_gu_run8("gemm_gateup", wqg, whg, wqu, whu, h8_aq_, h8_asc_, Mp, gw.N, gw.K, C, ldc, 0, rg_env,
                (ua > 1 ? 4 : 0) | (og > 1 ? 8 : 0) | (og > 1 && xw_bg_on() ? 16 : 0));
@@ -808,7 +810,9 @@
     cl_mem wqg = nullptr, whg = nullptr, wqu = nullptr, whu = nullptr;
     h8_prepare(gw, wqg, whg);
     h8_prepare(uw, wqu, whu);
+    const uint64_t act0 = h8_act_calls_;
     h8_act(Mp, gw.K, act32);
+    h8_input_check(act0, "gemm_gateup");
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
     int wgy = 1;

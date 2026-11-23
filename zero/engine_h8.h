@@ -356,7 +356,17 @@
     h8_pre_live_ = true, h8_pre_M_ = Mp, h8_pre_K_ = K;
   }
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
+  // (the guard against a GEMM reading a stale input, 2026-11-23: 326febb merged this call into a comment and every H8
+  //  prompt GEMM but the fused gate / up read the previous one, wrong prompts on discrete cards in release .16, unseen
+  //  by the start checks, whose inputs come from the host. h8_act counts its calls, whether it rotates or finds the input
+  //  ready; an H8 GEMM launch without one since its call began throws: h8_input_check)
+  uint64_t h8_act_calls_ = 0;
+  void h8_input_check(uint64_t calls_at_start, const char* name) const {
+    if (h8_act_calls_ == calls_at_start)
+      throw std::logic_error(std::string("gemm ") + name + ": H8 GEMM launched without its input prepared (h8_act not called)");
+  }
   void h8_act(int Mp, int K, bool act32) {
+    ++h8_act_calls_;
     if (h8_q2_pass_) return;  // (ARC_H8_Q2's second pass: both planes were made by the first)
     // (rmsnorm_h8 left this input rotated: from the f32 values, so per-32 scales or not make no difference)
     if (h8_pre_live_ && !h8_fsrc_ && h8_row() && Mp == h8_pre_M_ && K == h8_pre_K_) return;
@@ -480,6 +490,7 @@
     h8_matmul1(name, w, Mp, C, ldc, c_off, 1, act32);
   }
   void h8_matmul1(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
+    const uint64_t act0 = h8_act_calls_;  // (h8_input_check below)
     XwRole xr(this, w.role);  // (the big tile's work-groups and input order by role, ARC_GEMM_XW_SLM_WG_GU: engine_xw.h)
     // (H8R: a split's whole dot product is one int32 sum, |sum| <= 127 * 127 * K: past 133,000 values per split it
     //  could overflow. The models' K is 17-22K today and split-K cuts it further; a refusal, not a wrong answer)
@@ -500,6 +511,7 @@
     int pack = (xw_pack_a(Mp, w.K) ? 1 : 0) | (pw ? 2 : 0) | (order > 1 ? 8 : 0);
     if ((pack & 8) && xw_bg_on()) pack |= 16;  // (ARC_GEMM_XW_BG: B from global memory, engine_xw.h)
     h8_act(Mp, w.K, act32);
+    h8_input_check(act0, name);
     XwUnwgl un(this, xw_wgl_a(Mp, w.K) > 1 && wb <= 1 ? Mp : 0, w.K);
     if (xw_wgl_a(Mp, w.K) > 1 && wb > 1) pack |= 4;
     // (the 140T preset: 32 tokens, 2 column groups, 128 registers on XMX)

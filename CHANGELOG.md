@@ -7,6 +7,8 @@
   prepares their input into a comment, so the prompt's logits were wrong. Generation from a correct prompt was not
   affected, but the prompt's state was. The laptop's iGPU, which runs without H8 by default, did not show it. Use
   2026.11.23.17; .16 is marked broken.
+- **A guard against it:** every H8 prompt GEMM now checks that its input was prepared since its call began, and stops
+  with an error naming the GEMM if not, on any card at the first prompt.
 
 ## 2026-11-23: `ARC_H8_NORM_ONCE` removed
 
