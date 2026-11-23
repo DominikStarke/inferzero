@@ -71,7 +71,7 @@
 // (ocloc dg2-g10 at 256 registers, 32 x 48 with 8 x 4 sub-groups: XW_HB 1 spills inside the K loop (30 scratch
 //  messages), XW_HB 2 with XS_LATE none there (235 instructions for its DPAS, 4.2 each; 84 scratch messages outside
 //  the loop, the epilogue's). 4 x 8 sub-groups spill in the loop either way: 8 x 4 is the form)
-#if XW_NC == 3 && !defined(XW_HB)
+#if XW_NC == 3 && !defined(XW_HB) && !defined(XS_BSTREAM)  // (XS_BSTREAM: B streamed instead)
 #define XW_HB 2
 #endif
 #if XW_NC == 3 && !defined(XS_LATE)
@@ -400,7 +400,41 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
     for (int j = 0; j < XS_CPS; ++j) {  // (the stage's chunks in order: the same sums as one chunk a stage)
       __local const uint* xa = xs[cur][j] + sy * XW_TG * 128;
       __local const uint* xb = xs[cur][j] + XS_AW + sx * XW_NC * 256;
-#if defined(XW_HB) && XW_HB == 2
+#if defined(XS_BSTREAM)
+      // -DXS_BSTREAM (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 4; ARC_GEMM_XW_BSTREAM): A held for
+      // every token group of the chunk, B streamed one 8-column block at a time (8 registers), as oneDNN's kernel
+      // streams its operand: the B registers no longer grow with XW_NC, the 32 x 48 tile's spill (the users' ocloc
+      // 26.40: 118 scratch messages holding B's chunk). With XS_DPASW A is half its size (int4 a token group and
+      // k-half). Each sum still takes k 0..31 then 32..63 of the chunk; integer sums: bit for bit either way
+#if defined(XS_DPASW) && !defined(XW_EMU)
+      int4 ak[2][XW_TG];
+      const int hh = (sx & 1) * 32;
+#pragma unroll
+      for (int hf = 0; hf < 2; ++hf)
+#pragma unroll
+        for (int t = 0; t < XW_TG; ++t)
+          ak[hf][t] = as_int4(intel_sub_group_block_read4((__local const uint*)(xa + t * 128 + hf * 64 + hh)));
+#define XS_BMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
+#else
+      int8 ak[2][XW_TG];
+#pragma unroll
+      for (int hf = 0; hf < 2; ++hf)
+#pragma unroll
+        for (int t = 0; t < XW_TG; ++t) ak[hf][t] = XS_RD(xa + t * 128 + hf * 64);
+#define XS_BMAD(a, b, c) xw8_mad(a, b, c)
+#endif
+#pragma unroll
+      for (int hf = 0; hf < 2; ++hf)  // (k 0..31: the lo blocks of the column groups; then 32..63: the hi ones)
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c)
+#pragma unroll
+          for (int h = 0; h < 2; ++h) {  // (the column group's two blocks of 8 columns: lo0 / lo1, hi0 / hi1)
+            const int8 b = XS_RD(xb + c * 256 + hf * 128 + h * 64);
+#pragma unroll
+            for (int t = 0; t < XW_TG; ++t) xacc[t][2 * c + h] = XS_BMAD(ak[hf][t], b, xacc[t][2 * c + h]);
+          }
+#undef XS_BMAD
+#elif defined(XW_HB) && XW_HB == 2
       // -DXW_HB=2: B a column group and a k-half at a time (16 registers of B), A read again for each: each sum
       // still takes values 0..31 of the chunk, then 32..63 (integer sums: bit for bit either way)
 #pragma unroll
