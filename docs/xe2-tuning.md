@@ -1153,7 +1153,7 @@ What it shows:
   at 5.6 instructions a DPAS (since XW_PTR) issuing is no longer the limit. The limit is local-memory traffic: ours
   moves ~152 bytes a DPAS (oneDNN's kernel 93), and skipzx-lab's probe measured 77-99 B a clock a Xe-core of local reads,
   which caps the big tile near 70-83 % of peak before barriers and latency (#45). The plan: 256-B local messages
-  (`ARC_GEMM_XW_UL`), the split-matrix DPAS (`dpasw`), 32 x 48 without spills, k32 stages in 4 buffers. Measured on skipzx-lab's A770 (2026-11-23): only `dpasw` gained (+3.6 % on the 27B 4K, now the default); the 256-B reads -9.6 %, k32 -4.3 %, every 32 x 48 form slower, the snake walk within the drift: removed.
+  (`ARC_GEMM_XW_UL`), the split-matrix DPAS (`dpasw`), 32 x 48 without spills, k32 stages in 4 buffers. Measured on skipzx-lab's A770 (2026-11-23): only `dpasw` gained (+3.6 % on the 27B 4K, now the default); the 256-B reads -9.6 %, k32 -4.3 %, every 32 x 48 form slower, the snake walk within the drift (+0.6 %; with dpasw +0.3 % in both pairs, gemm_down 343.8 -> 338.5 ms, qkv 128.8 -> 127.6: small, consistent): removed.
 - **The A770's GEMM is bound by issuing its own loop.** 12.4 instructions a DPAS against ~8 cycles of XMX work caps
   it near 8 / 12.4 = 65 % of peak. That is what hansong80's `xw_peak --probe` measured with the data in cache
   (~65 %, issue #45). The 64 % of the prompt the GEMMs take, at 48 % of peak, is this ceiling plus memory stalls.
