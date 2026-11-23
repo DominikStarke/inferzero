@@ -416,7 +416,25 @@ cat_load() {  # the catalog into CT_* (one awk for the whole file, not one per f
     $1 != "" { printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n", $c["id"], $c["title"], $c["applies"],
       $c["relates"], $c["default"], $c["on"], $c["off"], $c["variant"], $c["tip"], $c["output"], $c["cost"] }')
 }
-sw_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'; }
+sw_list() {  # LIST: its ;-separated items, trimmed, one a line (no other process: the menu calls it per option per key, #81)
+  local -a p; local s
+  IFS=';' read -r -a p <<< "$1"
+  for s in "${p[@]}"; do
+    s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}
+    [ -n "$s" ] && printf '%s\n' "$s"
+  done
+  return 0
+}
+sw_list_a() {  # ARRAY LIST: sw_list's items into the array named ARRAY, without a subshell
+  local -n _out=$1; local -a p; local s
+  _out=()
+  IFS=';' read -r -a p <<< "$2"
+  for s in "${p[@]}"; do
+    s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}
+    [ -n "$s" ] && _out+=("$s")
+  done
+  return 0
+}
 sw_has() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }  # LIST WORD
 sw_or() {  # words joined "a, b or c"
   local n=$# i=0 out="" w
@@ -438,14 +456,19 @@ sw_default() {  # on / off, or auto when the engine picks it by the PC or the mo
   elif [[ "$d" =~ ^on([^a-z:]|$) ]] && ! [[ "$d" =~ ^on[[:space:]]*: ]]; then printf on
   else printf auto; fi
 }
-sw_on() {  # ID: 1 on, 0 off, empty when the engine picks
-  case "$1" in mtp) printf '%s' "$SW_DRAFTING"; return;; gpus2) [ "$SW_GPUS" -ge 2 ] && printf 1 || printf 0; return;; esac
-  if [ -n "${OPTC[$1]+x}" ]; then [ "${OPTC[$1]}" = off ] && printf 0 || printf 1; return; fi
-  case "$(sw_default "$1")" in on) printf 1;; off) printf 0;; esac
+sw_on_v() {  # ID: sw_on's answer in SW_ONV, without a subshell
+  SW_ONV=""
+  case "$1" in mtp) SW_ONV=$SW_DRAFTING; return;; gpus2) [ "$SW_GPUS" -ge 2 ] && SW_ONV=1 || SW_ONV=0; return;; esac
+  if [ -n "${OPTC[$1]+x}" ]; then [ "${OPTC[$1]}" = off ] && SW_ONV=0 || SW_ONV=1; return; fi
+  local d=${CT_default[$1]}
+  if [[ "$d" =~ ^off([^a-z]|$) ]]; then SW_ONV=0
+  elif [[ "$d" =~ ^on([^a-z:]|$) ]] && ! [[ "$d" =~ ^on[[:space:]]*: ]]; then SW_ONV=1; fi
+  return 0
 }
+sw_on() { sw_on_v "$1"; printf '%s' "$SW_ONV"; }  # ID: 1 on, 0 off, empty when the engine picks
 sw_choices() {  # ID: "on:Sparse off:Full" for a choose-one option (its two variants are its on and off values)
-  local vs e suf val out=() w
-  mapfile -t vs < <(sw_list "${CT_variant[$1]}")
+  local vs=() e suf val out=() w
+  sw_list_a vs "${CT_variant[$1]}"
   [ ${#vs[@]} -eq 2 ] && [ -n "${CT_on[$1]}" ] && [ -n "${CT_off[$1]}" ] || return 1
   for e in "${vs[@]}"; do
     suf=${e%%:*}; val=${e#*:}; w=${suf#-}
@@ -454,42 +477,58 @@ sw_choices() {  # ID: "on:Sparse off:Full" for a choose-one option (its two vari
   printf '%s\n' "${out[*]}"
 }
 sw_reason() {  # ID: the reason it does not apply now, or nothing; SW_KIND says which rule (model, pc, gpus, not, needs)
+  sw_reason_v "$1"; printf '%s' "$SW_WHY"
+}
+sw_names_v() {  # KIND WORD...: the words' names joined "a, b or c" in SW_NAMES, without a subshell (the menu, #81)
+  local kind=$1 n=$(($# - 1)) i=0 w nm out=""; shift
+  for w in "$@"; do
+    i=$((i + 1))
+    if [ "$kind" = m ]; then
+      case "$w" in dense) nm='dense models';; moe) nm='MoE models';; moe_std) nm='standard MoE models';; qsa) nm='QSA models';; flashnext) nm='Flash Next';;
+        mtp) nm='models with MTP';; h8) nm='dense Qwen3.5 / 3.8 models';; *) nm=$w;; esac
+    else
+      case "$w" in b-series) nm='Arc B-series';; alchemist) nm='Arc A-series';; igpu-140t) nm='Arc 140T';;
+        igpu-xe2) nm='Lunar Lake / Panther Lake';; igpu-xe-lpg) nm='Meteor Lake';; *) nm=$w;; esac
+    fi
+    if [ $i -eq 1 ]; then out=$nm; elif [ $i -eq $n ]; then out+=" or $nm"; else out+=", $nm"; fi
+  done
+  SW_NAMES=$out
+}
+sw_title_v() { case "$1" in mtp) SW_T='Drafting';; gpus2) SW_T='2 or more GPUs';; *) SW_T=${CT_title[$1]:-$1};; esac; }
+sw_reason_v() {  # ID: sw_reason's reason in SW_WHY (empty: it applies) and its rule in SW_KIND, in this shell
   local id=$1 ap=() mw=() pw=() rel=() w e t multi=0 any
-  SW_KIND=""
-  mapfile -t ap < <(sw_list "${CT_applies[$id]}")
+  SW_KIND=""; SW_WHY=""
+  sw_list_a ap "${CT_applies[$id]}"
   for w in "${ap[@]}"; do
     case "$w" in dense|moe|moe_std|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg) pw+=("$w");; multi-gpu) multi=1;; esac
   done
   if [ ${#mw[@]} -gt 0 ]; then
     any=0; for w in "${mw[@]}"; do sw_has "$SW_WORDS" "$w" && any=1; done
-    if [ $any = 0 ]; then
-      local names=(); for w in "${mw[@]}"; do names+=("$(sw_mword "$w")"); done
-      SW_KIND=model; printf 'for %s only' "$(sw_or "${names[@]}")"; return
-    fi
+    if [ $any = 0 ]; then sw_names_v m "${mw[@]}"; SW_KIND=model; SW_WHY="for $SW_NAMES only"; return 0; fi
   fi
   if [ -n "$SW_PC" ] && [ ${#pw[@]} -gt 0 ]; then
     any=0; for w in "${pw[@]}"; do sw_has "$SW_PC" "$w" && any=1; done
-    if [ $any = 0 ]; then
-      local names=(); for w in "${pw[@]}"; do names+=("$(sw_pword "$w")"); done
-      SW_KIND=pc; printf 'needs %s' "$(sw_or "${names[@]}")"; return
-    fi
+    if [ $any = 0 ]; then sw_names_v p "${pw[@]}"; SW_KIND=pc; SW_WHY="needs $SW_NAMES"; return 0; fi
   fi
-  mapfile -t rel < <(sw_list "${CT_relates[$id]}")
+  sw_list_a rel "${CT_relates[$id]}"
   for e in "${rel[@]}"; do [ "$e" = needs:gpus2 ] && multi=1; done
   if [ $multi = 1 ] && [ "$SW_GPUS" -lt 2 ]; then
     SW_KIND=gpus
-    if sw_has "$SW_PC" multi-gpu; then printf 'choose a Multi-GPU split first'; else printf 'needs 2 or more GPUs'; fi
-    return
+    if sw_has "$SW_PC" multi-gpu; then SW_WHY='choose a Multi-GPU split first'; else SW_WHY='needs 2 or more GPUs'; fi
+    return 0
   fi
   for e in "${rel[@]}"; do
     [[ "$e" == not:* ]] || continue
-    t=${e#not:}; [ "$(sw_on "$t")" = 1 ] && { SW_KIND=not; printf 'not with %s' "$(sw_title "$t")"; return; }
+    t=${e#not:}; sw_on_v "$t"
+    [ "$SW_ONV" = 1 ] && { sw_title_v "$t"; SW_KIND=not; SW_WHY="not with $SW_T"; return 0; }
   done
   for e in "${rel[@]}"; do
     [[ "$e" == needs:* ]] || continue
     t=${e#needs:}; [ "$t" = gpus2 ] && continue
-    [ "$(sw_on "$t")" = 0 ] && { SW_KIND=needs; printf 'turn %s on first' "$(sw_title "$t")"; return; }
+    sw_on_v "$t"
+    [ "$SW_ONV" = 0 ] && { sw_title_v "$t"; SW_KIND=needs; SW_WHY="turn $SW_T on first"; return 0; }
   done
+  return 0
 }
 sw_tipline() {  # ID: what it needs, goes with or excludes, the output, the cost (up to its first bracket or ;)
   local id=$1 rel=() e n=() h=() x=() p=() c
@@ -544,8 +583,22 @@ m_dflash() {  # KEY: a DFlash2 drafter's repository for the model in the Hugging
 # the right, the tip of the focused switch under them. Plain text, no colour: [x] [ ] [-] and > carry the state. In a
 # terminal of 80 columns or more; otherwise, and when not a terminal, the numbered menu
 declare -A TUI_DRAFT=() TUI_IMG=()
-tui_draft_choices() {  # KEY: off mtp both dflash, the ones this model has
+# (the menu's per-model facts, found once when it opens instead of at every key: a redraw ran model_path's find and
+#  ~100 subshells, ~1 s a key on d-dorok's NixOS over SSH, #81. TUI_HAVE downloaded 1 / 0, TUI_NAME the short name,
+#  TUI_WORDS the words, TUI_DCH the drafting choices)
+declare -A TUI_HAVE=() TUI_NAME=() TUI_WORDS=() TUI_DCH=()
+tui_cache() {
+  local k
+  for k in "${TUI_KEYS[@]}"; do
+    model_path "$k" >/dev/null 2>&1 && TUI_HAVE[$k]=1 || TUI_HAVE[$k]=0
+    TUI_NAME[$k]=$(m_field "$k" 1 | sed 's/ (.*//')
+    TUI_WORDS[$k]=$(m_words "$k")
+    TUI_DCH[$k]=$(tui_draft_choices "$k")
+  done
+}
+tui_draft_choices() {  # KEY: off mtp both dflash, the ones this model has (cached for the menu: TUI_DCH)
   local k=$1
+  [ -n "${TUI_DCH[$k]+x}" ] && { printf '%s' "${TUI_DCH[$k]}"; return; }
   sw_has "$(m_words "$k")" mtp || { printf 'off'; return; }
   if m_dflash "$k"; then printf 'off mtp both dflash'; else printf 'off mtp'; fi
 }
@@ -553,7 +606,7 @@ tui_draft_default() { local c; c=$(tui_draft_choices "$1"); case "$c" in *both*)
 tui_draft_label() { case "$1" in off) printf 'Off';; mtp) printf 'MTP';; both) printf 'MTP+DF';; dflash) printf 'DFlash2';; esac; }
 tui_state() {  # KEY: SW_* for that model with its Drafting
   local k=$1
-  SW_WORDS=$(m_words "$k"); SW_GPUS=$GPUS; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
+  if [ -n "${TUI_WORDS[$k]+x}" ]; then SW_WORDS=${TUI_WORDS[$k]}; else SW_WORDS=$(m_words "$k"); fi; SW_GPUS=$GPUS; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
   [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" = off ] && SW_DRAFTING=0 || SW_DRAFTING=1
 }
 tui_cut() { local s=$1 n=$2; [ ${#s} -le "$n" ] && printf '%-*s' "$n" "$s" || printf '%s~' "${s:0:$((n - 1))}"; }
@@ -565,7 +618,7 @@ tui_items() {  # KEY: the right pane's items (draft, img, attn, the switches; th
   for id in "${CT_IDS[@]}"; do
     sw_value "$id" && continue
     sw_choices "$id" >/dev/null && continue
-    why=$(sw_reason "$id")
+    sw_reason_v "$id"; why=$SW_WHY
     if [ -n "$why" ]; then TUI_NA=$((TUI_NA + 1)); [ "$TUI_SHOWNA" = 1 ] || continue; fi
     TUI_ITEMS+=("$id")
   done
@@ -583,12 +636,12 @@ tui_item_line() {  # KEY ITEM: its line in the right pane (44 columns)
         [ "${TUI_IMG[$k]:-1}" = 1 ] && printf '[x] Images' || printf '[ ] Images'
       else printf '[-] Images  this model reads none'; fi;;
     attn)
-      why=$(sw_reason qsa)
+      sw_reason_v qsa; why=$SW_WHY
       if [ -n "$why" ]; then printf '[-] Attention  %s' "$why"
       else case "${OPTC[qsa]:-}" in on) printf 'Attention  default (Sparse) Full';; off) printf 'Attention  default Sparse (Full)';; *) printf 'Attention  (default) Sparse Full';; esac; fi;;
     na) [ "$TUI_SHOWNA" = 1 ] && printf '    a: hide the %s that do not apply' "$TUI_NA" || printf '    a: show %s more that do not apply' "$TUI_NA";;
     *)
-      why=$(sw_reason "$it")
+      sw_reason_v "$it"; why=$SW_WHY
       if [ -n "$why" ]; then printf '[-] %s  %s' "${CT_title[$it]}" "$why"
       else case "$(sw_on "$it")" in 1) printf '[x] %s' "${CT_title[$it]}";; 0) printf '[ ] %s' "${CT_title[$it]}";; *) printf '[~] %s (auto)' "${CT_title[$it]}";; esac; fi;;
   esac
@@ -617,9 +670,10 @@ tui_changed() {  # KEY: what was changed from the defaults
 }
 tui_draw() {
   local k=${TUI_KEYS[$TUI_SEL]} i left right lines=() rows tip
+  [ -n "${TUI_NAME[$k]+x}" ] || tui_cache  # (a draw before tui() opened the menu: the tests)
   tui_state "$k"; tui_items "$k"
   [ "$TUI_FOC" -ge ${#TUI_ITEMS[@]} ] && TUI_FOC=$((${#TUI_ITEMS[@]} - 1))
-  lines+=(" inferzero  $(tui_cut "$(m_field "$k" 1 | sed 's/ (.*//')" 40)  ~$(m_field "$k" 3) GB")
+  lines+=(" inferzero  $(tui_cut "${TUI_NAME[$k]}" 40)  ~$(m_field "$k" 3) GB")
   lines+=(" $(printf '%.0s-' {1..78})")
   # (at most the terminal's height, TUI_H: the 10 lines around the lists and as many list rows as fit; a longer
   #  options list scrolls, its window following the focus. A 24-row terminal scrolled with every option shown, and
@@ -638,9 +692,9 @@ tui_draw() {
     left=""; right=""
     if [ $i -lt ${#TUI_KEYS[@]} ]; then
       local mk=${TUI_KEYS[$i]} mark=" " cur=" "
-      model_path "$mk" >/dev/null 2>&1 && mark="*"
+      [ "${TUI_HAVE[$mk]:-0}" = 1 ] && mark="*"
       [ $i -eq "$TUI_SEL" ] && cur=">"
-      left="$cur$((i + 1)) $mark $(tui_cut "$(m_field "$mk" 1 | sed 's/ (.*//')" 26)"
+      left="$cur$((i + 1)) $mark $(tui_cut "${TUI_NAME[$mk]}" 26)"
     fi
     local j=$((i + off))
     if [ $j -lt "$ni" ]; then
@@ -651,7 +705,7 @@ tui_draw() {
   done
   lines+=(" $(printf '%.0s-' {1..78})")
   if [ "$TUI_PANE" = opts ]; then tip=$(tui_tip "$k" "${TUI_ITEMS[$TUI_FOC]}")
-  else tip="$(m_field "$k" 1), ~$(m_field "$k" 3) GB, wants $(m_field "$k" 5) GB of RAM. $(model_path "$k" >/dev/null 2>&1 && printf 'Downloaded.' || printf 'Enter downloads it first.')"; fi
+  else tip="$(m_field "$k" 1), ~$(m_field "$k" 3) GB, wants $(m_field "$k" 5) GB of RAM. $([ "${TUI_HAVE[$k]:-0}" = 1 ] && printf 'Downloaded.' || printf 'Enter downloads it first.')"; fi
   mapfile -t -O ${#lines[@]} lines < <(tui_wrap "$tip" | head -3)
   lines+=(" Changed from the defaults: $(tui_changed "$k" | cut -c1-50)")
   lines+=(" $(printf '%.0s-' {1..78})")
@@ -704,8 +758,10 @@ tui() {  # returns 0 after the server ran or on q; the key to start is in TUI_ST
   trap 'stty "$saved" 2>/dev/null; printf "\033[?25h"' EXIT
   stty -echo -icanon 2>/dev/null
   printf '\033[?25l\033[H\033[J'
+  tui_cache
   while :; do
-    tui_draw
+    # (keys already waiting, a held arrow key or a paste: handled first, one redraw after them; #81)
+    read -t 0 2>/dev/null || tui_draw
     IFS= read -rsn1 key || break
     if [ "$key" = $'\e' ]; then IFS= read -rsn2 -t 0.05 rest || rest=""; key="ESC$rest"; fi
     case "$key" in

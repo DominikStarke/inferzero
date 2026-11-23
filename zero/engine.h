@@ -287,7 +287,13 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     free_buf(o);
     clReleaseKernel(k);  // (before its module goes, in release_all)
     clReleaseKernel(ks);
-    return bytes / 1e6 / best;
+    // (a discrete card's own memory reads 186 GB/s or more (the A380 and up): a figure below 64 is a buffer the driver
+    //  put in system memory without saying so, PCIe's speed timed. The room check above does not catch every case:
+    //  hansong80's A770 under Windows with the 35B's 14.6 GiB of buffers read "12 GB/s", the probe 404, #45. No figure)
+    const double gbs = bytes / 1e6 / best;
+    if (!zrt::integrated() && gbs < 64)
+      throw std::runtime_error("read_gbs: the buffer was placed in system memory (" + std::to_string((int)gbs) + " GB/s)");
+    return gbs;
   }
   static uint64_t raw_bytes(const GpuWeight& w) { return (uint64_t)w.N * (w.K / 256) * gguf_sb_bytes(w.type); }
   std::map<std::string, double> prof_ms;
@@ -1844,7 +1850,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         const char* e = getenv("ARC_QWEN_DSPLIT");
         return e ? atoi(e) : -1;
       }();
-      if (!drafter && !hp.gemma && hd == 256 && hpg % 2 == 0 && (qwen_ds == 1 || (qwen_ds < 0 && hpg >= 8))) {
+      // (2026-11-23: on discrete Alchemist cards also the 4B / 9B / 27B from ARC_QWEN_DSPLIT_FROM positions on, 16,384
+      //  by default (-1: never), in the =1 form. skipzx-lab's A770, the 27B at 92K: attention 369.8 / 373.6 -> 307.9 ms,
+      //  generation 14.64-14.88 -> 15.12 tok/s; KL against the default path at 16K / 32K / 64K, 256 positions each: max
+      //  0.0045, top token 98.8 %, #45. A row decides by its own position, and a group of rows never straddles it)
+      static const int ds_from_env = getenv("ARC_QWEN_DSPLIT_FROM") ? atoi(getenv("ARC_QWEN_DSPLIT_FROM")) : 16384;
+      const bool alch_ds = qwen_ds < 0 && hpg < 8 && ds_from_env >= 0 && cl_.sg8 && !zrt::integrated();
+      if (!drafter && !hp.gemma && hd == 256 && hpg % 2 == 0 &&
+          (qwen_ds == 1 || (qwen_ds < 0 && hpg >= 8) || (alch_ds && pos0 + r0 >= ds_from_env))) {
         const int hg = hpg % 4 == 0 && qwen_ds != 1 ? 4 : 2, n = hg == 4 ? 1 : std::min(left, 2), tr = n, nsub = 4;
         const int sgs = hpg / hg * nsub, lsz = 16 * sgs;
         const int lo = win ? std::max(0, pos0 + r0 - win + 1) : 0, plast = pos0 + r0 + n - 1;
@@ -1873,7 +1886,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       // go through attn_decode one by one, as single tokens do.)
       if (16 * nsp >= 128 || drafter)
         while (tpw < T - r0 && tpw < 4 && 16 * nsp * tpw * 2 <= 512) tpw *= 2;  // apart_ holds 4 rows of partials
-      const int n = std::min(tpw, T - r0);
+      int n = std::min(tpw, T - r0);
+      // (the rows below ARC_QWEN_DSPLIT_FROM stop at it: the ones past it take attn_dsplit, as when decoded alone)
+      if (!drafter && !hp.gemma && hd == 256 && hpg % 2 == 0 && alch_ds && pos0 + r0 + n > ds_from_env)
+        n = std::max(1, ds_from_env - (pos0 + r0));
       if (16 * nsp * tpw >= 128) {
         const int lsz = 16 * nsp * tpw, plast = pos0 + r0 + n - 1, lo = win ? std::max(0, pos0 + r0 - win + 1) : 0;
         int S, kstart, ns, p0 = pos0 + r0, nv = n, q0 = r0;

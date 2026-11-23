@@ -154,7 +154,8 @@ static std::string peak_note(Engine& eng, double gbs) {
   if (peak < 0) {
     try { peak = eng.read_gbs(); } catch (const std::exception&) { peak = 0; }  // (no room left for its buffer)
   }
-  if (peak <= 0) return "";
+  // (a pass that read its weights faster than the probe's figure: the probe timed something else, so no figure; #45, #80)
+  if (peak <= 0 || gbs > peak * 1.1) return "";
   char s[96];
   snprintf(s, sizeof(s), " (%.0f %% of this GPU's measured %.0f GB/s)", gbs / peak * 100, peak);
   return s;

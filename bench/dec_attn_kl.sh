@@ -29,7 +29,9 @@ done
 n=$((ctx + steps))
 have=$(tr ',' '\n' < "$work/ids.txt" | grep -c .)
 [ "$have" -ge "$n" ] || { echo "the text gave $have tokens, fewer than $n"; exit 1; }
-tr ',' '\n' < "$work/ids.txt" | head -n "$n" | paste -sd, - > "$work/ids_cut.txt"
+# (awk reads to the end: head would close the pipe early and tr's SIGPIPE ends the script under pipefail, exit 141;
+#  skipzx-lab, #45)
+tr ',' '\n' < "$work/ids.txt" | awk -v n="$n" 'NR <= n' | paste -sd, - > "$work/ids_cut.txt"
 ctxarg=$(( (n + 256 + 255) / 256 * 256 ))
 echo "dec_attn_kl: $(basename "$model"), $ctx prompt tokens, $steps decoded one by one (--ctx $ctxarg)"
 t0=$(date +%s)

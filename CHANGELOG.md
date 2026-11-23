@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-23: fixes from the day's reports, and faster long-context generation on Arc A-series
+
+- **Faster on Arc A-series (Alchemist) cards at long contexts:** past 16,384 tokens of context, the Qwen models' decode
+  attention reads each key and value once for all the heads that share it. skipzx-lab's A770, the 27B at 92K:
+  attention -17 %, generation 14.64-14.88 -> 15.12 tok/s. Its KL against the previous path stays at 0.0045 or less
+  (16K / 32K / 64K). `ARC_QWEN_DSPLIT_FROM=N` moves the start, `-1` turns it off (#45).
+- **`ARC_ATTN_DEC_SMAX` has no effect with `ARC_QWEN_DSPLIT=1`:** that path keeps its own split size. The docs say so now.
+- **Fixed:** `bench/dec_attn_kl.sh` stopped at once with exit 141 on Linux (its `head` ended a pipe early under
+  `pipefail`; skipzx-lab, #45).
+- **Fixed:** the Linux launcher's full-screen menu took about a second for each key on some systems (d-dorok, NixOS over
+  SSH, #81). It now finds each model's facts once when it opens instead of at every key, the option rules run without
+  extra processes, and keys typed ahead are handled before the next redraw.
+- **Fixed:** `runz` printed a far too low "measured" bandwidth (for example "12 GB/s" on an A770 with the 35B under
+  Windows, #45) when the driver had put its test buffer in system memory. A figure that cannot be the card's own
+  memory is no longer printed.
+
 ## 2026-11-23: the A770 GEMM plan finished: the split DPAS by default on Arc A-series cards
 
 - **Faster on Arc A-series (Alchemist) cards:** the big prompt tile's matrix instructions now run in their split form over
