@@ -658,6 +658,7 @@ static int run_main(int argc, char** argv) {
     }
     else if (a == "--mtp") eo.mtp = true;
     else if (a == "--dflash") { eo.dflash = next(); eo.mtp = true; }  // DFlash2 drafter folder
+    else if (a == "--dspark") eo.dspark = next();  // Inkling 2's DSpark drafter (dspark-*.gguf): greedy drafting
     else if (a == "--draft") {  // auto: DFlash2 and the MTP block, picked per step; mtp: the block only; dflash: DFlash2 only
       const std::string d = next();
       if (d == "mtp") eo.dflash.clear();
@@ -1727,6 +1728,9 @@ static int run_main(int argc, char** argv) {
     if (steps)
       printf("MTP time: drafting %.1f ms, verification %.1f ms (%.1f ms a pass), verify_done %.1f ms\n", mtp_draft_ms,
              mtp_verify_ms, mtp_verify_ms / steps, mtp_done_ms);
+    if (eng.dsp_on() && eng.dsp_checks_)  // (ARC_DSP_CHECK=1: the conv-state rollback against ink_conv_state)
+      printf("DSpark check: %llu verifications, the conv states %s\n", (unsigned long long)eng.dsp_checks_,
+             eng.dsp_check_bad_ ? ("DIFFER in " + std::to_string(eng.dsp_check_bad_)).c_str() : "the same bit for bit every time");
     if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
   }
   if (prof) {

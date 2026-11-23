@@ -818,6 +818,7 @@
   // last tokens up to `tok` appeared earlier in it, the tokens that followed there are the drafts (copy drafting, R1)
   std::vector<int> mtp_draft(int tok, int max_drafts, const std::vector<int>* hist = nullptr) {
     copy_used_ = false;
+    if (dsp_) return dsp_draft(tok, max_drafts);  // (Inkling 2's DSpark drafter, zero/engine_dspark.h)
     if (hist && copy_on()) {
       const int md = std::clamp(max_drafts, 1, std::min(this->max_drafts(), std::max(1, ctx - pos - 1)));
       std::vector<int> cd = copy_lookup(*hist, tok, md);
@@ -872,6 +873,7 @@
   // predicts the token after row i's token). The DeltaNet states after each draft-free prefix are kept so that
   // verify_done() can drop rejected drafts.
   const std::vector<float>& verify(int tok, const std::vector<int>& drafts) {
+    if (dsp_) return dsp_verify(tok, drafts);
     const int T = 1 + (int)drafts.size();
     if (drafts.empty() || (int)drafts.size() > max_drafts()) throw std::runtime_error("verify: too many drafts");
     if (pos + T > ctx) throw std::runtime_error("context overflow");
@@ -899,6 +901,7 @@
   }
   // The first `accepted` drafts of the last verify() turned out right; the rest are dropped.
   void verify_done(int accepted) {
+    if (dsp_) return dsp_verify_done(accepted);
     const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
     const cl_mem dfl_src = vrows_ ? dfl_vrows_ : nullptr;  // (a batched pass: the slot's own copy of its rows)
     vrows_ = false;

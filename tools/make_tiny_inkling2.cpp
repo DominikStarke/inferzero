@@ -23,7 +23,7 @@
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--all-experts] [--passes N] [--scale S]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -234,10 +234,11 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--all-experts] [--passes N] [--scale S]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--ggml-org] [--dspark DRAFT.gguf] [--all-experts] [--passes N] [--scale S]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
+  std::string dspark_out;  // (--dspark FILE: a tiny DSpark drafter for it, the real one's names and keys)
   uint64_t seed = 2;
   bool loop = true;
   for (int i = 2; i < argc; ++i) {
@@ -250,6 +251,7 @@ int main(int argc, char** argv) {
     else if (a == "--ggml-org-exps") g_ggml_org = 2;  // (only its experts' types)
     else if (a == "--all-experts") NU = NE;
     else if (a == "--scale" && i + 1 < argc) g_init = std::max(0.01, atof(argv[++i]));
+    else if (a == "--dspark" && i + 1 < argc) dspark_out = argv[++i];
     else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
     else { fprintf(stderr, "make_tiny_inkling2: unknown option %s\n", a.c_str()); return 2; }
   }
@@ -405,6 +407,70 @@ int main(int argc, char** argv) {
     }
     w.write(out);
     printf("%s: %s, %zu tensors, %zu keys\n", out.c_str(), ARCH.c_str(), w.ts.size(), w.kv.size());
+    if (!dspark_out.empty()) {
+      // A tiny DSpark drafter for this model (I2 step 6, 2026-11-24), as unsloth's dspark-Inkling-2-Mini-Q8_0.gguf lays
+      // its drafter out: arch dflash, 3 layers (sliding, global, sliding), a block of 8, the Markov head of rank DR;
+      // no token embedding and no head (it borrows the target's). Taps: 4 of the target's layer visits, the last one
+      // their count (the head's input). Random weights: its drafts are tests of the machinery, not good guesses
+      const int DL = 3, DH = 2, DHKV = 1, DF = 512, DR = 16, DB = 8, DW = 16, KG = DHKV * D, NVIS = loop ? LSTART + (LEND - LSTART) * PASSES + (NL - LEND) : NL;
+      Model d;
+      const std::string q = "dflash.";
+      d.str("general.architecture", "dflash");
+      d.str("general.name", "Inkling 2 tiny DSpark drafter (random weights, inferzero test)");
+      d.u32("general.alignment", 32);
+      d.u32(q + "block_count", DL);
+      d.u32(q + "context_length", 4096);
+      d.u32(q + "embedding_length", E);
+      d.u32(q + "feed_forward_length", DF);
+      d.u32(q + "attention.head_count", DH);
+      d.u32(q + "attention.head_count_kv", DHKV);
+      d.f32(q + "rope.freq_base", 1e6);
+      d.f32(q + "attention.layer_norm_rms_epsilon", 1e-6);
+      d.u32(q + "attention.key_length", D);
+      d.u32(q + "attention.value_length", D);
+      d.u32(q + "vocab_size", NVP);
+      d.u32(q + "vocab_size_unpadded", NV);
+      d.u32(q + "block_size", DB);
+      d.arr(q + "target_layers", 5, std::vector<int64_t>{1, NVIS * 3 / 8, NVIS * 11 / 16, NVIS});
+      d.u32(q + "dspark.markov_rank", DR);
+      d.b(q + "sample_from_anchor", false);
+      d.b(q + "has_confidence_head", false);
+      d.b(q + "attention.causal", false);
+      d.u32(q + "attention.sliding_window", DW);
+      d.arr(q + "attention.sliding_window_pattern", 5, std::vector<int64_t>{1, 0, 1});
+      d.u32(q + "rope.dimension_count", D);
+      d.f32(q + "final_logit_softcapping", 30.0);
+      const uint32_t Q8 = GGML_Q8_0;
+      d.tensor("dspark_fuse.weight", randn((size_t)(DL + 1) * 4, 1.0), F32, S{(uint64_t)DL + 1, 4});
+      d.tensor("dspark_hidden_out.bias", randn(E, 0.1), F32, S{uE});
+      d.tensor("dspark_hidden_out.weight", mat(E, DR), BF16, S{uE, (uint64_t)DR});
+      d.tensor("dspark_norm.weight", normw(E), F32, S{uE});
+      d.tensor("joint_proj.bias", randn((size_t)3 * DR, 0.1), F32, S{(uint64_t)3 * DR});
+      d.tensor("joint_proj.weight", mat(3 * DR, 2 * (DR + E)), BF16, S{(uint64_t)3 * DR, (uint64_t)2 * (DR + E)});
+      d.tensor("markov_w1.weight", randn((size_t)NVP * DR, 1.0), BF16, S{(uint64_t)NVP, (uint64_t)DR});
+      d.tensor("mask_embd.weight", randn(E, 1.0), F32, S{uE});
+      d.tensor("output_norm.weight", normw(E), F32, S{uE});
+      for (int il = 0; il < DL; ++il) {
+        const std::string b = "blk." + std::to_string(il) + ".";
+        d.tensor(b + "attn_k.weight", mat(KG, E), Q8, S{(uint64_t)KG, uE});
+        d.tensor(b + "attn_k_ctx.weight", mat(KG, E), Q8, S{(uint64_t)KG, uE});
+        d.tensor(b + "attn_k_ctx_norm.weight", normw(D), F32, S{(uint64_t)D});
+        d.tensor(b + "attn_k_norm.weight", normw(D), F32, S{(uint64_t)D});
+        d.tensor(b + "attn_norm.weight", normw(E), F32, S{uE});
+        d.tensor(b + "attn_output.weight", mat(E, DH * D), Q8, S{uE, (uint64_t)DH * D});
+        d.tensor(b + "attn_q.weight", mat(DH * D, E), Q8, S{(uint64_t)DH * D, uE});
+        d.tensor(b + "attn_q_norm.weight", normw(D), F32, S{(uint64_t)D});
+        d.tensor(b + "attn_v.weight", mat(KG, E), Q8, S{(uint64_t)KG, uE});
+        d.tensor(b + "attn_v_ctx.weight", mat(KG, E), Q8, S{(uint64_t)KG, uE});
+        d.tensor(b + "dflare_norm.weight", normw(E), F32, S{uE});
+        d.tensor(b + "ffn_down.weight", mat(E, DF), Q8, S{uE, (uint64_t)DF});
+        d.tensor(b + "ffn_gate.weight", mat(DF, E), Q8, S{(uint64_t)DF, uE});
+        d.tensor(b + "ffn_norm.weight", normw(E), F32, S{uE});
+        d.tensor(b + "ffn_up.weight", mat(DF, E), Q8, S{(uint64_t)DF, uE});
+      }
+      d.write(dspark_out);
+      printf("%s: dflash (DSpark), %zu tensors, %zu keys\n", dspark_out.c_str(), d.ts.size(), d.kv.size());
+    }
   } catch (const std::exception& e) {
     fprintf(stderr, "make_tiny_inkling2: %s\n", e.what());
     return 1;

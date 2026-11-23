@@ -12,3 +12,7 @@ Ideas from other projects (no code or text taken):
 
 - zero/kernels/gemm_xw8.cl's 32 x 48 tile through local memory (XW_NC 3, 2026-11-22) follows the strategy of the
   int8 GEMM in oneDNN (Intel, Apache License 2.0) on Alchemist GPUs, as its verbose output describes it.
+- zero/engine_dspark.h (Inkling 2's DSpark drafter, 2026-11-24) follows the drafter's graph as ollama's
+  mlxrunner/model/inkling2/draft.go and model.go compute it (ollama, MIT license, Copyright (c) Ollama): the taps of
+  the target's layer visits, the fused context keys, the 8-row block and the Markov head. vLLM's and SGLang's DSpark
+  drafters (Apache License 2.0) were read as cross-checks.

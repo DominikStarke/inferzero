@@ -39,7 +39,19 @@
   struct InkSlot {  // per cache slot
     int ip = 0, cap = 0;
     cl_mem kc = nullptr, vc = nullptr, conv[4] = {nullptr, nullptr, nullptr, nullptr};  // (conv: K, V, attn out, ffn out)
+    cl_mem save[4] = {nullptr, nullptr, nullptr, nullptr};  // (DSpark: a verification's conv inputs, engine_dspark.h)
   };
+  cl_mem ink_conv_arena_ = nullptr;   // (every slot's conv states, sub-buffers: ink_conv_off_ bytes into it)
+  std::vector<size_t> ink_conv_off_;
+  cl_mem ink_sub(cl_mem parent, size_t off, size_t bytes) {
+    if (opt.dry) return nullptr;
+    cl_int err;
+    cl_buffer_region r{off, bytes};
+    cl_mem m = clCreateSubBuffer(parent, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &r, &err);
+    CL_CHECK(err);
+    mems_.push_back(m);
+    return m;
+  }
   std::vector<InkLayer> inkl_;
   std::vector<InkSlot> inks_;
   // the chunk's buffers (rows of max_chunk)
@@ -305,16 +317,27 @@
     // the cache slots: K / V (f16) at the slot's capacity, the conv states (zeroed by ink_reset)
     inks_.assign(k.nslot, InkSlot());
     const int swa_cap = swa_ring_cap(ctx, max_chunk, 0);
+    // (the conv states as sub-buffers of one arena, 256-byte aligned, I2 step 6: DSpark's verification moves all of
+    //  them on in one launch, ink_conv_commit. The same buffers to the kernels as before)
+    const int ch[4] = {KG, KG, E, E};
+    ink_conv_off_.assign((size_t)k.nslot * 4, 0);
+    size_t off = 0;
+    for (int s = 0; s < k.nslot; ++s)
+      for (int c = 0; c < 4; ++c) {
+        ink_conv_off_[(size_t)s * 4 + c] = off;
+        off += ((size_t)ch[c] * (k.nc - 1) * 4 + 255) / 256 * 256;
+      }
+    ink_conv_arena_ = buf(off);
     for (int s = 0; s < k.nslot; ++s) {
       InkSlot& S = inks_[s];
       S.ip = ink_layer_phys(s);
       S.cap = inkl_[S.ip].glob ? ctx : swa_cap;
       S.kc = buf((size_t)S.cap * KG * 2);
       S.vc = buf((size_t)S.cap * KG * 2);
-      const int ch[4] = {KG, KG, E, E};
-      for (int c = 0; c < 4; ++c) S.conv[c] = buf((size_t)ch[c] * (k.nc - 1) * 4);
+      for (int c = 0; c < 4; ++c) S.conv[c] = ink_sub(ink_conv_arena_, ink_conv_off_[(size_t)s * 4 + c], (size_t)ch[c] * (k.nc - 1) * 4);
     }
     ink_reset();
+    if (!opt.dspark.empty()) load_dspark(opt.dspark);  // (I2 step 6: zero/engine_dspark.h)
   }
   cl_mem ink_tok_norm_ = nullptr, ink_out_res_q_ = nullptr;
 
@@ -386,6 +409,7 @@
     ink_bank_out_ = f(E);
     ink_prelude_ = f(E);
     ink_dummy_ = buf(64);
+    if (dsp_) dsp_alloc();  // (DSpark: its buffers and caches, zero/engine_dspark.h)
     // (I1.7 step 4: the shared MoE kernels' tables where a layer's file has none: the gate-up / down scales 1, the
     //  selection bias 0; NE floats each)
     {
@@ -404,6 +428,7 @@
     for (auto& S : inks_)
       for (int c = 0; c < 4; ++c)
         if (S.conv[c]) fill(S.conv[c], (size_t)ch[c] * (ink_.nc - 1) * 4);
+    dsp_cn_ = 0;  // (DSpark: its context starts again with the sequence)
   }
 
   // ---- launches
@@ -498,11 +523,21 @@
   }
   // llama's convolve over the chunk with the slot's state, then the state moved on (out != cur)
   // (add: then add = add + out, ink_add's step; one token in the same launch)
-  void ink_conv(cl_mem cur, cl_mem w, cl_mem dyn, cl_mem state, cl_mem out, int C, int T, cl_mem add = nullptr) {
+  // (save: DSpark's verification pass, I2 step 6: the inputs kept there and the state left as it was;
+  //  ink_conv_commit moves it on by the accepted rows after the pass)
+  void ink_conv(cl_mem cur, cl_mem w, cl_mem dyn, cl_mem state, cl_mem out, int C, int T, cl_mem add = nullptr,
+                cl_mem save = nullptr) {
     cl_kernel kk = ink_k("ink_conv");
     int has = dyn ? 1 : 0, nh = hp.n_head_kv, NC = ink_.nc;
     float sc = 1.0f / std::sqrt((float)((dyn ? 2 : 1) * NC + 1));
     static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+    if (save) {
+      int hs = 1;
+      set_args(kk, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, T, NC, sc, save, hs);
+      ink_run1("ink_conv", kk, (size_t)C * T);
+      if (add) ink_add(add, out, add, C * T);
+      return;
+    }
     if (T == 1 && !unfused) {  // (I2 step 1: one token, the conv and its state's move in one launch)
       cl_kernel k1 = ink_k("ink_conv1");
       int ha = add ? 1 : 0;
@@ -510,7 +545,8 @@
       ink_run1("ink_conv1", k1, C);
       return;
     }
-    set_args(kk, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, T, NC, sc);
+    int hs0 = 0;
+    set_args(kk, 0, cur, w, dyn ? dyn : ink_dummy_, has, nh, state, out, C, T, NC, sc, ink_dummy_, hs0);
     ink_run1("ink_conv", kk, (size_t)C * T);
     cl_kernel ks = ink_k("ink_conv_state");
     set_args(ks, 0, cur, state, C, T, NC);
@@ -623,8 +659,8 @@
     if (L.glob) ink_mm("ink_kcp", L.kcp, in[1], ink_kd_, T, Mp, true);
     ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp, true);
     if (L.glob) ink_mm("ink_vcp", L.vcp, in[2], ink_vd_, T, Mp, true);
-    ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T);
-    ink_conv(ink_v0_, L.v_conv, L.glob ? ink_vd_ : nullptr, S.conv[1], ink_vc_, KG, T);
+    ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T, nullptr, dsp_save(S, 0));
+    ink_conv(ink_v0_, L.v_conv, L.glob ? ink_vd_ : nullptr, S.conv[1], ink_vc_, KG, T, nullptr, dsp_save(S, 1));
     // clips (q, r: per-head scales; global: the log-length factor), K's clip, V's RMS norm
     static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
     if (!unfused) {
@@ -671,7 +707,7 @@
     // a block's first layer: the stream before it joins the blocks, the attention output starts a new one; else the
     // output is added to the stream (in the conv's launch, ink_conv's add)
     const bool bstart = ip % k.block == 0;
-    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_);
+    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_, dsp_save(S, 2));
     ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
     if (bstart) {
       ink_copy(ink_cur_, 0, ink_blocks_, (size_t)nb * max_chunk * rowE, rowE * T);
@@ -732,7 +768,7 @@
       ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
     } else {
       ink_dump("mo", ip, ink_mo_, (size_t)T * E, T);
-      ink_conv(ink_mo_, L.ffn_conv, nullptr, S.conv[3], ink_tmp_, E, T, ink_cur_);
+      ink_conv(ink_mo_, L.ffn_conv, nullptr, S.conv[3], ink_tmp_, E, T, ink_cur_, dsp_save(S, 3));
     }
     ink_dump("out", ip, ink_cur_, (size_t)T * E, T);
   }
@@ -763,6 +799,7 @@
     ink_pos_ = 0;
     int nb = 0;
     auto run_layer_at = [&](int slot, bool msgs) {
+      if (dsp_) dsp_tap((int)ink_pos_, T);  // (DSpark's taps: the stream as this visit starts, engine_dspark.h)
       ink_next_il_ = ink_pos_ + 1 < ink_order_.size() ? ink_order_[ink_pos_ + 1] : -1;
       ++ink_pos_;
       ink_layer(slot, T, Mp, msgs, nb);
@@ -792,6 +829,7 @@
     // the output's mix, into x_ (head(): output_norm, the head, the softcap)
     ink_mix(ink_blocks_, nb, ink_cur_, ink_out_res_q_, 1, x_, T);
     ink_dump("fin", 99, x_, (size_t)T * E, T);
+    if (dsp_) dsp_after_forward(T);  // (DSpark: the last tap, the head's input; outside verification the context)
   }
 
   // the tokens' count (vocab_size_unpadded): the logits that are tokens, the head's first rows (runz --kl-ref)

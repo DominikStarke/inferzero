@@ -529,7 +529,17 @@ with all experts cached it is the resident path, with smaller Q8_0 records for t
    drafter's own architecture. Each verified token costs one main pass for several tokens, so it is the lever where
    bandwidth caps: the A770 (130 needs ~1.2 tokens a pass at 100 % of its bandwidth, ~1.6 at a realistic 75 %), the
    B60 / B580, the iGPUs. The drafts a step per family as `xe2_mtp_drafts` does for MTP (Alchemist 4).
-   **The design (2026-11-24, for review before code): see "DSpark drafting: design" below.**
+   **The design (2026-11-24, for review before code): see "DSpark drafting: design" below.** **Built (2026-11-24,
+   runz only, `--dspark FILE`):** `zero/engine_dspark.h` (loading, the taps, the drafter's caches, the block and the
+   top-K Markov chain, the 8-row verification, the conv-state rollback), `ops_inkling.cl`'s `dsp_*` and
+   `ink_conv_commit` kernels, the conv states in one arena, `make_tiny_inkling2 --dspark` (a tiny drafter in the real
+   file's layout). The tiny file, 48 tokens: the greedy text with drafting equals plain decoding with the random drafter
+   (0 accepted), the exact chain (`ARC_DSP_TOPK=0`), and oracle drafts (`ARC_DSP_ORACLE`: the accepted count cycling 0,
+   1, ..., all; 28 / 60 at 3 drafts, 35 / 91 at 7); `ARC_DSP_CHECK=1` compared the conv arena after every rollback with
+   `ink_conv_state` over the same inputs: the same bit for bit in all 33 verifications. Not known until the real file
+   runs: the acceptance (the tiny drafter's weights are random), so the drafter's own arithmetic is checked there first.
+   Left: the top-K and the chain on the GPU (drafting costs 4-8 ms a step on the laptop, most of it host waits), the
+   drafter's memory in the plan, sampled decoding (greedy only: the server does not take Inkling yet).
 7. **The memory tiers per card** (I1.7's design, sized by the plan):
 
 | Card | Memory, bandwidth | Experts (14.7 GiB of records) | Prompt experts | Drafting | Notes |

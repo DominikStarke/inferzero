@@ -184,10 +184,14 @@ __kernel void ink_ctrl_fused(__global float* x, __global const float* Wf, __glob
 // out[t][c] = (cur[t][c] + sum_i w[c][i] x(t - (NC - 1) + i) + [dyn] sum_lag x(t - lag) dyn[t][h(c)][lag]) * scale,
 // x(tt) the chunk's input for tt >= 0, else the slot's state (the NC - 1 inputs before the chunk, oldest first, per
 // channel). dyn: T x (nh NC) or none (has_dyn 0). Call ink_conv_state afterwards (this reads the old state).
+// (I2 step 6, DSpark's verification: has_save also copies the chunk's inputs to save, T x C, for ink_conv_commit to
+//  move the state on by the accepted rows only; the caller then skips ink_conv_state)
 __kernel void ink_conv(__global const float* cur, __global const float* w, __global const float* dyn, int has_dyn, int nh,
-                       __global const float* state, __global float* out, int C, int T, int NC, float scale) {
+                       __global const float* state, __global float* out, int C, int T, int NC, float scale,
+                       __global float* save, int has_save) {
   const int i = get_global_id(0);
   if (i >= C * T) return;
+  if (has_save) save[i] = cur[i];
   const int t = i / C, c = i % C;
 #define INK_X(tt) ((tt) >= 0 ? cur[(size_t)(tt) * C + c] : state[(size_t)c * (NC - 1) + (NC - 1) + (tt)])
   float acc = 0.0f;
@@ -594,4 +598,148 @@ __kernel void ink_mask_logits(__global float* logits, int nl, int nv, int rows) 
   const int i = get_global_id(0), pad = nl - nv;
   if (i >= pad * rows) return;
   logits[(size_t)(i / pad) * nl + nv + i % pad] = -INFINITY;
+}
+
+// ---- DSpark drafting (I2 step 6, docs/inkling2.md "DSpark drafting: design"; zero/engine_dspark.h)
+
+// the conv states after a verification pass: each (state, its saved inputs) entry moved on by the first `rows` of the
+// pass's inputs, as ink_conv_state would have moved it by those rows alone (in place, ascending, reads only entries
+// not yet written). One launch for every visit's four states: grid (max C rounded, entries); tab: (state offset, save
+// offset, C) per entry, in floats of the two arenas
+__kernel void ink_conv_commit(__global float* states, __global const float* saves, __global const int* tab, int n,
+                              int rows, int NC) {
+  const int c = get_global_id(0), e = get_global_id(1);
+  if (e >= n) return;
+  const int C = tab[3 * e + 2];
+  if (c >= C) return;
+  __global float* s = states + tab[3 * e] + (size_t)c * (NC - 1);
+  __global const float* cur = saves + tab[3 * e + 1];
+  for (int k = 0; k < NC - 1; ++k) {
+    const int tt = rows - (NC - 1) + k;
+    s[k] = tt >= 0 ? cur[(size_t)tt * C + c] : s[k + rows];
+  }
+}
+
+// rows 1 .. B-1 of the draft block: the mask embedding (row 0, the anchor, is written by the host)
+__kernel void dsp_block_init(__global float* x, __global const float* mask, int E, int B) {
+  const int i = get_global_id(0);
+  if (i >= E * (B - 1)) return;
+  x[(size_t)E + i] = mask[i % E];
+}
+
+// a head's RMS norm (weights w, eps) and its rotary position (NeoX halves, theta = pos base^(-2i / D)) in the
+// work-group (INK_D items, one per value); returns this item's value
+inline float dsp_norm_rope1(float v, __global const float* w, int pos, float eps, float base, __local float* red,
+                            __local float* y) {
+  const int d = get_local_id(0), h2 = INK_D / 2;
+  const float ss = ink_wg_sum(v * v, red);
+  y[d] = v * rsqrt(ss / (float)INK_D + eps) * w[d];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int i = d < h2 ? d : d - h2;
+  const float th = (float)pos * pow(base, -2.0f * (float)i / (float)INK_D), cs = cos(th), sn = sin(th);
+  const float o = d < h2 ? y[d] * cs - y[d + h2] * sn : y[d] * cs + y[d - h2] * sn;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  return o;
+}
+// q or k rows of the block in place: [rows][nh][D], row r at position pos0 + r; one work-group of INK_D per (row, head)
+__kernel void dsp_qk(__global float* x, int nh, __global const float* w, int pos0, float eps, float base) {
+  __local float red[INK_D], y[INK_D];
+  const int g = get_group_id(0), r = g / nh, d = get_local_id(0);
+  __global float* p = x + (size_t)g * INK_D;
+  p[d] = dsp_norm_rope1(p[d], w, pos0 + r, eps, base, red, y);
+}
+// the context's K (normed, rotated) and V of `rows` committed tokens into a layer's f16 cache, at (pos0 + r) % cap
+__kernel void dsp_kv_store(__global const float* kk, __global const float* vv, int nkv, __global const float* w,
+                           int pos0, float eps, float base, __global half* kc, __global half* vc, int cap) {
+  __local float red[INK_D], y[INK_D];
+  const int g = get_group_id(0), r = g / nkv, h = g % nkv, d = get_local_id(0);
+  const float k = dsp_norm_rope1(kk[(size_t)g * INK_D + d], w, pos0 + r, eps, base, red, y);
+  const size_t o = ((size_t)((pos0 + r) % cap) * nkv + h) * INK_D + d;
+  vstore_half(k, o, kc);
+  vstore_half(vv[(size_t)g * INK_D + d], o, vc);
+}
+// the block's attention, one work-group of INK_D per (row, head): its keys the context's cn - clo cached ones (u % cap)
+// and the block's B rows, every row seeing all of them (not causal), scale 1 / sqrt(D); online softmax over tiles of
+// INK_D keys, as ink_attn
+__kernel void dsp_attn(__global const float* q, __global const float* kb, __global const float* vb,
+                       __global const half* kc, __global const half* vc, int cap, int clo, int cn,
+                       __global float* out, int H, int HKV, int B) {
+  __local float qs[INK_D], p[INK_D], red[INK_D];
+  const int g = get_group_id(0), t = g / H, h = g % H, kvh = h / (H / HKV), d = get_local_id(0);
+  qs[d] = q[((size_t)t * H + h) * INK_D + d];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int nctx = cn - clo, nk = nctx + B;
+  const float inv = rsqrt((float)INK_D);
+  float m = -INFINITY, z = 0.0f, acc = 0.0f;
+  for (int base = 0; base < nk; base += INK_D) {
+    const int j = base + d;
+    float s = -INFINITY;
+    if (j < nk) {
+      float dot = 0.0f;
+      if (j < nctx) {
+        __global const half* kr = kc + ((size_t)((clo + j) % cap) * HKV + kvh) * INK_D;
+        for (int i = 0; i < INK_D; ++i) dot += qs[i] * vload_half(i, kr);
+      } else {
+        __global const float* kr = kb + ((size_t)(j - nctx) * HKV + kvh) * INK_D;
+        for (int i = 0; i < INK_D; ++i) dot += qs[i] * kr[i];
+      }
+      s = dot * inv;
+    }
+    const float mt = ink_wg_max(s, red);
+    const float mn = fmax(m, mt), corr = m == -INFINITY ? 0.0f : exp(m - mn);
+    const float e = j < nk ? exp(s - mn) : 0.0f;
+    p[d] = e;
+    z = z * corr + ink_wg_sum(e, red);
+    acc *= corr;
+    const int n = min(INK_D, nk - base);
+    for (int k = 0; k < n; ++k) {
+      const int jj = base + k;
+      const float v = jj < nctx ? vload_half(((size_t)((clo + jj) % cap) * HKV + kvh) * INK_D + d, vc)
+                                : vb[((size_t)(jj - nctx) * HKV + kvh) * INK_D + d];
+      acc += p[k] * v;
+    }
+    m = mn;
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  out[((size_t)t * H + h) * INK_D + d] = acc / z;
+}
+// the taps' mix of a row: out[r] = RMS(sum_t f[t] tap_t[r0 + r], w), f the fuse row (softmaxed at load); taps at
+// tstride floats apart, rows of E. One work-group of 256 per row
+__kernel void dsp_mix(__global const float* taps, int ntap, long tstride, int r0, __global const float* f,
+                      __global const float* w, __global float* out, int E, float eps) {
+  __local float red[INK_LS];
+  const int r = get_group_id(0), l = get_local_id(0), n = get_local_size(0);
+  float ss = 0.0f;
+  for (int i = l; i < E; i += n) {
+    float v = 0.0f;
+    for (int t = 0; t < ntap; ++t) v += f[t] * taps[(size_t)t * tstride + (size_t)(r0 + r) * E + i];
+    out[(size_t)r * E + i] = v;
+    ss += v * v;
+  }
+  const float rs = rsqrt(ink_wg_sum(ss, red) / (float)E + eps);
+  for (int i = l; i < E; i += n) out[(size_t)r * E + i] = out[(size_t)r * E + i] * rs * w[i];
+}
+// the Markov head's input: z = [state (R), markov_w1[last] (R), h (E), f (E)]
+__kernel void dsp_cat(__global float* z, __global const float* state, __global const float* w1, __global const float* h,
+                      __global const float* f, int R, int E) {
+  const int i = get_global_id(0);
+  if (i >= 2 * (R + E)) return;
+  z[i] = i < R ? state[i] : i < 2 * R ? w1[i - R] : i < 2 * R + E ? h[i - 2 * R] : f[i - 2 * R - E];
+}
+// its gates (g: joint_proj z, b its bias): keep = sigmoid, update = tanh, latent = tanh; state = keep state +
+// (1 - keep) update
+__kernel void dsp_gate(__global const float* g, __global const float* b, __global float* state, __global float* lat,
+                       int R) {
+  const int i = get_global_id(0);
+  if (i >= R) return;
+  const float keep = 1.0f / (1.0f + exp(-(g[i] + b[i])));
+  const float upd = tanh(g[R + i] + b[R + i]);
+  lat[i] = tanh(g[2 * R + i] + b[2 * R + i]);
+  state[i] = keep * state[i] + (1.0f - keep) * upd;
+}
+// u = u + b (+ h where has_h): the correction's vector, hidden_out lat + its bias (+ the row's own h: the exact chain)
+__kernel void dsp_addb(__global float* u, __global const float* b, __global const float* h, int has_h, int E) {
+  const int i = get_global_id(0);
+  if (i >= E) return;
+  u[i] = u[i] + b[i] + (has_h ? h[i] : 0.0f);
 }
