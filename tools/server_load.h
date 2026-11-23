@@ -273,7 +273,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   //  memory row, 2026-11-23. The stage's weights in RAM, if any, are said with it)
   if (!so.ctx_auto && L->pp) {
     const double GiB = 1073741824.0;
-    zrt::Dev* const was = zrt::cur;
+    // (restored by a scope guard, as PpEngine's Back: a throw in the checks or the strings must not leave the server's
+    //  thread on the last stage's GPU; the Researcher's review of 78ad6ba)
+    struct Back { zrt::Dev* s; ~Back() { zrt::cur = s; } } back{zrt::cur};
     const int n = L->pp->stages();
     for (int r = 0; r < n; ++r) {
       zrt::cur = zrt::devs[PpEngine::gpu_of(r, n)];
@@ -288,7 +290,6 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
               fit > 0 ? ("this stage fits --ctx " + std::to_string(fit) + "; --ctx auto takes the smallest over the stages").c_str()
                       : "no context fits this stage: --tensor-split for fewer of its layers, or --ctx auto");
     }
-    zrt::cur = was;
   }
   try {  // (the log's model and memory lines, docs/logging.md; /metrics' model_info: never a reason the load fails)
     const auto& h = eng.hp;
