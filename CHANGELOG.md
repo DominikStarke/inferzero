@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-23: audit fixes: the memory plan of layer splits and Gemma, the RAM of the CPU path, the failsafe
+
+- **Cards that cannot hold the model:**
+  - A layer split's stage counted the whole model's KV and recurrent states in its room, so more of each stage's
+    weights went to RAM than needed. It now counts its own layers.
+  - Gemma's sliding-window rings were counted at 6 bytes a value; they take ~2 (int8 K and V). The layers that reuse
+    another's KV cache counted again.
+  - The RAM cap counted the weights' own bytes only. With the CPU path for weights in RAM (on by default on discrete
+    cards) each also gets an int8 copy, ~3.6x the RAM for an IQ3_S model. A 16 GB PC could page or fail; the cap
+    now counts it.
+- **The GPU failsafe:**
+  - Two threads failing at once (a split model losing both GPUs) no longer garble the hang marker.
+  - A split model's GPU that hangs now writes the marker too.
+- **A layer split that fails to load** frees each stage's memory on its own GPU (GPU 0 freed another driver's GPU's
+  memory before).
+- **`zero-server start -Preset X`** keeps the preset's `-Opt` / `-NoOpt` switches (they were dropped).
+- **The launcher window** says to restart the computer after a GPU hang or a lost GPU, not to shrink the context.
+- **Smaller fixes:**
+  - An empty `log-dir.txt` no longer stops every `zero-server` command and the window.
+  - On Linux, packaged models no longer trigger a catalog scan at every model switch.
+  - The 256 MB log roll zips in the background, not with the log locked.
+  - `./zero-launcher.sh` exits 4 for a busy port (as `zero-server`) and makes `--log-dir` absolute.
+  - runz's `--mtp-drafts` help gives the real defaults.
+
 ## 2026-11-23: the server log: a second server no longer damages the first one's
 
 - **Fixed:** a second serverz on the same logs folder rotated the running server's log before it stopped on the

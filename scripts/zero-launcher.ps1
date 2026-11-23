@@ -55,8 +55,9 @@ $exe = Exe
 $stateFile = Join-Path $stateDir "server.json"
 # (logs\server.log since 2026-11-23; zero-server -LogDir's folder, kept in log-dir.txt, or ARC_LOG_DIR: zero-server.ps1)
 $serverLogDir = if ($env:ARC_LOG_DIR) { [IO.Path]::GetFullPath($env:ARC_LOG_DIR) }
-                elseif (Test-Path -LiteralPath (Join-Path $stateDir "log-dir.txt")) { (Get-Content -Encoding UTF8 -LiteralPath (Join-Path $stateDir "log-dir.txt") -TotalCount 1).Trim() }
+                elseif (Test-Path -LiteralPath (Join-Path $stateDir "log-dir.txt")) { "$(Get-Content -Encoding UTF8 -LiteralPath (Join-Path $stateDir "log-dir.txt") -TotalCount 1)".Trim() }
                 else { Join-Path $stateDir "logs" }
+if (-not $serverLogDir) { $serverLogDir = Join-Path $stateDir "logs" }  # (an empty log-dir.txt)
 $serverLog = Join-Path $serverLogDir "server.log"
 $presetDir = Join-Path $stateDir "presets"
 $updateFile = Join-Path $stateDir "update-check.json"
@@ -2116,8 +2117,13 @@ function Show-ActionFailed([int]$code) {
   $out = @(Get-Content -Encoding UTF8 $script:actOut -ErrorAction SilentlyContinue | Where-Object { $_ })
   $details = (($out | Select-Object -Last 25) -join "`r`n") + $(if ($err) { "`r`n$err" } else { "" })
   $first = @("$err" -split "`r?`n" | Where-Object { $_ -and $_ -notmatch '^\s*(At |\+|CategoryInfo|FullyQualifiedErrorId)' })[0]
+  # (exit 2 after a GPU hang or a lost GPU too, or a start the hang marker refused: then a restart helps, not a smaller
+  #  context; the marker or the log's lines say which, audit 2026-11-23 M8)
+  $gpuFault = (Test-Path -LiteralPath (Join-Path $stateDir "gpu_hang.txt")) -or
+              (@($out | Where-Object { $_ -match 'GPU (hang|lost)|a GPU (hang|lost) at|restart the computer' }).Count -gt 0)
   $what = switch ($code) {
-    2 { "The server stopped while loading (often: not enough GPU memory; a smaller context, Images off, or close other GPU programs)." }
+    2 { $(if ($gpuFault) { "The GPU hung or was lost: restart the computer (Restart, not Shut down) before starting the server again (the log tab says which kernel)." }
+          else { "The server stopped while loading (often: not enough GPU memory; a smaller context, Images off, or close other GPU programs)." }) }
     3 { "The server did not become ready within 10 minutes (the log tab says how far it got)." }
     4 { $(if ($out.Count) { $out[-1] } else { "The port is used by another program: pick another port (advanced options)." }) }
     default { $(if ($first) { "$first".Trim() } else { "Failed (exit code $code)." }) }

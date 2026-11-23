@@ -781,7 +781,7 @@ run_server() {
   local host=${HOST:-127.0.0.1} shown url pid opened=0 rc
   case "$host" in 0.0.0.0) shown=127.0.0.1;; ::) shown=::1;; *) shown=$host;; esac
   case "$shown" in *:*) url="http://[$shown]:$PORT/";; *) url="http://$shown:$PORT/";; esac
-  if port_busy "$host" "$PORT"; then say "port $PORT is in use (another server?): stop it, or choose another with --port"; return 1; fi
+  if port_busy "$host" "$PORT"; then say "port $PORT is in use (another server?): stop it, or choose another with --port"; return 4; fi  # (4, as zero-server: not 1, which Docker restarts in a loop)
   exposed "$HOST" && say "note: --host $HOST makes the server reachable from your network; it has no password of its own"
   [ ${#OPT_WORDS[@]} -gt 0 ] && say "options: $(IFS=';'; printf '%s' "${OPT_WORDS[*]}" | sed 's/;/; /g')"
   say "starting: ${OPT_ENV[*]}${OPT_ENV[*]:+ }${CMD[*]}"
@@ -1032,7 +1032,7 @@ main() {
       --think-budget) THINK=${2:-}; shift;;
       --session-cache-gb) SESS_GB=${2:-}; shift;;
       --chunk) CHUNK=${2:-}; shift;;
-      --log-dir) LOG_DIR=${2:-}; shift;;
+      --log-dir) LOG_DIR=${2:-}; shift; case "$LOG_DIR" in ''|/*) ;; *) LOG_DIR="$PWD/$LOG_DIR";; esac;;  # (absolute: serverz runs in the package folder)
       --model-dirs) mode=model_dirs;;
       --add-model-dir) md_add=${2:-}; shift; mode=model_dirs;;
       --remove-model-dir) md_rm=${2:-}; shift; mode=model_dirs;;

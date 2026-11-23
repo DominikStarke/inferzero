@@ -95,12 +95,23 @@ class PpEngine {
       for (int r = 0; r < n; ++r)
         ram_gb[r] = std::min(32 * GiB, total * (double)(c[r + 1] - c[r]) / nl) / GiB;
     }
-    for (int r = 0; r < n; ++r) {
-      zrt::cur = zrt::devs[gpu_of(r, n)];
-      EngineOptions so = stage_options(o, c, r);
-      if (r < (int)host_gb.size() && host_gb[r] >= 0 && so.host_weights_gb < 0) so.host_weights_gb = host_gb[r];
-      if (ram_gb[r] >= 0) so.expert_ram_gb = ram_gb[r];  // (0: no tier, as the option means)
-      stages_.push_back(std::make_unique<Engine>(path, so));
+    try {
+      for (int r = 0; r < n; ++r) {
+        zrt::cur = zrt::devs[gpu_of(r, n)];
+        EngineOptions so = stage_options(o, c, r);
+        if (r < (int)host_gb.size() && host_gb[r] >= 0 && so.host_weights_gb < 0) so.host_weights_gb = host_gb[r];
+        if (ram_gb[r] >= 0) so.expert_ram_gb = ram_gb[r];  // (0: no tier, as the option means)
+        stages_.push_back(std::make_unique<Engine>(path, so));
+      }
+    } catch (...) {
+      // (a stage that failed to load: the ones built freed each on its own GPU, as ~PpEngine does, before Back puts
+      //  GPU 0 back. Freed after it, through GPU 0's context, a GPU of another driver's memory; audit 2026-11-23 M6)
+      for (int r = (int)stages_.size() - 1; r >= 0; --r) {
+        zrt::cur = zrt::devs[gpu_of(r, n)];
+        stages_[r].reset();
+      }
+      stages_.clear();
+      throw;
     }
     rows_.resize(n);
   }

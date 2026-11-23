@@ -13,6 +13,8 @@
 #include "platform.h"
 #include "app_dir.h"
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -106,7 +108,7 @@ inline char gpu_name[256] = "";
 
 // the marker written atomically (a temporary file, then a rename); false when it could not be written
 inline bool write_marker(Kind k, const char* kernel, const char* extra = nullptr) {
-  const std::string p = marker_path(), tmp = p + ".tmp";
+  const std::string p = marker_path(), tmp = p + "." + std::to_string(plat::process_id()) + ".tmp";  // (one per process)
   FILE* f = fopen(tmp.c_str(), "wb");
   if (!f) return false;
   fprintf(f, "time=%s\nprogram=%s\nkernel=%s\nkind=%s\ngpu=%s\nboot=%s\n", utc_now().c_str(), program().c_str(),
@@ -214,6 +216,12 @@ inline void kernel_lines() {
 
 // The one way out after a GPU fault (see the top). detail: what was being waited for or done
 [[noreturn]] inline void gpu_fatal(Kind k, const std::string& detail) {
+  // (one thread does it: a split model's shards both lost reached here together and wrote one .tmp, so no marker or a
+  //  garbled one; the others wait for its _Exit, audit 2026-11-23 M4)
+  static std::atomic<bool> busy{false};
+  if (busy.exchange(true)) {
+    for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
   const char* kn = last_kernel.load();
   const std::string prog = program();
   LOG_ERR("inferzero: GPU %s: %s (the last kernel launched: %s, in %s)\n", kind_name(k), detail.c_str(), kn ? kn : "none",
@@ -242,7 +250,7 @@ inline void marker_log_moved(const std::string& from, const std::string& to) {
     s += (line.rfind("log=", 0) == 0 ? "log=" + to : line) + "\n";
   }
   in.close();
-  const std::string p = marker_path(), tmp = p + ".tmp";
+  const std::string p = marker_path(), tmp = p + "." + std::to_string(plat::process_id()) + ".tmp";  // (one per process)
   if (FILE* f = fopen(tmp.c_str(), "wb")) {
     const bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
     if (fclose(f) == 0 && ok) plat::replace_file(tmp.c_str(), p.c_str());

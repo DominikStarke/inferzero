@@ -1603,7 +1603,8 @@ static int server_main(int argc, char** argv) {
       namespace fs = std::filesystem;
       std::error_code ec;
       if (!fs::exists(m.path, ec)) return true;
-      const std::string pk = lower_ascii(fs::weakly_canonical(zpack::packages_dir(), ec).string()) + "\\";
+      // (PLAT_SEP: "\\" on Linux too made every package look stale there, the catalog scanned again; audit 2026-11-23)
+      const std::string pk = lower_ascii(fs::weakly_canonical(zpack::packages_dir(), ec).string()) + PLAT_SEP;
       if (lower_ascii(fs::weakly_canonical(m.path, ec).string()).rfind(pk, 0) == 0) return false;  // (a package)
       std::string stem = fs::path(m.path).stem().string();
       if (const size_t sp = stem.find("-00001-of-"); sp != std::string::npos) stem.resize(sp);

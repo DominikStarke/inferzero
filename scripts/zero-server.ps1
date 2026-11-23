@@ -175,6 +175,36 @@ function Find-Opt([string]$id) {
   if (-not $o) { throw "zero-server: no option '$id' (the options: $(($optCatalog | ForEach-Object { $_.id }) -join ', '); zero-server options)" }
   return $o
 }
+# (the preset first, before -Opt / -NoOpt / -DefaultOpt below: a preset's switches were read after them and dropped,
+#  audit 2026-11-23 M7)
+# ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
+# zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
+# an option given on the command line wins over the preset's.
+$presetDir = Join-Path $stateDir "presets"
+$presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
+  "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb",
+  "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "LogFile", "LogVerbosity", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
+function Preset-Path([string]$n) {
+  $n = "$n".Trim()
+  if ($n -notmatch '^[\w][\w .-]{0,63}$') { throw "-Preset: a name of letters, digits, spaces, dots and dashes (got '$n')" }
+  return Join-Path $presetDir "$n.json"
+}
+if ($Preset -and $Action -in "start", "restart") {
+  $pp = Preset-Path $Preset
+  if (-not (Test-Path -LiteralPath $pp)) { throw "-Preset: no preset '$Preset' ($pp); zero-server presets lists them" }
+  try { $po = Get-Content -Encoding UTF8 -LiteralPath $pp -Raw | ConvertFrom-Json } catch { throw "preset '$Preset' ($pp) is not valid JSON: $($_.Exception.Message)" }
+  foreach ($p in $po.PSObject.Properties) {
+    $k = @($presetKeys | Where-Object { $_ -eq $p.Name })[0]  # (the script's spelling: -eq ignores case)
+    if (-not $k) { throw "preset '$Preset': unknown option '$($p.Name)' ($pp)" }
+    if ($PSBoundParameters.ContainsKey($k)) { continue }  # (the command line wins)
+    $v = $p.Value
+    if ((Get-Variable $k).Value -is [switch]) { $v = [switch][bool]$v }
+    Set-Variable -Name $k -Value $v  # (the parameter's type converts it: "4096" for -Chunk becomes 4096)
+    $PSBoundParameters[$k] = $v      # (counts as given: a running server with other options is restarted)
+  }
+}
 $optChanged = $false
 foreach ($s in @($Opt | ForEach-Object { "$_" -split ',' } | Where-Object { $_ })) {
   $id, $val = $s.Trim() -split '=', 2
@@ -221,34 +251,6 @@ function PC-Kinds { Get-PcKinds }
 # are read from the state's own whisper / asr fields (a state file of before: from extra, once)
 function Get-StateFlags($s) { if ($s) { "$($s.extra)" -replace '"[^"]*"', '""' } else { "" } }
 
-# ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
-# zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
-# an option given on the command line wins over the preset's.
-$presetDir = Join-Path $stateDir "presets"
-$presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
-  "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb",
-  "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "LogFile", "LogVerbosity", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
-  "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
-function Preset-Path([string]$n) {
-  $n = "$n".Trim()
-  if ($n -notmatch '^[\w][\w .-]{0,63}$') { throw "-Preset: a name of letters, digits, spaces, dots and dashes (got '$n')" }
-  return Join-Path $presetDir "$n.json"
-}
-if ($Preset -and $Action -in "start", "restart") {
-  $pp = Preset-Path $Preset
-  if (-not (Test-Path -LiteralPath $pp)) { throw "-Preset: no preset '$Preset' ($pp); zero-server presets lists them" }
-  try { $po = Get-Content -Encoding UTF8 -LiteralPath $pp -Raw | ConvertFrom-Json } catch { throw "preset '$Preset' ($pp) is not valid JSON: $($_.Exception.Message)" }
-  foreach ($p in $po.PSObject.Properties) {
-    $k = @($presetKeys | Where-Object { $_ -eq $p.Name })[0]  # (the script's spelling: -eq ignores case)
-    if (-not $k) { throw "preset '$Preset': unknown option '$($p.Name)' ($pp)" }
-    if ($PSBoundParameters.ContainsKey($k)) { continue }  # (the command line wins)
-    $v = $p.Value
-    if ((Get-Variable $k).Value -is [switch]) { $v = [switch][bool]$v }
-    Set-Variable -Name $k -Value $v  # (the parameter's type converts it: "4096" for -Chunk becomes 4096)
-    $PSBoundParameters[$k] = $v      # (counts as given: a running server with other options is restarted)
-  }
-}
 # -Drafter auto|mtp|dflash|off|<folder>: one name for the drafters. off = -NoMtp, a folder = -DFlash <folder>; mtp /
 # dflash / auto pick the model's variant below (the -nodf / -df / plain ids)
 $drafterPick = ""; $script:draftPick = ""
@@ -323,7 +325,7 @@ if ($LogDir -eq "default") {
   $LogDir = Abs-Dir $LogDir
   if (-not $DryRun) { try { New-Item -ItemType Directory -Force $stateDir | Out-Null; [IO.File]::WriteAllText($logDirFile, "$LogDir`n", (New-Object Text.UTF8Encoding $false)) } catch {} }
 }
-$savedLogDir = if (Test-Path -LiteralPath $logDirFile) { (Get-Content -Encoding UTF8 -LiteralPath $logDirFile -TotalCount 1).Trim() } else { "" }
+$savedLogDir = if (Test-Path -LiteralPath $logDirFile) { "$(Get-Content -Encoding UTF8 -LiteralPath $logDirFile -TotalCount 1)".Trim() } else { "" }  # (an empty file: $null, cast first)
 $logsDir = if ($LogDir) { $LogDir } elseif ($env:ARC_LOG_DIR) { Abs-Dir $env:ARC_LOG_DIR } elseif ($savedLogDir) { $savedLogDir } else { Join-Path $stateDir "logs" }
 $log = Join-Path $logsDir "server.log"
 $stateFile = Join-Path $stateDir "server.json"

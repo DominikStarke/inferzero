@@ -543,10 +543,15 @@
       if (il >= hp.n_layer) return pp_last();  // (the MTP block's layer)
       return il >= lb && il < le;
     };
+    double total_w = 0;  // (the same tensors' values, for the RAM a byte of them costs below)
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight" &&
-          (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0) && in_stage(t.name))
+          (mtp_on || t.name.compare(0, mtp_pre.size(), mtp_pre) != 0) && in_stage(t.name)) {
         total += (double)t.nbytes;
+        double v = 1;
+        for (const auto d : t.dims) v *= (double)d;
+        total_w += v;
+      }
     const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
     // (a discrete card, 2026-11-16, an Arc B580 (12 GB) for Qwen3.8 27B: the weights that leave less than keep_gb of
     //  its memory for the working buffers and the context go to host memory, read over PCIe: once per prompt chunk
@@ -563,14 +568,21 @@
     // (exact: the KV bytes the engine allocates for a model without sliding rings (Qwen: int8 K and V and their
     //  scales, kv_pos_bytes), for the automatic room below; the old rule keeps its 6 bytes a value, so whether a model
     //  is tight does not move. d-dorok's B580, the 27B at 4K: 0.39 GiB by 6 bytes a value, 0.13 allocated, issue #37)
+    // (the audit of 2026-11-23: the stage's own layers only, [lb, le), as the weights above: each stage of a layer
+    //  split counted the whole model's KV; and exact for sliding rings too (Gemma: int8 K and V and their scales, 2 hd
+    //  + 8 bytes a head and position, where 6 bytes a value counted ~2.8x), the layers that reuse another's KV
+    //  (kv_src, from n_layer_kv on) none. The old rule (exact false) keeps 6 bytes a value)
     auto kv_est = [&](double c, bool exact = false) {
       double n = 0;
-      for (int il = 0; il < hp.n_layer; ++il) {
+      for (int il = lb; il < le; ++il) {
         if (hp.recurrent(il)) continue;
+        if (exact && hp.swa_rings && hp.n_layer_kv > 0 && il >= hp.n_layer_kv) continue;  // (kv_src: no cache of its own)
         const bool sw = hp.swa_rings && il < (int)hp.swa.size() && hp.swa[il];
         const int nkv = il < (int)hp.kv_heads.size() && hp.kv_heads[il] > 0 ? hp.kv_heads[il] : hp.n_head_kv;
         const int hd = hp.swa_rings ? (sw ? hp.hd_swa : hp.hd_full) : hp.head_dim;
-        const double per = exact && !hp.swa_rings ? (double)kv_pos_bytes() : hd * 6.0;
+        const double per = !exact ? hd * 6.0
+                           : hp.swa_rings ? (opt.attn_int8 ? 2.0 * hd + 8 : 4.0 * hd)
+                                          : (double)kv_pos_bytes();
         n += (sw ? std::min(c, (double)hp.n_swa + 2048) : (exact ? std::ceil(c / 16) * 16 : c)) * nkv * per;
       }
       return n;
@@ -629,7 +641,7 @@
       // (the recurrent states: the caller's snapshots per slot (serverz 3, opt.state_snaps), and the MTP
       //  verification's second copy)
       double rec = 0;
-      for (int il = 0; il < hp.n_layer; ++il)
+      for (int il = lb; il < le; ++il)  // (the stage's own layers: audit 2026-11-23, M1)
         if (hp.recurrent(il)) rec += (double)(state_bytes() + conv_bytes());
       // (and since the audit of 2026-11-23: every slot past the first its own live states, add_slots' copies of S and
       //  conv_state, with MTP S_next and conv_pre too; one slot as before)
@@ -687,7 +699,12 @@
                     "its buffers may not fit and the GPU may page (issue #37)\n", keep / GiB, keep_auto / GiB);
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_ && disc) {
-      want = std::max(0.0, std::min(total - (budget - keep), (double)plat::ram_available() - 4.0 * GiB));
+      // (the RAM a byte in host memory costs: with ARC_HOST_CPU (the discrete default, zero/xe2/engine_hostcpu.h) also
+      //  its CPU copy, int8 and a scale per 32 values, ~1.125 bytes a value: an IQ3_S byte (~0.43 a value) costs ~3.6
+      //  bytes of RAM. The cap counted the raw bytes only: a 16 GB PC paged or failed (audit 2026-11-23, M3; the B580
+      //  of the Discord report has 15.4 GiB))
+      const double per_byte = host_cpu_on() && total > 0 ? 1.0 + 1.125 * total_w / total : 1.0;
+      want = std::max(0.0, std::min(total - (budget - keep), ((double)plat::ram_available() - 4.0 * GiB) / per_byte));
     } else if (opt.host_weights_gb < 0 && tight_) {
       // (what leaves 45 % of the share for the rest, but no more than the RAM free now beyond the share, less 4 GiB:
       //  host memory is RAM all the same. Gemma 4 31B, 24.8 GB free: 5.3 GiB in host memory and a share filled with

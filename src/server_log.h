@@ -17,7 +17,9 @@
 #include "app_dir.h"
 #include "gpu_fail.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -272,7 +274,17 @@ inline void roll_now() {
   fclose(c.dfile);
   c.dfile = nullptr;
   const bool moved = keep_earlier(log.parent_path(), log);
-  if (moved) prune(log.parent_path());
+  // (the prune, which zips, in a thread of its own: under the log's mutex it held every log line for seconds, audit
+  //  2026-11-23; one at a time, nothing in it logs)
+  if (moved) {
+    static std::atomic<bool> pruning{false};
+    if (!pruning.exchange(true)) {
+      std::thread([dir = log.parent_path()] {
+        prune(dir);
+        pruning.store(false);
+      }).detach();
+    }
+  }
   c.dfile = plat::fopen_path(log, moved ? "wb" : "ab");
   c.dfile_bytes = 0;
   if (!moved) c.dfile_cap *= 2;  // (not again at once)

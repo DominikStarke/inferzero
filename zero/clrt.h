@@ -437,6 +437,9 @@ inline void sync() {
     const uint64_t lim = gd.sync_timeout_ns.load();
     if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
       if (std::atomic<bool>* f = gd.fault.load()) f->store(true);
+      // (a split model's GPU past its limit: the hang marker too, so no later start piles onto it, though TpEngine goes
+      //  on with the failover; audit 2026-11-23 M5)
+      gpufail::write_marker(gpufail::Hang, gpufail::last_kernel.load(), "split=1");
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": its work did not finish within " +
                          std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
     }
@@ -463,6 +466,9 @@ inline void wait_guarded(W w) {
     const uint64_t lim = gd.sync_timeout_ns.load();
     if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
       if (std::atomic<bool>* f = gd.fault.load()) f->store(true);
+      // (a split model's GPU past its limit: the hang marker too, so no later start piles onto it, though TpEngine goes
+      //  on with the failover; audit 2026-11-23 M5)
+      gpufail::write_marker(gpufail::Hang, gpufail::last_kernel.load(), "split=1");
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": its copies did not finish within " +
                          std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
     }
