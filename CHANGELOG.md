@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-23: the placement check covers the model's own buffers
+
+- **The system-memory warning now also checks the model's own buffers** (the weights, the KV cache, the DeltaNet state, the work buffers: the 256 largest of 16 MB or more), not only the expert cache. lact-lab's two A770s under Windows (#93) ran the 35B's 4K prompt at 193 tok/s with `gdn_recur` ten times slower than on another A770: buffers the driver had put in system memory. Discrete cards; about 0.1 s at load.
+
 ## 2026-11-23: Q4_1, Q5_0 and Q8_1 run on the GPU in their own form
 
 - **Files with Q4_1, Q5_0 or Q8_1 tensors** are no longer requantized to Q8_0 on the CPU at load: the GPU reads them as they are. A Q4_1 copy of the Qwen3.5 4B on the laptop: GPU memory 7.95 -> 6.60 GiB, load 49 -> 5 s, generation 15.2 -> 22.2 tok/s, the same accuracy (KL against f32 0.00144 against 0.00136). Q5_0: 7.95 -> 6.81 GiB, KL 0.00133 -> 0.00093 (its values are exact on the GPU). This also removes the memory pressure behind #88.

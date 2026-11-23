@@ -177,44 +177,100 @@
   //  186 GB/s or more (the A380 and up), PCIe ~20-30, so a piece under 64 GB/s is in system memory, and the run says
   //  how much, and what keeps it on the card. Discrete cards only, ~1 ms a GiB; ARC_XPLACE=0 skips it, =2 prints each
   //  piece's rate)
-  void xcache_placement_check() {
+  static int xplace_mode() {
     static const int mode = getenv("ARC_XPLACE") ? atoi(getenv("ARC_XPLACE")) : 1;
+    return mode;
+  }
+  // (a rate that means system memory: on a discrete card under 64 GB/s (its own memory reads 186 or more); on an iGPU
+  //  (ARC_XPLACE=2, tests: all its memory is RAM, ~60-120 GB/s) under half the fastest one seen)
+  static bool placement_slow(double gbs, double top) {
+    return zrt::integrated() ? gbs < 0.5 * top : gbs < 64;
+  }
+  // (one device allocation's read rate, GB/s: up to 64 MB of it from ptr, the best of two timed reads after a warm-up;
+  //  0 for one too small to time, under 16 MB)
+  double placement_rate(cl_kernel k, cl_mem o, void* ptr, size_t size) {
+    const size_t bytes = std::min<size_t>(size, (size_t)64 << 20) / 2048 * 2048;
+    if (bytes < ((size_t)16 << 20)) return 0;  // (a small one: the launch's own cost would hide the rate)
+    const size_t groups = std::max<size_t>(64, (size_t)std::max<uint32_t>(zrt::hw_threads(), 1024) * 4 / 16);
+    int n = (int)(bytes / 4);
+    double best = 1e30;
+    for (int r = 0; r < 3; ++r) {
+      set_args(k, 0, ptr, o, n);
+      size_t gws[1] = {groups * 256}, lws[1] = {256};
+      clFinish(cl_.queue);
+      const auto t0 = std::chrono::steady_clock::now();
+      run("xcache_place", k, 1, gws, lws);
+      clFinish(cl_.queue);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
+    }
+    return bytes / 1e6 / best;
+  }
+  // (2026-11-23, #93: lact-lab's two A770s under Windows, the 35B at 4K 193 tok/s with gdn_recur 2,375 ms against
+  //  ~200 on skipzx-lab's: not only the expert cache in system memory, the model's own buffers too. The same read for
+  //  the engine's allocations of 64 MB or more (weights, the KV cache, the DeltaNet state, the work buffers), after
+  //  everything is allocated. Discrete cards; ARC_XPLACE=0 skips it, =2 prints each one (also on an iGPU: tests))
+  void buffers_placement_check() {
+    const int mode = xplace_mode();
+    if (mode == 0 || (zrt::integrated() && mode != 2) || opt.dry) return;
+    cl_kernel k = cl_.kernel(rd_prog(), "rd_block");
+    struct Rel { cl_kernel k; ~Rel() { clReleaseKernel(k); } } rel{k};
+    cl_mem o = buf(64);
+    struct FreeO { Engine& e; cl_mem o; ~FreeO() { e.free_buf(o); } } free_o{*this, o};
+    const double GiB = 1073741824.0;
+    double slow = 0, all = 0, slow_min = 1e30, fast_min = 1e30;
+    int nslow = 0, n = 0;
+    // (the largest 256 of 16 MB or more: a dense model's weights are a buffer each, most of them tens of MB)
+    std::vector<cl_mem> big;
+    for (cl_mem m : mems_)
+      if (m && m->owner && m->size >= ((size_t)16 << 20) && m != o) big.push_back(m);  // (not sub-buffers: their parent is read)
+    std::sort(big.begin(), big.end(), [](cl_mem a, cl_mem b) { return a->size > b->size; });
+    if (big.size() > 256) big.resize(256);
+    std::vector<std::pair<cl_mem, double>> rates;
+    double top = 0;
+    for (cl_mem m : big) {
+      const double gbs = placement_rate(k, o, m->ptr, m->size);
+      if (gbs > 0) rates.emplace_back(m, gbs), top = std::max(top, gbs);
+    }
+    for (const auto& [m, gbs] : rates) {
+      ++n, all += m->size;
+      if (placement_slow(gbs, top)) slow += m->size, ++nslow, slow_min = std::min(slow_min, gbs);
+      else fast_min = std::min(fast_min, gbs);
+      if (mode == 2) zlog::eprintf("inferzero: ARC_XPLACE: buffer of %.3f GiB: %.0f GB/s\n", m->size / GiB, gbs);
+    }
+    if (slow > 0)
+      zlog::eprintf("inferzero: warning: %d of the model's %d large buffers (%.2f of %.2f GiB) are in system memory (read at "
+                    "%.0f GB/s, the card's own memory at %.0f): every pass reads them over PCIe and the run is slow. A "
+                    "shorter --ctx (or a smaller --expert-cache-gb on a MoE model) leaves the driver room for them (#93)\n",
+                    nslow, n, slow / GiB, all / GiB, slow_min, fast_min < 1e29 ? fast_min : 0.0);
+  }
+  void xcache_placement_check() {
+    const int mode = xplace_mode();
     if (mode == 0 || (zrt::integrated() && mode != 2) || opt.dry || !xc_) return;  // (=2 on an iGPU too: tests)
     cl_kernel k = cl_.kernel(rd_prog(), "rd_block");
     struct Rel { cl_kernel k; ~Rel() { clReleaseKernel(k); } } rel{k};
     cl_mem o = buf(64);
     struct FreeO { Engine& e; cl_mem o; ~FreeO() { e.free_buf(o); } } free_o{*this, o};
     const double GiB = 1073741824.0;
-    double slow_bytes = 0, all_bytes = 0, slow_min = 1e30, fast_min = 1e30;
-    const size_t groups = std::max<size_t>(64, (size_t)std::max<uint32_t>(zrt::hw_threads(), 1024) * 4 / 16);
+    double slow_bytes = 0, all_bytes = 0, slow_min = 1e30, fast_min = 1e30, top = 0;
+    struct Piece { size_t pool, c, bytes; double gbs; };
+    std::vector<Piece> pieces;
     for (size_t pi = 0; pi < xc_->pools.size(); ++pi) {
       auto& P = xc_->pools[pi];
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / P.rec);
       for (size_t c = 0; c < P.chunks.size(); ++c) {
         const int kslots = std::min(per, P.n - (int)c * per);
         const size_t piece = (size_t)kslots * P.rec;
-        const size_t bytes = std::min<size_t>(piece, (size_t)64 << 20) / 2048 * 2048;
-        if (bytes < ((size_t)16 << 20)) continue;  // (a small piece: the launch's own cost would hide the rate)
-        void* ptr = P.chunks[c];
-        int n = (int)(bytes / 4);
-        double best = 1e30;
-        for (int r = 0; r < 3; ++r) {
-          set_args(k, 0, ptr, o, n);
-          size_t gws[1] = {groups * 256}, lws[1] = {256};
-          clFinish(cl_.queue);
-          const auto t0 = std::chrono::steady_clock::now();
-          run("xcache_place", k, 1, gws, lws);
-          clFinish(cl_.queue);
-          const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-          if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
-        }
-        const double gbs = bytes / 1e6 / best;
-        all_bytes += piece;
-        if (gbs < 64) slow_bytes += piece, slow_min = std::min(slow_min, gbs);
-        else fast_min = std::min(fast_min, gbs);
-        if (mode == 2)
-          zlog::eprintf("inferzero: ARC_XPLACE: pool %zu piece %zu (%.2f GiB): %.0f GB/s\n", pi, c, piece / GiB, gbs);
+        const double gbs = placement_rate(k, o, P.chunks[c], piece);
+        if (gbs > 0) pieces.push_back({pi, c, piece, gbs}), top = std::max(top, gbs);
       }
+    }
+    for (const Piece& q : pieces) {
+      all_bytes += q.bytes;
+      if (placement_slow(q.gbs, top)) slow_bytes += q.bytes, slow_min = std::min(slow_min, q.gbs);
+      else fast_min = std::min(fast_min, q.gbs);
+      if (mode == 2)
+        zlog::eprintf("inferzero: ARC_XPLACE: pool %zu piece %zu (%.2f GiB): %.0f GB/s\n", q.pool, q.c, q.bytes / GiB, q.gbs);
     }
     if (slow_bytes > 0)
       zlog::eprintf("inferzero: warning: %.2f of the expert cache's %.2f GiB are in system memory (read at %.0f GB/s, the "
