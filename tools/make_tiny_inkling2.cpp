@@ -15,11 +15,13 @@
 //  - a vocabulary of 500 padded to 512 rows (the real 200,058 / 201,024), tokenizer pre "inkling2".
 // --no-loop: architecture inkling2 (the same layers once, no loop keys or controllers).
 // --nvfp4-equal: every NVFP4 block's four scales equal (the per-32 fold then exact: zero/kernels/decode.cl QT 40).
+// --scale S: every matrix drawn S times its default size (S < 1: the router's sigmoids and the controllers' tanh in range,
+//   as a trained model's mostly are; the default saturates them, and int8 rounding is then amplified).
 // --all-experts: every expert active (expert_used_count = expert_count), so no top-k choice: the random router's near
 //   ties (its sigmoids near 1, the bias at 0.1) flip under int8 rounding and part a check from the reference for that
 //   reason alone (2026-11-23, the first engine runs); with all experts the comparison measures the arithmetic.
 //
-// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N]
+// usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N] [--scale S]
 #include "../src/log.h"  // (zlog: first, as gguf_pack.h's headers use it)
 #include "../zero/gguf_pack.h"  // (zpack::Writer / put_kv)
 #include "../src/quants.h"  // (f32_to_fp16, nvfp4_scale)
@@ -35,6 +37,7 @@
 namespace {
 
 int E = 256, NL = 8, H = 6, HKV = 2, D = 128, NREL = 16, SWA = 16, EXT = 32, NC = 4, BLOCK = 2;
+double g_init = 1.0;  // (--scale S)
 int NE = 8, NU = 2, FF = 128, RANK = 16, LSTART = 2, LEND = 6, PASSES = 3, NV = 500, NVP = 512;
 const std::vector<int> GLOBAL = {1, 5, 7};
 const int NVFP4_LAYERS = 6;  // (experts of layers 0..5 NVFP4, the rest BF16)
@@ -196,7 +199,7 @@ struct Model {
 
 int main(int argc, char** argv) {
   if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N]\n");
+    printf("usage: make_tiny_inkling2 OUT.gguf [--seed N] [--no-loop] [--nvfp4-equal] [--all-experts] [--passes N] [--scale S]\n");
     return argc < 2 ? 1 : 0;
   }
   const std::string out = argv[1];
@@ -208,6 +211,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-loop") loop = false;
     else if (a == "--nvfp4-equal") g_nvfp4_equal = true;
     else if (a == "--all-experts") NU = NE;
+    else if (a == "--scale" && i + 1 < argc) g_init = std::max(0.01, atof(argv[++i]));
     else if (a == "--passes" && i + 1 < argc) PASSES = std::max(1, atoi(argv[++i]));  // (the loop's count)
     else { fprintf(stderr, "make_tiny_inkling2: unknown option %s\n", a.c_str()); return 2; }
   }
@@ -217,7 +221,7 @@ int main(int argc, char** argv) {
     const std::string ARCH = loop ? "inkling2_loop" : "inkling2", p = ARCH + ".";
     auto mat = [&](int n_out, int n_in, double scale = 1.0) {  // [n_out][n_in], outputs of about unit size
       F v((size_t)n_out * n_in);
-      const double s = scale / std::sqrt((double)n_in);
+      const double s = scale * g_init / std::sqrt((double)n_in);  // (--scale: every matrix's size times S)
       for (auto& x : v) x = (float)(rng.normal() * s);
       return v;
     };

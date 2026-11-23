@@ -36,8 +36,27 @@ inline double sigm(double v) { return 1.0 / (1.0 + std::exp(-v)); }
 // llama's build_lora_mm: a 2D weight W may come with W.scale (one f32, shape {1}) multiplying its output, as an
 // NVFP4-everywhere file would have (the Q8_K_XL has none on 2D weights). Activation scales (.input_scale, for FP8
 // activations) are refused at the start (inkling2_layers).
+// (REF_INK_Q8=1, a check of the engine: the activations of the matmuls the engine runs in int8 quantized as it does,
+//  per 32 values with src/quants.h quantize_act_cpu, then taken back to floats; the weights as before. The engine's
+//  rule (zero/engine_inkling.h ink_mat): int8 unless the router, N % 16 or K % 256. The engine's int8 drift then
+//  leaves the comparison, and a stage that still parts shows a bug, not a rounding)
 inline void mm(const std::string& name, const std::vector<float>& X, int T, std::vector<float>& Y) {
-  matmul(name, X, T, Y);
+  static const bool q8 = getenv("REF_INK_Q8") && atoi(getenv("REF_INK_Q8")) != 0;
+  const GgufTensor& wt = F->get(name);
+  const int K = (int)wt.dims[0], N = wt.dims.size() > 1 ? (int)wt.dims[1] : 1;
+  static const std::string kRouter = "ffn_gate_inp.weight";
+  const bool router = name.size() >= kRouter.size() && name.compare(name.size() - kRouter.size(), kRouter.size(), kRouter) == 0;
+  if (q8 && !router && N % 16 == 0 && K % 256 == 0) {
+    std::vector<int8_t> aq((size_t)T * K);
+    std::vector<float> asc((size_t)(K / 32) * T), xq((size_t)T * K);
+    std::vector<uint16_t> ab((size_t)(K / 16) * T);
+    quantize_act_cpu(X.data(), T, K, aq.data(), asc.data(), ab.data(), true);
+    for (int t = 0; t < T; ++t)
+      for (int k = 0; k < K; ++k) xq[(size_t)t * K + k] = (float)aq[(size_t)t * K + k] * asc[(size_t)(k / 32) * T + t];
+    matmul(name, xq, T, Y);
+  } else {
+    matmul(name, X, T, Y);
+  }
   const std::string sn = name.substr(0, name.size() - 7) + ".scale";  // (name ends in ".weight")
   if (const GgufTensor* s = F->find(sn)) {
     if (s->nelements() != 1) { zlog::eprintf("inkling2: %s is not one value\n", sn.c_str()); exit(1); }
