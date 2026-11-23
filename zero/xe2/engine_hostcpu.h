@@ -23,7 +23,7 @@ std::unordered_map<cl_mem, HostMat> host_mat_;  // (zero/engine_load.h upload_pa
 std::vector<int8_t> hcpu_q_;
 std::vector<float> hcpu_y_, hcpu_sc_;
 uint64_t hcpu_n_ = 0;
-double hcpu_ms_ = 0;
+double hcpu_ms_ = 0, hcpu_last_ms_ = 0;
 
 // (on by default on discrete cards since 2026-11-19: d-dorok's B580 (PCIe 3.0, i9-9900KF), the 27B, two rounds each:
 //  0.49 GiB in RAM (ARC_HOST_KEEP_GB=0.75) 7.11 -> 13.70 tok/s (a step 140.6 -> 72.6 ms), the default 0.85 GiB 4.54 ->
@@ -107,13 +107,15 @@ static float host_dot(const int8_t* w, const float* wd, const int8_t* a, const f
 }
 // (matmul1, one token: true when the CPU did it; C[c_off + n] (+)= sum_k W[n][k] * a[k])
 bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
-  if (!host_cpu_on() || acc > 1 || q2mm_ || profile) return false;
+  // (with --prof / --prof-gen too since 2026-11-23: a profile without it timed the GPU reading these matrices over
+  //  PCIe, a path the plain run does not take (skipzx-lab's A770 at 92K, #45: the GEMVs 2-4x slower in the profile).
+  //  Its time is the profile's row "<matrix> (CPU)", matmul1)
+  if (!host_cpu_on() || acc > 1 || q2mm_) return false;
   const auto it = host_mat_.find(w.raw);
   if (it == host_mat_.end()) return false;
   const HostMat& h = it->second;
   const int N = w.N, K = w.K, nb = K / 32;
   if (N <= 0 || K % 32 || h.q.size() != (size_t)N * K) return false;
-  const auto t0 = std::chrono::steady_clock::now();
   hcpu_q_.resize(K);
   hcpu_sc_.resize((size_t)nb * M);
   hcpu_y_.resize(N);
@@ -122,6 +124,9 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   CL_CHECK(clEnqueueReadBuffer(cl_.queue, aq_, CL_FALSE, 0, (size_t)K, hcpu_q_.data(), 0, nullptr, nullptr));
   CL_CHECK(clEnqueueReadBuffer(cl_.queue, asc_, CL_TRUE, 0, hcpu_sc_.size() * 4, hcpu_sc_.data(), 0, nullptr, nullptr));
   if (acc) CL_CHECK(clEnqueueReadBuffer(cl_.queue, C, CL_TRUE, (size_t)c_off * 4, (size_t)N * 4, hcpu_y_.data(), 0, nullptr, nullptr));
+  // (timed from here: the blocking reads above also waited for the GPU's earlier work, which the profile counts
+  //  under its own kernels)
+  const auto t0 = std::chrono::steady_clock::now();
   std::vector<float> ad(nb);
   for (int b = 0; b < nb; ++b) ad[b] = hcpu_sc_[(size_t)b * M];
   float* y = hcpu_y_.data();
@@ -133,6 +138,7 @@ bool host_cpu_gemv(const GpuWeight& w, int M, cl_mem C, int c_off, int acc) {
   }
   CL_CHECK(clEnqueueWriteBuffer(cl_.queue, C, CL_TRUE, (size_t)c_off * 4, (size_t)N * 4, y, 0, nullptr, nullptr));
   ++hcpu_n_;
-  hcpu_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  hcpu_last_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  hcpu_ms_ += hcpu_last_ms_;
   return true;
 }

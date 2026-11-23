@@ -1422,6 +1422,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       // with more sub-groups again (gemv1_rows)
       if (act32 && host_cpu_gemv(w, Mp, C, c_off, a)) {  // (a matrix in host memory, ARC_HOST_CPU=1: zero/xe2)
         rd_bytes += raw_bytes(w);
+        if (profile) {  // (the CPU's time in the profile, a row of its own: "gemm_up (CPU)")
+          const std::string n = std::string(name) + " (CPU)";
+          prof_ms[n] += hcpu_last_ms_;
+          prof_n[n]++;
+        }
         return;
       }
       const int fz = q2_fuse_ ? 1 : 0;

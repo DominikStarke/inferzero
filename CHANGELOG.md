@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-23: profiles show the CPU's share of the weights in host memory
+
+- **Fixed:** `--prof` and `--prof-gen` turned off the CPU path for the weights kept in host memory
+  (`ARC_HOST_CPU`, on by default on discrete cards). A profile therefore timed the GPU reading those matrices over
+  PCIe, which the plain run never does. On skipzx-lab's A770 at 92K (#45), the profile showed every GEMV 2-4x
+  slower than at 128 tokens.
+- A profile now runs the same path as the plain run. The CPU's time is a row of its own, named after the matrix:
+  `gemm_up (CPU)`.
+- The plain run is unchanged.
+
 ## 2026-11-23: self-audit fixes: the long-context room, the big tile per GPU kind, the free's wait
 
 - **The long-context room** (cards that cannot hold the model):
