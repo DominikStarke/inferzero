@@ -47,17 +47,23 @@
   double w8_partial_bytes() const { return w8_part_bytes_; }  // (layer matrices' resident W8 of a just-in-time model)
   bool tight() const { return tight_; }                  // (plan_tight: weights over 85 % of an iGPU's share)
   size_t host_weight_bytes() const { return host_bytes_; }  // (weights in host memory: plan_tight)
+  // (a sliding-window model's KV, shared with plan_tight's estimate so the two do not drift (the Researcher's review of
+  //  71d3fa0): the bytes a head and position, the int8 rows with their scales (one f32 per 64 values, for K and V)
+  //  and attn_fa_g's float rows (f32 or f16 K, f16 V); and a sliding layer's ring length for a chunk and margin)
+  size_t ring_pos_bytes(bool i8, bool frows, int hd) const {
+    return (i8 ? 2 * (size_t)hd + 2 * (size_t)(hd / 64) * 4 : 0) + (frows ? (size_t)(kc_bytes() + 2) * hd : 0);
+  }
+  int swa_ring_cap(int c, int chunk, int margin) const { return std::min(c, (hp.n_swa + chunk + margin + 255) / 256 * 256); }
   size_t ctx_bytes(int c) const {
     c = (c + 15) / 16 * 16;
     size_t n = ctx_buf_bytes(c);
     if (hp.ds41) return n + ds_ctx_cache_bytes(c);
     if (hp.swa_rings) {
-      const int swa_cap = std::min(c, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256);
+      const int swa_cap = swa_ring_cap(c, max_chunk, swa_margin());
       for (const Layer& L : layers_)
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
-          if (L.i8) n += 2 * (size_t)L.nkv * cap * L.hd + 2 * (size_t)L.nkv * cap * (L.hd / 64) * 4;
-          if (frows_) n += (kc_bytes() + 2) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows: f32 (or f16) K, f16 V)
+          n += (size_t)L.nkv * cap * ring_pos_bytes(L.i8, frows_, L.hd);
         }
     } else {
       int nl = mtp_block_ ? 1 : 0;

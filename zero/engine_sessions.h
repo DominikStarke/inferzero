@@ -569,21 +569,39 @@
     //  scales, kv_pos_bytes), for the automatic room below; the old rule keeps its 6 bytes a value, so whether a model
     //  is tight does not move. d-dorok's B580, the 27B at 4K: 0.39 GiB by 6 bytes a value, 0.13 allocated, issue #37)
     // (the audit of 2026-11-23: the stage's own layers only, [lb, le), as the weights above: each stage of a layer
-    //  split counted the whole model's KV; and exact for sliding rings too (Gemma: int8 K and V and their scales, 2 hd
-    //  + 8 bytes a head and position, where 6 bytes a value counted ~2.8x), the layers that reuse another's KV
-    //  (kv_src, from n_layer_kv on) none. The old rule (exact false) keeps 6 bytes a value)
+    //  split counted the whole model's KV; and exact for sliding rings too, as ctx_bytes allocates them (the shared
+    //  ring_pos_bytes / swa_ring_cap, engine_slots.h): the float rows of the two-pass attention (Gemma 4's q2: f32 or
+    //  f16 K, f16 V), the int8 rows only where the load makes them (engine_load_gemma.h: one pass, the drafter's two
+    //  source layers with --mtp, E2B / E4B's global layers), the ring at the window + the chunk + the margin; the
+    //  layers that reuse another's KV (kv_src, from n_layer_kv on) none. 6 bytes a value counted Gemma 4 31B ~2.8x;
+    //  the first form of this fix (2 hd + 8, a ring of window + 2,048) 4-5 % and a chunk's length short, the
+    //  Researcher's review of 71d3fa0. The old rule (exact false) keeps 6 bytes a value and window + 2,048)
+    const bool q2_est = hp.gemma || (hp.hc && fn_precise());  // (q2_init's q2_, which runs after this)
+    const bool frows_est = (q2_est && hp.gemma) || hp.qwen3;
+    const bool att8_est = q2_est && hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_ATT8") && atoi(getenv("ARC_G4_ATT8")) == 0);
+    const int ch_est = opt.chunk > 0 ? (std::max(opt.chunk, opt.min_chunk) + 127) / 128 * 128 : 1024;  // (the tight chunk)
     auto kv_est = [&](double c, bool exact = false) {
       double n = 0;
+      const int ci = (int)std::min(c, 1e9);
       for (int il = lb; il < le; ++il) {
         if (hp.recurrent(il)) continue;
         if (exact && hp.swa_rings && hp.n_layer_kv > 0 && il >= hp.n_layer_kv) continue;  // (kv_src: no cache of its own)
         const bool sw = hp.swa_rings && il < (int)hp.swa.size() && hp.swa[il];
         const int nkv = il < (int)hp.kv_heads.size() && hp.kv_heads[il] > 0 ? hp.kv_heads[il] : hp.n_head_kv;
         const int hd = hp.swa_rings ? (sw ? hp.hd_swa : hp.hd_full) : hp.head_dim;
-        const double per = !exact ? hd * 6.0
-                           : hp.swa_rings ? (opt.attn_int8 ? 2.0 * hd + 8 : 4.0 * hd)
-                                          : (double)kv_pos_bytes();
-        n += (sw ? std::min(c, (double)hp.n_swa + 2048) : (exact ? std::ceil(c / 16) * 16 : c)) * nkv * per;
+        if (!exact) {
+          n += (sw ? std::min(c, (double)hp.n_swa + 2048) : c) * nkv * (hd * 6.0);
+          continue;
+        }
+        if (!hp.swa_rings) {
+          n += std::ceil(c / 16) * 16 * nkv * (double)kv_pos_bytes();
+          continue;
+        }
+        const bool i8 = !q2_est || (opt.mtp && (il == g4_kv_layer(hp.n_layer - 2) || il == g4_kv_layer(hp.n_layer - 1))) ||
+                        (att8_est && !sw);
+        const int c16 = (ci + 15) / 16 * 16;
+        const double cap = sw ? swa_ring_cap(c16, ch_est, std::min(ch_est, 4096)) : c16;
+        n += cap * nkv * (double)ring_pos_bytes(i8, frows_est, hd);
       }
       return n;
     };

@@ -14,8 +14,9 @@
 - **Cards that cannot hold the model:**
   - A layer split's stage counted the whole model's KV and recurrent states in its room, so more of each stage's
     weights went to RAM than needed. It now counts its own layers.
-  - Gemma's sliding-window rings were counted at 6 bytes a value; they take ~2 (int8 K and V). The layers that reuse
-    another's KV cache counted again.
+  - Gemma's KV was counted at 6 bytes a value; it is now counted as the engine allocates it (the two-pass
+    attention's float rows, the int8 rows only where they are made, the sliding ring with its chunk), through one
+    helper shared with the allocation. The layers that reuse another's KV cache are no longer counted again.
   - The RAM cap counted the weights' own bytes only. With the CPU path for weights in RAM (on by default on discrete
     cards) each also gets an int8 copy, ~3.6x the RAM for an IQ3_S model. A 16 GB PC could page or fail; the cap
     now counts it.
