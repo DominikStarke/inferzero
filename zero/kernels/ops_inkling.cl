@@ -116,6 +116,41 @@ __kernel void ink_rms2(__global const float* x, int xstride, __global const floa
   for (int i = l; i < E; i += n) { o[i] = a[i] * ra; o[E + i] = b[i] * rb; }
 }
 
+// (I2 step 1, 2026-11-24) ink_rms2, then ctrl_down's quantization of its 2E rows, in one launch: the row as ink_rms2
+// writes it (work-groups of 256), then quantized from g as swiglu_quant does; pad rows (t >= M_valid) quantize as
+// zeros. grid (256, Mp), local (256, 1); 2E a multiple of 256
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ink_rms2_quant(__global const float* x, int xstride, __global const float* m, int moff, int mstride,
+                             __global float* g, int E, int M, int M_valid, __global char* aq, __global float* asc,
+                             __global ushort* absum, int act32) {
+  __local float red[INK_LS];
+  const int t = get_group_id(1), l = get_local_id(0), n = get_local_size(0), lane = get_sub_group_local_id();
+  const bool valid = t < M_valid;
+  __global float* o = g + (size_t)t * 2 * E;
+  if (valid) {
+    __global const float* a = x + (size_t)t * xstride;
+    __global const float* b = m + moff + (size_t)t * mstride;
+    float sa = 0.0f, sb = 0.0f;
+    for (int i = l; i < E; i += n) { sa += a[i] * a[i]; sb += b[i] * b[i]; }
+    const float ra = rsqrt(ink_wg_sum(sa, red) / (float)E + 1e-6f), rb = rsqrt(ink_wg_sum(sb, red) / (float)E + 1e-6f);
+    for (int i = l; i < E; i += n) { o[i] = a[i] * ra; o[E + i] = b[i] * rb; }
+    barrier(CLK_GLOBAL_MEM_FENCE);
+  }
+  for (int s = get_sub_group_id(); s < 2 * E / 256; s += get_num_sub_groups()) {
+    float v[16];
+    if (!valid) {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    } else {
+      const float16 q = vload16(0, o + s * 256 + 16 * lane);
+      const float qv[16] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7, q.s8, q.s9, q.sa, q.sb, q.sc, q.sd, q.se, q.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = qv[i];
+    }
+    quant_store16(v, s, t, M, 2 * E, aq, asc, absum, act32);
+  }
+}
+
 // the controller's result, element-wise (any size): x = x - tanh(f) x + tanh(gn) m, for T x E (m at mstride floats)
 __kernel void ink_ctrl_apply(__global float* x, __global const float* f, __global const float* gn, __global const float* m,
                              int moff, int mstride, int E, int T) {

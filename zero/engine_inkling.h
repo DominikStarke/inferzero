@@ -479,11 +479,22 @@
   void ink_control(const InkLayer& L, cl_mem x, int c, int T, int Mp) {
     const int E = hp.n_embd;
     int moff = c * E, mst = 4 * E, EE = E, TT = T, xs = E;
-    cl_kernel k2 = ink_k("ink_rms2");
-    set_args(k2, 0, x, xs, ink_msgs_, moff, mst, ink_cg_, EE);
-    ink_rung("ink_rms2", k2, T, 256);
-    ink_mm("ink_ctrl_down", L.ctrl_down[c], ink_cg_, ink_lo_, T, Mp);
     static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;  // (A/B: the launches of before)
+    if (!unfused && !L.ctrl_down[c].f && (2 * E) % 256 == 0) {
+      // (I2 step 1: ink_rms2 and ctrl_down's quantization in one launch)
+      cl_kernel k2 = ink_k("ink_rms2_quant");
+      int MM = Mp, a32 = 1;
+      set_args(k2, 0, x, xs, ink_msgs_, moff, mst, ink_cg_, EE, MM, TT, aq_, asc_, absum_, a32);
+      size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+      run("ink_rms2_quant", k2, 2, gws, lws);
+      ink_q_x_ = ink_cg_, ink_q_k_ = 2 * E;
+      ink_mm("ink_ctrl_down", L.ctrl_down[c], ink_cg_, ink_lo_, T, Mp, true);
+    } else {
+      cl_kernel k2 = ink_k("ink_rms2");
+      set_args(k2, 0, x, xs, ink_msgs_, moff, mst, ink_cg_, EE);
+      ink_rung("ink_rms2", k2, T, 256);
+      ink_mm("ink_ctrl_down", L.ctrl_down[c], ink_cg_, ink_lo_, T, Mp);
+    }
     if (!unfused && L.ctrl_gain[c].f && L.ctrl_forget[c].f && L.ctrl_gain[c].K == L.ctrl_forget[c].K) {
       // (I2 step 1: gain, forget and apply in one launch where both are f32, the rank-64 matrices)
       cl_kernel kf = ink_k("ink_ctrl_fused");
