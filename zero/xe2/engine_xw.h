@@ -501,7 +501,7 @@
                              (xw_big_on() && xw_big_cfg().cps > 1 ? " -DXS_CPS=" + std::to_string(xw_big_cfg().cps) : std::string()) +
                              (xw_ptr() ? " -DXW_PTR" : "") +
                              ((pack & 4) ? " -DXS_WGLA" : "") + ((pack & 8) ? " -DXS_WGLB" : "") +
-                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx);
+                             ((pack & 16) ? " -DXS_BG" : "") + (xw_split_ ? " -DXS_SPLIT" : "") + xw_lsc_opt() + xw_dpasw_opt(wgx) + xw_k32_opt(pack);
       return kernel("xw8", sd, "gemm_xw8");
     }
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
@@ -613,9 +613,24 @@
   }
   // (the start check's verdict on these local-layout forms, per key; false after a check failed with one: plain)
   bool xw_lay_ok_ = true;
-  bool xw_lay_on() const { return xw_lay_ok_ && (xw_dpasw_env() || xw_ul_env()); }
+  // ARC_GEMM_XW_K32=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 5): the big tile's stages
+  // of 32 k values in 4 local buffers, each stage's loads 3 stages ahead and the split barrier's wait a stage of DPAS
+  // after its arrive (gemm_xw8.cl -DXS_K32). Where both operands are in the work-group order (pack bits 4 and 8), not
+  // with the fused gate / up, DPASW, UL or BG (the kernel refuses them). The users' ocloc 26.40 (dg2-g10): no spill,
+  // 3,904 instructions and 530 moves against 3,974 and 627. Bit for bit, checked at start (a failure: the layout retry)
+  static bool xw_k32_env() {
+    static const bool on = getenv("ARC_GEMM_XW_K32") && atoi(getenv("ARC_GEMM_XW_K32")) != 0;
+    return on;
+  }
+  std::string xw_k32_opt(int pack) const {
+    if (!xw_k32_env() || !xw_lay_ok_ || xw_dpasw_env() || xw_ul_env() || (pack & 12) != 12 || (pack & 16)) return std::string();
+    return " -DXS_K32";
+  }
+  bool xw_lay_on() const { return xw_lay_ok_ && (xw_dpasw_env() || xw_ul_env() || xw_k32_env()); }
   // (the start line's "checked" with DPASW: only where the big tile's own work-group has an even wgx, so a key whose kernel
-  //  built the plain form says so instead; the Researcher's review of 287604b)
+  //  built the plain form says so instead; the Researcher's review of 287604b. It reads the big tile's x only: the fused
+  //  gate / up halves its own wgx by its width, and xw_dpasw_opt(wgx) decides that kernel's form at build time; this is
+  //  only the log line's wording)
   bool xw_dpasw_built() const { return xw_dpasw_env() && xw_lay_ok_ && xw_big_cfg().x % 2 == 0; }
   // (the build options of the local-layout form for a kernel of wgx column sub-groups a work-group)
   std::string xw_dpasw_opt(int wgx) const {
@@ -1068,7 +1083,7 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : xw_ul_env() ? "|ul" : "") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_dpasw_env() ? "|dpasw" : xw_ul_env() ? "|ul" : "") + (xw_k32_env() ? "|k32" : "") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -1092,7 +1107,7 @@
         xw_lay_ok_ = false;
         ok = xw_check();
         zlog::eprintf("inferzero: %s differs or does not build: the plain local layout and DPAS (%s)\n",
-                      xw_dpasw_env() ? "ARC_GEMM_XW_DPASW: the split DPAS" : "ARC_GEMM_XW_UL: the 64-bit local reads", ok ? "checked" : "differs too");
+                      xw_dpasw_env() ? "ARC_GEMM_XW_DPASW: the split DPAS" : xw_ul_env() ? "ARC_GEMM_XW_UL: the 64-bit local reads" : "ARC_GEMM_XW_K32: the k32 stages", ok ? "checked" : "differs too");
       }
       layk[key] = xw_lay_ok_;
       if (!ok && xw_split_) {  // (the split barrier failing: once more with the plain one)
@@ -1139,7 +1154,7 @@
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
       if (ok && xw_lay_on() && xw_big_on())
-        zlog::eprintf(xw_dpasw_env() ? (xw_dpasw_built() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
+        zlog::eprintf(xw_k32_env() && !xw_dpasw_env() && !xw_ul_env() ? "inferzero: gemm_xw8: the big tile's stages of 32 k values in 4 buffers (ARC_GEMM_XW_K32, results checked bit for bit)\n" : xw_dpasw_env() ? (xw_dpasw_built() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
                                                        : "inferzero: ARC_GEMM_XW_DPASW: the big tile's work-group has an odd count of column sub-groups: the plain DPAS\n")
                                      : "inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
       if (ok && !xw_lsc_opt().empty() && xw_big_on())

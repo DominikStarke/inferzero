@@ -384,6 +384,76 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #define XS_WAITB()
 #define XS_STAGE_END() barrier(CLK_LOCAL_MEM_FENCE)
 #endif
+#ifdef XS_K32
+  // -DXS_K32 (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 5; ARC_GEMM_XW_K32): stages of 32 k values
+  // (half a chunk: A's units of one k-half, u % 2, and B's parts {0, 1} or {2, 3}) in 4 local buffers, 12 KB each at
+  // 4 x 8 (the 48 KB of xs). Each stage's global loads issue 3 stages ahead; iteration s: the loads of s + 3, the DPAS
+  // of s, the wait for iteration s - 1's arrive (everyone past the DPAS of s - 1), the stores of s + 3 into the buffer s
+  // - 1 left, the arrive. The wait sits a stage of DPAS after its arrive (oneDNN's barrierwait after its 24 dpasw), so
+  // a slow sub-group stalls the rest less. Each sum takes k 0..31 then 32..63 of a chunk, as before: bit for bit
+#if !defined(XW_PTR) || !defined(XS_WGLA) || !defined(XS_WGLB) || defined(XW_GU) || defined(XW_HB) || \
+    defined(XS_BSTREAM) || defined(XS_DPASW) || defined(XS_UL) || defined(XS_BG) || XS_CPS != 1
+#error "XS_K32: with XW_PTR and the work-group order (XS_WGLA / XS_WGLB), the plain loop, one chunk a stage"
+#endif
+#define K32_UA (XS_UA / 2)                  // (A units a stage: one a token group)
+#define K32_U (K32_UA + XS_BW / 128)        // (units a stage)
+#define K32_W (K32_U * 64)                  // (words a stage buffer)
+#define K32_UPS ((K32_U + XS_NS - 1) / XS_NS)
+#ifdef XW_EMU
+#define K32_ARRIVE()
+#define K32_WAIT() barrier(CLK_LOCAL_MEM_FENCE)
+#else
+#pragma OPENCL EXTENSION cl_intel_split_work_group_barrier : enable
+#define K32_ARRIVE() intel_work_group_barrier_arrive(CLK_LOCAL_MEM_FENCE)
+#define K32_WAIT() intel_work_group_barrier_wait(CLK_LOCAL_MEM_FENCE)
+#endif
+  __local uint* const kb = &xs[0][0][0];  // (4 x K32_W words: 2 x XS_CPS x (XS_AW + XS_SB) holds them)
+  const int ns = 2 * (ch1 - ch0);         // (stages: 2 a chunk)
+  int8 kst[K32_UPS];
+  // unit v of stage q: A (v < K32_UA) of token group v, k-half q % 2; B of column group (v - K32_UA) / 2, part
+  // 2 (q % 2) + (v - K32_UA) % 2; in the stage's buffer at v * 64
+#define K32_SRC(v, q)                                                                                           \
+  ((v) < K32_UA ? apw + (size_t)(ch0 + (q) / 2) * XS_AW + (2 * (v) + (q) % 2) * 64                          \
+                : wpw + (size_t)(ch0 + (q) / 2) * XS_BW + (4 * (((v) - K32_UA) / 2) + 2 * ((q) % 2) + ((v) - K32_UA) % 2) * 64)
+#define K32_LOAD(q)                                                                             \
+  _Pragma("unroll") for (int i = 0; i < K32_UPS; ++i) {                                        \
+    const int v = sid + i * XS_NS;                                                             \
+    if (v < K32_U) kst[i] = as_int8(intel_sub_group_block_read8(K32_SRC(v, (q))));            \
+  }
+#define K32_STORE(q)                                                                            \
+  _Pragma("unroll") for (int i = 0; i < K32_UPS; ++i) {                                        \
+    const int v = sid + i * XS_NS;                                                             \
+    if (v < K32_U) XS_WR(kb + ((q) & 3) * K32_W + v * 64, kst[i]);                             \
+  }
+  for (int q = 0; q < 3 && q < ns; ++q) {  // (the prologue: stages 0..2 into buffers 0..2)
+    K32_LOAD(q)
+    K32_STORE(q)
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (int q = 0; q < ns; ++q) {
+    const bool more = q + 3 < ns;
+    if (more) { K32_LOAD(q + 3) }
+    __local const uint* const bb = kb + (q & 3) * K32_W;
+    __local const uint* xa = bb + sy * XW_TG * 64;
+    __local const uint* xb = bb + K32_UA * 64 + sx * XW_NC * 128;
+    int8 bl[XW_NC], bh[XW_NC];
+#pragma unroll
+    for (int c = 0; c < XW_NC; ++c) bl[c] = XS_RD(xb + c * 128), bh[c] = XS_RD(xb + c * 128 + 64);
+#pragma unroll
+    for (int t = 0; t < XW_TG; ++t) {
+      const int8 a = XS_RD(xa + t * 64);
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+        xacc[t][2 * c] = xw8_mad(a, bl[c], xacc[t][2 * c]);
+        xacc[t][2 * c + 1] = xw8_mad(a, bh[c], xacc[t][2 * c + 1]);
+      }
+    }
+    if (q) K32_WAIT();  // (iteration q - 1's arrive: every sub-group past the DPAS of stage q - 1)
+    if (more) { K32_STORE(q + 3) }  // (into stage q - 1's buffer, (q + 3) & 3)
+    K32_ARRIVE();
+  }
+  if (ns) K32_WAIT();  // (the last arrive's wait: arrives and waits in pairs)
+#else
   if (ch0 < ch1) {  // (s_begin / s_end are the same for the whole work-group: its barriers stay uniform)
     XS_LOAD(ch0)
     XS_STORE(0)
@@ -534,6 +604,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #ifdef XS_SPLIT
   if (ch0 < ch1) XS_WAITB();  // (the last arrive's wait: arrives and waits in pairs)
 #endif
+#endif  // XS_K32
 #elif defined(XW_DB) && defined(XW_PACKA) && defined(XW_PACKW)
   // ---- -DXW_DB (ARC_GEMM_XW_DB, 2026-11-20, the A770 row's G3; the Alchemist default for 32-token tiles since 2026-11-21): the packed loop with its loads one step ahead. The
   //      next token group's A operands are read before this group's DPAS, and at a chunk's last group the next chunk's B

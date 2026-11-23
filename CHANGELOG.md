@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-23: the A770 GEMM plan, steps 4 and 5 (opt-in, to measure)
+
+- **New, opt-in: `ARC_GEMM_XW_K32=1`** (8-lane discrete cards, the big prompt tile): the tile works through its input
+  in smaller steps with four buffers, loading three steps ahead, so a slow part of the GPU holds the others up less, as
+  oneDNN's A770 kernel does. The results are the same bit for bit, checked at start.
+- **The 32 x 48 tile without register spills:** a form that compiles without spills for the A770 is in `xw_peak` (its rows
+  "slm 32x48 8x4 ..."), for the A770 to measure before it goes into the engine (#45).
+
 ## 2026-11-23: the A770 GEMM plan, step 3: the split DPAS (opt-in)
 
 - **New, opt-in: `ARC_GEMM_XW_DPASW=1`** (Arc A-series and other Alchemist cards). The big prompt tile's matrix
