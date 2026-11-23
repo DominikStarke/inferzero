@@ -351,6 +351,40 @@ The token embedding table stays in the mapped file and is read on the CPU, as fo
   `xe2/cpu_experts.h`, each change under `hp.inkling`. A change to `plan_weights` / `size_expert_cache` in
   `engine_sessions.h` (the Developer's file) goes through the Researcher.
 
+**The memory tiers** (the user, 2026-11-23: "make sure for it to run with memory tiers design"; the tiers of
+[tiered-placement.md](tiered-placement.md), section 1: compute where the bytes are). Inkling takes the 35B's tiers as
+they are, with nothing of its own but the record recipe:
+
+| Tier | Holds for Inkling | Who computes from it | Sized by |
+|---|---|---|---|
+| GPU, resident | attention, controllers, router, conv taps, head (~1.2 GiB); the 48 slots' K / V and conv states; the chunk's buffers | the GPU | the model (fixed) and the context (`ink_ctx_cache_bytes`) |
+| GPU expert cache | the most recently used expert records, LRU per record-size pool, per physical layer (the loop's passes share it) | the GPU (`-DXCACHE` kernels) | what the GPU has left after the resident part and the context (`size_expert_cache`) |
+| RAM tier (discrete cards) | expert records that miss the GPU cache: pinned host memory the GPU copies from in the background | `ARC_XCPU=1`: the CPU computes a missing expert from its RAM-tier copy while the GPU runs; otherwise copied into a victim slot | automatic: the free RAM less 16 GiB, or half the free RAM leaving 4 GiB; capped by what Windows lets the GPU map of RAM; `--expert-ram-gb` / `ARC_XRAM_GB` override |
+| SSD (the expert file) | every expert record, 14.7 GiB, read unbuffered on a miss of both tiers; prefetched in execution order | — | the file: built once on C:, never D: |
+| RAM, mapped file | the token embedding table (BF16, 0.9 GB) and the GGUF itself | the CPU (`embed`) | — |
+
+- **On the laptop (iGPU),** the RAM tier is off by design (`!zrt::integrated()` in `engine_stream.h`): the GPU's
+  memory is the RAM, so the expert cache itself is the RAM tier. Two tiers: the cache (~14 GiB of the GPU share
+  holding ~95 % of the 14.7 GiB of experts) and the SSD (the rest, and the cold start).
+- **On a discrete card,** all three:
+  - B580 12 GB with 32 GB RAM: ~9.5 GiB cached; the automatic tier (~10 GiB on a machine with ~20 GiB free) holds the
+    other ~5 GiB, so the SSD is read only at the cold start.
+  - A770 16 GB: ~13 GiB cached, the tier holds the other ~2 GiB.
+  - B60 / B65 / B70: every expert in VRAM.
+  - With `ARC_XCPU=1` a miss in the GPU cache is computed on the CPU from the RAM tier (NVFP4 and Q8_0 CPU dots, situ
+    plus the gate-up scale), so the loop's later passes don't wait on a copy.
+- **Fill order:** a prompt's experts go into the GPU cache's transient end, and into the RAM tier only where the tier
+  can't hold every expert anyway (`ARC_XRAM_FILL`, the default since 2026-11-21). Generation's misses go to the front
+  of the LRU, and to the tier.
+- **The other tiers of tiered-placement.md** (one model over several GPUs, a layer split, the CPU computing dense rows
+  `ARC_HOST_CPU`) stay refused for Inkling in this step, as in I1.5. A layer split would move whole cache slots with
+  their physical layer's experts: a later step.
+- **Checks in the run list:**
+  - on the tiny file, a cache forced small (`ARC_XCACHE_GB`) with a RAM tier (`ARC_XRAM_GB`) and with none, so that
+    every tier serves records;
+  - the same top tokens across the three: GPU only, GPU + SSD, GPU + RAM + SSD with and without `ARC_XCPU`;
+  - the expert statistics line (`expert_stats`: hits per tier, SSD bytes) on the laptop with the real file.
+
 **Expected on the laptop** (estimates, to be measured; Xe-LPG, 75 GB/s, ~11 TOPS DP4a):
 - **Generation:** ~3.6 GB read a token (attention 1.4 GB over the 48 passes, experts ~1.7 GB, head 0.5 GB): a ceiling
   of ~20 tok/s, likely 10-15 once the cache is warm, about the 35B's 21.6.
