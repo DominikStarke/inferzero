@@ -275,7 +275,6 @@
           throw std::runtime_error("Inkling 2: expert type " + std::string(ggml_type_name(type)) + " (" + name +
                                    ") not supported yet (NVFP4, BF16, Q8_0, F32; IQ4_NL streamed" +
                                    (ink_streamed_ ? std::string(")") : std::string(": not with ARC_INK_RESIDENT=1)")));
-        if (!t.data) throw std::runtime_error("Inkling 2: " + name + " has no data in this file");
         rb = t.nbytes / ((uint64_t)NE * N);
         // (streamed, I1.7 step 5: no raw copy on the GPU; the expert file's records instead. Their bytes for the
         //  plan, as load_moe counts them; a float type's records are Q8_0, ExpertStore::rec_type)
@@ -284,6 +283,9 @@
           stream_bytes_ += (uint64_t)N * NE * (padded_k(K) / 256) * raw_padded_sb_bytes(rt);
           return;
         }
+        // (resident only: a package's experts are in its expert file, listed here without data; streamed they are read
+        //  from there)
+        if (!t.data) throw std::runtime_error("Inkling 2: " + name + " has no data in this file (a package: not with ARC_INK_RESIDENT=1)");
         raw = buf(t.nbytes, t.data);
       };
       experts(p + "ffn_gate_up_exps.weight", 2 * F, E, L.gu, L.gu_type, L.gu_rb);
@@ -414,10 +416,8 @@
     //  selection bias 0; NE floats each)
     {
       std::vector<float> one((size_t)NE, 1.0f), zero((size_t)NE, 0.0f);
-      ink_ones_ = buf((size_t)NE * 4);
-      ink_zeros_ = buf((size_t)NE * 4);
-      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_ones_, CL_TRUE, 0, (size_t)NE * 4, one.data(), 0, nullptr, nullptr));
-      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ink_zeros_, CL_TRUE, 0, (size_t)NE * 4, zero.data(), 0, nullptr, nullptr));
+      ink_ones_ = buf((size_t)NE * 4, one.data());  // (with their data: a dry run (--ctx auto, the model list) allocates nothing)
+      ink_zeros_ = buf((size_t)NE * 4, zero.data());
     }
   }
 

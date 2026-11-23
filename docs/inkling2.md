@@ -266,8 +266,9 @@ Developer cuts them.
      - The mainline file is known as `inkling-2-mini` / `inkling`, with the engine's chunk of 512.
      - It is **listed but not supported** by the server yet: `m.supported` stays false, as for DeepSeek-V4.1.
      - The DSpark drafter (`dspark-*.gguf`, GGUF `dflash`) isn't taken as a drafter; it is step I2's work.
-   - **The server runs it** (I2 step 7, 2026-11-24; `m.supported` stays false until the real file passes its KL, so
-     the catalog does not offer it yet; `-m FILE` loads it):
+   - **The server runs it** (I2 step 7, 2026-11-24). **The real file passed its KL** the same day (ref_forward over a
+     chat prompt and 64 generated tokens: 0.0048 prompt path, 0.0043 token by token, the top token 88 / 88 and 87 / 88),
+     so the catalog offers it (`m.supported`); packages (`--pack`) work as for the other MoE models:
      - **Prompts:** `inkling::render` with the request's `reasoning_effort` (a name or a number; thinking off is
        effort 0) and `tools`. No generation prompt: the model writes `<|message_model|>`. Stop at token 200006.
      - **Streaming:** `inkling::OutputParser` over `inkling::parse(text, final)`: the thinking messages as reasoning,

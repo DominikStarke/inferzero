@@ -359,6 +359,9 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   //  moves here when it exists, see ExpertStore::open_or_build)
   try {
     ExpertStore st;
+    // (Inkling 2: its float experts as Q8_0 records, as the engine writes them (engine_stream.h): the same recipe,
+    //  so the same fingerprint and records. Without it the package's file was refused at load, "does not match")
+    st.float_to_q8 = arch == "inkling2" || arch == "inkling2_loop";
     st.open_or_build(src, source, pre, n_exp, r.experts);
     if (!st.built) zlog::eprintf("inferzero: the expert file was already there: %s\n", r.experts.c_str());
     r.expert_bytes = st.file_bytes;

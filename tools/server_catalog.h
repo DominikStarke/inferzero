@@ -381,8 +381,7 @@ static std::vector<ModelInfo> scan_models() {
       {"gemma-4-E4B_q4_0-it.gguf", {"gemma4-e4b", "e4b"}},
       {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}},
       {"gemma-4-31B_q4_0-it.gguf", {"gemma4-31b", "g31"}},
-      // (Unsloth's Inkling 2 Mini, the mainline file: listed; the server runs it with -m FILE, offered here once the
-      //  real file passes its KL, docs/inkling2.md)
+      // (Unsloth's Inkling 2 Mini, the mainline file; supported since its KL, docs/inkling2.md)
       {"Inkling-2-Mini-UD-Q8_K_XL.gguf", {"inkling-2-mini", "inkling"}}};
   std::vector<ModelInfo> out;
   for (size_t i = 0; i < cands.size(); ++i) {
@@ -442,6 +441,8 @@ static std::vector<ModelInfo> scan_models() {
       drafter = drafter || f.rfind("mtp-", 0) == 0;
     }
     m.supported = m.arch == "qwen35" || m.arch == "qwen35moe" || m.arch == "gemma4";  // (MoE: GSQ or standard experts)
+    // (Inkling 2, since the real file's KL against ref_forward, 2026-11-24: 0.0048 prompt / 0.0043 decode, docs/inkling2.md)
+    m.supported = m.supported || m.arch == "inkling2" || m.arch == "inkling2_loop";
     m.supported = m.supported || m.arch == "qwen4exp";  // (Qwen3.8 Flash Next: inferzero only, experts streamed)
     (void)gsq;
     m.vision = mmproj;  // (Gemma 4 12B: gemma4uv; E2B / E4B: gemma4v)
