@@ -9,6 +9,10 @@
   2026.11.23.17; .16 is marked broken.
 - **A guard against it:** every H8 prompt GEMM now checks that its input was prepared since its call began, and stops
   with an error naming the GEMM if not, on any card at the first prompt.
+- **And a check at start:** one H8 prompt GEMM is replayed end to end at load (the norm, the input's preparation, the GEMM)
+  on random rows A, B, then A again. A's two results must match bit for bit and B's must differ, or the load stops with
+  an error (`ARC_H8=0` runs without H8). Checked on the laptop with H8 forced: it passes, and it stops the load when the
+  input's preparation is skipped on purpose.
 
 ## 2026-11-23: `ARC_H8_NORM_ONCE` removed
 

@@ -361,6 +361,57 @@
   //  by the start checks, whose inputs come from the host. h8_act counts its calls, whether it rotates or finds the input
   //  ready; an H8 GEMM launch without one since its call began throws: h8_input_check)
   uint64_t h8_act_calls_ = 0;
+  // (and at start, after the buffers: one H8 prompt GEMM replayed end to end through the engine's own path (the norm and
+  //  its quantization into aq_, h8_act, the GEMM) on random rows: input A, then B, then A again. A's two results must
+  //  be equal bit for bit and B's clearly different, which a stale or misrouted input breaks; the GEMM kernels' own
+  //  start checks feed them from the host and could not see it. A failure stops the load with an error (not H8 turned
+  //  off: the replay may have rotated a resident weight in place for H8, which the DP4a GEMMs would then read wrong);
+  //  ARC_H8=0 runs without H8. The first layer's first H8 matrix, chunks of up to 256 tokens; dense Qwen only.
+  //  ARC_H8_E2E=0: skipped)
+  void h8_e2e_check() {
+    static const bool off = getenv("ARC_H8_E2E") && atoi(getenv("ARC_H8_E2E")) == 0;
+    if (off || !h8_ || opt.dry || layers_.empty() || hp.moe || hp.hc || hp.gemma || hp.ds41 || hp.inkling || !hp.n_embd) return;
+    Layer& L = layers_[0];
+    const GpuWeight* w = L.qkv.N ? &L.qkv : L.wq.N ? &L.wq : nullptr;
+    const int Mp = std::min(max_chunk, 256) / 32 * 32, E = hp.n_embd;
+    if (!w || !L.attn_norm || Mp < 32 || w->K != E) return;
+    struct Keep { int& r; int v; ~Keep() { r = v; } } keep{cur_T_, cur_T_};
+    cur_T_ = Mp;
+    if (!h8_takes(*w, Mp)) return;
+    const int a_in = act32_for(false), N = w->N;
+    cl_int err;
+    cl_mem C = clCreateBuffer(cl_.ctx, CL_MEM_READ_WRITE, (size_t)Mp * N * 4, nullptr, &err);
+    CL_CHECK(err);
+    struct Rel { cl_mem m; ~Rel() { clReleaseMemObject(m); } } rel{C};
+    uint32_t seed = 4711;
+    auto rows = [&] {
+      std::vector<float> x((size_t)Mp * E);
+      for (auto& v : x) { seed = seed * 1664525u + 1013904223u; v = (float)((int)(seed >> 9) % 2001 - 1000) / 500.0f; }
+      return x;
+    };
+    const std::vector<float> xa = rows(), xb = rows();
+    auto pass = [&](const std::vector<float>& x) {
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, x.size() * 4, x.data(), 0, nullptr, nullptr));
+      rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, Mp, a_in);
+      matmul("h8_e2e", *w, Mp, C, N, 0, 0, a_in);
+      std::vector<float> c((size_t)Mp * N);
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, C, CL_TRUE, 0, c.size() * 4, c.data(), 0, nullptr, nullptr));
+      return c;
+    };
+    const std::vector<float> c1 = pass(xa), c2 = pass(xb), c3 = pass(xa);
+    double d = 0, n = 0;
+    bool finite = true;
+    for (size_t i = 0; i < c1.size(); ++i) {
+      finite = finite && std::isfinite(c1[i]) && std::isfinite(c2[i]);
+      d += (double)(c1[i] - c2[i]) * (c1[i] - c2[i]);
+      n += (double)c1[i] * c1[i];
+    }
+    const bool same = memcmp(c1.data(), c3.data(), c1.size() * 4) == 0, moved = n > 0 && d > 0.0025 * n;
+    if (finite && same && moved) return;
+    throw std::runtime_error(std::string("the H8 prompt GEMM replayed at start does not follow its input (") +
+                             (!finite ? "not finite" : !same ? "the same input gave two results" : "another input gave the same result") +
+                             "): please report it; ARC_H8=0 runs without H8");
+  }
   void h8_input_check(uint64_t calls_at_start, const char* name) const {
     if (h8_act_calls_ == calls_at_start)
       throw std::logic_error(std::string("gemm ") + name + ": H8 GEMM launched without its input prepared (h8_act not called)");

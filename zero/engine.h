@@ -563,6 +563,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       mem_bufs_ = gpu_bytes - g0;
     }
     kv_drift_check();  // (a tight model: plan_tight's KV estimate against what was allocated, engine_sessions.h)
+    h8_e2e_check();  // (one H8 prompt GEMM replayed end to end on random rows, engine_h8.h)
     npu_setup();  // (ARC_NPU=1 only)
     if (opt.slots > 1) add_slots(opt.slots);  // (before the expert cache takes what is left)
     w8_part_auto();  // (ARC_W8_PARTIAL_GB=auto: resident W8 in the room the context left, engine_load.h)
