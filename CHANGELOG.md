@@ -3,6 +3,7 @@
 ## 2026-11-24: the Max 1550's prompt attention; xw_peak on 16-lane cards
 
 - **Data Center GPU Max: long prompts about a quarter faster** (hibagus, #48): the prompt attention runs with the 128-register file by default there. One Max 1550 stack, the 27B: attention at 32K 8,050 -> 6,232 ms, the 262K prompt 428 -> 529 tok/s. `ARC_ATTN_FX_GRF=256` gives the former form; other GPUs keep it until they measure it (`ARC_ATTN_FX_GRF=128` to try).
+- **The KL checks also give the same-top-token share without near-ties** (`runz --kl-ref` / `--kl-decode`, `benchkl_options`, `benchwebsite_bench`): positions where the f32 reference's own top two are within 0.08 nats (`ARC_KL_TIE`) are left out of that share, the user's rule of 2026-11-24 for the 98 % bar; the KL counts every position as before.
 - **`xw_peak --shape NxK` on a 16-lane card** (B-series, Lunar Lake / Panther Lake, a Max) runs the 16-lane GEMM's forms on those shapes at `--m` tokens, as `--all --ms M` does; it stopped with "--lanes 16 is for --all" before (#92, #4).
 
 ## 2026-11-24: Inkling 2 in the server

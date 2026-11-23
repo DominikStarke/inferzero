@@ -513,9 +513,15 @@ for m in "${MODELS[@]}"; do
       if [ -n "$agree" ]; then
         top=$(printf '%s\n' "$agree" | awk '{ if ($6 + 0 != 0) printf "%.1f", 100.0 * $4 / $6 }')
       fi
-      save "{$J_MODEL,\"test\":\"kl\",\"kl\":$(jnum "$kl"),\"kl_max\":$(jnum "$kmax"),\"top_agree_pct\":$(jnum "$top")}"
-      row "$name" kl "" "" "" "" "" "" "$kl" "$kmax" "$top"
-      printf '  KL against f32: mean %s, max %s, top token agrees %s %%\n' "$(fmt_g "$kl")" "$(fmt_g "$kmax")" "$(fmt_g "$top")"
+      # (without the reference's near-ties, the rule of 2026-11-24: runz prints it after the strict share)
+      topnt=""
+      ntl=$(grep -a -o -m1 -E 'without near-ties \(ref top-2 margin < [0-9.]+\): [0-9]+ / [0-9]+' "$RUNOUT" | head -n 1)
+      if [ -n "$ntl" ]; then
+        topnt=$(printf '%s\n' "$ntl" | awk '{ if ($NF + 0 != 0) printf "%.1f", 100.0 * $(NF - 2) / $NF }')
+      fi
+      save "{$J_MODEL,\"test\":\"kl\",\"kl\":$(jnum "$kl"),\"kl_max\":$(jnum "$kmax"),\"top_agree_pct\":$(jnum "$top"),\"top_agree_nt_pct\":$(jnum "$topnt")}"
+      row "$name" kl "" "" "" "" "" "" "$kl" "$kmax" "$top" "$topnt"
+      printf '  KL against f32: mean %s, max %s, top token agrees %s %% (%s %% without near-ties)\n' "$(fmt_g "$kl")" "$(fmt_g "$kmax")" "$(fmt_g "$top")" "$(fmt_g "$topnt")"
     else
       printf '  KL: no f32 reference (ref_forward failed or does not take this model)\n'
     fi
@@ -533,7 +539,7 @@ SUM_GPU="$gpu" SUM_COMMIT="$commit" SUM_STAMP="$stamp" awk -F '\t' -v sizes="${S
     if (test != "kl" && !(id in has)) {
       has[id] = 1; pp[id] = $4; ttft[id] = $5; tg[id] = $6; fits[id] = $7; acc[id] = $8
     }
-    if (test == "kl") { nk++; km[nk] = model; kl[nk] = $9; kx[nk] = $10; kt[nk] = $11 }
+    if (test == "kl") { nk++; km[nk] = model; kl[nk] = $9; kx[nk] = $10; kt[nk] = $11; kn[nk] = $12 }
   }
   END {
     ns = split(sizes, sz, " ")
@@ -580,9 +586,10 @@ SUM_GPU="$gpu" SUM_COMMIT="$commit" SUM_STAMP="$stamp" awk -F '\t' -v sizes="${S
       print line
     }
     print ""; print "## Accuracy: KL against an f32 reference (480 tokens of USAGE.md)"; print ""
-    print "| Model | KL mean | KL max | top token agrees |"; print "|---|---|---|---|"
+    print "| Model | KL mean | KL max | top token agrees | without near-ties |"; print "|---|---|---|---|---|"
     for (i = 1; i <= nk; i++)
-      print "| " km[i] " | " fmtf(kl[i], 5, 0) " | " fmtf(kx[i], 4, 0) " | " fmtf(kt[i], 1, 0) " % |"
+      print "| " km[i] " | " fmtf(kl[i], 5, 0) " | " fmtf(kx[i], 4, 0) " | " fmtf(kt[i], 1, 0) " % | " (kn[i] == "" ? "-" : fmtf(kn[i], 1, 0) " %") " |"
+    print ""; print "(without near-ties: positions whose reference top two are within 0.08 nats left out, ARC_KL_TIE; the KL counts every position)"
   }' "$ROWS" > "$OUT/summary.md"
 printf 'summary: %s\n' "$OUT_ARG/summary.md"
 exit 0  # (not runz's last exit code: 3 when the last size did not fit)

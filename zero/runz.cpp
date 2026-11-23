@@ -87,14 +87,33 @@ static std::vector<float> read_kl_ref(const std::string& path, size_t V) {
 // (ARC_KL_FLIPS=1, --kl-ref: a position whose top token is not the reference's, with the reference's top two, their
 //  margin in log-prob, and where our pick stands in the reference: a near-tie (margin ~0) or a real miss. 2026-11-19,
 //  for Flash Next's same-top-token rule on discrete cards)
+// (the same-top-token share without the reference's near-ties, the user's rule of 2026-11-24: a position whose
+//  reference top two are within ARC_KL_TIE nats (default 0.08) is left out of the share; the KL counts every position.
+//  kl_flip tallies it for every position, kl_ties() prints it and starts again)
+struct KlTies { size_t n = 0, ok = 0; };
+static KlTies g_kl_ties;
+static double kl_tie_margin() {
+  static const double m = getenv("ARC_KL_TIE") ? atof(getenv("ARC_KL_TIE")) : 0.08;
+  return m;
+}
+static std::string kl_ties() {
+  char b[160];
+  snprintf(b, sizeof b, ", without near-ties (ref top-2 margin < %.2f): %zu / %zu (%.1f %%)", kl_tie_margin(), g_kl_ties.ok,
+           g_kl_ties.n, g_kl_ties.n ? 100.0 * (double)g_kl_ties.ok / (double)g_kl_ties.n : 0.0);
+  g_kl_ties = KlTies();
+  return b;
+}
 static void kl_flip(size_t pos, const float* l, const float* rr, size_t V) {
   static const bool on = getenv("ARC_KL_FLIPS") && atoi(getenv("ARC_KL_FLIPS")) != 0;
-  if (!on) return;
   const size_t te = std::max_element(l, l + V) - l, t1 = std::max_element(rr, rr + V) - rr;
-  if (te == t1) return;
   size_t t2 = t1 == 0 ? 1 : 0;
   for (size_t i = 0; i < V; ++i)
     if (i != t1 && rr[i] > rr[t2]) t2 = i;
+  if ((double)rr[t1] - rr[t2] >= kl_tie_margin()) {
+    ++g_kl_ties.n;
+    g_kl_ties.ok += te == t1 ? 1 : 0;
+  }
+  if (!on || te == t1) return;
   printf("flip pos %zu: ref top %zu (p %.4f), 2nd %zu (p %.4f), margin %.4f | inferzero top %zu (ref p %.4f)\n", pos, t1,
          std::exp((double)rr[t1]), t2, std::exp((double)rr[t2]), (double)rr[t1] - rr[t2], te, std::exp((double)rr[te]));
 }
@@ -374,8 +393,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
         mxk = std::max(mxk, kl);
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
       }
-      printf("KL prompt path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
-             sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
+      printf("KL prompt path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu%s\n",
+             sum / prompt.size(), prompt.size(), mxk, agree, prompt.size(), kl_ties().c_str());
       for (int r = 0; r < gpus; ++r) tp.shard(r).keep_rows = false;
       tp.reset();
       sum = mxk = 0;
@@ -395,8 +414,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
       mxk = std::max(mxk, kl);
       agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
     }
-    printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
-           sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
+    printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu%s\n",
+           sum / prompt.size(), prompt.size(), mxk, agree, prompt.size(), kl_ties().c_str());
     return 0;
   }
   tp.forward(prompt.data(), std::min((int)prompt.size(), 64));  // warm-up (kernels, page-in)
@@ -556,7 +575,9 @@ static int run_main(int argc, char** argv) {
             "  --kl-decode           with --kl-ref: through the token-by-token generation path\n"
             "  (ARC_KL_FLIPS=1 with --kl-ref: each position whose top token is not the reference's, with the reference's\n"
             "   top two and their margin)\n"
-            "  --slots-check         two conversations (the prompt's halves) alone, then held at once in slots 0 and 1\n"
+            "  (the same-top-token share is also given without near-ties: positions whose reference top two are within\n"
+            "   ARC_KL_TIE nats, default 0.08, left out of it; the KL counts every position)\n"
+            "  --slots-check        two conversations (the prompt's halves) alone, then held at once in slots 0 and 1\n"
             "                        with their steps interleaved and batched: every logit must be bit for bit the same\n"
             "  --bench-batch N       time of a batched decoding step over 1..N slots against one slot alone; with --gpus,\n"
             "                        first a check that the batched steps' logits equal each slot's alone, bit for bit\n"
@@ -1519,8 +1540,8 @@ static int run_main(int argc, char** argv) {
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr); kl_flip(r, l.data(), rr, V);
       }
       const size_t n = toks.size() - from;
-      printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
-             sum / n, n, mxk, agree, n);
+      printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu%s\n",
+             sum / n, n, mxk, agree, n, kl_ties().c_str());
       return 0;
     }
     // warm-up so kernel compilation is not counted in the time to first token
@@ -1629,8 +1650,8 @@ static int run_main(int argc, char** argv) {
           kl_flip(r, l.data(), rr, V);
         }
         const size_t n = toks.size() - kl_from;
-        printf("\nKL(ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
-               sum / n, n, mx, agree, n);
+        printf("\nKL(ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu%s",
+               sum / n, n, mx, agree, n, kl_ties().c_str());
         if (g_ref_tail.empty())  // (a compact reference has no full rows to compare: read_kl_ref)
           printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
                  100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);

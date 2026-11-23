@@ -78,10 +78,13 @@ $rows = New-Object System.Collections.ArrayList
 function Add-Row([string]$opt, [string]$against, [string]$refFile, [hashtable]$envs) {
   $o = Invoke-Exe $runz @($Model, "--tokens-file", $ids, "--kl-ref", $refFile, "--n", "1") $envs
   $m = [regex]::Match($o, 'KL\(ref \|\| inferzero\) = ([0-9.]+) \(mean over (\d+) positions, max ([0-9.]+)\), top token agrees (\d+) / (\d+)')
+  # (the share without the reference's near-ties, the rule of 2026-11-24: runz prints it after the strict one)
+  $nt = [regex]::Match($o, 'without near-ties \(ref top-2 margin < [0-9.]+\): (\d+) / (\d+)')
+  $tie = if ($nt.Success) { "$($nt.Groups[1].Value) / $($nt.Groups[2].Value)" } else { "-" }
   if ($m.Success) {
-    [void]$rows.Add([pscustomobject]@{ option = $opt; against = $against; mean = $m.Groups[1].Value; max = $m.Groups[3].Value; top = "$($m.Groups[4].Value) / $($m.Groups[5].Value)" })
+    [void]$rows.Add([pscustomobject]@{ option = $opt; against = $against; mean = $m.Groups[1].Value; max = $m.Groups[3].Value; top = "$($m.Groups[4].Value) / $($m.Groups[5].Value)"; tie = $tie })
   } else {
-    [void]$rows.Add([pscustomobject]@{ option = $opt; against = $against; mean = "failed"; max = "-"; top = "-" })
+    [void]$rows.Add([pscustomobject]@{ option = $opt; against = $against; mean = "failed"; max = "-"; top = "-"; tie = "-" })
   }
   Stamp "$opt against $against done"
 }
@@ -118,9 +121,10 @@ $rel = (Get-Content (Join-Path $root "bin\PREBUILT.txt") -Encoding UTF8 -ErrorAc
 if (-not $rel) { $rel = "source tree " + ((& git -C $root log -1 --format=%h 2>$null) -join "") }
 Write-Output ("release: " + $rel.Trim([char]0xFEFF, ' '))
 Write-Output ""
-Write-Output "| option | against | KL mean | KL max | same top token |"
-Write-Output "|---|---|---|---|---|"
-foreach ($r in $rows) { Write-Output ("| {0} | {1} | {2} | {3} | {4} |" -f $r.option, $r.against, $r.mean, $r.max, $r.top) }
+Write-Output "| option | against | KL mean | KL max | same top token | without near-ties |"
+Write-Output "|---|---|---|---|---|---|"
+foreach ($r in $rows) { Write-Output ("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $r.option, $r.against, $r.mean, $r.max, $r.top, $r.tie) }
+Write-Output "(without near-ties: positions whose reference top two are within 0.08 nats left out, ARC_KL_TIE; the KL counts every position)"
 Write-Output ""
 Write-Output "Faster drafting (ARC_MTP_VOCAB=32768): $draft"
 if ($qsa) { Write-Output "(the sparse rows with the selection cut to 64 keys on both sides, ARC_QSA_TOPK / REF_TOPK, so that these tokens are sparse)" }

@@ -73,10 +73,14 @@ add_row() {  # option against ref env...
   local o m
   o=$(env "$@" "$RUNZ" "$MODEL" --tokens-file "$IDS" --kl-ref "$ref" --n 1 2>&1)
   m=$(grep -oE 'KL\(ref \|\| inferzero\) = [0-9.]+ \(mean over [0-9]+ positions, max [0-9.]+\), top token agrees [0-9]+ / [0-9]+' <<<"$o" | tail -n 1)
+  # (the share without the reference's near-ties, the rule of 2026-11-24: runz prints it after the strict one)
+  local nt
+  nt=$(grep -oE 'without near-ties \(ref top-2 margin < [0-9.]+\): [0-9]+ / [0-9]+' <<<"$o" | tail -n 1 | sed -E 's/.*: ([0-9]+ \/ [0-9]+)$/\1/')
+  [ -n "$nt" ] || nt="-"
   if [ -n "$m" ]; then
-    ROWS+=("| $opt | $against | $(sed -E 's/.*= ([0-9.]+) \(.*/\1/' <<<"$m") | $(sed -E 's/.*max ([0-9.]+)\).*/\1/' <<<"$m") | $(sed -E 's/.*agrees ([0-9]+ \/ [0-9]+).*/\1/' <<<"$m") |")
+    ROWS+=("| $opt | $against | $(sed -E 's/.*= ([0-9.]+) \(.*/\1/' <<<"$m") | $(sed -E 's/.*max ([0-9.]+)\).*/\1/' <<<"$m") | $(sed -E 's/.*agrees ([0-9]+ \/ [0-9]+).*/\1/' <<<"$m") | $nt |")
   else
-    ROWS+=("| $opt | $against | failed | - | - |")
+    ROWS+=("| $opt | $against | failed | - | - | - |")
   fi
   stamp "$opt against $against done"
 }
@@ -112,9 +116,10 @@ echo
 echo "kl_options: $(basename "$MODEL"), $TOKENS tokens of USAGE.md, ${GPU:-GPU 0}"
 echo "release: $(head -n 1 "$ROOT/bin/PREBUILT.txt" 2>/dev/null || git -C "$ROOT" log -1 --format=%h 2>/dev/null)"
 echo
-echo "| option | against | KL mean | KL max | same top token |"
-echo "|---|---|---|---|---|"
+echo "| option | against | KL mean | KL max | same top token | without near-ties |"
+echo "|---|---|---|---|---|---|"
 printf '%s\n' "${ROWS[@]}"
+echo "(without near-ties: positions whose reference top two are within 0.08 nats left out, ARC_KL_TIE; the KL counts every position)"
 echo
 echo "Faster drafting (ARC_MTP_VOCAB=32768): $DRAFT"
 [ $FN = 1 ] || [ $Q27 = 1 ] && echo "(the sparse rows with the selection cut to 64 keys on both sides, ARC_QSA_TOPK / REF_TOPK, so that these tokens are sparse)"

@@ -181,8 +181,11 @@ foreach ($m in $Models) {
       $kmax = Num $o "max ([\d.]+)\)"
       $agree = [regex]::Match($o, "top token agrees (\d+) / (\d+)")
       $top = if ($agree.Success) { [math]::Round(100.0 * [int]$agree.Groups[1].Value / [int]$agree.Groups[2].Value, 1) } else { $null }
-      Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "kl"; kl = $kl; kl_max = $kmax; top_agree_pct = $top }
-      [string]::Format($inv, "  KL against f32: mean {0}, max {1}, top token agrees {2} %", $kl, $kmax, $top)
+      # (without the reference's near-ties, the rule of 2026-11-24: runz prints it after the strict share)
+      $nt = [regex]::Match($o, 'without near-ties \(ref top-2 margin < [0-9.]+\): (\d+) / (\d+)')
+      $topnt = if ($nt.Success -and [int]$nt.Groups[2].Value -gt 0) { [math]::Round(100.0 * [int]$nt.Groups[1].Value / [int]$nt.Groups[2].Value, 1) } else { $null }
+      Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "kl"; kl = $kl; kl_max = $kmax; top_agree_pct = $top; top_agree_nt_pct = $topnt }
+      [string]::Format($inv, "  KL against f32: mean {0}, max {1}, top token agrees {2} % ({3} % without near-ties)", $kl, $kmax, $top, $topnt)
     } else { "  KL: no f32 reference (ref_forward failed or does not take this model)" }
   }
 }
@@ -213,10 +216,12 @@ foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Accuracy: KL against an f32 reference (480 tokens of USAGE.md)"
-$md += ""; $md += "| Model | KL mean | KL max | top token agrees |"; $md += "|---|---|---|---|"
+$md += ""; $md += "| Model | KL mean | KL max | top token agrees | without near-ties |"; $md += "|---|---|---|---|---|"
 foreach ($r in ($rows | Where-Object { $_.test -eq "kl" })) {
-  $md += [string]::Format($inv, "| {0} | {1:F5} | {2:F4} | {3:F1} % |", $r.model, $r.kl, $r.kl_max, $r.top_agree_pct)
+  $md += [string]::Format($inv, "| {0} | {1:F5} | {2:F4} | {3:F1} % | {4} |", $r.model, $r.kl, $r.kl_max, $r.top_agree_pct,
+                          $(if ($null -ne $r.top_agree_nt_pct) { [string]::Format($inv, "{0:F1} %", $r.top_agree_nt_pct) } else { "-" }))
 }
+$md += ""; $md += "(without near-ties: positions whose reference top two are within 0.08 nats left out, ARC_KL_TIE; the KL counts every position)"
 [IO.File]::WriteAllLines((Join-Path $Out "summary.md"), $md)
 "summary: $(Join-Path $Out 'summary.md')"
 exit 0  # (not runz's last exit code: 3 when the last size did not fit)
