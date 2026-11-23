@@ -66,6 +66,7 @@ struct TpComm {
   // a write to a 4-byte aligned word lands on the 8-byte word below it)
   static constexpr int kSemStride = 16;
   std::vector<uint32_t> dseq;   // per shard: the number of its last GPU-side sum (the same on every shard)
+  std::vector<uint64_t> devsync_resets;  // per shard: the semaphores zeroed before the 32-bit numbers wrap (tp_reduce_at)
   // (the driver's zex_wait_on_mem_desc_t / zex_write_to_mem_desc_t, level_zero/driver_experimental/zex_common.h: no
   //  stype / pNext. Scopes: 1 sub-device, 2 device, 4 host; waits: 1 ==, 2 !=, 4 >, 8 >=, 16 <, 32 <=)
   struct ZexWait { uint32_t action, scope; };
@@ -408,6 +409,21 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
     return;
   }
   if (p2p && c.devsync) {  // (ARC_TP_DEVSYNC: the GPUs meet on their own, TpComm::devsync)
+    // (the 32-bit wait compares sem >= q: before q passes 2^31 (ARC_TP_DEVSYNC_WRAP for tests), every GPU idle and
+    //  past a host barrier, each zeroes its own slots and the numbers start again. Every shard counts the same sums, so
+    //  all of them get here at the same one. ~16M tokens of the 27B between resets; a wrap to 0 would have let every
+    //  wait pass, the peers' parts read before they landed)
+    static const uint32_t wrap = getenv("ARC_TP_DEVSYNC_WRAP") ? (uint32_t)std::max(2, atoi(getenv("ARC_TP_DEVSYNC_WRAP"))) : (1u << 31);
+    if (c.dseq[r] + 1 >= wrap) {
+      zrt::sync();
+      c.barrier(opt.tp_rank);
+      const uint32_t z = 0;
+      ZE_CHECK(zeCommandListAppendMemoryFill(zrt::imm(), c.sem[r], &z, 4, (size_t)64 * c.n, nullptr, 0, nullptr));
+      zrt::sync();
+      c.barrier(opt.tp_rank);
+      c.dseq[r] = 0;
+      ++c.devsync_resets[r];
+    }
     const uint32_t q = ++c.dseq[r];
     ze_command_list_handle_t l = zrt::imm();
     ZE_CHECK(zeCommandListAppendBarrier(l, nullptr, 0, nullptr));  // (the copies done before the numbers go out)
@@ -1494,6 +1510,7 @@ class TpEngine {
         comm_.zex_write = (decltype(comm_.zex_write))pr;
         comm_.sem.assign(n, nullptr);
         comm_.dseq.assign(n, 0);
+        comm_.devsync_resets.assign(n, 0);
         for (int q = 0; q < n; ++q)  // (one GPU at a time, as above)
           run_on({q}, [&](int r) {
             zrt::oom_throws = true;
@@ -1513,7 +1530,11 @@ class TpEngine {
         }
       }
       comm_.devsync = !no;
-      zlog::eprintf("inferzero: ARC_TP_DEVSYNC: %s\n", no ? no : "a generated token's sums meet on the GPUs (memory semaphores)");
+      // (the zex descriptors have no stype / version: the layout of today's zex_common.h, checked on Linux compute
+      //  runtimes 25.18 and 26.40 only; the driver's version is in the log's "kernels compiled" line, to tell a later
+      //  driver's change from a bug)
+      zlog::eprintf("inferzero: ARC_TP_DEVSYNC: %s (checked on Linux compute runtimes 25.18 / 26.40 only: the driver "
+                    "above)\n", no ? no : "a generated token's sums meet on the GPUs (memory semaphores)");
     }
     // (a slow link: the prompt's sums wait on it; docs/multi-gpu.md says what helps)
     const double eff = use ? direct : host;
@@ -1791,6 +1812,11 @@ inline void TpMirror::finish() {
       return;
     }
     t.set_broken();
+    // (ARC_TP_DEVSYNC: a GPU waits on its own for the others' parts, with no timeout of its own; a GPU wait that ran out
+    //  is then most likely another GPU's sum that never came, not the GPU the timeout names)
+    if (c.devsync && abort)
+      zlog::eprintf("multi-GPU: ARC_TP_DEVSYNC was on: a GPU that timed out was most likely waiting for another GPU's part%s\n",
+                    c.first_failed >= 0 ? (" (GPU " + std::to_string(c.first_failed.load() + 1) + " failed first)").c_str() : "");
     for (size_t k = 0; k < errs.size(); ++k) {  // (the other GPUs' own errors in the log: shard 0's may only say
       if (!errs[k]) continue;                  //  that another failed)
       try {

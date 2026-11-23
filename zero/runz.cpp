@@ -466,6 +466,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms | sums per token %.0f, %.2f ms of each token waiting\n",
            step_ms.size(), gms, step_ms.size() / gms * 1000.0, st.front(), st[st.size() / 2],
            (double)(n1 - n0) / step_ms.size(), (w1 - w0) / step_ms.size());
+    if (tp.comm().devsync) printf("(ARC_TP_DEVSYNC: the direct sums wait on the GPUs, not counted in that waiting time)\n");
     const double gb = (read_bytes() - b0) / 1e9;
     printf("weights read: %.0f MB per token over %d GPUs, %.1f GB/s together\n", gb * 1000 / step_ms.size(), gpus, gb / gms * 1000);
   }
