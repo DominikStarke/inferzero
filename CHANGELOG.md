@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-23: audit follow-ups: the room without the old cap, a mixed process's GPUs each their own
+
+- **The long-context room is no longer capped at the old rule's** on a card that cannot hold the model. Where the
+  estimate is above it, the old room did not fit either. Example: the 27B at `--slots 2 --mtp` and 16K needs ~3.1
+  GiB against a 2.5 GiB cap. Since a card that pages is slower than one with more of the weights in RAM, the estimate
+  now wins. Below the cap nothing changes (d-dorok's B580, the 27B at 4K with one slot: ~0.9 GiB, as before).
+- **`runz --must-fit` exits with code 6**, not 3, which is now a GPU hang (docs/gpu-failsafe.md). website_bench
+  reads the message, not the code.
+- **A770 sweeps:** `ARC_GEMM_XW_SLM_TILE=32x32` or `ARC_GEMM_XW_SLM_CPS=1`, the default values, no longer turn
+  off the 4 x 8 default. A sweep row that named them measured the old 4 x 4 shapes.
+- **A layer split of unlike cards (one process):**
+  - each GPU says its own XMX-off, 140T-preset and H8 lines, not only the first GPU;
+  - a GPU on a second Level Zero driver (Linux) looks up that driver's list-append function for `ARC_BATCH`,
+    instead of using GPU 0's.
+- One GPU is unchanged.
+
 ## 2026-11-23: profiles show the CPU's share of the weights in host memory
 
 - **Fixed:** `--prof` and `--prof-gen` turned off the CPU path for the weights kept in host memory

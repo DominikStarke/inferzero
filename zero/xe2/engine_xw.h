@@ -319,7 +319,10 @@
         if (sscanf(w, "%d,%d", &x, &y) == 2 && (x == 2 || x == 4 || x == 8) && (y == 2 || y == 4 || y == 8) && x * y <= 32)
           b.x = x, b.y = y;
         else zlog::eprintf("inferzero: ARC_GEMM_XW_SLM_WG=%s not X,Y with 2 / 4 / 8 each and X x Y <= 32: 4,4\n", w);
-      } else if (!zrt::integrated() && xw_split_env() && !getenv("ARC_GEMM_XW_SLM_TILE") && !getenv("ARC_GEMM_XW_SLM_CPS")) {
+      } else if (!zrt::integrated() && xw_split_env() && (!getenv("ARC_GEMM_XW_SLM_TILE") || (b.tm == 32 && b.nc == 2)) &&
+                 (!getenv("ARC_GEMM_XW_SLM_CPS") || atoi(getenv("ARC_GEMM_XW_SLM_CPS")) == 1)) {
+        // (a tile or stages set to the default values, 32x32 / CPS 1, count as unset: a sweep row that names them
+        //  measured 4 x 4, not the default; audit 2026-11-23)
         // (not with a tile or stages asked for: CPS 2 at 4 x 8 is 96 KB, and the 64 KB check below would reset what the
         //  sweep asked for to 32 x 32 4,4 CPS 1; the Researcher's review of 277d809)
         // (4 x 8 on discrete 8-lane cards, Alchemist, with the split barrier since 2026-11-23: skipzx-lab's A770, the

@@ -441,9 +441,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const bool xmx_force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
     const bool sg8_igpu = cl_.sg8 && zrt::integrated();
     if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !p140_ && !getenv("ARC_XMX_TRY")) {
-      static bool said = false;
-      if (!said) zlog::eprintf("inferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
-      said = true;
+      if (first_for_device("xmx_off8"))
+        zlog::eprintf("inferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
     }
     if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force || p140_)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
@@ -523,13 +522,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       h8f_defs_.clear();
       if (!opt.dry) build_kernels();
     }
-    if (p140_) {
-      static std::once_flag said;
+    if (p140_ && first_for_device("p140")) {
       const bool res = p140_res_;
-      std::call_once(said, [res] {
-        zlog::eprintf("inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, %s DP4a below (ARC_140T=0: off)\n",
-                      p140_min(res), res ? "resident" : "just-in-time");
-      });
+      zlog::eprintf("inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, %s DP4a below (ARC_140T=0: off)\n",
+                    p140_min(res), res ? "resident" : "just-in-time");
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     if (!opt.dry) xw_init();   // (the H8R GEMM with wider XMX tiles: the 140T preset and discrete cards' H8 (h8_auto_), or ARC_GEMM_XW=1: zero/xe2/engine_xw.h)
@@ -1176,6 +1172,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 #include "engine_stream.h"  // (expert streaming)
 #include "engine_load_gemma.h"  // (the Gemma 4 weights)
 #include "engine_alloc.h"  // (the activation buffers and the memory plan)
+  // true the first time for this tag on this kind of GPU (cl_.device_id) in the process: a line about the GPU, said
+  // once for each GPU of a layer split of unlike cards, not only for the first (audit 2026-11-23)
+  bool first_for_device(const char* tag) const {
+    static std::mutex mu;
+    static std::set<std::string> seen;
+    std::lock_guard<std::mutex> g(mu);
+    return seen.insert(std::string(tag) + "|" + cl_.device_id).second;
+  }
   // ---------------------------------------------------------------- dispatch helpers
   void run(const char* name, cl_kernel k, int dims, const size_t* gws, const size_t* lws) {
     cl_event e = nullptr;

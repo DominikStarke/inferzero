@@ -92,20 +92,16 @@
       zlog::eprintf("inferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
     // (H8 is this GPU's default, and the NPU turns it off: a B390's 27B 4K prompt 628 tok/s alone, 194-330 with the
     //  NPU at every share from 0.12 to 0.5; gee456, issue #31, 2026-11-18)
-    if (!h8_env() && (p140_ || h8_auto_) && !q2mm_ && npu_wanted() && !opt.dry) {
-      static std::once_flag f;
-      std::call_once(f, [] {
-        zlog::eprintf("inferzero: the NPU turns off H8, this GPU's prompt path: the GPU alone is likely faster "
-                      "(an Arc B390's 27B 4K prompt 628 tok/s alone, at most 330 with the NPU)\n");
-      });
-    }
-    // (once per process: a split model's shards each init; bench/gemm_sweep.ps1 reads this line)
-    static std::once_flag said;
-    if (h8_ && !opt.dry) std::call_once(said, [] {
+    if (!h8_env() && (p140_ || h8_auto_) && !q2mm_ && npu_wanted() && !opt.dry && first_for_device("h8_npu"))
+      zlog::eprintf("inferzero: the NPU turns off H8, this GPU's prompt path: the GPU alone is likely faster "
+                    "(an Arc B390's 27B 4K prompt 628 tok/s alone, at most 330 with the NPU)\n");
+    // (once per kind of GPU: a split model's shards each init, one kind; a layer split of unlike cards says it for each.
+    //  bench/gemm_sweep.ps1 reads this line)
+    if (h8_ && !opt.dry && first_for_device("h8_on"))
       zlog::eprintf("inferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8, one scale per %s)\n",
-              h8_row() ? "column and token" : "256 values");
-    });
-    if (h8_ && h8f_off_ && !opt.dry) { static std::once_flag f; std::call_once(f, [] { zlog::eprintf("inferzero: H8 rotates the activations from f32\n"); }); }
+                    h8_row() ? "column and token" : "256 values");
+    if (h8_ && h8f_off_ && !opt.dry && first_for_device("h8f"))
+      zlog::eprintf("inferzero: H8 rotates the activations from f32\n");
   }
   // the rotation block for a row length K: the largest power of two up to 1024 (ARC_H8_HB) dividing it; K is a whole
   // number of 256-superblocks, so at least 256

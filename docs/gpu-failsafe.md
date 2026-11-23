@@ -100,6 +100,7 @@ The limit (`ARC_GPU_WAIT_S`):
 | 3 | the GPU's work did not finish within the limit (a hang) |
 | 4 | device lost (the driver reset the GPU) |
 | 5 | another Level Zero failure mid-work |
+| 6 | `runz --must-fit`: the model and the context do not fit the GPU share (3 before 2026-11-23, which is now a hang) |
 
 The launchers (`scripts/zero-server.ps1`, `zero-launcher.sh`, and the docker entrypoint) don't restart the server on 3 or 4. They print the marker's text and "restart the computer before using the GPU again". A restart loop on a hung GPU is what made today worse.
 

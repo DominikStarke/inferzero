@@ -144,6 +144,7 @@ struct Dev {
   // (a GPU of another Level Zero driver than GPU 0's, a layer split's stage (#57: a B60 and an A770 on two drivers):
   //  that driver's context, which its memory, modules, lists and events are made in; null: the shared ctx)
   ze_context_handle_t zctx = nullptr;
+  ze_driver_handle_t zdrv = nullptr;  // (that driver; null: zrt::driver's, as GPU 0)
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -230,6 +231,7 @@ struct BatchFns {
   ze_result_t(__stdcall* append)(ze_command_list_handle_t, uint32_t, ze_command_list_handle_t*, ze_event_handle_t, uint32_t,
                                  ze_event_handle_t*) = nullptr;
   bool ok = false;
+  bool loader_append = false;  // (append is the loader's export, for every driver)
 };
 inline BatchFns& batch_fns() {
   static BatchFns f = [] {
@@ -239,7 +241,10 @@ inline BatchFns& batch_fns() {
     b.create = (decltype(b.create))plat::dl_sym(zl, "zeCommandListCreate");
     b.close = (decltype(b.close))plat::dl_sym(zl, "zeCommandListClose");
     b.reset = (decltype(b.reset))plat::dl_sym(zl, "zeCommandListReset");
+    // (the loader's own export dispatches by the list's driver; without it, the driver's address: GPU 0's here, another
+    //  driver's in batch_append_for, audit 2026-11-23)
     b.append = (decltype(b.append))plat::dl_sym(zl, "zeCommandListImmediateAppendCommandListsExp");
+    b.loader_append = b.append != nullptr;
     if (!b.append) {
       typedef ze_result_t(__stdcall * PFN_ext)(ze_driver_handle_t, const char*, void**);
       auto ext = (PFN_ext)plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress");
@@ -255,7 +260,29 @@ inline BatchFns& batch_fns() {
   return f;
 }
 inline int batch_max() { return batch_max(D()); }
-inline bool batching(const Dev& d) { return batch_max(d) > 0 && batch_fns().ok; }
+// append for d's driver: the loader's export, or GPU 0's driver's address, or (a GPU of another driver, Linux with
+// unlike cards) that driver's own, looked up once per driver; null when it has none
+using BatchAppend = decltype(BatchFns::append);
+inline BatchAppend batch_append_for(const Dev& d) {
+  BatchFns& b = batch_fns();
+  if (!b.ok) return nullptr;
+  if (b.loader_append || !d.zdrv || d.zdrv == driver) return b.append;
+  static std::mutex mu;
+  static std::vector<std::pair<ze_driver_handle_t, BatchAppend>> by_drv;
+  std::lock_guard<std::mutex> g(mu);
+  for (auto& [dh, f] : by_drv)
+    if (dh == d.zdrv) return f;
+  BatchAppend f = nullptr;
+  typedef ze_result_t(__stdcall * PFN_ext)(ze_driver_handle_t, const char*, void**);
+  void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
+  auto ext = zl ? (PFN_ext)plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress") : nullptr;
+  void* p = nullptr;
+  if (ext && ext(d.zdrv, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) f = (BatchAppend)p;
+  if (!f) zlog::eprintf("inferzero: GPU %d's driver cannot append lists to an immediate list: ARC_BATCH off there\n", d.index);
+  by_drv.push_back({d.zdrv, f});
+  return f;
+}
+inline bool batching(const Dev& d) { return batch_max(d) > 0 && batch_append_for(d) != nullptr; }
 inline bool batching() { return batching(D()); }
 // the list being recorded appended to d's immediate list (no-op when none)
 inline void flush(Dev& d) {
@@ -266,11 +293,12 @@ inline void flush(Dev& d) {
   d.rec_cap = std::min(d.rec_cap * 2, batch_max(d));
   ZE_CHECK(batch_fns().close(l));
   Dev::RecList& r = d.rec_pool[d.rec_cur];
-  ze_result_t e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
+  const BatchAppend app = batch_append_for(d);  // (non-null: batching(d) let the recording start)
+  ze_result_t e = app(d.cl, 1, &l, r.done, 0, nullptr);
   // (out of device memory; the hook frees on the calling thread's GPU, zrt::D(): only when d is that GPU, as
   //  clReleaseMemObject can flush another GPU's list, whose shard thread may be using its cache)
   for (int i = 0; e == (ze_result_t)0x70000003 && i < 8 && &d == &D() && oom_hook && oom_hook(); ++i)
-    e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
+    e = app(d.cl, 1, &l, r.done, 0, nullptr);
   ZE_CHECK(e);
   r.used = true;
 }
@@ -1521,6 +1549,7 @@ struct ClRt {
       d->index = i;
       if (!sim && i < (int)gpu_drv.size() && gpu_drv[i] != zrt::driver) {
         // (a GPU of another driver: that driver's context, one per driver, kept for the process as zrt::ctx is)
+        d->zdrv = gpu_drv[i];
         static std::vector<std::pair<ze_driver_handle_t, ze_context_handle_t>> drv_ctx;
         for (auto& f : drv_ctx)
           if (f.first == gpu_drv[i]) d->zctx = f.second;

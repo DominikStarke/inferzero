@@ -662,10 +662,14 @@
       // (the slots' KV together past one 32K context, as keep_extra counts it: 2 slots of 32K used the credit up too)
       const double kv_long = std::max(0.0, kv_est(ctx, true) * std::max(opt.slots, 1) - kv_est(32768, true));
       const double credit = std::max(0.0, driver_slack() - kv_long);
-      const double room = std::min(keep_def, std::max(0.0, need + mtp_part + apart - credit));
+      // (not capped at the old rule's room since the audit of 2026-11-23 (the Researcher: "fitting wins"): where the
+      //  estimate is above keep_def, the old rule's room did not fit either (the 27B at --slots 2 --mtp and 16K: ~3.1
+      //  GiB against 2.5), and a card that pages is slower than one with more of the weights in RAM. Below it (d-dorok's
+      //  B580, the 27B at 4K, one slot: ~0.9) the same room as before)
+      const double room = std::max(0.0, need + mtp_part + apart - credit);
       if (getenv("ARC_FIT_PARTS") && !opt.dry)  // (diagnostics: the tight plan's room by part, with runz's memory line)
         zlog::eprintf("inferzero: room %.3f GiB = fixed %.2f + activations %.3f + staging %.3f + residual %.3f + states %.3f + "
-                      "KV %.3f + MTP %.3f + partials %.3f + reserve %.3f - driver credit %.3f (cap %.2f)\n", room / GiB,
+                      "KV %.3f + MTP %.3f + partials %.3f + reserve %.3f - driver credit %.3f (the old rule's %.2f)\n", room / GiB,
                       (dense_rows ? 0.25 : 0.4), act / GiB, stage / GiB, resid / GiB, snaps / GiB,
                       kv_est(ctx, true) * std::max(opt.slots, 1) / GiB, mtp_part / GiB, apart / GiB,
                       (double)opt.stream_reserve / GiB, credit / GiB, keep_def / GiB);

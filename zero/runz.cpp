@@ -455,7 +455,7 @@ static int run_main(int argc, char** argv) {
             "  --tokens 1,2,3        token ids               --tokens-file F   token ids from a file (comma separated)\n"
             "  --text-file F         text, tokenized with the model's vocabulary (special tokens such as <|im_start|> parsed)\n"
             "  --dump-ids F          write the prompt's token ids to F and exit\n"
-            "  --must-fit            exit (code 3) when the model and the context exceed the GPU share (a warning without)\n"
+            "  --must-fit            exit (code 6) when the model and the context exceed the GPU share (a warning without)\n"
             "generation:\n"
             "  --n N                 tokens to generate (default 16)     --show   print the generated text\n"
             "  --dump-logits F       write the prompt logits and every generation step's (f32) to F, to compare runs bitwise\n"
@@ -589,7 +589,7 @@ static int run_main(int argc, char** argv) {
       text_prompt = ss.str();
     }
     else if (a == "--dump-ids") dump_ids = next();  // write the prompt's token ids (comma separated) and exit
-    else if (a == "--must-fit") must_fit = true;  // exit (code 3) when the model and context exceed the GPU share
+    else if (a == "--must-fit") must_fit = true;  // exit (code 6) when the model and context exceed the GPU share
     else if (a == "--feed-step") feed_step = atoi(next());
     else if (a == "--n") n_gen = atoi(next());
     else if (a == "--chunk") chunk = atoi(next());
@@ -753,7 +753,7 @@ static int run_main(int argc, char** argv) {
               eng.host_weight_bytes() ? (", " + std::to_string((int)(eng.host_weight_bytes() / 1048576)) + " MiB of the weights in host memory too").c_str() : "",
               share / GiB, Engine::driver_slack() / GiB,
               fit > 0 ? ("--ctx " + std::to_string(fit) + " fits with every weight on the GPU").c_str() : "no context fits: a smaller model or fewer weights on the GPU");
-      if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
+      if (must_fit) return 6;  // (code 6, not 3: 3 is a GPU hang since 2026-11-23, docs/gpu-failsafe.md. --must-fit: bench\website_bench.ps1 records the size as not fitting)
     }
   }
 
