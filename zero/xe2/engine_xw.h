@@ -595,8 +595,19 @@
   // (dg2-g10) makes the 32-bit read8 two 128-B messages (32 for 32 DPAS) and these one 256-B message (16), as oneDNN's
   // block_oword(16) reads. The cost: ~176 moves more in the kernel (a lane's 4 ulongs into DPAS's word layout). No spill
   // there, with the fused gate / up too. Bit for bit, checked at start (the build options are the check's own)
+  // ARC_GEMM_XW_DPASW=1 (8 lanes, 2026-11-23, opt-in; the A770 GEMM plan after oneDNN's kernel, step 3): the big tile's
+  // DPAS as the split form on a fused EU pair (gemm_xw8.cl -DXS_DPASW, cl_intel_subgroup_split_matrix_multiply_accumulate,
+  // dpasw): each sub-group of a pair reads half of the token operand, so A's local reads halve (the users' ocloc 26.40,
+  // dg2-g10: 24 local reads for 32 DPAS against 32, no spill, the same instruction count). The pairing is the driver's:
+  // checked at start bit for bit; a driver without the extension fails that check and keeps the plain DPAS. Takes
+  // precedence over ARC_GEMM_XW_UL (another local layout). Not on B-series cards (no fused EUs: no such DPAS)
+  static bool xw_dpasw_env() {
+    static const bool on = getenv("ARC_GEMM_XW_DPASW") && atoi(getenv("ARC_GEMM_XW_DPASW")) != 0;
+    return on;
+  }
   static std::string xw_ul_opt() {
     static const bool on = getenv("ARC_GEMM_XW_UL") && atoi(getenv("ARC_GEMM_XW_UL")) != 0;
+    if (xw_dpasw_env()) return " -DXS_DPASW";
     return on ? " -DXS_UL -DXS_LATE" : std::string();
   }
   // ARC_GEMM_XW_LSC=N (2026-11-23, opt-in; the A770's cache question, #45: with the removed ARC_GEMM_XW_AG, which kept
@@ -1044,7 +1055,7 @@
                             (xw_shape_on() ? "|shape" + std::to_string(hp.n_embd) : "") + (xw_db(32) ? "|db" + std::to_string(xw_db_env()) : "") +
                             (xw_slm_wgy() ? "|slm" + std::to_string(xw_slm_wgy()) : "") + (xw_epi2() ? "|e2" : "") +
                             (xw_big_on() ? "|big" + xw_big_key() : "") + (xw_wgl_try() ? "|wgl" : "") +
-                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_ul_opt().empty() ? "" : "|ul") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
+                            (xw_wgl_try() && xw_bg_env() ? "|bg" : "") + (xw_ul_opt().empty() ? "" : xw_dpasw_env() ? "|dpasw" : "|ul") + (xw_lsc_opt().empty() ? "" : "|lsc") + (xw_split_env() && xw_big_on() ? "|split" : "");
     std::lock_guard<std::mutex> g(mu);
     static std::map<std::string, int> fb2d;  // (per key: the 2D fallback its check ended at, then checked that way)
     static std::map<std::string, bool> crnd;  // (per key: whether its check ended with XW_C_RND)
@@ -1105,7 +1116,8 @@
                                   "checked bit for bit)\n"
                                 : "inferzero: ARC_GEMM_XW_WGL: the work-group order differs or does not build: the packed order\n");
       if (ok && !xw_ul_opt().empty() && xw_big_on())
-        zlog::eprintf("inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
+        zlog::eprintf(xw_dpasw_env() ? "inferzero: gemm_xw8: the big tile's DPAS split over fused EU pairs (ARC_GEMM_XW_DPASW, dpasw, results checked bit for bit)\n"
+                                     : "inferzero: gemm_xw8: the big tile's local-memory reads in 256-byte messages (ARC_GEMM_XW_UL, results checked bit for bit)\n");
       if (ok && !xw_lsc_opt().empty() && xw_big_on())
         zlog::eprintf("inferzero: gemm_xw8: the big tile's loads with the compiler's cache policy %s (ARC_GEMM_XW_LSC)\n",
                       getenv("ARC_GEMM_XW_LSC"));

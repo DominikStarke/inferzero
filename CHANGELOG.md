@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-23: the A770 GEMM plan, step 3: the split DPAS (opt-in)
+
+- **New, opt-in: `ARC_GEMM_XW_DPASW=1`** (Arc A-series and other Alchemist cards). The big prompt tile's matrix
+  instructions run in their split form over pairs of execution units, as oneDNN's A770 kernel does, so each reads half
+  of the token operand from local memory. The results are the same bit for bit, checked at start; its speed is for the
+  A770 to measure (#45).
+
 ## 2026-11-23: the A770 GEMM plan, step 1: 256-byte local-memory reads (opt-in)
 
 - **New, opt-in: `ARC_GEMM_XW_UL=1`** (8-lane discrete cards, the big prompt tile). The tile reads its operands from local

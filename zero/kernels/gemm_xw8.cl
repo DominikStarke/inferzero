@@ -115,6 +115,14 @@
 #define XW_PFD 1
 #endif
 
+#ifdef XS_DPASW  // (the split DPAS, the big tile's plain loop: see there)
+#if defined(XW_HB) || defined(XS_UL) || !defined(XW_SLM) || XW_WGX % 2
+#error "XS_DPASW: the big tile's plain loop (not XW_HB, not XS_UL), an even XW_WGX"
+#endif
+#ifndef XW_EMU
+#pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
+#endif
+#endif
 #ifdef XW_EMU
 inline int xw8_row(uint a, int8 b, int acc) {
   acc += dot_4x8packed_ss_int(BCAST(a, 0), (uint)b.s0);
@@ -447,12 +455,37 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       }
 #pragma unroll
       for (int t = 0; t < XW_TG; ++t) {
+#ifdef XS_DPASW
+        // -DXS_DPASW (2026-11-23, the A770 GEMM plan after oneDNN's kernel, step 3; ARC_GEMM_XW_DPASW): the split DPAS
+        // (cl_intel_subgroup_split_matrix_multiply_accumulate, dpasw on a fused EU pair). Sub-groups 2k and 2k + 1 of the
+        // work-group (the same sy, sx even and odd: the same tokens, other columns) each read half of the token operand
+        // (a 256-B unit's rows 0-3 or 4-7, components 0-3 of DPAS's row operand) and the hardware exchanges the halves:
+        // each still gets its full 8 x 8 sums, from half the local reads of A. Every call is reached by both sub-groups
+        // (no branch on sx in the loop). The pairing is the driver's: checked at start against the plain form, bit for
+        // bit. On a GPU without XMX (XW_EMU, the laptop's tests) the whole operand is read and the plain DPAS emulated
+#ifdef XW_EMU
+        const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
+#define XS_SMAD(a, b, c) xw8_mad(a, b, c)
+#else
+        const int hh = (sx & 1) * 32;  // (the even sub-group rows 0-3: words 0..31 of a unit; the odd one rows 4-7)
+        const int4 a0 = as_int4(intel_sub_group_block_read4((__local const uint*)(xa + t * 128 + hh)));
+        const int4 a1 = as_int4(intel_sub_group_block_read4((__local const uint*)(xa + t * 128 + 64 + hh)));
+#define XS_SMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
+#endif
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) {
+          xacc[t][2 * c] = XS_SMAD(a1, hi0[c], XS_SMAD(a0, lo0[c], xacc[t][2 * c]));
+          xacc[t][2 * c + 1] = XS_SMAD(a1, hi1[c], XS_SMAD(a0, lo1[c], xacc[t][2 * c + 1]));
+        }
+#undef XS_SMAD
+#else
         const int8 a0 = XS_RD(xa + t * 128), a1 = XS_RD(xa + t * 128 + 64);
 #pragma unroll
         for (int c = 0; c < XW_NC; ++c) {
           xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
           xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
         }
+#endif
       }
 #endif  // XW_HB
     }
