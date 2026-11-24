@@ -69,6 +69,18 @@
   cl_mem dsp_Fh_ = nullptr, dsp_fb_ = nullptr, dsp_w1g_ = nullptr, dsp_cidx_ = nullptr, dsp_cval_ = nullptr, dsp_ids_ = nullptr;
   std::vector<float> dsp_lg_, dsp_hrow_host_, dsp_u_host_, dsp_w1_host_;
   std::vector<int> dsp_idx_;
+  // (the second layout, 2026-11-24, #45/#96: unsloth's re-export through llama.cpp's convert (conversion/inkling2.py of
+  //  ggml-org/llama.cpp e4b1cb5, the Inkling2 DSpark branch; dflash.cpp / dspark.cpp there). The same drafter, its
+  //  constants folded at export: the fuse rows softmaxed into blk.N.ctx_mix and markov_ctx_mix (used as they are), the
+  //  norms renamed (dflare_norm -> blk.N.ctx_norm, dspark_norm -> markov_ctx_norm), markov_w2 = unembed hidden_out and
+  //  its bias = unembed b_h folded in fp64 (our dsp_fold's F and fb, read from the file), markov_w1 cut to the tokenizer's
+  //  rows, mask_embd one row per mask slot, the target's embed_norm as token_embd_norm, and the sliding window + 1 (llama
+  //  sees n_swa - 1 positions before the anchor). Picked by the tensors present; the first layout as before)
+  bool dsp_v2_ = false;
+  int dsp_mrows_ = 1;                      // (mask_embd's rows: 1, or one per mask slot)
+  cl_mem dsp_tnorm_ = nullptr;             // (v2: the anchor's norm, token_embd_norm)
+  const GgufTensor* dsp_w2_ = nullptr;     // (v2: markov_w2 [V][R], R fastest)
+  std::vector<float> dsp_w2b_host_;        // (v2: markov_w2.bias)
 
   static int dsp_drafts_default() {
     static const int d = getenv("ARC_DSP_DRAFTS") ? std::clamp(atoi(getenv("ARC_DSP_DRAFTS")), 1, 7) : 3;
@@ -87,9 +99,12 @@
     dsp_f_ = std::make_unique<GgufFile>(path);
     const GgufFile& d = *dsp_f_;
     const std::string a = d.get_str("general.architecture");
-    if (a != "dflash" || !d.find("markov_w1.weight") || !d.find("dspark_fuse.weight") || !d.find("joint_proj.weight"))
-      throw std::runtime_error("DSpark: " + path + " is not a DSpark drafter (arch dflash with markov_w1, dspark_fuse, joint_proj)");
     auto I = [&](const std::string& k, int64_t def = -1) { return (int)d.get_int("dflash." + k, def); };
+    dsp_v2_ = !d.find("dspark_fuse.weight") && d.find("blk.0.ctx_mix.weight") && d.find("markov_ctx_mix.weight");
+    if (dsp_v2_) return load_dspark_v2(path);
+    if (a != "dflash" || !d.find("markov_w1.weight") || !d.find("dspark_fuse.weight") || !d.find("joint_proj.weight"))
+      throw std::runtime_error("DSpark: " + path + " is not a DSpark drafter (arch dflash with markov_w1, joint_proj, and "
+                               "dspark_fuse or blk.N.ctx_mix + markov_ctx_mix)");
     const int nl = I("block_count"), E = hp.n_embd;
     dsp_H_ = I("attention.head_count");
     dsp_HKV_ = I("attention.head_count_kv");
@@ -140,11 +155,104 @@
     dsp_hout_b_ = f32_from(d, "dspark_hidden_out.bias");
     dsp_w1_ = &w1;
     dsp_head_t_ = f_.find("output.weight") ? &f_.get("output.weight") : &f_.get("token_embd.weight");
+    dsp_load_layers(path, nl, *pat, "dflare_norm.weight");
+    has_mtp = dsp_ = true;
+    clFinish(cl_.queue);
+    dsp_log_loaded(path, nl, "");
+  }
+  void dsp_log_loaded(const std::string& path, int nl, const char* layout) {
+    LOG_INF("DSpark drafter%s: %d layers, block %d, Markov rank %d, taps %s of %d visits, %d drafts a step, top-%d "
+            "candidates (%s)\n", layout, nl, dsp_B_, dsp_R_,
+            [&] { std::string s; for (int t : dsp_taps_) s += (s.empty() ? "" : ",") + std::to_string(t); return s; }().c_str(),
+            dsp_nvis_, opt.mtp_drafts, dsp_topk(), path.c_str());
+  }
+
+  // the second layout (dsp_v2_ above): the graph of the first with the file's folded constants
+  void load_dspark_v2(const std::string& path) {
+    const GgufFile& d = *dsp_f_;
+    auto I = [&](const std::string& k, int64_t def = -1) { return (int)d.get_int("dflash." + k, def); };
+    const int nl = I("block_count"), E = hp.n_embd;
+    for (const char* t : {"markov_w1.weight", "markov_w2.weight", "joint_proj.weight", "joint_proj.bias",
+                          "markov_ctx_norm.weight", "mask_embd.weight", "token_embd_norm.weight", "output_norm.weight"})
+      if (d.get_str("general.architecture") != "dflash" || !d.find(t))
+        throw std::runtime_error("DSpark: " + path + " is not a DSpark drafter of the ctx_mix layout (arch dflash, " + t + ")");
+    // (llama.cpp's defaults where a key is missing: sample_from_anchor true; this graph is the one without a confidence
+    //  head, slot 0 the anchor, the Markov head reading the context mix)
+    // (and the anchor embedded by the target's token_embd, as llama.cpp's get_tok_embd where the drafter has none; a
+    //  shared fc would be the other DFlash injection, not this one)
+    if (I("has_markov_context", 1) != 1 || I("sample_from_anchor", 1) != 0 || I("has_confidence_head", 0) != 0 ||
+        d.find("conf_proj.weight") || d.find("token_embd.weight") || d.find("fc.weight"))
+      throw std::runtime_error("DSpark: " + path + ": a variant this engine does not run (sample_from_anchor, a confidence "
+                               "head, or no Markov context)");
+    dsp_H_ = I("attention.head_count");
+    dsp_HKV_ = I("attention.head_count_kv");
+    dsp_F_ = I("feed_forward_length");
+    dsp_B_ = I("block_size", 8);
+    // (the export writes the window + 1: llama.cpp's sliding mask lets n_swa - 1 positions before the anchor through,
+    //  conversion/inkling2.py; dsp_win_ counts the positions before the anchor, as the first layout's window did)
+    const int win = I("attention.sliding_window", 0);
+    dsp_win_ = win > 1 ? win - 1 : 0;
+    dsp_eps_ = (float)d.get_float("dflash.attention.layer_norm_rms_epsilon", 1e-6);
+    dsp_base_ = (float)d.get_float("dflash.rope.freq_base", 1e6);
+    dsp_nvis_ = ink_visits();
+    const auto* tl = d.get_ints("dflash.target_layers");
+    const auto* pat = d.get_ints("dflash.attention.sliding_window_pattern");
+    const GgufTensor& w1 = d.get("markov_w1.weight");
+    const GgufTensor& w2 = d.get("markov_w2.weight");
+    const GgufTensor& jp = d.get("joint_proj.weight");
+    const GgufTensor& mk = d.get("mask_embd.weight");
+    const GgufTensor& mx = d.get("markov_ctx_mix.weight");
+    dsp_R_ = (int)w1.dims[0];
+    const int nt = tl ? (int)tl->size() : 0, Vd = w1.dims.size() == 2 ? (int)w1.dims[1] : -1;
+    dsp_mrows_ = mk.dims.size() >= 2 ? (int)mk.dims[1] : 1;
+    const GgufTensor* w2b = d.find("markov_w2.bias");
+    bool ok = nl >= 1 && I("embedding_length") == E && I("attention.key_length") == hp.head_dim && dsp_H_ > 0 &&
+              dsp_HKV_ > 0 && dsp_H_ % dsp_HKV_ == 0 && dsp_F_ % 256 == 0 && dsp_B_ >= 2 && dsp_B_ <= 8 && tl &&
+              nt >= 1 && nt <= 8 && pat && (int)pat->size() >= nl && Vd >= ink_.nv && Vd <= hp.n_vocab &&
+              w2.dims.size() == 2 && (int)w2.dims[0] == dsp_R_ && (int)w2.dims[1] == Vd &&
+              (!w2b || (int)w2b->nelements() == Vd) && (int)jp.dims[0] == 2 * (dsp_R_ + E) &&
+              (int)jp.dims[1] == 3 * dsp_R_ && (int)mk.dims[0] == E && (dsp_mrows_ == 1 || dsp_mrows_ == dsp_B_ - 1) &&
+              (int)mx.nelements() == nt && (int)d.get("markov_ctx_norm.weight").nelements() == E &&
+              (int)d.get("token_embd_norm.weight").nelements() == E && E % 256 == 0;
+    for (int i = 0; ok && i < nt; ++i)
+      ok = (*tl)[i] >= 0 && (*tl)[i] <= dsp_nvis_ && (i == 0 || (*tl)[i] > (*tl)[i - 1]);
+    if (ok) ok = tl->back() == dsp_nvis_;
+    for (int il = 0; ok && il < nl; ++il) {
+      const GgufTensor* m = d.find("blk." + std::to_string(il) + ".ctx_mix.weight");
+      ok = m && (int)m->nelements() == nt;
+    }
+    if (!ok)
+      throw std::runtime_error("DSpark: " + path + " does not match this model (its width, vocabulary, taps over " +
+                               std::to_string(dsp_nvis_) + " layer visits, or a shape)");
+    for (int64_t t : *tl) dsp_taps_.push_back((int)t);
+    // (the mixes as the file has them: softmaxed at export; the last one the Markov head's feature row)
+    for (int il = 0; il < nl; ++il) dsp_fuse_.push_back(f32_from(d, "blk." + std::to_string(il) + ".ctx_mix.weight"));
+    dsp_fuse_.push_back(f32_from(d, "markov_ctx_mix.weight"));
+    dsp_mask_ = f32_from(d, "mask_embd.weight");
+    dsp_onorm_ = f32_from(d, "output_norm.weight");
+    dsp_fnorm_ = f32_from(d, "markov_ctx_norm.weight");
+    dsp_tnorm_ = f32_from(d, "token_embd_norm.weight");
+    dsp_joint_ = f32_from(d, "joint_proj.weight");
+    dsp_joint_b_ = f32_from(d, "joint_proj.bias");
+    dsp_w1_ = &w1;
+    dsp_w2_ = &w2;
+    dsp_w2b_host_.assign((size_t)Vd, 0.0f);
+    if (w2b) dequant_row(w2b->type, w2b->data, Vd, dsp_w2b_host_.data());
+    dsp_head_t_ = f_.find("output.weight") ? &f_.get("output.weight") : &f_.get("token_embd.weight");
+    dsp_load_layers(path, nl, *pat, "ctx_norm.weight");
+    has_mtp = dsp_ = true;
+    clFinish(cl_.queue);
+    dsp_log_loaded(path, nl, " (ctx_mix layout)");
+  }
+  // the drafter's layers (both layouts; ctxn: the context mix's norm, dflare_norm or ctx_norm)
+  void dsp_load_layers(const std::string& path, int nl, const std::vector<int64_t>& pat, const char* ctxn) {
+    const GgufFile& d = *dsp_f_;
+    const int E = hp.n_embd;
     dsp_l_.resize(nl);
     for (int il = 0; il < nl; ++il) {
       DspLayer& L = dsp_l_[il];
       const std::string p = "blk." + std::to_string(il) + ".";
-      L.local = (*pat)[il] != 0 && dsp_win_ > 0;
+      L.local = pat[il] != 0 && dsp_win_ > 0;
       L.q = gemv_weight(d, p + "attn_q.weight");
       L.k = gemv_weight(d, p + "attn_k.weight");
       L.v = gemv_weight(d, p + "attn_v.weight");
@@ -156,7 +264,7 @@
       L.down = gemv_weight(d, p + "ffn_down.weight");
       L.attn_norm = f32_from(d, p + "attn_norm.weight");
       L.ffn_norm = f32_from(d, p + "ffn_norm.weight");
-      L.ctx_norm = f32_from(d, p + "dflare_norm.weight");
+      L.ctx_norm = f32_from(d, p + ctxn);
       L.q_norm = f32_from(d, p + "attn_q_norm.weight");
       L.k_norm = f32_from(d, p + "attn_k_norm.weight");
       L.kx_norm = f32_from(d, p + "attn_k_ctx_norm.weight");
@@ -165,12 +273,6 @@
           L.gate.N != dsp_F_ || L.up.N != dsp_F_ || L.down.N != E || L.down.K != dsp_F_)
         throw std::runtime_error("DSpark: " + path + ": unexpected layer shape in " + p);
     }
-    has_mtp = dsp_ = true;
-    clFinish(cl_.queue);
-    LOG_INF("DSpark drafter: %d layers, block %d, Markov rank %d, taps %s of %d visits, %d drafts a step, top-%d "
-            "candidates (%s)\n", nl, dsp_B_, dsp_R_,
-            [&] { std::string s; for (int t : dsp_taps_) s += (s.empty() ? "" : ",") + std::to_string(t); return s; }().c_str(),
-            dsp_nvis_, opt.mtp_drafts, dsp_topk(), path.c_str());
   }
 
   // the chunk's and the block's buffers, the drafter's caches, the conv inputs' save arena (alloc_inkling)
@@ -248,6 +350,28 @@
     dsp_cidx_ = buf((size_t)8 * 64 * 4);
     dsp_cval_ = buf((size_t)8 * 64 * 4);
     dsp_ids_ = buf(8 * 4);
+    if (dsp_v2_) {
+      // (the second layout: F and fb are the file's markov_w2 and its bias, folded at export in fp64; rows past its
+      //  vocabulary zero, never a candidate: dsp_topk picks among the tokenizer's ink_.nv)
+      fill(dsp_Fh_, (size_t)V * R * 2);
+      fill(dsp_fb_, (size_t)V * 4);
+      const int Vd = (int)dsp_w2_->dims[1];
+      const size_t rb = dsp_w2_->nbytes / (size_t)Vd;
+      std::vector<float> f((size_t)R);
+      std::vector<uint16_t> h((size_t)4096 * R);
+      for (int c0 = 0; c0 < Vd; c0 += 4096) {
+        const int n = std::min(4096, Vd - c0);
+        for (int c = 0; c < n; ++c) {
+          dequant_row(dsp_w2_->type, dsp_w2_->data + (size_t)(c0 + c) * rb, R, f.data());
+          for (int r = 0; r < R; ++r) h[(size_t)c * R + r] = f32_to_fp16(f[r]);
+        }
+        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_Fh_, CL_TRUE, (size_t)c0 * R * 2, (size_t)n * R * 2, h.data(), 0, nullptr, nullptr));
+      }
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_fb_, CL_TRUE, 0, (size_t)Vd * 4, dsp_w2b_host_.data(), 0, nullptr, nullptr));
+      dsp_w1_f16();
+      clFinish(cl_.queue);
+      return;
+    }
     GpuWeight head = lm_head_;  // (not &lm_head_: head_defs adds no softcap)
     std::vector<float> wt((size_t)R * E);  // (hidden_out's columns as rows: [R][E]; the tensor is [E][R], R fastest)
     {
@@ -274,12 +398,18 @@
     matmul("dsp_fold_bias", head, 16, dsp_fb_, V, 0, 0, true);
     cur_T_ = saved;
     free_buf(rows);
-    {  // markov_w1 to f16, in row blocks
-      const size_t rb = dsp_w1_->nbytes / hp.n_vocab;
+    dsp_w1_f16();
+    clFinish(cl_.queue);
+  }
+  // markov_w1 to f16, in row blocks (its rows: the first layout's hp.n_vocab, the second's the tokenizer's)
+  void dsp_w1_f16() {
+    const int R = dsp_R_, NV = (int)dsp_w1_->dims[1];
+    {
+      const size_t rb = dsp_w1_->nbytes / NV;
       std::vector<float> f((size_t)R);
       std::vector<uint16_t> h((size_t)4096 * R);
-      for (int c0 = 0; c0 < hp.n_vocab; c0 += 4096) {
-        const int n = std::min(4096, hp.n_vocab - c0);
+      for (int c0 = 0; c0 < NV; c0 += 4096) {
+        const int n = std::min(4096, NV - c0);
         for (int c = 0; c < n; ++c) {
           dequant_row(dsp_w1_->type, dsp_w1_->data + (size_t)(c0 + c) * rb, R, f.data());
           for (int r = 0; r < R; ++r) h[(size_t)c * R + r] = f32_to_fp16(f[r]);
@@ -352,10 +482,19 @@
       const size_t rb = tok_embd_->nbytes / hp.n_vocab;
       dequant_row(tok_embd_->type, tok_embd_->data + (size_t)tok * rb, E, dsp_hrow_host_.data());
       CL_CHECK(clEnqueueWriteBuffer(cl_.queue, dsp_x_, CL_TRUE, 0, (size_t)E * 4, dsp_hrow_host_.data(), 0, nullptr, nullptr));
-      ink_rmsnorm(dsp_x_, E, ink_tok_norm_, dsp_x_, 1);
+      if (dsp_v2_) {  // (the second layout: the file's token_embd_norm at the drafter's epsilon, llama.cpp's build_inp_block)
+        cl_kernel kn = ink_k("ink_rmsnorm");
+        int EE = E;
+        float ep = dsp_eps_;
+        set_args(kn, 0, dsp_x_, EE, dsp_tnorm_, dsp_x_, EE, ep);
+        ink_rung("ink_rmsnorm", kn, 1, 256);
+      } else {
+        ink_rmsnorm(dsp_x_, E, ink_tok_norm_, dsp_x_, 1);
+      }
+      // (mask_embd: one row for every mask slot, or the second layout's row per slot, slot k > 0 its row k - 1)
       cl_kernel k = ink_k("dsp_block_init");
-      int EE = E, BB = B;
-      set_args(k, 0, dsp_x_, dsp_mask_, EE, BB);
+      int EE = E, BB = B, MR = dsp_mrows_;
+      set_args(k, 0, dsp_x_, dsp_mask_, EE, BB, MR);
       ink_run1("dsp_block_init", k, (size_t)E * (B - 1));
     }
     cur_T_ = B;
@@ -433,7 +572,7 @@
     }
     // (the host's chain: the exact one, ARC_DSP_TOPK=0, or more than 64 candidates)
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_logits_, CL_TRUE, 0, (size_t)nd * nl * 4, dsp_lg_.data(), 0, nullptr, nullptr));
-    const size_t hrb = dsp_head_t_->nbytes / hp.n_vocab, w1b = dsp_w1_->nbytes / hp.n_vocab;
+    const size_t hrb = dsp_head_t_->nbytes / hp.n_vocab, w1b = dsp_w1_->nbytes / dsp_w1_->dims[1];  // (its rows: hp.n_vocab, or the second layout's tokenizer rows)
     cl_kernel kc = ink_k("dsp_cat"), kg = ink_k("dsp_gate"), kb = ink_k("dsp_addb");
     std::vector<int> drafts;
     int last = tok;
@@ -446,6 +585,46 @@
       dsp_mv("dsp_joint", dsp_joint_, dsp_z_, dsp_g_, 3 * R, 2 * (R + E));
       set_args(kg, 0, dsp_g_, dsp_joint_b_, dsp_state_, dsp_lat_, RR);
       ink_run1("dsp_gate", kg, R);
+      if (dsp_v2_) {
+        // (the second layout: a candidate's logit is its uncapped base + markov_w2[c] . latent + bias[c], llama.cpp's
+        //  col = softcap(base + bias), whose argmax the cap does not move; every token with ARC_DSP_TOPK=0, else the
+        //  base's top K)
+        std::vector<float> lat((size_t)R), wr((size_t)R);
+        CL_CHECK(clEnqueueReadBuffer(cl_.queue, dsp_lat_, CL_TRUE, 0, (size_t)R * 4, lat.data(), 0, nullptr, nullptr));
+        const float* l = &dsp_lg_[(size_t)i * nl];
+        const size_t w2b = dsp_w2_->nbytes / dsp_w2_->dims[1];
+        auto logit = [&](int c) {
+          const float capped = l[c];
+          const double raw = cap > 0.0f ? cap * std::atanh(std::clamp((double)capped / cap, -0.999999, 0.999999)) : capped;
+          dequant_row(dsp_w2_->type, dsp_w2_->data + (size_t)c * w2b, R, wr.data());
+          double corr = dsp_w2b_host_[c];
+          for (int r = 0; r < R; ++r) corr += (double)wr[r] * lat[r];
+          return raw + corr;
+        };
+        int best = 0, n = 0;
+        double bs = -1e300;
+        if (K == 0) {
+          for (int c = 0; c < nv; ++c) {
+            const double v = logit(c);
+            if (v > bs) bs = v, best = c;
+          }
+        } else {
+          for (int c = 0; c < nv; ++c) {  // (the K largest base logits, as below)
+            const float v = l[c];
+            if (n == K && v <= l[dsp_idx_[K - 1]]) continue;
+            int j = n < K ? n++ : K - 1;
+            while (j > 0 && l[dsp_idx_[j - 1]] < v) { dsp_idx_[j] = dsp_idx_[j - 1]; --j; }
+            dsp_idx_[j] = c;
+          }
+          for (int j = 0; j < n; ++j) {
+            const double v = logit(dsp_idx_[j]);
+            if (v > bs) bs = v, best = dsp_idx_[j];
+          }
+        }
+        drafts.push_back(best);
+        last = best;
+        continue;
+      }
       dsp_mv("dsp_hidden_out", dsp_hout_, dsp_lat_, dsp_u_, E, R);
       set_args(kb, 0, dsp_u_, dsp_hout_b_, dsp_hrow_[i + 1], exact, EE);
       ink_run1("dsp_addb", kb, E);
