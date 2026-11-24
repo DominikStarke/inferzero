@@ -97,6 +97,11 @@ inline int8 x8_mad(int8 a, int8 b, int8 c) {
 #define X8_HR ((hg) * 4)
 #endif
 #define X8_AMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
+// (-DX8_HG_SG, ARC_MOE_DPASW_HGSG=1, a test, 2026-11-24, #45: the half from the sub-group id, uniform by its definition, not
+//  from the local id; the Researcher's review of 84ec2ca)
+#ifdef X8_HG_SG
+#define X8_HGV ((int)get_sub_group_id() & 1)
+#endif
 #else
 #define X8_AMAD(a, b, c) x8_mad((a), (b), (c))
 #endif
@@ -134,7 +139,15 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
                       __global const int* restrict tstart, int e0, int e1, __global const int* restrict rowmap,
                       int use_map, __global const float* restrict rowscale, int use_scale X8_SITU_ARG) {
   const int nsb = K / 256, s_begin = 0, s_end = nsb, lane = get_sub_group_local_id();
-  const int gc = get_global_id(0) / LS, hg = ((int)get_local_id(0) / SG) & 1, t_end = tstart[e1];
+  const int gc = get_global_id(0) / LS, t_end = tstart[e1];
+#ifdef X8_HGV
+  const int hg = X8_HGV;
+#else
+  const int hg = ((int)get_local_id(0) / SG) & 1;
+#endif
+#ifdef X8_DPASW_BAR  // (ARC_MOE_DPASW_BAR=1, a test, 2026-11-24, #45: a work-group barrier before the tiles, as gemm_xw8's kernels have)
+  barrier(CLK_LOCAL_MEM_FENCE);
+#endif
   for (int t = tstart[e0] + get_global_id(1); t < t_end; t += get_global_size(1)) {
   const int e = tiles[1 + 3 * t], r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
   const int g = (e - e0) * (N / LS) + gc;  // (column group in the stacked decoded experts)

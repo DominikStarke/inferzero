@@ -67,7 +67,7 @@
   }
   std::string rgx_defs(const Layer& L, int i) const {
     if (!rgx_part(L, i)) return std::string();
-    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (cl_.sg8 && moe_dpasw_on() ? (moe_dpasw_swap() ? " -DRG_DPASW -DRG_DPASW_SWAP" : " -DRG_DPASW") : "") +
+    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (cl_.sg8 ? moe_dpasw_defs("RG") : std::string()) +
            (rgx_emu() ? " -DRG_XEMU" : "") +
            (cl_.sg8 && rgx_emu() && atoi(getenv("ARC_MOE_RG_XEMU")) == 2 ? " -DRG_XBAD" : "");
   }
@@ -120,8 +120,9 @@
     // (the copy only lives for a check: up to slots x max(n_embd, Fp) floats, 128 MiB for the 35B at 2,048-token chunks,
     //  outside the memory plan; freed at once by free_after, audit 2026-11-17)
     static std::once_flag said;
-    const char* form = !cl_.sg8 ? "" : moe_dpasw_on() ? ", 8 lanes, the split DPAS: ARC_MOE_DPASW=1" : ", 8 lanes";
-    std::call_once(said, [form] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1%s)\n", form); });
+    // (which split-DPAS switches the run had, ARC_MOE_DPASW_SWAP among them: a contributor's log says which run is which)
+    const std::string form = !cl_.sg8 ? std::string() : ", 8 lanes" + moe_dpasw_desc();
+    std::call_once(said, [&form] { zlog::eprintf("inferzero: expert GEMMs of prompt chunks on XMX from the raw rows (ARC_MOE_RG_XMX=1%s)\n", form.c_str()); });
     zlog::eprintf("inferzero: moe_rg on XMX for %s experts%s: %s\n", ggml_type_name(type), key & 1 ? " (situ)" : "",
                   same ? "the same results as DP4a bit for bit" : "DIFFERS from DP4a: DP4a kept for this type (please report)");
   }

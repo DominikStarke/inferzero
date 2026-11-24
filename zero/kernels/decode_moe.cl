@@ -591,7 +591,11 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
   __local uint kt[VB_TABLES];  // (unused by these types)
 #endif
   const int lane = get_sub_group_local_id(), gc = get_group_id(0), nsb = K / 256, t_end = tstart[ne];
+#if defined(RG8_SPLIT) && defined(RG_HG_SG)  // (ARC_MOE_DPASW_HGSG=1, a test, 2026-11-24, #45: the half from the sub-group id)
+  const int hg = (int)get_sub_group_id() & 1;
+#else
   const int hg = ((int)get_local_id(0) / RG_SGN) & 1;  // (which half of the 16-row group)
+#endif
   for (int t = tstart[0] + gy; t < t_end; t += ngy) {
     const int e = tiles[1 + 3 * t], r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
     int rl[2], tokl[2];  // (slots lane and lane + 8)

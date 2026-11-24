@@ -538,7 +538,7 @@
       static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
       return kernel("x8", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : "") +
-                              (moe_dpasw_on() ? (moe_dpasw_swap() ? " -DX8_DPASW -DX8_DPASW_SWAP" : " -DX8_DPASW") : "") + (situ ? ink_situ_defs() : std::string()),
+                              moe_dpasw_defs("X8") + (situ ? ink_situ_defs() : std::string()),
                     "gemm_x8");
     }
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
@@ -579,6 +579,33 @@
   bool moe_dpasw_on() const {
     static const bool on = getenv("ARC_MOE_DPASW") && atoi(getenv("ARC_MOE_DPASW")) != 0;
     return on && cl_.sg8 && cl_.xmx && !zrt::integrated();
+  }
+  // (tests of the split DPAS's failing check on an A770, 2026-11-24, #45, the Researcher's review of 84ec2ca; each its
+  //  own switch, with ARC_MOE_DPASW=1: ARC_MOE_DPASW_HGSG=1 the pair's half from the sub-group id (both kernels),
+  //  ARC_MOE_DPASW_BAR=1 a work-group barrier before gemm_x8's tiles, ARC_MOE_DPASW_EVEN=1 one more tile check with
+  //  even counts in every dimension (xmx_check's "/moe-even"))
+  static bool moe_dpasw_test(const char* name) {
+    const char* v = getenv(name);
+    return v && atoi(v) != 0;
+  }
+  // the build options of the split DPAS for prefix "X8" (gemm_x8) or "RG" (moe_rg), "" without it
+  std::string moe_dpasw_defs(const std::string& p) const {
+    if (!moe_dpasw_on()) return std::string();
+    std::string s = " -D" + p + "_DPASW";
+    if (moe_dpasw_swap()) s += " -D" + p + "_DPASW_SWAP";
+    if (moe_dpasw_test("ARC_MOE_DPASW_HGSG")) s += " -D" + p + "_HG_SG";
+    if (p == "X8" && moe_dpasw_test("ARC_MOE_DPASW_BAR")) s += " -DX8_DPASW_BAR";
+    return s;
+  }
+  // the log lines' name of that form: which switches a run had
+  std::string moe_dpasw_desc() const {
+    if (!moe_dpasw_on()) return std::string();
+    std::string s = ", the split DPAS: ARC_MOE_DPASW=1";
+    if (moe_dpasw_swap()) s += ", swapped (ARC_MOE_DPASW_SWAP=1)";
+    if (moe_dpasw_test("ARC_MOE_DPASW_HGSG")) s += ", the half from the sub-group id (ARC_MOE_DPASW_HGSG=1)";
+    if (moe_dpasw_test("ARC_MOE_DPASW_BAR")) s += ", a barrier before the tiles (ARC_MOE_DPASW_BAR=1)";
+    if (moe_dpasw_test("ARC_MOE_DPASW_EVEN")) s += ", with the even tile check (ARC_MOE_DPASW_EVEN=1)";
+    return s;
   }
   bool xmx_slow_ = false;  // (the check failed on speed, the results being right: no retry without 2D loads)
   // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
@@ -741,32 +768,29 @@
         //  (col ^ 8) swapped: one line, so that one run says which part of the split is wrong. Untested here)
         if (sane && N > 0 && out[0].size() % (size_t)N == 0) {
           const size_t R = out[0].size() / (size_t)N;
-          // (an output row's DPAS row and its row-half partner: the dense forms by the row itself (r % 8, r ^ 4); the MoE
-          //  tile forms write C by slot, (r0 + m) * ldc, so by the row within its tile (m % 8, r0 + (m ^ 4) when inside
-          //  the tile), the test's tiles starting at slots 0, 16, 21 and 37 (the Researcher's review of 16b8eb4))
-          std::vector<int> drow(R), dpart(R);
-          for (size_t r = 0; r < R; ++r) drow[r] = (int)(r % 8), dpart[r] = (r ^ 4) < R ? (int)(r ^ 4) : -1;
+          // (an output row's DPAS row: the dense forms by the row itself (r % 8); the MoE tile forms write C by slot,
+          //  (r0 + m) * ldc, so by the row within its tile (m % 8), the test's tiles starting at slots 0, 16, 21 and 37
+          //  (the Researcher's review of 16b8eb4))
+          std::vector<int> drow(R);
+          for (size_t r = 0; r < R; ++r) drow[r] = (int)(r % 8);
           if (name.find("/moe") != std::string::npos)
             for (int t = 0; t < tiles[0]; ++t) {
               const int r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
-              for (int m = 0; m < nr && r0 + m < (int)R; ++m) {
-                drow[r0 + m] = m % 8;
-                dpart[r0 + m] = (m ^ 4) < nr && r0 + (m ^ 4) < (int)R ? r0 + (m ^ 4) : -1;
-              }
+              for (int m = 0; m < nr && r0 + m < (int)R; ++m) drow[r0 + m] = m % 8;
             }
-          size_t d[2][2] = {{0, 0}, {0, 0}}, rsw = 0, csw = 0, nd = 0;
+          // (no swap counts: every output is scaled after the DPAS by its own row's and column's factors (the activation
+          //  scales by slot, the weight scales by column, rowscale, the SwiGLU gate), random in this test, so a swapped
+          //  half never equals DP4a's value there; the Researcher's review of 84ec2ca)
+          size_t d[2][2] = {{0, 0}, {0, 0}}, nd = 0;
           for (size_t r = 0; r < R; ++r)
             for (size_t c = 0; c < (size_t)N; ++c) {
               const size_t i = r * N + c;
               if (out[1][i] == out[0][i]) continue;
               ++nd;
               ++d[drow[r] >= 4][(c % 16) >= 8];
-              if (dpart[r] >= 0 && out[1][i] == out[0][(size_t)dpart[r] * N + c]) ++rsw;
-              if ((c ^ 8) < (size_t)N && out[1][i] == out[0][r * N + (c ^ 8)]) ++csw;
             }
           zlog::eprintf("inferzero: XMX check %s: %zu of %zu outputs differ; rows 0-3 / 4-7 of 8 x columns 0-7 / 8-15 of 16: "
-                        "%zu %zu / %zu %zu; equal to DP4a's with the row halves swapped %zu, the column halves %zu\n",
-                        name.c_str(), nd, out[0].size(), d[0][0], d[0][1], d[1][0], d[1][1], rsw, csw);
+                        "%zu %zu / %zu %zu\n", name.c_str(), nd, out[0].size(), d[0][0], d[0][1], d[1][0], d[1][1]);
         }
       }
     };
@@ -801,6 +825,16 @@
         }
       // (8-lane GPUs: only with ARC_MOE_X8=1, gemm_x8's tiles; their failure keeps DP4a for the tiles alone, moe_x8_ok_)
       const std::string bad_before_moe = bad;
+      // (a split-DPAS test switch without the split DPAS itself: said, so a log without the form is not read as a run
+      //  of the test; the Researcher's review of 84ec2ca)
+      if (mode == 0 && !moe_dpasw_on() && first_for_device("moe_dpasw_tests")) {
+        std::string set;
+        for (const char* s : {"ARC_MOE_DPASW_SWAP", "ARC_MOE_DPASW_HGSG", "ARC_MOE_DPASW_BAR", "ARC_MOE_DPASW_EVEN"})
+          if (moe_dpasw_test(s)) set += std::string(set.empty() ? "" : ", ") + s;
+        if (!set.empty())
+          zlog::eprintf("inferzero: %s set but not used: the split DPAS is off (it needs ARC_MOE_DPASW=1 on a discrete "
+                        "8-lane GPU with XMX)\n", set.c_str());
+      }
       try {
       for (int q : {100, 101})  // (the tile kernel has no layouts with mins)
         for (int acc : {0, 2}) {
@@ -819,6 +853,15 @@
             size_t gws[2] = {(size_t)N, 2}, lws[2] = {32, 2};
             run("xmx_check", k, 2, gws, lws);
           });
+          // (ARC_MOE_DPASW_EVEN=1, a test, 2026-11-24, #45: even counts in every dimension, one tile per y, two tiles a
+          //  work-group (ARC_MOE_WY=2's shape), as gemm_xw8's split DPAS runs; the failing forms have y 1 and 3 groups)
+          if (moe_dpasw_on() && moe_dpasw_test("ARC_MOE_DPASW_EVEN"))
+            check(std::to_string(q) + "/moe-even" + (acc ? "/swiglu" : ""), make, [&](cl_kernel k) {
+              int MM = M, NN = N, KK = K, ldc = N, ac = acc, e0 = 0, e1 = 2, um = acc ? 1 : 0, us = acc ? 0 : 1;
+              set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, ac, bt, bts, e0, e1, bm, um, bw, us);
+              size_t gws[2] = {(size_t)N, 4}, lws[2] = {16, 2};
+              run("xmx_check", k, 2, gws, lws);
+            });
         }
       } catch (const std::exception& e) {
         if (!cl_.sg8) throw;  // (16 lanes: as before, the outer handler keeps DP4a for everything)
@@ -827,7 +870,7 @@
       if (cl_.sg8 && moe_x8_env() && mode == 0) {
         moe_x8_ok_ = bad == bad_before_moe;
         zlog::eprintf("inferzero: the MoE expert GEMMs on 8-lane XMX (gemm_x8 tiles, ARC_MOE_X8=1%s): %s\n",
-                      moe_dpasw_on() ? ", the split DPAS: ARC_MOE_DPASW=1" : "",
+                      moe_dpasw_desc().c_str(),
                       moe_x8_ok_ ? "the same results as DP4a bit for bit"
                                  : ("DIFFER from DP4a (" + bad.substr(bad_before_moe.size()) + " ): DP4a kept for them (please report)").c_str());
         bad = bad_before_moe;  // (the dense kernels keep XMX)
