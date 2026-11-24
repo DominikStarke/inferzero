@@ -537,6 +537,7 @@
   //  drift apart unseen; a W line past 2 %. The Researcher's review of aa6f021)
   double kv_est_tight_ = -1;
   bool small_plan_ = false;  // (plan_tight: smaller chunks and residual segments instead of a small spill to RAM)
+  double ram_short_ = 0;      // (plan_tight: the host-memory weights the RAM could not take, #88)
   int small_chunk_ = 512, small_seg_ = 8192;  // (the small plan's chunk and segment: 512 / 8K or 256 / 4K)
   void kv_drift_check() {
     if (kv_est_tight_ < 0 || !tight_ || small_plan_ || zrt::integrated() || opt.dry || hp.ds41 || hp.moe) return;  // (small_plan_: its rings for another chunk)
@@ -554,6 +555,8 @@
   }
   void plan_tight() {
     small_plan_ = false;
+    ram_short_ = 0;
+    host_cpu_ram_off_ = false;
     small_chunk_ = 512, small_seg_ = 8192;
     if (opt.tp_size > 1 || hp.moe || stream_) return;
     double total = 0;
@@ -758,8 +761,25 @@
       //  its CPU copy, int8 and a scale per 32 values, ~1.125 bytes a value: an IQ3_S byte (~0.43 a value) costs ~3.6
       //  bytes of RAM. The cap counted the raw bytes only: a 16 GB PC paged or failed (audit 2026-11-23, M3; the B580
       //  of the Discord report has 15.4 GiB))
-      const double per_byte = host_cpu_on() && total > 0 ? 1.0 + cpu_copy / total : 1.0;
-      want = std::max(0.0, std::min(total - (budget - keep), ((double)plat::ram_available() - 4.0 * GiB) / per_byte));
+      // (2026-11-24, #88, xtronema's B580 with 15.4 GiB of RAM, a Q4_0 27B of 11.35 GiB, 2.29 GiB of its weights in
+      //  host memory: the weights and their CPU copy, ~6.9 GiB, against the RAM free less 4 GiB, while the load read the
+      //  11 GB file through the page cache; the kernel moved 4.7 GB to zram, and the GPU reading host memory that was
+      //  being paged timed out and was reset. Now: the RAM kept for the rest (the system, the desktop, the file's pages
+      //  as the load reads them, the engine's own host buffers) is 4 GiB or 30 % of the RAM, whichever is more; where
+      //  the CPU copy does not fit beside the weights, the copy goes for this load (the GPU reads those weights over
+      //  PCIe, as ARC_HOST_CPU=0) before the host share is cut; and where even the weights alone do not fit, the load
+      //  says so and, on Linux, where nothing pages the GPU's memory gracefully, stops before the GPU is lost.
+      //  UNTESTED HERE: no build or run on the laptop)
+      const double need = std::max(0.0, total - (budget - keep));
+      const double reserve = std::max(4.0 * GiB, 0.30 * (double)plat::ram_total());
+      const double ram_free = std::max(0.0, (double)plat::ram_available() - reserve);
+      double per_byte = host_cpu_on() && total > 0 ? 1.0 + cpu_copy / total : 1.0;
+      if (per_byte > 1.0 && need * per_byte > ram_free && need > 0) {
+        host_cpu_ram_off_ = true;
+        per_byte = 1.0;
+      }
+      want = std::max(0.0, std::min(need, ram_free / per_byte));
+      ram_short_ = need - want;  // (what the RAM cannot take: checked below, after the small plan)
       // (a small spill, at most 0.5 GiB, where 512-token chunks and an 8K residual segment leave room for every weight:
       //  those instead. Weights in RAM cost every token (skipzx-lab's A770, the 27B at 92K, #45: 0.39 GiB in RAM, 10.0
       //  tok/s against 22.4 with none), the smaller chunk ~5-10 % of the prompt. Only with the automatic room, no chunk
@@ -795,7 +815,28 @@
           small_seg_ = (int)st[1];
           small_plan_ = true;
           want = 0;
+          ram_short_ = 0;
           break;
+        }
+      }
+      if (want <= 0) host_cpu_ram_off_ = false;  // (nothing in host memory: no copy to give up)
+      if (!opt.dry && !getenv("ARC_HOST_WEIGHTS_GB")) {
+        if (host_cpu_ram_off_)
+          zlog::eprintf("inferzero: %.2f GiB of the weights in host memory without their CPU copy: the copy would not fit "
+                        "the RAM free (%.2f GiB beyond %.1f GiB kept for the system and the file's pages); the GPU reads "
+                        "them over PCIe (ARC_HOST_CPU=0's way)\n", want / GiB, ram_free / GiB, reserve / GiB);
+        if (ram_short_ > 0.05 * GiB) {
+          char m[640];
+          snprintf(m, sizeof m,
+                   "not enough RAM for the weights the GPU cannot hold: %.2f GiB needed in host memory, %.2f GiB free "
+                   "beyond %.1f GiB kept for the system and the model file's pages (RAM %.1f GiB). A smaller --ctx, a "
+                   "smaller file, or closing other programs frees it; ARC_HOST_WEIGHTS_GB=N sets the host share by hand",
+                   need / GiB, ram_free / GiB, reserve / GiB, (double)plat::ram_total() / GiB);
+#ifdef _WIN32
+          zlog::eprintf("inferzero: warning: %s\n", m);  // (Windows pages the GPU's memory itself: slow, not lost)
+#else
+          throw std::runtime_error(m);  // (Linux: the GPU reading paged host memory timed out and was reset, #88)
+#endif
         }
       }
     } else if (opt.host_weights_gb < 0 && tight_) {

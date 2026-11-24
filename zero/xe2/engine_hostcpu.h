@@ -50,9 +50,12 @@ int hcpu_inK_ = -1, hcpu_inM_ = -1;
 //  11.88, 1.02 GiB at a 4K context 3.90 -> 10.27; the prompt the same or faster (836 -> 1,022 tok/s at 512); issue #37.
 //  llama.cpp SYCL on that card: 11.4. Off on iGPUs, whose GPU reads RAM at full speed (the laptop's 27B with 0.5 GiB
 //  forced there 5.03 -> 4.22). ARC_HOST_CPU=0 / 1 decides)
+// (host_cpu_ram_off_: plan_tight found no RAM for the CPU copy of the weights in host memory on this load (#88, a
+//  16 GB PC): the GPU reads them over PCIe instead, as with ARC_HOST_CPU=0)
+bool host_cpu_ram_off_ = false;
 bool host_cpu_on() const {
   static const int e = getenv("ARC_HOST_CPU") ? (atoi(getenv("ARC_HOST_CPU")) != 0 ? 1 : 0) : -1;
-  return e < 0 ? !zrt::integrated() : e == 1;
+  return !host_cpu_ram_off_ && (e < 0 ? !zrt::integrated() : e == 1);
 }
 // (upload_padded: a matrix it put in host memory; its rows are `data` (nbytes of GGUF `type`), valid during the call)
 void host_src_note(cl_mem m, uint32_t type, const uint8_t* data, size_t nbytes, size_t nsb) {
