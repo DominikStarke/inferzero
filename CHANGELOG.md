@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-24: NVFP4 experts another 7 % faster in generation
+
+- **NVFP4 experts read straight into registers in generation** (#45): each 32-value block of an expert's weights is now loaded in one go, as MXFP4's are, instead of through a staged copy in local memory. The same numbers bit for bit. A Pro B60, Inkling 2 Mini UD-Q4_K_XL: generation 20.24 -> 21.73 tok/s (+7.4 %); the expert GEMVs moe_gateup 832 -> 596 ms, moe_down 496 -> 297 ms over 128 tokens, now level with IQ4_NL's 556 / 303 (skipzx-lab).
+
 ## 2026-11-24: NVFP4 experts about 1.8x faster in generation; DSpark's new drafter file
 
 - **NVFP4 experts read exactly, and about 1.8x faster in generation** (Inkling 2 Mini UD files, #45): each 16 values now use their own scale, as the file stores them, instead of the two scales of a 32-value block being merged into one (which rounded the smaller half and cost a division a value). A Pro B60, Inkling 2 Mini UD-Q4_K_XL: generation 11.40 -> 20.22 tok/s; KL against the f32 reference 0.00468 -> 0.00450 (skipzx-lab). This covers generation and, for Inkling 2, every prompt chunk's gate / up; the down projection of prompt chunks of 320 tokens or more still merges the two scales (the start line says which). `ARC_NVFP4_FOLD=1` merges them everywhere, as before.
