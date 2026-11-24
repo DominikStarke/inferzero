@@ -621,10 +621,11 @@ __kernel void ink_conv_commit(__global float* states, __global const float* save
 }
 
 // rows 1 .. B-1 of the draft block: the mask embedding (row 0, the anchor, is written by the host)
-__kernel void dsp_block_init(__global float* x, __global const float* mask, int E, int B) {
+// (mrows: mask's rows, 1 (every slot the one row) or B - 1 (slot k > 0 its row k - 1: the DSpark file's second layout))
+__kernel void dsp_block_init(__global float* x, __global const float* mask, int E, int B, int mrows) {
   const int i = get_global_id(0);
   if (i >= E * (B - 1)) return;
-  x[(size_t)E + i] = mask[i % E];
+  x[(size_t)E + i] = mask[mrows > 1 ? i : i % E];
 }
 
 // a head's RMS norm (weights w, eps) and its rotary position (NeoX halves, theta = pos base^(-2i / D)) in the
