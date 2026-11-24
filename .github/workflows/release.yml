@@ -37,7 +37,10 @@ jobs:
           Expand-Archive $z.FullName -DestinationPath dist\check
           $pkg = Get-ChildItem dist\check -Directory | Select-Object -First 1
           & (Join-Path $pkg.FullName "bin\serverz.exe") --help | Select-Object -First 3
-          & (Join-Path $pkg.FullName "bin\runz.exe") --help 2>&1 | Select-Object -First 3
+          # (runz prints its usage on stderr: read through cmd, so PowerShell's Stop does not take it as an error)
+          $u = cmd /c "`"$(Join-Path $pkg.FullName 'bin\runz.exe')`" --help 2>&1"
+          $u | Select-Object -First 3
+          if (-not (($u -join "`n") -match 'usage: runz')) { throw "runz did not start" }
       - uses: actions/upload-artifact@v4
         with:
           name: win64
