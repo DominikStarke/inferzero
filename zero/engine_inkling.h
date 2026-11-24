@@ -746,13 +746,14 @@
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, b, CL_TRUE, 0, n * 4, v.data(), 0, nullptr, nullptr));
     if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, n, f); fclose(f); }
   }
-  // (ARC_INK_ATTN_DEC=1, opt-in, 2026-11-24: ink_attn's decode form, ops_inkling.cl ink_attn_tab / _part / _comb,
-  //  for up to 8 rows (a token, DSpark's 8-row verification): the bias table once a (row, head), the keys in chunks over
-  //  many work-groups, one a KV head serving its query heads, then the chunks merged. skipzx-lab's B60 (#45): ink_attn
-  //  37.6 % of generation's GPU time, 24 work-groups a token. Another order of sums than ink_attn: KL-checked, not bit
-  //  for bit. A start line says it is on. UNTESTED HERE: no build or run on the laptop)
-  cl_mem ink_atab_ = nullptr, ink_apart_ = nullptr;
-  size_t ink_atab_n_ = 0, ink_apart_n_ = 0;
+  // (ARC_INK_ATTN_DEC=1, opt-in, 2026-11-24: ink_attn's decode form in one launch, ops_inkling.cl ink_attn_dec, for up
+  //  to 8 rows (a token, DSpark's 8-row verification): the keys in chunks over many work-groups, one a KV head serving
+  //  its query heads, each with the bias of its own distances, the last of a (row, KV head) merging the chunks (a counter
+  //  in ink_acnt_, back to 0 after each launch). skipzx-lab's B60 (#45): ink_attn 37.6 % of generation's GPU time, 24
+  //  work-groups a token. Another order of sums than ink_attn: KL-checked, not bit for bit. One launch a layer visit, as
+  //  ink_attn (the user's goal: under 600 launches a token). A start line says it is on. UNTESTED HERE)
+  cl_mem ink_apart_ = nullptr, ink_acnt_ = nullptr;
+  size_t ink_apart_n_ = 0;
   mutable bool ink_attn_dec_said_ = false;  // (the line once: the flag first, no lock in the per-layer path)
   bool ink_attn_dec_on(int T) const {
     static const bool on = getenv("ARC_INK_ATTN_DEC") && atoi(getenv("ARC_INK_ATTN_DEC")) != 0;
@@ -767,38 +768,22 @@
     const int len = win > 0 ? std::min(win, p0 + T) : p0 + T;
     const int ck = std::max(64, ((len + 63) / 64 + 15) / 16 * 16);
     const int nch = std::max(1, (len + ck - 1) / ck);
-    const size_t tab_n = (size_t)8 * H * (ext + 1), part_n = (size_t)8 * H * 64 * (D + 2);
-    if (ink_atab_n_ < tab_n) {
-      if (ink_atab_) free_buf(ink_atab_);
-      ink_atab_ = buf(tab_n * 4);
-      ink_atab_n_ = tab_n;
-    }
+    const size_t part_n = (size_t)8 * H * 64 * (D + 2);
     if (ink_apart_n_ < part_n) {
       if (ink_apart_) free_buf(ink_apart_);
       ink_apart_ = buf(part_n * 4);
       ink_apart_n_ = part_n;
     }
-    {
-      cl_kernel kt = ink_k("ink_attn_tab");
-      int EX = ext, NR = nrel, HH = H;
-      set_args(kt, 0, ink_r_, ink_s_, L.rel_bias, EX, NR, HH, ink_atab_);
-      size_t g[2] = {((size_t)ext + 1 + 63) / 64 * 64, (size_t)T * H}, l[2] = {64, 1};
-      run("ink_attn_tab", kt, 2, g, l);
+    if (!ink_acnt_) {  // (the counters, 8 rows x HKV, zero from the start and after every launch)
+      ink_acnt_ = buf((size_t)8 * HKV * 4);
+      fill(ink_acnt_, (size_t)8 * HKV * 4);
     }
-    {
-      cl_kernel kp = ink_k("ink_attn_part");
-      int EX = ext, HH = H, HK = HKV, P0 = p0, W = win, CP = cap, CK = ck, NCH = nch;
-      set_args(kp, 0, ink_q_, S.kc, S.vc, ink_atab_, EX, HH, HK, P0, W, CP, CK, NCH, ink_apart_);
-      size_t g[2] = {(size_t)64 * nch, (size_t)T * HKV}, l[2] = {64, 1};
-      run("ink_attn_part", kp, 2, g, l);
-    }
-    {
-      cl_kernel kc = ink_k("ink_attn_comb");
-      int NCH = nch;
-      set_args(kc, 0, ink_apart_, NCH, ink_g_, ink_att_);
-      size_t g[1] = {(size_t)T * H * D}, l[1] = {(size_t)D};
-      run("ink_attn_comb", kc, 1, g, l);
-    }
+    cl_kernel kk = ink_k("ink_attn_dec");
+    int EX = ext, NR = nrel, HH = H, HK = HKV, P0 = p0, W = win, CP = cap, CK = ck, NCH = nch;
+    set_args(kk, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, EX, NR, ink_att_, HH, HK, P0, W, CP, CK, NCH,
+             ink_apart_, ink_acnt_);
+    size_t g[2] = {(size_t)64 * nch, (size_t)T * HKV}, l[2] = {64, 1};
+    run("ink_attn_dec", kk, 2, g, l);
   }
   void ink_layer(int slot, int T, int Mp, bool msgs, int& nb) {
     const InkSlot& S = inks_[slot];
