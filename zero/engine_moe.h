@@ -210,8 +210,16 @@
     //  2,048 tokens, 2026-11-17), so they stay per tile (or ARC_MOE_GEMM_PAD); its down projection, on moe_rg already,
     //  takes the XMX form as it is)
     const bool rgx = rg_ok && gemm_ok && rgx_layer(L);
-    const bool use_rg = rg_ok && (rgx || q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
-                                  (tp_moe() && tp_rg_gu));
+    // (ARC_INK_MOE_GEMM=1: this layer's gate / up through decode + GEMM where its types take it; see ink_moe_gemm_on)
+    static const int ink_gemm_min = getenv("ARC_INK_MOE_GEMM_MIN") ? atoi(getenv("ARC_INK_MOE_GEMM_MIN")) : 256;
+    const bool ink_g = ink_moe_gemm_on() && hp.inkling && moe_group_ > 0 && moe_gemm_part_ok(L, 0) &&
+                       moe_gemm_part_ok(L, 1) && !tp_moe() && !q2g && tm == 16 && T > ink_gemm_min;
+    if (ink_g && !ink_gemm_said_ && (ink_gemm_said_ = true))
+      zlog::eprintf("inferzero: Inkling 2: the prompt's expert gate / up through decode + the int8 GEMM in the layers "
+                    "whose types take it, chunks of more than %d rows (ARC_INK_MOE_GEMM=1; W8 area of %d experts)\n",
+                    ink_gemm_min, moe_group_);
+    const bool use_rg = !ink_g && rg_ok && (rgx || q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
+                                            (tp_moe() && tp_rg_gu));
     // (ARC_INK_DOWN_TILE=1, opt-in, 2026-11-29: Inkling 2's down projection of prompt chunks per tile (moe_down_q)
     //  instead of moe_rg on an integrated GPU or where XMX is off. The laptop's 125H, UD-IQ4_XS, --bench-pp 512: moe_rg
     //  46 % of the prompt, 73.8 ms a visit; per tile (ARC_MOE_RG_MIN=100000) moe_down 3,540 -> 1,021 ms, 65.5 -> 98-100
@@ -231,8 +239,9 @@
     const bool rg_down = !down_tile && rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
-    const bool use_gemm_gu = use_gemm || (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
-                                          !hp.ds41 && tm == 16 && T >= gemm_min);
+    const bool use_gemm_gu = use_gemm || ink_g ||
+                             (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
+                              !hp.ds41 && tm == 16 && T >= gemm_min);
     // (ARC_MOE_GU2=1, opt-in, 2026-11-29: the per-tile kernels' tiles in passes over K, the gate's sums then the up's,
     //  GU_MC slots a pass (ARC_MOE_GU_MC, default 4): spill-free in 128 registers on mtl / arl-h / dg2 / bmg, ocloc
     //  26.40, where one pass spilled up to 166 scratch messages on Xe-LPG; meant bit-identical. UNTESTED HERE: built,
@@ -600,9 +609,29 @@
   }
   bool moe_gemm_ok() const {
     if (!hp.moe_std) return false;
+    // (ARC_INK_MOE_GEMM=1: Inkling 2 decided per layer, so the buffers once any layer takes decode + GEMM; layers 20-23's
+    //  BF16 / Q8_0 experts, which blocked it for the whole model, keep their per-tile kernels)
+    if (ink_moe_gemm_on() && hp.inkling) {  // (gate / up only: K = n_embd; the down's K = 1152 is no whole superblocks)
+      for (const Layer& L : layers_)
+        if (moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1)) return true;
+      return false;
+    }
     for (const Layer& L : layers_)
       if (!moe_gemm_gu_layer_ok(L)) return false;
     return true;
+  }
+  // ARC_INK_MOE_GEMM=1 (opt-in, 2026-11-24): Inkling 2's prompt experts through decode + the int8 GEMM, per layer, for
+  // chunks of more than ARC_INK_MOE_GEMM_MIN rows (default 256). The laptop's 125H: the prompt >55 % moe_gateup +
+  // moe_down on the per-tile DP4a kernels; oneDNN's batched expert GEMM of the 35B 1.7x ours. Each chunk decodes the
+  // layer's experts to W8 once (moe_group_ at a time) and runs one GEMM over their tiles, instead of decoding a block for
+  // every 16 slots. Gate / up only, in the padded experts' form (ARC_MOE_GEMM_PAD's: N = F rows of K = n_embd, h at the
+  // row stride Fp); the down projection (K = F = 1152, no whole superblocks) stays per tile or on moe_rg as before
+  // (ARC_INK_DOWN_TILE=1: per tile). Layers whose experts the GEMM does not take (Q8_0 / BF16, layers 20-23) as before.
+  // Another order of sums than the per-tile kernels, and NVFP4 folded per 32 in decode_w8: KL-checked. Extra memory:
+  // the W8 area of moe_group_ experts (the start line). UNTESTED HERE: built, not run.
+  static bool ink_moe_gemm_on() {
+    static const bool on = getenv("ARC_INK_MOE_GEMM") && atoi(getenv("ARC_INK_MOE_GEMM")) != 0;
+    return on;
   }
   // moe_rg's types: no per-block mins, not requantized by decode_w8 (IQ1_M: its own scale layout)
   static bool moe_rg_type(uint32_t t) {
