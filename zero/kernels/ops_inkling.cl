@@ -390,100 +390,85 @@ __kernel void ink_attn(__global const float* q, __global const float* r, __globa
 // token's GPU time, 339 us a launch at 512-640 positions and 690 at 2,200, with one work-group a (row, head): 24 groups
 // for a token, a whole key row dotted serially by each work-item, ~14 barriers every 128 keys, and the bias table
 // built again by every group. Here the keys of each row are cut into chunks over many work-groups, each for one KV
-// head and its H / HKV query heads (K and V read once for them): the dots over sub-groups (lanes along D,
-// sub_group_reduce_add, the rows read coalesced), the bias of only the distances the chunk's keys have (inside ext;
-// past it the table's 0), partial m / z / acc per chunk; the last work-group of a (row, KV head) to finish (a counter,
-// as ops_flashnext.cl's hc_up1 HC_UPQ: device-scope release before it, acquire after) merges the chunks from the zero
-// sink logit (m 0, z 1), divides and applies the sigmoid gate, as ink_attn ends, and sets the counter back to 0. The
-// same scores and softmax; another order of sums: KL-checked, not bit for bit.
-// Registers (16 lanes, 128 GRF): per lane q 4 x 8, acc 4 x 8, m / z 4 + 4, the K and V words 8 + 8: ~90 floats, under
-// the 128-register file; nothing private is indexed at run time (the unrolled head loop's g is a constant). Local:
-// 4 x 4 x 128 + 4 x 1,025 floats (24.4 KB). UNTESTED HERE: no build or run on the laptop, the user's rule of 2026-11-24
+// head: its IAD_G = H / HKV query heads one sub-group each (16 lanes along D, 8 values a lane), every sub-group walking
+// all the chunk's keys in order (the same K / V rows read by the G sub-groups, the second and third from L1), the dot
+// by sub_group_reduce_add, an online softmax; the bias of only the distances the chunk's keys have (inside ext; past
+// it the table's 0), built once by the work-group; each sub-group's chunk partial m / z / acc straight to part. The
+// last work-group of a (row, KV head) to finish (a counter, as ops_flashnext.cl's hc_up1 HC_UPQ: device-scope release
+// before it, acquire after) merges the chunks in order from the zero sink logit (m 0, z 1), divides and applies the
+// sigmoid gate, as ink_attn ends, and sets the counter back to 0. The same scores and softmax; another order of sums:
+// KL-checked, not bit for bit.
+// Registers, 128 GRF (the user: "I want it to fit GRF 128"): per lane q 8, acc 8, the K and V words 8 + 8, m and z:
+// ~34 live floats, ~68 registers on Xe-HPG's 32-byte ones (a SIMD16 float is 2), ~34 on Xe2's; nothing private
+// indexed at run time. Local: the bias, IAD_G x 1,025 floats (12.3 KB for 3 heads). UNTESTED HERE: no build or run on
+// the laptop, the user's rule of 2026-11-24
 #if INK_D == 128
-#define IAD_G 4    // (query heads a KV head, at most: Inkling 2 Mini's 24 / 8 = 3)
-#define IAD_V 8    // (values of D a lane: 128 / 16)
+#ifndef IAD_G
+#define IAD_G 3  // (query heads a KV head: H / HKV, -DIAD_G from engine_inkling.h; Inkling 2 Mini's 24 / 8)
+#endif
+#define IAD_V 8  // (values of D a lane: 128 / 16)
 // part[((t H + h) nch + c) (INK_D + 2) + ...]: chunk c's m, z, then acc[INK_D] (unnormalized), for its keys lo + c ck ..
 // min(pos, lo + (c + 1) ck - 1); an empty chunk m -inf, z 0. cnt[t HKV + kvh]: the chunks done, 0 between launches.
-// grid (64 nch, T HKV), local (64, 1): four sub-groups of 16 lanes, each every 4th key of the chunk
+// grid (16 IAD_G nch, T HKV), local (16 IAD_G, 1): sub-group g the KV head's query head g
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void ink_attn_dec(__global const float* q, __global const float* r, __global const float* sink,
                            __global const float* gate, __global const half* kc, __global const half* vc,
                            __global const float* bias, int ext, int NREL, __global float* out, int H, int HKV, int pos0,
                            int window, int cap, int ck, int nch, __global float* part, __global int* cnt) {
-  __local float lm[4][IAD_G], lz[4][IAD_G];
-  __local float lacc[4][IAD_G][INK_D];
   __local float ltab[IAD_G][INK_EXT + 1];  // (the bias at this chunk's distances, from d_lo: at most ext of them)
   __local int last;
-  const int c = get_group_id(0), tk = get_group_id(1), t = tk / HKV, kvh = tk % HKV, G = H / HKV;
-  const int sg = get_sub_group_id(), lane = get_sub_group_local_id(), nsg = get_num_sub_groups();
-  const int lid = get_local_id(0), nl = get_local_size(0);
+  const int c = get_group_id(0), tk = get_group_id(1), t = tk / HKV, kvh = tk % HKV;
+  const int g = get_sub_group_id(), lane = get_sub_group_local_id(), lid = get_local_id(0), nl = get_local_size(0);
+  const int h = kvh * IAD_G + g;
   const int pos = pos0 + t, lo = window > 0 ? max(0, pos - window + 1) : 0;
   const int u0 = lo + c * ck, u1 = min(pos, lo + (c + 1) * ck - 1);
   // (the distances inside ext this chunk's keys have: pos - u1 .. pos - u0, cut to 0 .. ext - 1; none when empty)
   const int d_lo = max(0, pos - u1), d_hi = min(ext - 1, pos - u0), nd = u0 <= u1 ? max(0, d_hi - d_lo + 1) : 0;
-  for (int i = lid; i < G * nd; i += nl) {
-    const int g = i / nd, e = d_lo + i % nd;
-    __global const float* rr = r + ((size_t)t * H + kvh * G + g) * NREL;
+  for (int i = lid; i < IAD_G * nd; i += nl) {
+    const int gg = i / nd, e = d_lo + i % nd;
+    __global const float* rr = r + ((size_t)t * H + kvh * IAD_G + gg) * NREL;
     float b = 0.0f;
     for (int j = 0; j < NREL; ++j) b += bias[(size_t)e * NREL + j] * rr[j];
-    ltab[g][e - d_lo] = b;
+    ltab[gg][e - d_lo] = b;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  const float inv = rsqrt((float)INK_D);
-  float qv[IAD_G][IAD_V], acc[IAD_G][IAD_V], m[IAD_G], z[IAD_G], sk[IAD_G];
+  const float inv = rsqrt((float)INK_D), sk = sink[(size_t)t * H + h];
+  float qv[IAD_V], acc[IAD_V], m = -INFINITY, z = 0.0f;
+  const float8 q8 = vload8(lane, q + ((size_t)t * H + h) * INK_D);
+  qv[0] = q8.s0, qv[1] = q8.s1, qv[2] = q8.s2, qv[3] = q8.s3, qv[4] = q8.s4, qv[5] = q8.s5, qv[6] = q8.s6, qv[7] = q8.s7;
 #pragma unroll
-  for (int g = 0; g < IAD_G; ++g) {
-    m[g] = -INFINITY, z[g] = 0.0f;
-    sk[g] = g < G ? sink[(size_t)t * H + kvh * G + g] : 0.0f;
-#pragma unroll
-    for (int i = 0; i < IAD_V; ++i) {
-      acc[g][i] = 0.0f;
-      qv[g][i] = g < G ? q[((size_t)t * H + kvh * G + g) * INK_D + lane * IAD_V + i] : 0.0f;
-    }
-  }
-  for (int u = u0 + sg; u <= u1; u += nsg) {  // (the same keys for a sub-group's lanes: uniform)
+  for (int i = 0; i < IAD_V; ++i) acc[i] = 0.0f;
+  for (int u = u0; u <= u1; ++u) {  // (every key of the chunk in order, the same for a sub-group's lanes: uniform)
     const size_t row = ((size_t)(u % cap) * HKV + kvh) * INK_D;
     const float8 kv = vload_half8(lane, kc + row), vv = vload_half8(lane, vc + row);
-    const float kk[IAD_V] = {kv.s0, kv.s1, kv.s2, kv.s3, kv.s4, kv.s5, kv.s6, kv.s7};
-    const float vk[IAD_V] = {vv.s0, vv.s1, vv.s2, vv.s3, vv.s4, vv.s5, vv.s6, vv.s7};
+    float pd = qv[0] * kv.s0;
+    pd += qv[1] * kv.s1;
+    pd += qv[2] * kv.s2;
+    pd += qv[3] * kv.s3;
+    pd += qv[4] * kv.s4;
+    pd += qv[5] * kv.s5;
+    pd += qv[6] * kv.s6;
+    pd += qv[7] * kv.s7;
     const int dist = pos - u;
-#pragma unroll
-    for (int g = 0; g < IAD_G; ++g) {
-      if (g >= G) break;
-      float pd = 0.0f;
-#pragma unroll
-      for (int i = 0; i < IAD_V; ++i) pd += qv[g][i] * kk[i];
-      // (ink_attn's table: bias[dist] . r - sink inside ext, - sink past it)
-      const float s = sub_group_reduce_add(pd) * inv + (dist < ext ? ltab[g][dist - d_lo] : 0.0f) - sk[g];
-      const float mn = fmax(m[g], s), corr = exp(m[g] - mn), e = exp(s - mn);
-      z[g] = z[g] * corr + e;
-#pragma unroll
-      for (int i = 0; i < IAD_V; ++i) acc[g][i] = acc[g][i] * corr + e * vk[i];
-      m[g] = mn;
-    }
+    // (ink_attn's table: bias[dist] . r - sink inside ext, - sink past it)
+    const float s = sub_group_reduce_add(pd) * inv + (dist < ext ? ltab[g][dist - d_lo] : 0.0f) - sk;
+    const float mn = fmax(m, s), corr = exp(m - mn), e = exp(s - mn);
+    z = z * corr + e;
+    acc[0] = acc[0] * corr + e * vv.s0;
+    acc[1] = acc[1] * corr + e * vv.s1;
+    acc[2] = acc[2] * corr + e * vv.s2;
+    acc[3] = acc[3] * corr + e * vv.s3;
+    acc[4] = acc[4] * corr + e * vv.s4;
+    acc[5] = acc[5] * corr + e * vv.s5;
+    acc[6] = acc[6] * corr + e * vv.s6;
+    acc[7] = acc[7] * corr + e * vv.s7;
+    m = mn;
   }
-  // (the four sub-groups' parts merged; a sub-group without keys has m -inf, z 0: its weight exp(-inf) 0)
+  {  // (this sub-group's head: the chunk's partial straight to part)
+    __global float* pp = part + (((size_t)t * H + h) * nch + c) * (INK_D + 2);
+    if (lane == 0) pp[0] = m, pp[1] = z;
 #pragma unroll
-  for (int g = 0; g < IAD_G; ++g) {
-    if (lane == 0) lm[sg][g] = m[g], lz[sg][g] = z[g];
-#pragma unroll
-    for (int i = 0; i < IAD_V; ++i) lacc[sg][g][lane * IAD_V + i] = acc[g][i];
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
-  for (int idx = lid; idx < G * INK_D; idx += nl) {
-    const int g = idx / INK_D, dd = idx % INK_D;
-    float M = -INFINITY;
-    for (int s = 0; s < nsg; ++s) M = fmax(M, lm[s][g]);
-    float Z = 0.0f, A = 0.0f;
-    if (M > -INFINITY)
-      for (int s = 0; s < nsg; ++s) {
-        const float w = exp(lm[s][g] - M);
-        Z += lz[s][g] * w;
-        A += lacc[s][g][dd] * w;
-      }
-    __global float* pp = part + (((size_t)t * H + kvh * G + g) * nch + c) * (INK_D + 2);
-    if (dd == 0) pp[0] = M, pp[1] = Z;
-    pp[2 + dd] = A;
+    for (int i = 0; i < IAD_V; ++i) pp[2 + lane * IAD_V + i] = acc[i];
   }
   // (the last of the (row, KV head)'s nch work-groups merges them all)
   barrier(CLK_GLOBAL_MEM_FENCE | CLK_LOCAL_MEM_FENCE);  // (this work-group's parts written)
@@ -494,10 +479,10 @@ __kernel void ink_attn_dec(__global const float* q, __global const float* r, __g
   barrier(CLK_LOCAL_MEM_FENCE);
   if (!last) return;  // (uniform: the same local value for the whole work-group)
   atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_device);
-  for (int idx = lid; idx < G * INK_D; idx += nl) {
-    const int g = idx / INK_D, dd = idx % INK_D, h = kvh * G + g;
+  for (int idx = lid; idx < IAD_G * INK_D; idx += nl) {
+    const int gg = idx / INK_D, dd = idx % INK_D, hh = kvh * IAD_G + gg;
     float mm = 0.0f, zz = 1.0f, aa = 0.0f;  // (the zero sink logit)
-    __global volatile const float* pp = (__global volatile const float*)part + ((size_t)t * H + h) * nch * (INK_D + 2);
+    __global volatile const float* pp = (__global volatile const float*)part + ((size_t)t * H + hh) * nch * (INK_D + 2);
     for (int cc = 0; cc < nch; ++cc, pp += INK_D + 2) {
       const float zc = pp[1];
       if (zc == 0.0f) continue;  // (an empty chunk)
@@ -506,7 +491,7 @@ __kernel void ink_attn_dec(__global const float* q, __global const float* r, __g
       aa = aa * a + pp[2 + dd] * b;
       mm = mn;
     }
-    const size_t o = ((size_t)t * H + h) * INK_D + dd;
+    const size_t o = ((size_t)t * H + hh) * INK_D + dd;
     out[o] = aa / zz * ink_sigmoid(gate[o]);
   }
   if (lid == 0) cnt[tk] = 0;  // (for the next launch)

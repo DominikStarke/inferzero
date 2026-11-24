@@ -396,6 +396,7 @@
     ink_k0_ = f(KG); ink_v0_ = f(KG); ink_kc_ = f(KG); ink_vc_ = f(KG);
     ink_r_ = f((size_t)k.nrel * hp.n_head);
     ink_s_ = f(hp.n_head);
+    ink_attn_dec_alloc();  // (ARC_INK_ATTN_DEC=1: its parts and counters, once)
     ink_kd_ = f((size_t)k.nc * hp.n_head_kv); ink_vd_ = f((size_t)k.nc * hp.n_head_kv);
     ink_ao_ = f(E); ink_tmp_ = f(std::max(E, KG)); ink_xm_ = f(E); ink_mo_ = f(E);
     ink_mix_ = f(3 * (size_t)E);
@@ -752,37 +753,47 @@
   //  in ink_acnt_, back to 0 after each launch). skipzx-lab's B60 (#45): ink_attn 37.6 % of generation's GPU time, 24
   //  work-groups a token. Another order of sums than ink_attn: KL-checked, not bit for bit. One launch a layer visit, as
   //  ink_attn (the user's goal: under 600 launches a token). A start line says it is on. UNTESTED HERE)
+  //  (128 registers, the default, the user's: one sub-group a query head, ~34 live floats a lane; built -DIAD_G = H /
+  //   HKV. Its buffers made once at load, ink_attn_dec_alloc: no allocation in the forward, so no mem_gen change)
   cl_mem ink_apart_ = nullptr, ink_acnt_ = nullptr;
-  size_t ink_apart_n_ = 0;
+  cl_kernel ink_adk_ = nullptr;
+  static bool ink_attn_dec_env() {
+    static const bool on = getenv("ARC_INK_ATTN_DEC") && atoi(getenv("ARC_INK_ATTN_DEC")) != 0;
+    return on;
+  }
   mutable bool ink_attn_dec_said_ = false;  // (the line once: the flag first, no lock in the per-layer path)
   bool ink_attn_dec_on(int T) const {
-    static const bool on = getenv("ARC_INK_ATTN_DEC") && atoi(getenv("ARC_INK_ATTN_DEC")) != 0;
+    const bool on = ink_attn_dec_env() && ink_apart_;
     if (on && !ink_attn_dec_said_ && (ink_attn_dec_said_ = true) && first_for_device("ink_attn_dec"))
       zlog::eprintf("inferzero: Inkling 2: the decode attention (ARC_INK_ATTN_DEC=1) for rows of up to 8: the keys split "
-                    "over many work-groups, one a KV head\n");
-    return on && T <= 8 && hp.head_dim == 128 && hp.n_head % hp.n_head_kv == 0 && hp.n_head / hp.n_head_kv <= 4;
+                    "over many work-groups, a sub-group a query head, 128 registers\n");
+    return on && T <= 8;
+  }
+  // (at alloc_inkling: the chunks' parts, 8 rows x H x 64 chunks x (D + 2) floats, 6.4 MB on Inkling 2 Mini, and the
+  //  counters, 8 x HKV, zero; only with ARC_INK_ATTN_DEC=1 and the shapes it is written for)
+  void ink_attn_dec_alloc() {
+    const int H = hp.n_head, HKV = hp.n_head_kv, D = hp.head_dim;
+    if (!ink_attn_dec_env() || D != 128 || H % HKV || H / HKV > 4) return;
+    ink_apart_ = buf((size_t)8 * H * 64 * (D + 2) * 4);
+    ink_acnt_ = buf((size_t)8 * HKV * 4);
+    fill(ink_acnt_, (size_t)8 * HKV * 4);
   }
   void ink_attn_dec(const InkLayer& L, const InkSlot& S, int T, int p0, int win, int cap) {
-    const int H = hp.n_head, HKV = hp.n_head_kv, D = hp.head_dim, ext = L.ext, nrel = ink_.nrel;
+    const int H = hp.n_head, HKV = hp.n_head_kv, G = H / HKV, ext = L.ext, nrel = ink_.nrel;
     // (the chunk: at most 64 a (row, KV head), at least 64 keys, a multiple of 16; the longest row's keys decide)
     const int len = win > 0 ? std::min(win, p0 + T) : p0 + T;
     const int ck = std::max(64, ((len + 63) / 64 + 15) / 16 * 16);
     const int nch = std::max(1, (len + ck - 1) / ck);
-    const size_t part_n = (size_t)8 * H * 64 * (D + 2);
-    if (ink_apart_n_ < part_n) {
-      if (ink_apart_) free_buf(ink_apart_);
-      ink_apart_ = buf(part_n * 4);
-      ink_apart_n_ = part_n;
-    }
-    if (!ink_acnt_) {  // (the counters, 8 rows x HKV, zero from the start and after every launch)
-      ink_acnt_ = buf((size_t)8 * HKV * 4);
-      fill(ink_acnt_, (size_t)8 * HKV * 4);
-    }
-    cl_kernel kk = ink_k("ink_attn_dec");
+    // (built once a model (a member: kernel() keeps it until the engine goes): ink_k's options with the query heads a KV
+    //  head)
+    if (!ink_adk_)
+      ink_adk_ = kernel("ops", "-DINK_LS=256 -DINK_D=" + std::to_string(hp.head_dim) + " -DINK_EXT=1024 -DIAD_G=" +
+                             std::to_string(G), "ink_attn_dec");
     int EX = ext, NR = nrel, HH = H, HK = HKV, P0 = p0, W = win, CP = cap, CK = ck, NCH = nch;
+    cl_kernel kk = ink_adk_;
     set_args(kk, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, EX, NR, ink_att_, HH, HK, P0, W, CP, CK, NCH,
              ink_apart_, ink_acnt_);
-    size_t g[2] = {(size_t)64 * nch, (size_t)T * HKV}, l[2] = {64, 1};
+    size_t g[2] = {(size_t)16 * G * nch, (size_t)T * HKV}, l[2] = {(size_t)16 * G, 1};
     run("ink_attn_dec", kk, 2, g, l);
   }
   void ink_layer(int slot, int T, int Mp, bool msgs, int& nb) {
