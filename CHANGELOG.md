@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-24: Inkling 2 generates with about 190 fewer GPU launches a token
+
+- **Inkling 2's attention projections run as one matrix a token** (#45): q, gate and rel (and k and v on a sliding layer) read the same input, so they are stored as one stack of rows and a generated token runs one GEMV over them; no more memory. The same numbers bit for bit. A Pro B60, Inkling 2 Mini IQ4_NL: 1,548 -> 1,412 GPU launches a token, generation +0.7 % (skipzx-lab).
+- **The k and v inputs' norms and quantization in one launch** where they have their own inputs (the loop's later passes, the global layers): 1,548 -> 1,492 launches a token on the same card, the same numbers bit for bit (skipzx-lab). Both together: about 1,356 a token.
+
 ## 2026-11-24: NVFP4 experts another 7 % faster in generation; a warning when a kernel spills registers
 
 - **A warning when a GPU kernel spills registers** to memory on your card (one line per kernel, naming it and its build options): such a kernel runs slower than it should, so please report the line with your GPU's name. `ARC_ZE_KPROPS=1` lists every kernel's private and spill memory as before; `ARC_ZE_KPROPS=0` turns both off.
