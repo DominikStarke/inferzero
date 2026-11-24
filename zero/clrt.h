@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -1736,13 +1737,27 @@ struct ClRt {
     // piece of the cache that Windows had paged out was a page fault ("device lost" now and then, in the server).
     // Only for them: on every kernel it made the driver touch every allocation per launch (27B: slower).
     if (prog->indirect) zeKernelSetIndirectAccess(k->k, 7 /* device | host | shared */);
-    static const bool kprops = (getenv("ARC_ZE_KPROPS") && atoi(getenv("ARC_ZE_KPROPS")) != 0);  // (debug: private / spill memory per kernel)
-    if (kprops) {
+    // (ARC_ZE_KPROPS=1: every kernel's private and spill memory. Since 2026-11-24 a spill is said by default, one warning
+    //  a kernel and build options, so every contributor's log shows one without being asked (the user: "make sure no
+    //  register spills"; the laptop builds nothing now, so the users' own compilers are the check); ARC_ZE_KPROPS=0
+    //  turns that off too. One zeKernelGetProperties a kernel made, at its creation)
+    static const int kprops = getenv("ARC_ZE_KPROPS") ? (atoi(getenv("ARC_ZE_KPROPS")) != 0 ? 1 : 0) : -1;
+    if (kprops != 0) {
       ze_kernel_properties_t kp{};
       kp.stype = (ze_structure_type_t)0x1e;
-      if (zeKernelGetProperties(k->k, &kp) == ZE_RESULT_SUCCESS && (kp.privateMemSize || kp.spillMemSize))
-        zlog::eprintf("kernel %s: private %u bytes, spill %u bytes per work-item/thread [%s]\n", name, kp.privateMemSize,
-                kp.spillMemSize, prog->opts.c_str());
+      if (zeKernelGetProperties(k->k, &kp) == ZE_RESULT_SUCCESS) {
+        if (kprops == 1 && (kp.privateMemSize || kp.spillMemSize))
+          zlog::eprintf("kernel %s: private %u bytes, spill %u bytes per work-item/thread [%s]\n", name, kp.privateMemSize,
+                        kp.spillMemSize, prog->opts.c_str());
+        else if (kp.spillMemSize) {
+          static std::mutex mu;
+          static std::set<std::string> said;
+          std::lock_guard<std::mutex> g(mu);
+          if (said.insert(std::string(name) + "|" + prog->opts).second)
+            LOG_WRN("inferzero: kernel %s spills %u bytes per thread to memory (build options: %s): slower than it "
+                    "should be; please report it with your GPU's name\n", name, kp.spillMemSize, prog->opts.c_str());
+        }
+      }
     }
     return k;
   }
