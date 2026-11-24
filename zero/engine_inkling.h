@@ -459,12 +459,36 @@
     return fl * 4 + 2 * E;                       // (+ the int8 activations)
   }
   int ink_chunk_default() const {
-    if (zrt::integrated()) return 512;
+    if (zrt::integrated()) return ink_chunk_igpu();
     const uint64_t mem = zrt::D().global_mem;
     int c = mem >= (30ull << 30) ? 8192 : mem >= (22ull << 30) ? 4096 : 2048;
     uint64_t w = 0;
     for (const GgufTensor& t : f_.tensors) w += t.nbytes;
     while (c > 2048 && (double)(w + (uint64_t)c * ink_row_bytes()) > 0.92 * (double)mem) c /= 2;
+    return c;
+  }
+  // An integrated GPU's chunk: 512 as before; ARC_INK_CHUNK_AUTO=1 (opt-in, 2026-11-29) the largest of 4096 / 2048 /
+  // 1024 whose rows still leave room for every expert in the expert cache. The laptop's 125H loaded Inkling 2
+  // UD-IQ4_XS at chunk 512 (the fixed value here), so every expert a prompt uses is read again each 512 tokens, 8x as
+  // often as at 4096. The room: the GPU share less the driver's slack (the cache's own limit, engine_stream.h), less
+  // the tensors that are not experts, every expert (the cache at 100 %) and its staging (~0.7 GiB); a row counted
+  // twice ink_row_bytes() for the engine's other buffers that grow with the chunk (activations, slots), within 92 %.
+  // --chunk N still sets it outright. The start line says the chunk and its extra memory against 512. UNTESTED HERE.
+  int ink_chunk_igpu() const {
+    static const bool aut = getenv("ARC_INK_CHUNK_AUTO") && atoi(getenv("ARC_INK_CHUNK_AUTO")) != 0;
+    if (!aut) return 512;
+    const uint64_t share = device_mem(), slack = (uint64_t)driver_slack();
+    const uint64_t limit = share > slack ? share - slack : 0;
+    uint64_t dense = 0, exps = 0;
+    for (const GgufTensor& t : f_.tensors) (t.name.find("_exps") != std::string::npos ? exps : dense) += t.nbytes;
+    const uint64_t fixed = dense + exps + (768ull << 20), row = 2 * ink_row_bytes();
+    int c = 4096;
+    while (c > 512 && (double)(fixed + (uint64_t)c * row) > 0.92 * (double)limit) c /= 2;
+    while (c > 512 && ctx > 0 && c / 2 >= ctx) c /= 2;  // (no longer than the context needs: --bench-pp 512's ctx 544)
+    const double GiB = 1024.0 * 1024.0 * 1024.0;
+    zlog::eprintf("inferzero: Inkling 2 on an integrated GPU: chunk %d (ARC_INK_CHUNK_AUTO=1; ~%.2f GiB more than at 512, "
+                  "the experts %.2f GiB kept whole in the cache, limit %.2f GiB)\n",
+                  c, (double)((uint64_t)(c - 512) * row) / GiB, exps / GiB, limit / GiB);
     return c;
   }
 
