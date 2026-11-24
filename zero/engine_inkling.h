@@ -659,10 +659,20 @@
   //  conv_in set: first one token's ink_conv1 of conv_in into conv_out with its add into cur (the post-attention conv);
   //  nw set: then the norm of out's rows in place with weight nw and their quantization for the next GEMM, as
   //  ink_rmsnorm_q (out's rows then count as quantized for ink_mm's reuse). The same values as the separate launches.
-  //  ARC_INK_FUSE_MIXQ=0 / ARC_INK_FUSE_CONVMIX=0 (or ARC_INK_FUSE=0): the separate launches. UNTESTED HERE)
+  //  Opt-in since skipzx-lab's B60 (#45): the same logits, but tg128 0.5 % slower in both pairs (12.08 / 12.07 main,
+  //  12.02 / 12.01 fused): one work-group a token runs the conv's E channels and the mix serially, where ink_conv1
+  //  spread them over the GPU. ARC_INK_FUSE_MIXQ=1 / ARC_INK_FUSE_CONVMIX=1 to try them; ARC_INK_FUSE=0 turns off these
+  //  and the earlier fusions. A start line names both. UNTESTED HERE)
   static bool ink_fuse_sw(const char* name) {
     const bool all_off = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
-    return !all_off && !(getenv(name) && atoi(getenv(name)) == 0);
+    const bool on = !all_off && getenv(name) && atoi(getenv(name)) != 0;
+    static std::once_flag said;
+    std::call_once(said, [all_off] {
+      auto st = [all_off](const char* n) { return !all_off && getenv(n) && atoi(getenv(n)) != 0 ? "on" : "off"; };
+      zlog::eprintf("inferzero: Inkling 2: the mix with the norm + quantization (ARC_INK_FUSE_MIXQ=1) %s, the conv with the "
+                    "FFN mix (ARC_INK_FUSE_CONVMIX=1) %s\n", st("ARC_INK_FUSE_MIXQ"), st("ARC_INK_FUSE_CONVMIX"));
+    });
+    return on;
   }
   void ink_mix_fused(cl_mem blocks, int nb, cl_mem cur, cl_mem q, int nq, cl_mem out, int T, int sep, cl_mem out1,
                      cl_mem out2, cl_mem conv_in, cl_mem conv_w, cl_mem conv_state, cl_mem conv_out, cl_mem nw, int Mp) {
@@ -780,7 +790,7 @@
     // the attention inputs: a mix (one query, SWA; three, global) of the blocks and the stream, from layer 1 on
     cl_mem in[3] = {ink_cur_, ink_cur_, ink_cur_};
     // (Inkling (a), 2026-11-24: outside the loop's later passes the mix and in[0]'s norm + quantization in one launch,
-    //  ink_mix_fused; ARC_INK_FUSE_MIXQ=0: the two launches)
+    //  ink_mix_fused; opt-in, ARC_INK_FUSE_MIXQ=1; else the two launches)
     static const bool fuse_mixq = ink_fuse_sw("ARC_INK_FUSE_MIXQ");
     const bool mixq = fuse_mixq && !msgs && E % 256 == 0;
     bool q0_done = false;  // (in[0]'s norm and quantization done by the mix's launch)
@@ -886,7 +896,7 @@
     // output is added to the stream (in the conv's launch, ink_conv's add)
     const bool bstart = ip % k.block == 0;
     // (Inkling (a), 2026-11-24: one token outside a block's start and outside DSpark's verification, the conv with
-    //  its add into the stream joins the FFN mix's launch, ink_mix_fused; ARC_INK_FUSE_CONVMIX=0: its own launch)
+    //  its add into the stream joins the FFN mix's launch, ink_mix_fused; opt-in, ARC_INK_FUSE_CONVMIX=1; else its own launch)
     static const bool fuse_convmix = ink_fuse_sw("ARC_INK_FUSE_CONVMIX");
     cl_mem save2 = dsp_save(S, 2);
     const bool convmix = fuse_convmix && T == 1 && !bstart && !save2;
@@ -901,7 +911,7 @@
     }
     // the MoE: its input a mix over the blocks (with the new one) and the stream, the controller, ffn_norm
     // (Inkling (a): outside the loop's later passes on the streamed path, the norm + quantization below joins the
-    //  mix's launch too, as ink_mix_fused's nw; ARC_INK_FUSE_MIXQ=0: its own launch)
+    //  mix's launch too, as ink_mix_fused's nw; opt-in, ARC_INK_FUSE_MIXQ=1; else its own launch)
     const bool ffn_q = mixq && ink_fast_moe_;
     if (convmix || ffn_q) {
       ink_mix_fused(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T, 0, nullptr, nullptr, convmix ? ink_ao_ : nullptr,

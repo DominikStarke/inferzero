@@ -568,7 +568,7 @@ __kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global c
 //   has_nq: then ink_rmsnorm_quant's norm of out's rows in place (weight w) and their quantization (ink_norm_quant_t,
 //     the same code; rows >= M_valid only quantize zeros, as there).
 // Each step's values as its own launch's: a barrier with a global fence between them, as between two launches. The
-// launches it replaces: ARC_INK_FUSE_MIXQ=0 / ARC_INK_FUSE_CONVMIX=0 (engine_inkling.h). UNTESTED HERE: no build or
+// launches it replaces unless ARC_INK_FUSE_MIXQ=1 / ARC_INK_FUSE_CONVMIX=1 (opt-in, engine_inkling.h). UNTESTED HERE: no build or
 // run on the laptop, the user's rule of 2026-11-24
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void ink_mix_fused(int has_conv, __global const float* ccur, __global const float* cw, __global float* cstate,
