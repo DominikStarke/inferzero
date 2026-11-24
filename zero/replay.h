@@ -148,7 +148,12 @@ struct Replay {
   //  GPU (the server's speech models) go as without ARC_REPLAY, never into the step's lists; atomics, as they read them)
   std::atomic<int> key{-1};
   std::atomic<std::thread::id> owner{};
+  // (a kernel was released while this GPU's recordings could not be dropped (another thread's step, or a thread of
+  //  another GPU): the owner drops them all at its next rp_begin or rp_end, and its step breaks at its next launch)
+  std::atomic<bool> stale{false};
   bool rec = false, broken = false, off = false, dev_ok = false, dev_known = false;
+  // (steps since the last kept replay: a recording counts until a replay matches it, so record / fail / record / fail
+  //  reaches the limit; the Researcher's review of 9184768, 1)
   int falls_in_row = 0;
   size_t seg = 0, cmd = 0;
   std::vector<RpFns::ArgDesc> argd;
@@ -224,11 +229,23 @@ inline void rp_break(Dev& d, RpWhy why);
 // every recording of d dropped (a kernel about to be released: clReleaseKernel); not during a step of another thread
 inline void rp_drop_all(Dev& d) {
   Replay* r = d.rp.load();
-  if (!r || (r->key.load() >= 0 && !r->mine())) return;
-  // (a step of this thread under way: what it took goes to the GPU first, the rest of it as without ARC_REPLAY)
-  if (r->mine() && !r->broken) rp_break(d, RpOther);
+  if (!r) return;
+  if (r->mine()) {  // (a step of this thread under way: what it took goes to the GPU first, the rest as without it)
+    if (!r->broken) rp_break(d, RpOther);
+    for (auto& [key, s] : r->steps) rp_drop(d, s);
+    r->steps.clear();
+    return;
+  }
+  // (d not this thread's GPU, or a step claimed or under way on another thread: marked, the owner drops them; else
+  //  claimed here (-1 -> -2) for the drop, so no step begins meanwhile)
+  int free_key = -1;
+  if (&d != &D() || !r->key.compare_exchange_strong(free_key, -2, std::memory_order_acq_rel)) {
+    r->stale.store(true, std::memory_order_release);
+    return;
+  }
   for (auto& [key, s] : r->steps) rp_drop(d, s);
   r->steps.clear();
+  r->key.store(-1, std::memory_order_release);
 }
 // a new segment for the recording: a mutable in-order list and an event; false when there is none to have
 inline bool rp_new_seg(Dev& d, RpStep& s) {
@@ -304,6 +321,7 @@ inline bool rp_launch(Dev& d, ZKernel* k, const ze_group_count_t& gc, const uint
   if (!rp || !rp->mine()) return false;
   Replay& r = *rp;
   if (r.broken) return false;
+  if (r.stale.load(std::memory_order_acquire)) { rp_break(d, RpOther); return false; }  // (a released kernel)
   RpStep& s = r.steps[r.key.load()];
   if (!rp_trackable(k)) { rp_break(d, RpUntracked); return false; }
   if (r.rec) {
@@ -403,11 +421,28 @@ inline bool rp_begin(int key) {
     return false;
   }
   Replay* rp = d.rp.load(std::memory_order_acquire);
-  if (!rp) {
-    rp = new Replay;
-    d.rp.store(rp, std::memory_order_release);
+  if (!rp) {  // (two threads at once: one Replay wins, the other's goes)
+    Replay* mine_new = new Replay;
+    if (d.rp.compare_exchange_strong(rp, mine_new, std::memory_order_acq_rel)) rp = mine_new;
+    else delete mine_new;
   }
   Replay& r = *rp;
+  // (the step claimed first: key -1 -> -2 (claimed, not yet begun), so of two threads only one goes on and nothing
+  //  else of the struct is touched by the other; -2 is no step for mine(), and is one for rp_drop_all. The
+  //  Researcher's review of 9184768, 2)
+  int free_key = -1;
+  if (!r.key.compare_exchange_strong(free_key, -2, std::memory_order_acq_rel)) {
+    static std::atomic<bool> said{false};
+    if (!said.exchange(true))
+      zlog::eprintf("inferzero: ARC_REPLAY: a step while another is under way on GPU %d (two engines on one GPU): run "
+                    "without a replay\n", d.index);
+    return false;
+  }
+  struct Unclaim {  // (every way out below without a step gives the claim back)
+    std::atomic<int>& k;
+    bool keep = false;
+    ~Unclaim() { if (!keep) k.store(-1, std::memory_order_release); }
+  } unclaim{r.key};
   if (r.off) return false;
   if (!r.dev_known) {
     r.dev_known = true;
@@ -417,15 +452,14 @@ inline bool rp_begin(int key) {
                     "arguments, group counts and sizes\n", d.index);
   }
   if (!r.dev_ok) return false;
-  if (r.key.load() >= 0) {  // (a step under way: another thread's, or this one's not ended)
-    static std::atomic<bool> said{false};
-    if (!said.exchange(true))
-      zlog::eprintf("inferzero: ARC_REPLAY: a step while another is under way on GPU %d (two engines on one GPU): run "
-                    "without a replay\n", d.index);
-    return false;
-  }
   rp_stats_at_exit();
   flush(d);  // (ARC_BATCH's list first: the step's own lists come after it)
+  // (a kernel released by another thread while it could not drop this GPU's recordings: every one goes now, Researcher's
+  //  review of 9184768, 3)
+  if (r.stale.exchange(false, std::memory_order_acq_rel)) {
+    for (auto& [k2, s2] : r.steps) rp_drop(d, s2);
+    r.steps.clear();
+  }
   auto it = r.steps.find(key);
   if (it != r.steps.end() && (!it->second.complete || it->second.gen != mem_gen.load(std::memory_order_relaxed))) {
     if (it->second.complete) ++rp_n_why[RpMemGen];
@@ -441,6 +475,7 @@ inline bool rp_begin(int key) {
   r.cntd.clear();
   r.sized.clear();
   r.owner.store(std::this_thread::get_id(), std::memory_order_release);
+  unclaim.keep = true;
   r.key.store(key, std::memory_order_release);
   return true;
 }
@@ -453,7 +488,10 @@ inline void rp_end() {
   Replay& r = *rp;
   flush(d);
   const int key = r.key.load();
-  r.key.store(-1, std::memory_order_release);  // (before anything that could throw: no stale step takes later launches)
+  // (-2 before anything that could throw: no step, so no launch is taken (mine() wants >= 0), but still claimed, so no
+  //  other thread begins one while this drops lists; -1 on every way out)
+  r.key.store(-2, std::memory_order_release);
+  struct Release { std::atomic<int>& k; ~Release() { k.store(-1, std::memory_order_release); } } release{r.key};
   auto it = r.steps.find(key);
   if (it == r.steps.end()) return;
   RpStep& s = it->second;
@@ -470,10 +508,14 @@ inline void rp_end() {
     if (!r.broken) ++rp_n_why[r.rec ? RpMemGen : RpKernel];  // (a recording with a free in it; fewer segments)
   }
   s.complete = keep;
-  r.falls_in_row = keep ? 0 : r.falls_in_row + 1;
+  r.falls_in_row = !r.rec && keep ? 0 : r.falls_in_row + 1;
   if (!keep) {
     rp_drop(d, s);
     r.steps.erase(it);
+  }
+  if (r.stale.exchange(false, std::memory_order_acq_rel)) {  // (a kernel released meanwhile: every recording goes)
+    for (auto& [k2, s2] : r.steps) rp_drop(d, s2);
+    r.steps.clear();
   }
   if (r.falls_in_row >= 8) {
     r.off = true;

@@ -1363,7 +1363,10 @@ inline cl_int clReleaseKernel(cl_kernel k) {
   // (ARC_REPLAY: recorded lists may hold commands of this kernel, and a later kernel at its address would pass the
   //  replay's comparison: every recording of this GPU dropped first; a model unload releases its kernels before its
   //  modules, so this also runs before any module goes. The Researcher's review of ede9772, 5)
-  if (zrt::D().rp.load(std::memory_order_acquire)) zrt::rp_drop_all(zrt::D());
+  // (every GPU with recordings, not only this thread's: an engine on GPU 1 torn down from a thread of GPU 0. Another GPU's
+  //  are marked stale and dropped by their owner; the Researcher's review of 9184768, 4)
+  for (zrt::Dev* dv : zrt::devs)
+    if (dv && dv->rp.load(std::memory_order_acquire)) zrt::rp_drop_all(*dv);
   if (zrt::last_k == k) zrt::last_k = nullptr;  // (the crash log must not read a kernel that is gone)
   {
     const char* nm = k->name.c_str();
