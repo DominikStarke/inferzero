@@ -774,10 +774,22 @@
   void ink_attn_dec_alloc() {
     const int H = hp.n_head, HKV = hp.n_head_kv, D = hp.head_dim;
     if (!ink_attn_dec_env() || D != 128 || H % HKV || H / HKV > 4) return;
-    ink_apart_ = buf((size_t)8 * H * 64 * (D + 2) * 4);
+    const size_t pb = (size_t)8 * H * 64 * (D + 2) * 4;
+    ink_apart_ = buf(pb * (ink_attn_pp() ? 2 : 1));
+    if (ink_attn_pp())  // (the two halves, used by turns)
+      for (int i = 0; i < 2; ++i) ink_apart_h_[i] = ink_sub(ink_apart_, pb * (size_t)i, pb);
     ink_acnt_ = buf((size_t)8 * HKV * 4);
     fill(ink_acnt_, (size_t)8 * HKV * 4);
   }
+  // (ARC_INK_ATTN_DEC_PP=1, a test, 2026-11-24, after skipzx-lab's KL max (#45): the parts in two halves used by turns,
+  //  so a launch never writes the lines the previous visit's merge read (a stale L1 line, if that is the bug; the
+  //  Researcher's suggestion). The same values; 12.8 MB for Inkling 2 Mini instead of 6.4)
+  static bool ink_attn_pp() {
+    static const bool on = getenv("ARC_INK_ATTN_DEC_PP") && atoi(getenv("ARC_INK_ATTN_DEC_PP")) != 0;
+    return on;
+  }
+  cl_mem ink_apart_h_[2] = {nullptr, nullptr};
+  int ink_apart_turn_ = 0;
   void ink_attn_dec(const InkLayer& L, const InkSlot& S, int T, int p0, int win, int cap) {
     const int H = hp.n_head, HKV = hp.n_head_kv, G = H / HKV, ext = L.ext, nrel = ink_.nrel;
     // (the chunk: at most 64 a (row, KV head), at least 64 keys, a multiple of 16; the longest row's keys decide)
@@ -797,8 +809,10 @@
                              std::to_string(G), "ink_attn_dec");
     int EX = ext, NR = nrel, HH = H, HK = HKV, P0 = p0, W = win, CP = cap, CK = ck, NCH = nch;
     cl_kernel kk = ink_adk_;
+    cl_mem parts = ink_apart_;
+    if (ink_apart_h_[0]) parts = ink_apart_h_[ink_apart_turn_], ink_apart_turn_ ^= 1;  // (ARC_INK_ATTN_DEC_PP=1)
     set_args(kk, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, EX, NR, ink_att_, HH, HK, P0, W, CP, CK, NCH,
-             ink_apart_, ink_acnt_);
+             parts, ink_acnt_);
     size_t g[2] = {(size_t)16 * G * nch, (size_t)T * HKV}, l[2] = {(size_t)16 * G, 1};
     run("ink_attn_dec", kk, 2, g, l);
   }
