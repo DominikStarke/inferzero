@@ -28,7 +28,6 @@
       <a href="results.html">Results</a>
       <a href="multi-gpu.html">Several GPUs</a>
       <a href="help.html" aria-current="page">Help out</a>
-      <a href="support.html">Support</a>
     </nav>
     <div class="hdr-right">
       <a class="gh" href="https://github.com/sponsors/rizagp">Sponsor</a>
@@ -91,10 +90,22 @@
 <section id="sponsor">
   <div class="wrap">
     <h2>Sponsor</h2>
-    <p><strong>Support this project so the code can run on real hardware, to make development faster and more accurate.</strong> inferzero is built by one person on one laptop; today the speed work on discrete cards (B60, B70, A770, B390) is measured only by the people who own them, so every change waits for someone's run. Sponsorship buys test hardware, so each change can be measured and checked before it reaches you.</p>
+    <p><strong>Support this project so the code can run on real hardware, to make development faster and more accurate.</strong> inferzero is built by one person on one laptop with an Intel Core Ultra iGPU. Every speed change for the discrete Arc cards (Pro B60, Pro B70, A770, B390) is measured today only by the users who own them, so each change waits for someone's run before it can be checked and released.</p>
+    <div class="grid">
+      <div class="card"><h3>Faster development</h3><p>With the cards here, a change is built, measured and fixed the same day, instead of waiting for a user's run on GitHub.</p></div>
+      <div class="card"><h3>More accurate</h3><p>Every change is checked against an exact reference (KL) and bit for bit where it promises the same results. On real hardware those checks run before a release, not after.</p></div>
+      <div class="card"><h3>Better for everyone</h3><p>inferzero stays free and open source. Sponsorship pays for the test hardware, not for features behind a paywall.</p></div>
+    </div>
+    <p>What sponsorship pays for:</p>
+    <ul>
+      <li>Test cards: an Arc Pro B60 / B70 and an Arc A770, the cards most users run.</li>
+      <li>A desktop to hold them (two or more cards for the multi-GPU work).</li>
+      <li>The time to measure, tune and check each change on them.</li>
+    </ul>
     <div class="btns">
       <a class="btn p" href="https://github.com/sponsors/rizagp">Sponsor on GitHub</a>
     </div>
+    <p class="note">No money? Measuring your hardware (above) is just as valuable: that is how most of inferzero's speed was found.</p>
   </div>
 </section>
 
@@ -117,7 +128,7 @@
 <footer>
   <div class="wrap">
     <div>inferzero · Apache 2.0 · <span class="mono">release 2026.11.19.01</span><br>An independent project, not made or endorsed by Intel. Intel and Arc are trademarks of Intel Corporation or its subsidiaries.</div>
-    <div><a href="https://github.com/rizagp/inferzero">GitHub</a> · <a href="https://github.com/rizagp/inferzero/releases">Releases</a> · <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a> · <a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a> · <a href="support.html">Support</a></div>
+    <div><a href="https://github.com/rizagp/inferzero">GitHub</a> · <a href="https://github.com/rizagp/inferzero/releases">Releases</a> · <a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a> · <a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a> · <a href="help.html#sponsor">Sponsor</a></div>
   </div>
 </footer>
 </body>
