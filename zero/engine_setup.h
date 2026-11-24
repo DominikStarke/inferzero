@@ -741,14 +741,27 @@
         //  (col ^ 8) swapped: one line, so that one run says which part of the split is wrong. Untested here)
         if (sane && N > 0 && out[0].size() % (size_t)N == 0) {
           const size_t R = out[0].size() / (size_t)N;
+          // (an output row's DPAS row and its row-half partner: the dense forms by the row itself (r % 8, r ^ 4); the MoE
+          //  tile forms write C by slot, (r0 + m) * ldc, so by the row within its tile (m % 8, r0 + (m ^ 4) when inside
+          //  the tile), the test's tiles starting at slots 0, 16, 21 and 37 (the Researcher's review of 16b8eb4))
+          std::vector<int> drow(R), dpart(R);
+          for (size_t r = 0; r < R; ++r) drow[r] = (int)(r % 8), dpart[r] = (r ^ 4) < R ? (int)(r ^ 4) : -1;
+          if (name.find("/moe") != std::string::npos)
+            for (int t = 0; t < tiles[0]; ++t) {
+              const int r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
+              for (int m = 0; m < nr && r0 + m < (int)R; ++m) {
+                drow[r0 + m] = m % 8;
+                dpart[r0 + m] = (m ^ 4) < nr && r0 + (m ^ 4) < (int)R ? r0 + (m ^ 4) : -1;
+              }
+            }
           size_t d[2][2] = {{0, 0}, {0, 0}}, rsw = 0, csw = 0, nd = 0;
           for (size_t r = 0; r < R; ++r)
             for (size_t c = 0; c < (size_t)N; ++c) {
               const size_t i = r * N + c;
               if (out[1][i] == out[0][i]) continue;
               ++nd;
-              ++d[(r % 8) >= 4][(c % 16) >= 8];
-              if ((r ^ 4) < R && out[1][i] == out[0][(r ^ 4) * N + c]) ++rsw;
+              ++d[drow[r] >= 4][(c % 16) >= 8];
+              if (dpart[r] >= 0 && out[1][i] == out[0][(size_t)dpart[r] * N + c]) ++rsw;
               if ((c ^ 8) < (size_t)N && out[1][i] == out[0][r * N + (c ^ 8)]) ++csw;
             }
           zlog::eprintf("inferzero: XMX check %s: %zu of %zu outputs differ; rows 0-3 / 4-7 of 8 x columns 0-7 / 8-15 of 16: "
