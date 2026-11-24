@@ -4,7 +4,8 @@
 # bench/website_bench.sh, runz --kl-ref) and the GPU's peak rates (gpu_bench). The Windows build is build.ps1; the
 # kernels are compiled at run time by Intel's driver, as on Windows.
 #   ./build.sh                 every program
-#   ./build.sh runz serverz    only these (./build.sh xw_peak: the XMX GEMM tile probe, bench/xw_peak.cpp)
+#   ./build.sh runz serverz    only these (./build.sh xw_peak: the XMX GEMM tile probe, bench/xw_peak.cpp; replay_probe:
+#                              kernel launches against replayed command lists, bench/replay_probe.cpp)
 # (ref_forward is built without -ffast-math, as the Windows build keeps it off /fp:fast: it is the reference)
 # Needs g++ 13 or newer (C++20) and an x86-64 CPU; with AVX2 / FMA / F16C (as the Windows build) or, without them,
 # a build for this CPU alone (-march=native, below). Nothing else at
@@ -13,11 +14,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 CXX="${CXX:-g++}"
 declare -A SRC=([runz]=zero/runz.cpp [serverz]=zero/serverz.cpp [mgpu_probe]=zero/mgpu_probe.cpp
-                [ref_forward]=tools/ref_forward.cpp [gpu_bench]=bench/gpu_bench.cpp [xw_peak]=bench/xw_peak.cpp)
+                [ref_forward]=tools/ref_forward.cpp [gpu_bench]=bench/gpu_bench.cpp [xw_peak]=bench/xw_peak.cpp
+                [replay_probe]=bench/replay_probe.cpp)
 targets=("$@")
 [ ${#targets[@]} -eq 0 ] && targets=(runz serverz mgpu_probe ref_forward gpu_bench)
 for t in "${targets[@]}"; do
-  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe, ref_forward, gpu_bench, xw_peak)" >&2; exit 2; }
+  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe, ref_forward, gpu_bench, xw_peak, replay_probe)" >&2; exit 2; }
 done
 command -v "$CXX" >/dev/null || { echo "build.sh: $CXX not found (sudo apt install g++)" >&2; exit 1; }
 mkdir -p bin

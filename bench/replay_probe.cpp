@@ -71,13 +71,13 @@ __kernel void step_a(__global float* y, __global const float* x, int n, float a)
   if (i < n) y[i] = y[i] * 0.999f + a * x[i];
 }
 )CLC";
-static void mutable_replay(ClRt& cl, HMODULE zl, PFN_listCreate listCreate, PFN_listClose listClose, PFN_queueExec queueExec,
+static void mutable_replay(ClRt& cl, void* zl, PFN_listCreate listCreate, PFN_listClose listClose, PFN_queueExec queueExec,
                            PFN_queueSync queueSync, ze_command_queue_handle_t q, uint32_t ord, int nk, int nf, int reps,
                            int nu, ze_group_count_t gc, uint32_t lws) {
   const char* what = "mutable list, recorded once";
-  auto extAddr = (PFN_extAddr)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+  auto extAddr = (PFN_extAddr)plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress");
   auto find = [&](const char* name) -> void* {
-    void* f = (void*)GetProcAddress(zl, name);
+    void* f = plat::dl_sym(zl, name);
     if (!f && extAddr) extAddr(zrt::driver, name, &f);
     return f;
   };
@@ -88,6 +88,11 @@ static void mutable_replay(ClRt& cl, HMODULE zl, PFN_listCreate listCreate, PFN_
   cl_kernel ka = cl.kernel(pa, "step_a");
   cl_mem ym = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4), yr = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4),
          x1 = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4);
+  // (the program, kernel and buffers released on every way out, an early "not supported" too: the Researcher's review)
+  struct Rel {
+    cl_program p; cl_kernel k; cl_mem a, b, c;
+    ~Rel() { clReleaseMemObject(a); clReleaseMemObject(b); clReleaseMemObject(c); clReleaseKernel(k); clReleaseProgram(p); }
+  } rel{pa, ka, ym, yr, x1};
   const float zero = 0.0f, one = 1.0f;
   CL_CHECK(clEnqueueFillBuffer(cl.queue, ym, &zero, 4, 0, (size_t)nf * 4, 0, nullptr, nullptr));
   CL_CHECK(clEnqueueFillBuffer(cl.queue, yr, &zero, 4, 0, (size_t)nf * 4, 0, nullptr, nullptr));
@@ -184,12 +189,14 @@ int main(int argc, char** argv) {
   }
   ClRt cl;
   if (!cl.init()) return 1;
-  HMODULE zl = GetModuleHandleA("ze_loader.dll");
-  auto listCreate = (PFN_listCreate)GetProcAddress(zl, "zeCommandListCreate");
-  auto listClose = (PFN_listClose)GetProcAddress(zl, "zeCommandListClose");
-  auto queueCreate = (PFN_queueCreate)GetProcAddress(zl, "zeCommandQueueCreate");
-  auto queueExec = (PFN_queueExec)GetProcAddress(zl, "zeCommandQueueExecuteCommandLists");
-  auto queueSync = (PFN_queueSync)GetProcAddress(zl, "zeCommandQueueSynchronize");
+  void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");  // (Windows and Linux: src/platform.h)
+  if (!zl) { fprintf(stderr, "Level Zero: the loader is not loaded
+"); return 1; }
+  auto listCreate = (PFN_listCreate)plat::dl_sym(zl, "zeCommandListCreate");
+  auto listClose = (PFN_listClose)plat::dl_sym(zl, "zeCommandListClose");
+  auto queueCreate = (PFN_queueCreate)plat::dl_sym(zl, "zeCommandQueueCreate");
+  auto queueExec = (PFN_queueExec)plat::dl_sym(zl, "zeCommandQueueExecuteCommandLists");
+  auto queueSync = (PFN_queueSync)plat::dl_sym(zl, "zeCommandQueueSynchronize");
   if (!listCreate || !listClose || !queueCreate || !queueExec || !queueSync) { fprintf(stderr, "Level Zero: no regular command lists\n"); return 1; }
   uint32_t ng = 0, ord = 0;
   zeDeviceGetCommandQueueGroupProperties(zrt::D().dev, &ng, nullptr);
@@ -256,10 +263,10 @@ int main(int argc, char** argv) {
   // each step recorded again into regular in-order lists of `chunk` kernels, each list appended to the immediate list
   // as soon as it is full (zeCommandListImmediateAppendCommandListsExp), so the GPU starts on the first chunk while
   // the host records the next. The recording's host time is counted. chunk = all: one list, recorded, then appended.
-  auto listReset = (PFN_listReset)GetProcAddress(zl, "zeCommandListReset");
-  auto immAppend = (PFN_immAppend)GetProcAddress(zl, "zeCommandListImmediateAppendCommandListsExp");
+  auto listReset = (PFN_listReset)plat::dl_sym(zl, "zeCommandListReset");
+  auto immAppend = (PFN_immAppend)plat::dl_sym(zl, "zeCommandListImmediateAppendCommandListsExp");
   if (!immAppend) {
-    auto extAddr = (PFN_extAddr)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+    auto extAddr = (PFN_extAddr)plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress");
     void* f = nullptr;
     if (extAddr && extAddr(zrt::driver, "zeCommandListImmediateAppendCommandListsExp", &f) == 0) immAppend = (PFN_immAppend)f;
   }
