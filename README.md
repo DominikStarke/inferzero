@@ -9,7 +9,10 @@ C++ on **Level Zero**. It loads GGUF files directly, serves an **OpenAI-, Anthro
 a web UI** (web search and voice conversation included), and plugs into the [Pi](https://pi.dev) coding agent with
 one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discrete GPU, no XMX matrix engines.
 
-**[Download](https://github.com/rizagp/inferzero/releases/latest)** · [Features](docs/features.md) · [Usage guide](USAGE.md) · [Install and build](docs/install.md) · [Measured results](docs/before-after.md) · [Changelog](CHANGELOG.md) · **[Contribute](CONTRIBUTING.md)**
+**[Download](https://github.com/rizagp/inferzero/releases/latest)** · [Features](docs/features.md) · [Usage guide](USAGE.md) · [Install and build](docs/install.md) · [Measured results](docs/before-after.md) · [Changelog](CHANGELOG.md) · **[Contribute](CONTRIBUTING.md)** · **[Support this project](#support-the-project)**
+
+> **Support this project so the code can run on real hardware, to make development faster and more accurate:**
+> [sponsor on GitHub](https://github.com/sponsors/rizagp) ([why](https://rizagp.github.io/inferzero/support.html)).
 
 ## Why it is worth a look
 
@@ -240,7 +243,8 @@ its failsafes: [docs/multi-gpu.md](docs/multi-gpu.md). The plan: QUEUE.md, F31.
 inferzero is built by one person on one laptop; today the speed work on discrete cards (B60, B70, A770, B390) is
 measured only by the users who own them, so every change waits for someone's run. Sponsorship buys test hardware, so
 each change can be measured and checked before it reaches you:
-[sponsor it on GitHub](https://github.com/sponsors/rizagp).
+[sponsor it on GitHub](https://github.com/sponsors/rizagp). What it pays for and other ways to help: the website's
+[Support page](https://rizagp.github.io/inferzero/support.html).
 
 ## License
 
