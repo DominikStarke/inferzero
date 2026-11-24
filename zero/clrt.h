@@ -54,6 +54,10 @@ struct ZKernel {
   //  address: after a free, a new buffer at the same address must be set again, see zrt::mem_free)
   struct Arg { uint8_t sz = 0; bool set = false; uint32_t gen = 0; unsigned char v[16]; };
   std::vector<Arg> args;
+  // (ARC_REPLAY, zero/replay.h: an argument once set without its value kept (local memory, or one past 16 bytes), so
+  //  its launches are never compared; the kernel's argument count, -1 until asked)
+  bool rp_untracked = false;
+  int rp_nargs = -1;
 };
 // indirect: built with -DXCACHE (see kernel()); bin_bytes: the native binary's size (bench/xw_peak --all: the code a
 // variant compiles to, a measure of its instructions)
@@ -99,6 +103,7 @@ struct cl_buffer_region { size_t origin, size; };
 // server's threads, Whisper / Qwen3-ASR, the expert prefetch); a multi-GPU shard's thread sets its own (engine_tp.h).
 namespace zrt {
 struct Mapping;
+struct Replay;  // (ARC_REPLAY, zero/replay.h)
 struct Dev {
   ze_device_handle_t dev = nullptr;
   ze_command_list_handle_t cl = nullptr;
@@ -148,6 +153,7 @@ struct Dev {
   // (batch_append_for's answer for this GPU, looked up once: batching() asks it at every launch)
   mutable std::atomic<void*> batch_app{nullptr};
   mutable std::atomic<int> batch_app_known{0};
+  Replay* rp = nullptr;  // (ARC_REPLAY's recorded steps on this GPU, zero/replay.h; made at the first step)
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -294,7 +300,10 @@ inline BatchAppend batch_append_for(const Dev& d) {
 inline bool batching(const Dev& d) { return batch_max(d) > 0 && batch_append_for(d) != nullptr; }
 inline bool batching() { return batching(D()); }
 // the list being recorded appended to d's immediate list (no-op when none)
+inline void rp_flush(Dev& d);  // (zero/replay.h)
+inline bool rp_launch(Dev& d, ZKernel* k, const ze_group_count_t& gc, const uint32_t* ls);
 inline void flush(Dev& d) {
+  if (d.rp) rp_flush(d);  // (ARC_REPLAY: a step's segment ends here, as ARC_BATCH's list does)
   if (!d.rec) return;
   ze_command_list_handle_t l = d.rec;
   d.rec = nullptr;  // (before anything that could wait: an oom_hook that synchronizes comes back here)
@@ -1193,6 +1202,7 @@ inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
     a = &k->args[i];
     if (cache && a->set && a->sz == sz && a->gen == gen && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
   }
+  if (!a) k->rp_untracked = true;  // (ARC_REPLAY: this argument's value is not kept, so the kernel's launches are not compared)
   if (zeKernelSetArgumentValue(k->k, i, sz, v) != ZE_RESULT_SUCCESS) {
     if (a) a->set = false;
     return -51;
@@ -1277,6 +1287,8 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   // (ARC_BATCH: recorded, see zrt::batch_max; a kernel with an event, ARC_ZE_SYNC_EACH or ARC_FAKE_OOM: as before)
   // (the switches once; whether this GPU batches, per GPU: tiered placement P0)
   static const bool batch_ok = !(getenv("ARC_ZE_SYNC_EACH") && atoi(getenv("ARC_ZE_SYNC_EACH")) != 0) && !getenv("ARC_FAKE_OOM");
+  // (ARC_REPLAY, zero/replay.h: during a marked step, recorded or compared with the recording instead of appended)
+  if (batch_ok && !sig && zrt::D().rp && zrt::rp_launch(zrt::D(), k, gc, ls)) return CL_SUCCESS;
   if (batch_ok && !sig && zrt::batching(zrt::D())) {
     zrt::Dev& d = zrt::D();
     if (zeCommandListAppendLaunchKernel(zrt::rec_list(d), k->k, &gc, nullptr, 0, nullptr) == ZE_RESULT_SUCCESS) {
@@ -1816,3 +1828,5 @@ template <typename T> inline void set_last_arg(cl_kernel k, const T& v) {
   if (kp.numKernelArgs == 0) throw std::runtime_error("set_last_arg: a kernel without arguments");
   set_args(k, kp.numKernelArgs - 1, v);
 }
+
+#include "replay.h"  // (ARC_REPLAY: the recorded generation steps, after everything they use)

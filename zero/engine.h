@@ -700,6 +700,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, src, CL_TRUE, 0, (size_t)T * W * 4, pp_out_->data() + (size_t)t0 * W, 0, nullptr,
                                  nullptr));
   }
+  // (ARC_REPLAY's families, 2026-11-24: Inkling 2 first (the Researcher's plan); one GPU, no layer split, no DSpark,
+  //  no profile (its events go through the immediate list). UNTESTED HERE: no build or run on the laptop)
+  bool replay_family() const {
+    return zrt::rp_env() && hp.inkling && !dsp_ && !profile && !zrt::tp_guarded && pp_first() && pp_last();
+  }
   const std::vector<float>& forward(const int* tokens, int n) {
     TP_MIRROR(forward(tokens, n), TpMirror::kLogits, 0);
     if (!pp_last()) pp_out_->assign((size_t)n * hp.hce(), 0.0f);  // (a stage before the last: its rows, not logits)
@@ -735,6 +740,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       const int T = std::min(step, n - c0);
       // pad to a multiple of 128 tokens so GEMM work-groups always get 8 token tiles (rows beyond T are zero)
       const int Mp = T >= 128 ? std::min((T + 127) / 128 * 128, max_chunk) : (T + 15) / 16 * 16;
+      // (ARC_REPLAY=1, zero/replay.h: a generated token's step recorded once and replayed; until here the step's code
+      //  runs unchanged, the launches compared with the recording. Opt-in, one model family at a time)
+      zrt::RpScope replay_step(n == 1 && replay_family());
       if (by_layer) keep_block();
       ring_guard(T);  // (Gemma: a snapshot's rings' window copied before this chunk overwrites it)
       if (pp_first()) embed(tokens + c0, T, Mp);
