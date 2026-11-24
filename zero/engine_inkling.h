@@ -778,9 +778,16 @@
     //  quantized it again before: -56 launches a token on Inkling 2 Mini (24 later-pass and 4 global visits x 2). The
     //  same norm and the same int8 rows, bit for bit. UNTESTED HERE)
     cl_mem src12[3] = {nullptr, nullptr, nullptr}, nw12[3] = {nullptr, nullptr, nullptr};  // (in[1], in[2]: norm later)
+    // (deferred only where its source is not ink_in_[0], which in[0]'s norm overwrites in place: a global layer whose
+    //  mix has one query has in[0] = in[1] = in[2] = ink_in_[0], and those are normed at once, before in[0]'s, as
+    //  before; the Researcher's review of 2e63603)
+    auto defer = [&](int j, cl_mem w) {
+      if (in[j] == ink_in_[0]) ink_rmsnorm(in[j], E, w, ink_in_[j], T);
+      else src12[j] = in[j], nw12[j] = w;
+    };
     if (!L.glob) {
       if (msgs) {
-        for (int j = 1; j < 3; ++j) src12[j] = in[j], nw12[j] = L.an;
+        for (int j = 1; j < 3; ++j) defer(j, L.an);
         ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       } else {
@@ -788,7 +795,7 @@
         in[0] = in[1] = in[2] = ink_in_[0];
       }
     } else {
-      for (int j = 1; j < 3; ++j) src12[j] = in[j], nw12[j] = L.inorm[j];
+      for (int j = 1; j < 3; ++j) defer(j, L.inorm[j]);
       ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
       for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
     }
