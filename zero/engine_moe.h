@@ -319,7 +319,10 @@
       static const int gr_dn_s = getenv("ARC_MOE_GR_DN_S") ? std::clamp(atoi(getenv("ARC_MOE_GR_DN_S")), 1, 8) : 4;
       const int grows = T == 1 ? gr_dn : T <= 8 ? gr_dn_s : 1;
       // (two passes fused: the 256-register file, as gate / up; with 128 the sums spilled, ocloc: 28-61 scratch messages)
-      cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +
+      // (ARC_MOE_GRF=256, 2026-11-29: the prompt tiles (TM 8 / 16) at 256 too, as gate / up already take it; ocloc 26.40:
+      //  the single-pass form spills nothing at 256 on mtl / arl-h / dg2 / bmg-g21 / bmg-g31; generation's forms stay 128)
+      static const std::string dn_grf_env = grf_env("ARC_MOE_GRF");
+      cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : tm >= 8 ? dn_grf_env : std::string()) + "-DMOE_Q -DQT=" +
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
                                          (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd +
