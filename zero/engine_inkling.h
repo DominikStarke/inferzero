@@ -668,6 +668,8 @@
     const bool on = !all_off && getenv(name) && atoi(getenv(name)) != 0;
     static std::once_flag said;
     std::call_once(said, [all_off] {
+      // (only when either is set: a run without them says nothing; the Researcher's review of 431298b)
+      if (!getenv("ARC_INK_FUSE_MIXQ") && !getenv("ARC_INK_FUSE_CONVMIX")) return;
       auto st = [all_off](const char* n) { return !all_off && getenv(n) && atoi(getenv(n)) != 0 ? "on" : "off"; };
       zlog::eprintf("inferzero: Inkling 2: the mix with the norm + quantization (ARC_INK_FUSE_MIXQ=1) %s, the conv with the "
                     "FFN mix (ARC_INK_FUSE_CONVMIX=1) %s\n", st("ARC_INK_FUSE_MIXQ"), st("ARC_INK_FUSE_CONVMIX"));
