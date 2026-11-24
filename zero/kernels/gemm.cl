@@ -40,6 +40,12 @@
 #define Q5_K 13
 #define Q6_K 14
 #define Q8_0 8
+// Q8_16 (QTYPE 9, 2026-11-24, -DACT32 only): the Q8_0 form with a scale per 16 values: int8 q as Q8_0's, a header of 16
+// f32 per superblock (decode.cl -DW8_NV16: NVFP4 decoded exactly per 16, each 16-value half's UE4M3 scale as it is,
+// no fold per 32). Each 64-value chunk's four exact int32 DP4a sums, each times its own weight scale and the 32-block's
+// activation scale, added in K order. The expert tiles (MOE_TILES) and the dense GEMM alike
+#define Q8_16 9
+#define F32S (QTYPE == Q8_0 || QTYPE == Q8_16)  // (float weight scales in the header, applied per block)
 
 #if QTYPE == 110 || QTYPE == 111
 // H8 (QUEUE 31.12, kernels/h8.cl): weights and activations Hadamard-rotated, int8 with one scale per superblock each:
@@ -86,6 +92,14 @@
 #define HAS_MIN 0
 #define DPJ 16
 #define HDR 8
+#elif QTYPE == Q8_16
+#define SC32 0
+#define HAS_MIN 0
+#define DPJ 16
+#define HDR 16
+#ifndef ACT32
+#error "Q8_16 needs -DACT32"
+#endif
 #else
 #error "unsupported QTYPE"
 #endif
@@ -235,13 +249,19 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
     const float d = as_float(intel_sub_group_block_read(hp));
     const uint4 h = intel_sub_group_block_read4(hp + SG);
     const uint hsc[4] = {h.s0, h.s1, h.s2, h.s3};
+#elif QTYPE == Q8_16
+    const uint8 ha = intel_sub_group_block_read8(hp), hb = intel_sub_group_block_read8(hp + 8 * SG);
+    const float d16[16] = {as_float(ha.s0), as_float(ha.s1), as_float(ha.s2), as_float(ha.s3),
+                           as_float(ha.s4), as_float(ha.s5), as_float(ha.s6), as_float(ha.s7),
+                           as_float(hb.s0), as_float(hb.s1), as_float(hb.s2), as_float(hb.s3),
+                           as_float(hb.s4), as_float(hb.s5), as_float(hb.s6), as_float(hb.s7)};
 #else
     const uint8 h = intel_sub_group_block_read8(hp);
     const float d8[8] = {as_float(h.s0), as_float(h.s1), as_float(h.s2), as_float(h.s3),
                          as_float(h.s4), as_float(h.s5), as_float(h.s6), as_float(h.s7)};
 #endif
 
-#if defined(ACT32) && QTYPE != Q8_0
+#if defined(ACT32) && !F32S
     // activation-scaled partial sums of this superblock; the weight scale d (and dmin) is applied once at the end
     float tq[TM];
 #pragma unroll
@@ -269,7 +289,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       __global const uint* dp = wqp + (s * 4 + j) * DPJ * SG;
       // ---- decode this 64-element chunk into 16 int8x4 words: lo = elements 0..31, hi = 32..63
       uint lo[8], hi[8];
-#if defined(W8) || QTYPE == Q8_0
+#if defined(W8) || F32S
 #ifdef DBG_NOWLOAD
       const uint8 r0 = (uint8)(s * 7 + j) ^ (uint8)(get_sub_group_local_id()), r1 = r0 * 3u;
 #else
@@ -317,6 +337,8 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       const int mn1 = mn0, mn3 = mn2;
 #elif QTYPE == Q8_0
       const float dlo = d8[2 * j], dhi = d8[2 * j + 1];
+#elif QTYPE == Q8_16
+      const float dq0 = d16[4 * j], dq1 = d16[4 * j + 1], dq2 = d16[4 * j + 2], dq3 = d16[4 * j + 3];
 #elif defined(H8)
       // (no scales inside a superblock)
 #else
@@ -468,11 +490,16 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #else
         const int plo = MULS(acc0, sc0), phi = MULS(acc1, sc2);
 #endif
+#elif QTYPE == Q8_16
+        // (each 16-value sum exact in int32, times its own weight scale and the 32-block's activation scale)
+        const float al = BCAST(avl[m / 16], m % 16), ah = BCAST(avh[m / 16], m % 16);
+        res[m] = fma(al * dq0, (float)c0[p], fma(al * dq1, (float)c1[p],
+                 fma(ah * dq2, (float)c2[p], fma(ah * dq3, (float)c3[p], res[m]))));
 #else
         const int acc0 = c0[p], acc1 = c1[p], acc2 = c2[p], acc3 = c3[p];
         const int plo = MULS(acc0, sc0) + MULS(acc1, sc1), phi = MULS(acc2, sc2) + MULS(acc3, sc3);
 #endif
-#if QTYPE != Q8_0
+#if !F32S
 #if defined(DBG_NOPOST)
         tq[m] += as_float(plo + phi);
 #elif defined(ACT32)
@@ -491,7 +518,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       }
     }
 
-#if defined(ACT32) && QTYPE != Q8_0
+#if defined(ACT32) && !F32S
 #pragma unroll
     for (int m = 0; m < TM; ++m) {
 #if HAS_MIN

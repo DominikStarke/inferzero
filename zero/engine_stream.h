@@ -409,7 +409,7 @@
     return i == 0 ? 0 : i == 1 ? (int)li.part[0] : (int)(li.part[0] + li.part[1]);
   }
   // decode_w8 of experts [e0, e0 + G) of matrix i from their records (moe_gemm)
-  void decode_w8_x(const Layer& L, int i, int e0, int G, int N, int K) {
+  void decode_w8_x(const Layer& L, int i, int e0, int G, int N, int K, const char* extra = "") {  // (extra: -DW8_NV16)
     const uint32_t type = L.ex_type[i];
     const int nsb = K / 256;
     if (N % 16) throw std::runtime_error("decode_w8_x: N = " + std::to_string(N) + " is not a multiple of 16");
@@ -418,7 +418,7 @@
     cl_mem tab = xc_->xtab[L.il];
     int NN = G * N, xo = xoff(L, i);
     if (sl) {
-      cl_kernel k = kernel("decode", "-DXCACHE -DQT=" + std::to_string(type) + " -DSL_NSB=" + std::to_string(nsb), "decode_w8_sl");
+      cl_kernel k = kernel("decode", "-DXCACHE -DQT=" + std::to_string(type) + " -DSL_NSB=" + std::to_string(nsb) + extra, "decode_w8_sl");
       set_args(k, 0, tab, NN, K, tabs_, moe_wq_, moe_wh_, tab, e0, N, xo);
       size_t g1 = (size_t)NN * nsb, l1 = (size_t)16 * nsb;
       run("decode_w8", k, 1, &g1, &l1);
@@ -426,7 +426,7 @@
     }
     size_t lx = 256;
     while (NN % lx) lx /= 2;
-    cl_kernel k = kernel("decode", "-DXCACHE -DQT=" + std::to_string(type), "decode_w8_sb");
+    cl_kernel k = kernel("decode", "-DXCACHE -DQT=" + std::to_string(type) + extra, "decode_w8_sb");
     set_args(k, 0, tab, NN, K, tabs_, moe_wq_, moe_wh_, tab, e0, N, xo);
     size_t gws[2] = {(size_t)NN, (size_t)nsb}, lws[2] = {lx, 1};
     run("decode_w8", k, 2, gws, lws);

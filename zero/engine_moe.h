@@ -744,7 +744,11 @@
         }
       }
       const bool ink_up = hp.inkling && i == 1;  // (Inkling: the up pass with situ and the gate-up scales)
-      cl_kernel k = moe_gemm_kernel(moe_gemm_qtype(L.ex_type[i]), -1, ink_up);  // (per-32 types: the Q8_0 form, ARC_INK_MOE_GEMM only)
+      // (per-32 types: the Q8_0 form, ARC_INK_MOE_GEMM only; NVFP4 there exact per 16, the Q8_16 form (gemm.cl QTYPE
+      //  9, decode.cl -DW8_NV16), as the per-tile kernels read it, from the expert cache; ARC_NVFP4_FOLD=1 folded per 32)
+      static const bool nv_fold_g = getenv("ARC_NVFP4_FOLD") && atoi(getenv("ARC_NVFP4_FOLD")) != 0;
+      const bool nv16g = xc_ && hp.inkling && L.ex_type[i] == GGML_NVFP4 && !nv_fold_g;
+      cl_kernel k = moe_gemm_kernel(nv16g ? 9 : moe_gemm_qtype(L.ex_type[i]), -1, ink_up);
       // tile work-groups per launch: about the average tile count of a group (more loop over the tiles)
       // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
       //  sums in the same order whatever the shape)
@@ -758,7 +762,7 @@
       const size_t ny = (std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G) + mwy - 1) / mwy * mwy;
       for (int e0 = 0; e0 < NE; e0 += G) {
         if (xc_)
-          decode_w8_x(L, i, e0, G, N, K);
+          decode_w8_x(L, i, e0, G, N, K, nv16g ? " -DW8_NV16" : "");
         else
           decode_w8(L.ex_sub[i][e0 / G], L.ex_type[i], G * N, K, moe_wq_, moe_wh_);
         // (gate / up: h rows of Fp, as the per-tile kernels and moe_rg write them; Fp = F unless the experts are padded)
