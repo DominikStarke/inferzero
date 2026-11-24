@@ -456,6 +456,24 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
     for (int h = 0; h < 2; ++h) {
       const uint lo = rd32(p + 16 + 16 * ib + 8 * h), hi = rd32(p + 16 + 16 * ib + 8 * h + 4);
       const int den = M[big] << (E[big] - E[h]), mh = 8 * M[h];
+      // (2026-11-24, NVFP4 experts ~7x slower in generation than IQ4_NL on a B60, #45: the smaller half's codes took an
+      //  integer division each, 16 a half, in every GEMV. Its 8 magnitudes (|kv| = kv[0..7]) are rounded once a half
+      //  now, the values looked up: r = (2 a mh + den) / (2 den) exactly as before, through a float reciprocal and a
+      //  correction of the quotient by one either way (n < 2^20, so the float quotient is within one), so the same
+      //  integers bit for bit. UNTESTED HERE: no build or run on the laptop, the user's rule of 2026-11-24)
+      int rt[8];
+      if (!same && h != big) {
+        const int dd = 2 * den;
+        const float inv = 1.0f / (float)dd;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+          const int n = 2 * (int)(char)kv[i] * mh + den;
+          int q = (int)((float)n * inv);
+          if (q * dd > n) --q;
+          else if ((q + 1) * dd <= n) ++q;
+          rt[i] = q;
+        }
+      }
 #pragma unroll
       for (int k = 0; k < 4; ++k) {
         // word k of the half: values 4k..4k+3 = (k < 2: low nibbles of bytes 4k..4k+3; else high nibbles of 4(k-2)..)
@@ -464,15 +482,12 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
         uint word = 0;
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-          const int c = (char)kv[(src >> (8 * j + sh)) & 15u];
+          const uint code = (src >> (8 * j + sh)) & 15u;
+          const int c = (char)kv[code];
           int v = c;
           if (!same) {
             if (h == big) v = 8 * c;
-            else {
-              const int a = c < 0 ? -c : c;
-              const int r = (2 * a * mh + den) / (2 * den);
-              v = c < 0 ? -r : r;
-            }
+            else v = c < 0 ? -rt[code & 7u] : rt[code & 7u];  // (|kv[code]| = kv[code & 7]: the table's two signs)
           }
           word |= ((uint)v & 0xFFu) << (8 * j);
         }
