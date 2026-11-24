@@ -588,6 +588,11 @@ declare -A TUI_DRAFT=() TUI_IMG=()
 #  ~100 subshells, ~1 s a key on d-dorok's NixOS over SSH, #81. TUI_HAVE downloaded 1 / 0, TUI_NAME the short name,
 #  TUI_WORDS the words, TUI_DCH the drafting choices)
 declare -A TUI_HAVE=() TUI_NAME=() TUI_WORDS=() TUI_DCH=()
+# (also found once, #81 again on f4cd5f7, d-dorok: "CPU usage and input latency have increased again". A redraw still
+#  ran m_words (m_field, a subshell, sed) for the Images row and the changed line, tui_draft_default (two subshells)
+#  in four places, m_field for the title and the tip, and 2-4 subshells a list row. TUI_DDEF the default drafting,
+#  TUI_DESC / TUI_GB / TUI_RAM the catalog's fields 1 / 3 / 5)
+declare -A TUI_DDEF=() TUI_DESC=() TUI_GB=() TUI_RAM=()
 tui_cache() {
   local k
   for k in "${TUI_KEYS[@]}"; do
@@ -595,8 +600,11 @@ tui_cache() {
     TUI_NAME[$k]=$(m_field "$k" 1 | sed 's/ (.*//')
     TUI_WORDS[$k]=$(m_words "$k")
     TUI_DCH[$k]=$(tui_draft_choices "$k")
+    TUI_DDEF[$k]=$(tui_draft_default "$k")
+    TUI_DESC[$k]=$(m_field "$k" 1); TUI_GB[$k]=$(m_field "$k" 3); TUI_RAM[$k]=$(m_field "$k" 5)
   done
 }
+tui_cut_v() { local s=$1 n=$2; if [ ${#s} -le "$n" ]; then printf -v TUI_CUT '%-*s' "$n" "$s"; else TUI_CUT="${s:0:$((n - 1))}~"; fi; }  # (tui_cut into TUI_CUT)
 tui_draft_choices() {  # KEY: off mtp both dflash, the ones this model has (cached for the menu: TUI_DCH)
   local k=$1
   [ -n "${TUI_DCH[$k]+x}" ] && { printf '%s' "${TUI_DCH[$k]}"; return; }
@@ -608,7 +616,7 @@ tui_draft_label() { case "$1" in off) printf 'Off';; mtp) printf 'MTP';; both) p
 tui_state() {  # KEY: SW_* for that model with its Drafting
   local k=$1
   if [ -n "${TUI_WORDS[$k]+x}" ]; then SW_WORDS=${TUI_WORDS[$k]}; else SW_WORDS=$(m_words "$k"); fi; SW_GPUS=$GPUS; [ "$SW_GPUS" -ge 1 ] 2>/dev/null || SW_GPUS=1
-  [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" = off ] && SW_DRAFTING=0 || SW_DRAFTING=1
+  [ "${TUI_DRAFT[$k]:-${TUI_DDEF[$k]-$(tui_draft_default "$k")}}" = off ] && SW_DRAFTING=0 || SW_DRAFTING=1
 }
 tui_cut() { local s=$1 n=$2; [ ${#s} -le "$n" ] && printf '%-*s' "$n" "$s" || printf '%s~' "${s:0:$((n - 1))}"; }
 tui_wrap() { printf '%s\n' "$1" | fold -s -w "${2:-78}" | sed 's/^/ /'; }  # TEXT [WIDTH]
@@ -625,26 +633,34 @@ tui_items() {  # KEY: the right pane's items (draft, img, attn, the switches; th
   done
   [ $TUI_NA -gt 0 ] && TUI_ITEMS+=(na)
 }
-tui_item_line() {  # KEY ITEM: its line in the right pane (44 columns)
-  local k=$1 it=$2 why c d
+tui_item_line() { tui_item_line_v "$@"; printf '%s' "$TUI_LINE"; }  # KEY ITEM: its line in the right pane (44 columns)
+tui_item_line_v() {  # KEY ITEM: tui_item_line's line in TUI_LINE, without a subshell (the draw's rows, #81)
+  local k=$1 it=$2 why c d w out="" l
   case "$it" in
     draft)
-      c=$(tui_draft_choices "$k"); d=${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}
-      if [ "$c" = off ]; then printf '[-] Drafting  none for this model'
-      else local w out=""; for w in $c; do if [ "$w" = "$d" ]; then out+="($(tui_draft_label "$w")) "; else out+="$(tui_draft_label "$w") "; fi; done; printf 'Drafting  %s' "$out"; fi;;
+      c=${TUI_DCH[$k]-$(tui_draft_choices "$k")}; d=${TUI_DRAFT[$k]:-${TUI_DDEF[$k]-$(tui_draft_default "$k")}}
+      if [ "$c" = off ]; then TUI_LINE='[-] Drafting  none for this model'
+      else
+        for w in $c; do
+          case "$w" in off) l=Off;; mtp) l=MTP;; both) l=MTP+DF;; dflash) l=DFlash2;; *) l="";; esac  # (tui_draft_label)
+          if [ "$w" = "$d" ]; then out+="($l) "; else out+="$l "; fi
+        done
+        TUI_LINE="Drafting  $out"
+      fi;;
     img)
-      if sw_has "$(m_words "$k")" vision; then
-        [ "${TUI_IMG[$k]:-1}" = 1 ] && printf '[x] Images' || printf '[ ] Images'
-      else printf '[-] Images  this model reads none'; fi;;
+      if sw_has "${TUI_WORDS[$k]-$(m_words "$k")}" vision; then
+        [ "${TUI_IMG[$k]:-1}" = 1 ] && TUI_LINE='[x] Images' || TUI_LINE='[ ] Images'
+      else TUI_LINE='[-] Images  this model reads none'; fi;;
     attn)
       sw_reason_v qsa; why=$SW_WHY
-      if [ -n "$why" ]; then printf '[-] Attention  %s' "$why"
-      else case "${OPTC[qsa]:-}" in on) printf 'Attention  default (Sparse) Full';; off) printf 'Attention  default Sparse (Full)';; *) printf 'Attention  (default) Sparse Full';; esac; fi;;
-    na) [ "$TUI_SHOWNA" = 1 ] && printf '    a: hide the %s that do not apply' "$TUI_NA" || printf '    a: show %s more that do not apply' "$TUI_NA";;
+      if [ -n "$why" ]; then TUI_LINE="[-] Attention  $why"
+      else case "${OPTC[qsa]:-}" in on) TUI_LINE='Attention  default (Sparse) Full';; off) TUI_LINE='Attention  default Sparse (Full)';; *) TUI_LINE='Attention  (default) Sparse Full';; esac; fi;;
+    # (the a key itself only in the keys line at the bottom: it was in both places, #81, d-dorok)
+    na) [ "$TUI_SHOWNA" = 1 ] && TUI_LINE="    the $TUI_NA that do not apply, shown" || TUI_LINE="    $TUI_NA more that do not apply, folded";;
     *)
       sw_reason_v "$it"; why=$SW_WHY
-      if [ -n "$why" ]; then printf '[-] %s  %s' "${CT_title[$it]}" "$why"
-      else case "$(sw_on "$it")" in 1) printf '[x] %s' "${CT_title[$it]}";; 0) printf '[ ] %s' "${CT_title[$it]}";; *) printf '[~] %s (auto)' "${CT_title[$it]}";; esac; fi;;
+      if [ -n "$why" ]; then TUI_LINE="[-] ${CT_title[$it]}  $why"
+      else sw_on_v "$it"; case "$SW_ONV" in 1) TUI_LINE="[x] ${CT_title[$it]}";; 0) TUI_LINE="[ ] ${CT_title[$it]}";; *) TUI_LINE="[~] ${CT_title[$it]} (auto)";; esac; fi;;
   esac
 }
 tui_tip() {  # KEY ITEM: the focused item's tip, for the lines under the lists
@@ -658,8 +674,9 @@ tui_tip() {  # KEY ITEM: the focused item's tip, for the lines under the lists
 }
 tui_changed() {  # KEY: what was changed from the defaults
   local k=$1 x=() id c
-  [ "${TUI_DRAFT[$k]:-$(tui_draft_default "$k")}" != "$(tui_draft_default "$k")" ] && x+=("Drafting: $(tui_draft_label "${TUI_DRAFT[$k]}")")
-  [ "${TUI_IMG[$k]:-1}" = 0 ] && sw_has "$(m_words "$k")" vision && x+=("Images: off")
+  local dd=${TUI_DDEF[$k]-$(tui_draft_default "$k")}  # (cached: #81)
+  [ "${TUI_DRAFT[$k]:-$dd}" != "$dd" ] && x+=("Drafting: $(tui_draft_label "${TUI_DRAFT[$k]}")")
+  [ "${TUI_IMG[$k]:-1}" = 0 ] && sw_has "${TUI_WORDS[$k]-$(m_words "$k")}" vision && x+=("Images: off")
   for id in "${CT_IDS[@]}"; do
     [ -n "${OPTC[$id]+x}" ] || continue
     sw_value "$id" && continue
@@ -677,7 +694,7 @@ tui_changed() {  # KEY: what was changed from the defaults
 tui_changed_item() {  # KEY ITEM: 0 when the item differs from its default
   local k=$1 it=$2
   case "$it" in
-    draft) [ -n "${TUI_DRAFT[$k]+x}" ] && [ "${TUI_DRAFT[$k]}" != "$(tui_draft_default "$k")" ];;
+    draft) [ -n "${TUI_DRAFT[$k]+x}" ] && [ "${TUI_DRAFT[$k]}" != "${TUI_DDEF[$k]-$(tui_draft_default "$k")}" ];;
     img) [ "${TUI_IMG[$k]:-1}" = 0 ];;
     attn) [ -n "${OPTC[qsa]+x}" ];;
     na) return 1;;
@@ -717,9 +734,12 @@ tui_draw() {
   local W=${TUI_W:-80} H=${TUI_H:-24}
   [ "$W" -lt 40 ] && W=40  # (no upper cap: the whole terminal, #81)
   local stack=0; [ "$W" -lt 80 ] && stack=1
-  local nk=${#TUI_KEYS[@]} ni=${#TUI_ITEMS[@]} keyl; keyl=$(tui_keys_n "$W")
-  local sep; sep=" $(printf '%*s' $((W - 2)) '' | tr ' ' '-')"
-  lines+=(" inferzero  $(tui_cut "${TUI_NAME[$k]}" $((W - 22)))  ~$(m_field "$k" 3) GB")
+  local nk=${#TUI_KEYS[@]} ni=${#TUI_ITEMS[@]} keyl=1; [ "$W" -lt 107 ] && keyl=2; [ "$W" -lt 57 ] && keyl=3  # (tui_keys_n)
+  # (the rule, the model's fields and every row without a subshell: #81 again, d-dorok on f4cd5f7)
+  if [ "${TUI_SEP_W:-}" != "$W" ]; then printf -v TUI_SEP '%*s' $((W - 2)) ''; TUI_SEP=" ${TUI_SEP// /-}"; TUI_SEP_W=$W; fi
+  local sep=$TUI_SEP gb=${TUI_GB[$k]-$(m_field "$k" 3)}
+  tui_cut_v "${TUI_NAME[$k]}" $((W - 22))
+  lines+=(" inferzero  $TUI_CUT  ~$gb GB")
   lines+=("$sep")
   # (at most the terminal's height: the fixed lines around the lists, then as many list rows as fit; a longer options
   #  list scrolls, its window following the focus. A 24-row terminal scrolled with every option shown, and the redraw
@@ -742,41 +762,46 @@ tui_draw() {
   TUI_OFF=$off
   local orows=$ni; [ "$orows" -gt "$avail" ] && orows=$avail
   local more=""; [ "$ni" -gt "$orows" ] && more="  ($((off + 1))-$((off + orows)) of $ni)"
-  # (a model's row; an option's row: the focus mark, the * of a changed option, the item)
+  # (a model's row; an option's row: the focus mark, the * of a changed option, the item; into TUI_ROW)
   model_row() {
     local mk=${TUI_KEYS[$1]} mark=" " cur=" "
     [ "${TUI_HAVE[$mk]:-0}" = 1 ] && mark="*"
     [ "$1" -eq "$TUI_SEL" ] && cur=">"
-    printf '%s%d %s %s' "$cur" $(($1 + 1)) "$mark" "$(tui_cut "${TUI_NAME[$mk]}" $(($2 - 6)))"
+    tui_cut_v "${TUI_NAME[$mk]}" $(($2 - 6))
+    printf -v TUI_ROW '%s%d %s %s' "$cur" $(($1 + 1)) "$mark" "$TUI_CUT"
   }
   opt_row() {
     local it=${TUI_ITEMS[$1]} f=" " c=" "
     [ "$TUI_PANE" = opts ] && [ "$1" -eq "$TUI_FOC" ] && f=">"
     tui_changed_item "$k" "$it" && c="*"
-    printf '%s%s%s' "$f" "$c" "$(tui_cut "$(tui_item_line "$k" "$it")" $(($2 - 2)))"
+    tui_item_line_v "$k" "$it"; tui_cut_v "$TUI_LINE" $(($2 - 2))
+    TUI_ROW="$f$c$TUI_CUT"
   }
   if [ $stack = 1 ]; then
     local mmore=""; [ "$mrows" -lt "$nk" ] && mmore="  ($((ms + 1))-$((ms + mrows)) of $nk)"
-    lines+=("   $(tui_cut "Models  (* downloaded)$mmore" $((W - 4)))")
-    for ((i = ms; i < ms + mrows; i++)); do lines+=(" $(model_row $i $((W - 2)))"); done
+    tui_cut_v "Models  (* downloaded)$mmore" $((W - 4)); lines+=("   $TUI_CUT")
+    for ((i = ms; i < ms + mrows; i++)); do model_row $i $((W - 2)); lines+=(" $TUI_ROW"); done
     lines+=("$sep")
-    lines+=("   $(tui_cut "Options$more" $((W - 4)))")
-    for ((i = 0; i < orows; i++)); do lines+=(" $(opt_row $((i + off)) $((W - 2)))"); done
+    tui_cut_v "Options$more" $((W - 4)); lines+=("   $TUI_CUT")
+    for ((i = 0; i < orows; i++)); do opt_row $((i + off)) $((W - 2)); lines+=(" $TUI_ROW"); done
   else
     local LW=$((W / 3)); [ $LW -lt 32 ] && LW=32; [ $LW -gt 44 ] && LW=44
     local RW=$((W - LW - 3))
     rows=$nk; [ "$orows" -gt "$rows" ] && rows=$orows
-    lines+=("   $(tui_cut "Models" $((LW - 2)))Options for the selected model$more")
+    tui_cut_v "Models" $((LW - 2)); lines+=("   ${TUI_CUT}Options for the selected model$more")
     for ((i = 0; i < rows; i++)); do
       left=""; right=""
-      [ $i -lt "$nk" ] && left=$(model_row $i "$LW")
-      [ $i -lt "$orows" ] && right=$(opt_row $((i + off)) "$RW")
-      lines+=(" $(tui_cut "$left" "$LW") $right")
+      [ $i -lt "$nk" ] && { model_row $i "$LW"; left=$TUI_ROW; }
+      [ $i -lt "$orows" ] && { opt_row $((i + off)) "$RW"; right=$TUI_ROW; }
+      tui_cut_v "$left" "$LW"; lines+=(" $TUI_CUT $right")
     done
   fi
   lines+=("$sep")
   if [ "$TUI_PANE" = opts ]; then tip=$(tui_tip "$k" "${TUI_ITEMS[$TUI_FOC]}")
-  else tip="$(m_field "$k" 1), ~$(m_field "$k" 3) GB, wants $(m_field "$k" 5) GB of RAM. $([ "${TUI_HAVE[$k]:-0}" = 1 ] && printf 'Downloaded.' || printf 'Enter downloads it first.')"; fi
+  else
+    local have='Enter downloads it first.'; [ "${TUI_HAVE[$k]:-0}" = 1 ] && have='Downloaded.'
+    tip="${TUI_DESC[$k]-$(m_field "$k" 1)}, ~$gb GB, wants ${TUI_RAM[$k]-$(m_field "$k" 5)} GB of RAM. $have"
+  fi
   # (the tip: 3 lines, more where the terminal has rows to spare, up to 6)
   local tipn=$((H - ${#lines[@]} - 3 - keyl)) tipmin=3; [ $stack = 1 ] && tipmin=2
   [ $tipn -lt $tipmin ] && tipn=$tipmin; [ $tipn -gt 6 ] && tipn=6
