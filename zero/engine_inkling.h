@@ -655,41 +655,36 @@
              out2 ? out2 : ink_dummy_, sp);
     ink_rung("ink_mix", kk, T, 256);
   }
-  // (2026-11-24, Inkling (a): ink_mix with the steps either side of it in one launch, ops_inkling.cl ink_mix_fused:
-  //  conv_in set: first one token's ink_conv1 of conv_in into conv_out with its add into cur (the post-attention conv);
-  //  nw set: then the norm of out's rows in place with weight nw and their quantization for the next GEMM, as
-  //  ink_rmsnorm_q (out's rows then count as quantized for ink_mm's reuse). The same values as the separate launches.
-  //  Opt-in since skipzx-lab's B60 (#45): the same logits, but tg128 0.5 % slower in both pairs (12.08 / 12.07 main,
-  //  12.02 / 12.01 fused): one work-group a token runs the conv's E channels and the mix serially, where ink_conv1
-  //  spread them over the GPU. ARC_INK_FUSE_MIXQ=1 / ARC_INK_FUSE_CONVMIX=1 to try them; ARC_INK_FUSE=0 turns off these
-  //  and the earlier fusions. A start line names both. UNTESTED HERE)
+  // (2026-11-24, Inkling (a): ink_mix and the norm + quantization after it in one launch, ops_inkling.cl ink_mix_fused:
+  //  the norm of out's rows in place with weight nw and their quantization for the next GEMM, as ink_rmsnorm_q (out's
+  //  rows then count as quantized for ink_mm's reuse). The same values as the two launches. Opt-in, ARC_INK_FUSE_MIXQ=1,
+  //  until a card measures a gain (skipzx-lab's B60, #45: +0.45 % in one pair); ARC_INK_FUSE=0 turns off it and the
+  //  earlier fusions. (The conv step it also took, ARC_INK_FUSE_CONVMIX, is gone: 0.6 % slower there in both A / B
+  //  pairs, the conv's 2,304 channels on one work-group where ink_conv1 spreads them over the GPU.) UNTESTED HERE)
   static bool ink_fuse_sw(const char* name) {
     const bool all_off = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
     const bool on = !all_off && getenv(name) && atoi(getenv(name)) != 0;
     static std::once_flag said;
     std::call_once(said, [all_off] {
-      // (only when either is set: a run without them says nothing; the Researcher's review of 431298b)
-      if (!getenv("ARC_INK_FUSE_MIXQ") && !getenv("ARC_INK_FUSE_CONVMIX")) return;
-      auto st = [all_off](const char* n) { return !all_off && getenv(n) && atoi(getenv(n)) != 0 ? "on" : "off"; };
-      zlog::eprintf("inferzero: Inkling 2: the mix with the norm + quantization (ARC_INK_FUSE_MIXQ=1) %s, the conv with the "
-                    "FFN mix (ARC_INK_FUSE_CONVMIX=1) %s\n", st("ARC_INK_FUSE_MIXQ"), st("ARC_INK_FUSE_CONVMIX"));
+      // (only when it is set: a run without it says nothing; the Researcher's review of 431298b)
+      if (!getenv("ARC_INK_FUSE_MIXQ")) return;
+      zlog::eprintf("inferzero: Inkling 2: the mix with the norm + quantization in one launch (ARC_INK_FUSE_MIXQ=1) %s\n",
+                    !all_off && atoi(getenv("ARC_INK_FUSE_MIXQ")) != 0 ? "on" : "off");
     });
     return on;
   }
   void ink_mix_fused(cl_mem blocks, int nb, cl_mem cur, cl_mem q, int nq, cl_mem out, int T, int sep, cl_mem out1,
-                     cl_mem out2, cl_mem conv_in, cl_mem conv_w, cl_mem conv_state, cl_mem conv_out, cl_mem nw, int Mp) {
+                     cl_mem out2, cl_mem nw, int Mp) {
     cl_kernel kk = ink_k("ink_mix_fused");
-    int hc = conv_in ? 1 : 0, NC = ink_.nc, NB = nb, NQ = nq, E = hp.n_embd, sp = sep, hq = nw ? 1 : 0, MM = Mp, TT = T,
-        a32 = 1;
-    float csc = 1.0f / std::sqrt((float)(NC + 1)), eps = hp.eps;
+    int NB = nb, NQ = nq, E = hp.n_embd, sp = sep, MM = Mp, TT = T, a32 = 1;
+    float eps = hp.eps;
     int64_t bs = (int64_t)max_chunk * hp.n_embd;
     cl_mem d = ink_dummy_;
-    set_args(kk, 0, hc, conv_in ? conv_in : d, conv_w ? conv_w : d, conv_state ? conv_state : d, conv_out ? conv_out : d,
-             NC, csc, blocks ? blocks : d, NB, bs, cur, q, NQ, out, E, out1 ? out1 : d, out2 ? out2 : d, sp, hq,
-             nw ? nw : d, eps, MM, TT, aq_, asc_, absum_, a32);
-    size_t gws[2] = {256, (size_t)(nw ? Mp : T)}, lws[2] = {256, 1};
+    set_args(kk, 0, blocks ? blocks : d, NB, bs, cur, q, NQ, out, E, out1 ? out1 : d, out2 ? out2 : d, sp, nw, eps, MM, TT,
+             aq_, asc_, absum_, a32);
+    size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
     run("ink_mix_fused", kk, 2, gws, lws);
-    if (nw) ink_q_x_ = out, ink_q_k_ = E;
+    ink_q_x_ = out, ink_q_k_ = E;
   }
   void ink_take(cl_mem src, int nq, int j, cl_mem out, int T) {
     cl_kernel kk = ink_k("ink_take");
@@ -802,14 +797,14 @@
         // (a global layer with one query: in[1] and in[2] are ink_in_[0] too, and their norms read it before in[0]'s norm in
         //  place, so that one stays two launches; the Researcher's review of f7bcce5)
         const bool mq1 = mixq && !L.glob;
-        if (mq1) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T, 0, nullptr, nullptr, nullptr, nullptr,
-                                nullptr, nullptr, L.glob ? L.inorm[0] : L.an, Mp);
+        if (mq1) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T, 0, nullptr, nullptr,
+                                L.glob ? L.inorm[0] : L.an, Mp);
         else ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T);  // ([T][1][E] is [T][E])
         q0_done = mq1;
         in[0] = in[1] = in[2] = ink_in_[0];
       } else {
         if (mixq) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1],
-                                ink_in_[2], nullptr, nullptr, nullptr, nullptr, L.glob ? L.inorm[0] : L.an, Mp);
+                                ink_in_[2], L.glob ? L.inorm[0] : L.an, Mp);
         else ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1], ink_in_[2]);
         q0_done = mixq;
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
@@ -897,15 +892,8 @@
     // a block's first layer: the stream before it joins the blocks, the attention output starts a new one; else the
     // output is added to the stream (in the conv's launch, ink_conv's add)
     const bool bstart = ip % k.block == 0;
-    // (Inkling (a), 2026-11-24: one token outside a block's start and outside DSpark's verification, the conv with
-    //  its add into the stream joins the FFN mix's launch, ink_mix_fused; opt-in, ARC_INK_FUSE_CONVMIX=1; else its own launch)
-    static const bool fuse_convmix = ink_fuse_sw("ARC_INK_FUSE_CONVMIX");
-    cl_mem save2 = dsp_save(S, 2);
-    const bool convmix = fuse_convmix && T == 1 && !bstart && !save2;
-    if (!convmix) {
-      ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_, save2);
-      ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
-    }
+    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_, dsp_save(S, 2));
+    ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
     if (bstart) {
       ink_copy(ink_cur_, 0, ink_blocks_, (size_t)nb * max_chunk * rowE, rowE * T);
       ++nb;
@@ -915,13 +903,8 @@
     // (Inkling (a): outside the loop's later passes on the streamed path, the norm + quantization below joins the
     //  mix's launch too, as ink_mix_fused's nw; opt-in, ARC_INK_FUSE_MIXQ=1; else its own launch)
     const bool ffn_q = mixq && ink_fast_moe_;
-    if (convmix || ffn_q) {
-      ink_mix_fused(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T, 0, nullptr, nullptr, convmix ? ink_ao_ : nullptr,
-                    L.post_conv, S.conv[2], ink_tmp_, ffn_q ? L.fn : nullptr, Mp);
-      if (convmix) ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
-    } else {
-      ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
-    }
+    if (ffn_q) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T, 0, nullptr, nullptr, L.fn, Mp);
+    else ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
     if (msgs) ink_control(L, ink_xm_, 3, T, Mp);
     // (I2 step 1: on the streamed path the norm also quantizes its rows for the experts, layer_moe's aq_ / asc_; the
     //  router between them is f32 and leaves them alone)

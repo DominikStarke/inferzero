@@ -560,40 +560,27 @@ __kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global c
   ink_norm_quant_t(get_group_id(1), x, xstride, w, out, E, eps, M, M_valid, aq, asc, absum, act32, red);
 }
 
-// (2026-11-24, Inkling (a): fewer launches a token, the same values) up to three launches in one, a work-group per
-// token (grid (256, has_nq ? M : M_valid), local (256, 1)):
-//   has_conv (one token, M_valid 1): ink_conv1's conv of the attention output and its add into the stream cur, the
-//     work-group's 256 work-items over the E channels (ink_conv1_c and the volatile read back, as ink_conv1);
-//   then ink_mix's mix of the blocks and cur into out (ink_mix_t, the same code);
-//   has_nq: then ink_rmsnorm_quant's norm of out's rows in place (weight w) and their quantization (ink_norm_quant_t,
-//     the same code; rows >= M_valid only quantize zeros, as there).
-// Each step's values as its own launch's: a barrier with a global fence between them, as between two launches. The
-// launches it replaces unless ARC_INK_FUSE_MIXQ=1 / ARC_INK_FUSE_CONVMIX=1 (opt-in, engine_inkling.h). UNTESTED HERE: no build or
-// run on the laptop, the user's rule of 2026-11-24
+// (2026-11-24, Inkling (a): fewer launches a token, the same values) ink_mix's mix of the blocks and cur into out
+// (ink_mix_t, the same code), then ink_rmsnorm_quant's norm of out's rows in place (weight w) and their quantization
+// (ink_norm_quant_t, the same code; rows >= M_valid only quantize zeros, as there), a work-group per row: grid (256, M),
+// local (256, 1). A barrier with a global fence between the two, as between two launches. Opt-in, ARC_INK_FUSE_MIXQ=1
+// (engine_inkling.h). (The conv step it also took, ARC_INK_FUSE_CONVMIX, is gone: 0.6 % slower on skipzx-lab's B60, #45,
+//  its 2,304 channels on one work-group where ink_conv1 spreads them over the GPU.) UNTESTED HERE: no build or run on the
+// laptop, the user's rule of 2026-11-24
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void ink_mix_fused(int has_conv, __global const float* ccur, __global const float* cw, __global float* cstate,
-                            __global float* cout, int NC, float cscale, __global const float* blocks, int nb,
-                            long bstride, __global float* cur, __global const float* q, int nq, __global float* out,
-                            int E, __global float* out1, __global float* out2, int sep, int has_nq,
-                            __global const float* w, float eps, int M, int M_valid, __global char* aq,
-                            __global float* asc, __global ushort* absum, int act32) {
+__kernel void ink_mix_fused(__global const float* blocks, int nb, long bstride, __global const float* cur,
+                            __global const float* q, int nq, __global float* out, int E, __global float* out1,
+                            __global float* out2, int sep, __global const float* w, float eps, int M, int M_valid,
+                            __global char* aq, __global float* asc, __global ushort* absum, int act32) {
   __local float red[INK_LS];
   __local float rs[INK_MAXS];
   __local float sc[4 * INK_MAXS];
   const int t = get_group_id(1);
   if (t < M_valid) {  // (the work-group's own token: the same branch for all of it)
-    if (has_conv) {
-      for (int c = get_local_id(0); c < E; c += get_local_size(0)) {
-        const float o = ink_conv1_c(ccur[c], cw, cw, 0, 1, cstate, c, E, NC, cscale);
-        cout[c] = o;
-        cur[c] = cur[c] + ((volatile __global float*)cout)[c];  // (as ink_conv1's add: no fma across the two)
-      }
-      barrier(CLK_GLOBAL_MEM_FENCE);
-    }
     ink_mix_t(t, blocks, nb, bstride, cur, q, nq, out, E, out1, out2, sep, red, rs, sc);
-    if (has_nq) barrier(CLK_GLOBAL_MEM_FENCE);
+    barrier(CLK_GLOBAL_MEM_FENCE);
   }
-  if (has_nq) ink_norm_quant_t(t, out, E, w, out, E, eps, M, M_valid, aq, asc, absum, act32, red);
+  ink_norm_quant_t(t, out, E, w, out, E, eps, M, M_valid, aq, asc, absum, act32, red);
 }
 
 // out = a + b, element-wise (any size; in place allowed)
