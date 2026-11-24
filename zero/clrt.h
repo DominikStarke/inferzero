@@ -669,6 +669,17 @@ inline char* staging(size_t n) {
   }
   return D().stage;
 }
+// A copy appended to a list or the immediate list, with the kernel launch's out-of-memory retry (zeEnqueue... below):
+// an out-of-device-memory answer shrinks the expert cache for this GPU and the copy is tried again. ZE_CHECK alone
+// ended the process on it, which the sums of a 4-way split could reach while the cache held what the GPU needed.
+inline void copy_ok(ze_command_list_handle_t l, void* dst, const void* src, size_t n) {
+  ze_result_t r = zeCommandListAppendMemoryCopy(l, dst, src, n, nullptr, 0, nullptr);
+  for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && oom_hook && oom_hook(); ++i) {
+    zlog::eprintf("inferzero: a copy of %.1f MB was out of GPU memory: the expert cache gave room back, trying again\n", n / 1e6);
+    r = zeCommandListAppendMemoryCopy(l, dst, src, n, nullptr, 0, nullptr);
+  }
+  if (r != ZE_RESULT_SUCCESS) ze_fail(r, __FILE__, __LINE__, "zeCommandListAppendMemoryCopy");
+}
 inline void* device_alloc(size_t n) {
   ze_device_mem_alloc_desc_t dd{ZE_STYPE_DEVICE_MEM_ALLOC_DESC, nullptr, 0, 0};
   void* p = nullptr;
@@ -1509,8 +1520,15 @@ struct ClRt {
     mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
     ZE_CHECK(zeDeviceGetMemoryProperties(zrt::dev0.dev, &nm, &mp));
     zrt::dev0.global_mem = mp.totalSize;
-    ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 0};
-    ZE_CHECK(zeContextCreate(drvh, &cd, &zrt::ctx));  // (every GPU of the driver: host memory they all reach)
+    // (ZE_CONTEXT_P2P_ENABLE = 1: a split model's sums copy straight between the GPUs, into each other's inboxes.
+    //  Without it the driver refuses a copy to another GPU's allocation of a many-way split -- as an out-of-memory
+    //  answer (0x70000003) on the third and fourth peer, which is what runz --gpus 3 / 4 hit. Ignored where the
+    //  driver has no such flag)
+    ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 1};
+    if (zeContextCreate(drvh, &cd, &zrt::ctx) != ZE_RESULT_SUCCESS) {  // (every GPU of the driver: host memory they all reach)
+      cd.flags = 0;
+      ZE_CHECK(zeContextCreate(drvh, &cd, &zrt::ctx));
+    }
     zrt::driver = drvh;
     ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 2 /* in order */, 2 /* asynchronous */, 0};
     ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, zrt::dev0.dev, &qd, &zrt::dev0.cl));

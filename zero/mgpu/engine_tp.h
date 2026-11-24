@@ -406,9 +406,9 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
     off = (cl_ulong)(h * c.half_b / 4);
     stride = n;
     for (int k = 0; k < c.n; ++k)
-      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.inbox[k] + (off + (size_t)r * stride) * 4, a.part->ptr, n * 4, nullptr, 0, nullptr));
+      zrt::copy_ok(zrt::imm(), c.inbox[k] + (off + (size_t)r * stride) * 4, a.part->ptr, n * 4);
   } else {
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+    zrt::copy_ok(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4);
   }
   if (p2p && c.devsync) {  // (ARC_TP_DEVSYNC: the GPUs meet on their own, TpComm::devsync)
     // (the 32-bit wait compares sem >= q: before q passes 2^31 (ARC_TP_DEVSYNC_WRAP for tests), every GPU idle and
@@ -507,7 +507,7 @@ inline void Engine::tp_reduce_rs(int rows, const TpSum& a) {
   // (less 1/1024: each part's f16 may round up half an ulp, and N parts at the limit summed to inf; kernel audit)
   float lim_n = lim * (1.0f - 1.0f / 1024) / N;
   set_args(ks.half, 0, a.part, tp_h_, nn, a.bg ? tpo_->flag_r : from(tp_flag_, fo), lim_n, ia, ib);
-  size_t g1 = (n + 255) / 256 * 256, l1 = 256;
+  size_t g1 = (n / 8 + 255) / 256 * 256, l1 = 256;  // (tp_half takes 8 values a thread)
   tp_run(a, "tp_sum", ks.half, g1, l1);
   if (i0 > 0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), put, dev, i0 * 2, nullptr, 0, nullptr));
   if (n > i1) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), put + i1 * 2, dev + i1 * 2, (n - i1) * 2, nullptr, 0, nullptr));
@@ -518,7 +518,7 @@ inline void Engine::tp_reduce_rs(int rows, const TpSum& a) {
     static std::atomic<long> warned{0};
     if (r == 0 && warned++ < 3) zlog::eprintf("inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+    zrt::copy_ok(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4);
     barrier();
     ++c.reduces[r];
     int np = N;
@@ -604,7 +604,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   float lim_n = lim * (1.0f - 1.0f / 1024) / N;
   int nn = (int)n, ia = (int)i0, ib = (int)i1;
   set_args(ks.half, 0, a.part, tp_h_, nn, a.bg ? tpo_->flag_r : from(tp_flag_, fo), lim_n, ia, ib);
-  size_t g1 = (n + 255) / 256 * 256, l1 = 256;
+  size_t g1 = (n / 8 + 255) / 256 * 256, l1 = 256;  // (tp_half takes 8 values a thread)
   tp_run(a, "tp_sum", ks.half, g1, l1);
   ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), evH, 0, nullptr));
   ZE_CHECK(zeCommandListAppendBarrier(cp, nullptr, 1, &evH));
@@ -629,7 +629,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     zrt::event_wait(ev_put(P - 1));
     c.barrier(r);
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+    zrt::copy_ok(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4);
     zrt::sync();
     c.barrier(r);
     waited();
