@@ -36,7 +36,15 @@
     cl_mem msg_q = nullptr;
     InkMat ctrl_down[4], ctrl_gain[4], ctrl_forget[4];
     cl_mem cd_h[4] = {nullptr, nullptr, nullptr, nullptr};  // (ARC_INK_CTRL1=1: ctrl_down in f16, ink_ctrl1)
+    // (2026-11-24, the user's goal of under 600 launches a token: the projections of one input as one stack of rows,
+    //  ink_stack_load: q, gate, rel, then k and v on a sliding layer; stk the whole stack, stk3 its first n3 rows (q,
+    //  gate, rel: a visit whose k / v read other inputs). Each matrix a view of it, stored once. so[] the parts' first
+    //  rows (q, gate, rel, k, v), -1 for a part not in it)
+    InkMat stk, stk3;
+    int n3 = 0, so[5] = {-1, -1, -1, -1, -1};
+    cl_mem sv[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};  // (the parts' rows in ink_stk_out_, one token's)
   };
+  cl_mem ink_stk_out_ = nullptr;  // (one token's stacked projections: q, gate, rel, k, v rows, views in InkLayer::sv)
   struct InkSlot {  // per cache slot
     int ip = 0, cap = 0;
     cl_mem kc = nullptr, vc = nullptr, conv[4] = {nullptr, nullptr, nullptr, nullptr};  // (conv: K, V, attn out, ffn out)
@@ -218,6 +226,80 @@
     }
     return m;
   }
+  // (2026-11-24, the user's goal of under 600 launches a token) the projections that read the attention's input as
+  // one stack of rows, as load_gdn_in stacks Qwen's qkv and z: q and gate, then rel, then k and v on a sliding layer
+  // (a global layer's k and v read their own normed inputs), each only where it is a GEMM matrix (not f32 rows) of the
+  // first one's type with whole 64-row groups. Their GGUF blocks copied as they are (a float matrix as load_w's Q8_0
+  // rows): each matrix a view of the stack, stored once, so no more memory. A generated token then runs one GEMV over
+  // it (ink_layer), a row's sum as its own matrix's. Returns false (nothing loaded) where q and gate do not stack
+  bool ink_stack_load(InkLayer& L, const std::string& p) {
+    const InkHp& k = ink_;
+    const int E = hp.n_embd, H = hp.n_head, D = hp.head_dim, KG = hp.n_head_kv * D;
+    static const bool off = getenv("ARC_INK_STACK") && atoi(getenv("ARC_INK_STACK")) == 0;  // (A/B: the matrices apart)
+    if (off || E % 256) return false;
+    struct Part { const char* name; int N; InkMat* m; };
+    const Part parts[5] = {{"attn_q.weight", H * D, &L.q}, {"attn_gate.weight", H * D, &L.gate},
+                           {"attn_rel.weight", k.nrel * H, &L.rel}, {"attn_k.weight", KG, &L.k}, {"attn_v.weight", KG, &L.v}};
+    std::vector<GgufTensor> q8(5);
+    std::vector<std::vector<uint8_t>> keep(5);
+    const GgufTensor* t[5] = {};
+    uint32_t type = 0;
+    bool in[5] = {};
+    for (int i = 0; i < 5; ++i) {
+      if (i >= 3 && L.glob) break;
+      const GgufTensor& g = f_.get(p + parts[i].name);
+      if (g.dims.size() != 2 || (int)g.dims[0] != E || (int)g.dims[1] != parts[i].N)
+        throw std::runtime_error("unexpected tensor shape: " + p + parts[i].name);
+      if (f_.find(p + std::string(parts[i].name).substr(0, strlen(parts[i].name) - 7) + ".scale")) continue;
+      t[i] = float_type(g.type) ? &as_q8(g, q8[i], keep[i]) : &mat(g);
+      if (i == 0) type = t[i]->type;
+      in[i] = t[i]->type == type && parts[i].N % 64 == 0 && gguf_sb_bytes(type) > 0;
+      if (i == 1 && !(in[0] && in[1])) return false;
+    }
+    if (in[3] != in[4]) in[3] = in[4] = false;  // (k and v both or neither: one visit takes them together)
+    size_t bytes = 0;
+    int N = 0;
+    for (int i = 0; i < 5; ++i)
+      if (in[i]) bytes += t[i]->nbytes, L.so[i] = N, N += parts[i].N;
+    std::vector<uint8_t> cat(bytes);
+    size_t off_b = 0;
+    for (int i = 0; i < 5; ++i)
+      if (in[i]) memcpy(cat.data() + off_b, t[i]->data, t[i]->nbytes), off_b += t[i]->nbytes;
+    L.stk.N = N, L.stk.K = E;
+    L.stk.w.type = type, L.stk.w.N = N, L.stk.w.K = E, L.stk.w.role = kRoles - 1;
+    L.stk.w.raw = upload_padded(type, cat.data(), cat.size(), E % 512 == 0, &L.stk.w.iq3t);
+    const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
+    auto view = [&](int row0, int n) -> cl_mem {
+      if (!L.stk.w.raw) return nullptr;  // (dry load)
+      cl_buffer_region reg{(size_t)row0 * sbr, (size_t)n * sbr + kRawSlack};  // (the slack upload_padded leaves)
+      cl_int err;
+      cl_mem m = clCreateSubBuffer(L.stk.w.raw, CL_MEM_READ_ONLY, CL_BUFFER_CREATE_TYPE_REGION, &reg, &err);
+      CL_CHECK(err);
+      mems_.push_back(m);
+      return m;
+    };
+    for (int i = 0; i < 5; ++i) {
+      if (!in[i]) continue;
+      const cl_mem v = view(L.so[i], parts[i].N);
+      InkMat& m = *parts[i].m;
+      m.N = parts[i].N, m.K = E;
+      m.w = make_weight(type, t[i]->data, t[i]->nbytes, parts[i].N, E, weight_role(p + parts[i].name), &v);
+      m.w.iq3t = L.stk.w.iq3t;  // (a view of the stack: its layout)
+    }
+    // (q, gate and rel: the stack's first rows when rel is in it, else q and gate)
+    L.n3 = in[2] ? L.so[2] + parts[2].N : L.so[1] + parts[1].N;
+    if (L.n3 < N) {
+      const cl_mem v3 = view(0, L.n3);
+      L.stk3.N = L.n3, L.stk3.K = E;
+      L.stk3.w = L.stk.w;
+      L.stk3.w.N = L.n3;
+      L.stk3.w.raw = v3;
+      L.stk3.w.g1k[0] = L.stk3.w.g1k[1] = L.stk3.w.guk = nullptr;  // (its own GEMV, chosen at its first launch)
+    } else {
+      L.stk3 = L.stk;
+    }
+    return true;
+  }
 
   void load_weights_inkling() {
     const InkHp& k = ink_;
@@ -228,12 +310,14 @@
       InkLayer& L = inkl_[il];
       const std::string p = "blk." + std::to_string(il) + ".";
       L.ext = L.glob ? k.ext : k.swa;
-      L.q = ink_mat(p + "attn_q.weight", H * D, E);
-      L.k = ink_mat(p + "attn_k.weight", KG, E);
-      L.v = ink_mat(p + "attn_v.weight", KG, E);
+      // (the stack first: the matrices it holds are views of it; the others apart, as before)
+      ink_stack_load(L, p);  // (L.so[i] >= 0: part i is in the stack; a dry load's views are null, so not by raw)
+      if (L.so[0] < 0) L.q = ink_mat(p + "attn_q.weight", H * D, E);
+      if (L.so[3] < 0) L.k = ink_mat(p + "attn_k.weight", KG, E);
+      if (L.so[4] < 0) L.v = ink_mat(p + "attn_v.weight", KG, E);
       L.o = ink_mat(p + "attn_output.weight", E, H * D);
-      L.gate = ink_mat(p + "attn_gate.weight", H * D, E);
-      L.rel = ink_mat(p + "attn_rel.weight", k.nrel * H, E);
+      if (L.so[1] < 0) L.gate = ink_mat(p + "attn_gate.weight", H * D, E);
+      if (L.so[2] < 0) L.rel = ink_mat(p + "attn_rel.weight", k.nrel * H, E);
       L.sink = ink_mat(p + "attn_sink_proj.weight", H, E);
       if (L.glob) {
         L.kcp = ink_mat(p + "attn_k_conv_proj.weight", k.nc * HKV, E);
@@ -408,6 +492,17 @@
     ink_k0_ = f(KG); ink_v0_ = f(KG); ink_kc_ = f(KG); ink_vc_ = f(KG);
     ink_r_ = f((size_t)k.nrel * hp.n_head);
     ink_s_ = f(hp.n_head);
+    {  // (the stacked projections' one-token output and each layer's views of it, ink_stack_load)
+      size_t nmax = 0;
+      for (const InkLayer& L : inkl_) nmax = std::max(nmax, (size_t)L.stk.N);
+      if (nmax) {
+        ink_stk_out_ = buf(nmax * 4);
+        const int pn[5] = {HD, HD, k.nrel * hp.n_head, KG, KG};
+        for (InkLayer& L : inkl_)
+          for (int i = 0; i < 5; ++i)
+            if (L.so[i] >= 0) L.sv[i] = ink_sub(ink_stk_out_, (size_t)L.so[i] * 4, (size_t)pn[i] * 4);
+      }
+    }
     ink_kd_ = f((size_t)k.nc * hp.n_head_kv); ink_vd_ = f((size_t)k.nc * hp.n_head_kv);
     ink_ao_ = f(E); ink_tmp_ = f(std::max(E, KG)); ink_xm_ = f(E); ink_mo_ = f(E);
     ink_mix_ = f(3 * (size_t)E);
@@ -810,9 +905,21 @@
     if (msgs)
       for (int j = 0; j < 3; ++j) ink_control(L, in[j], j, T, Mp);
     // (I2 step 1: in[0]'s norm last, with its quantization for the q / rel / sink / gate GEMMs in the same launch)
+    // (2026-11-24, the user's goal of under 600 launches a token: in[1]'s and in[2]'s norms likewise, each with its
+    //  quantization in one launch, ink_rmsnorm_q, right before the k / kcp and the v / vcp GEMMs that take it; they
+    //  quantized it again before: -56 launches a token on Inkling 2 Mini (24 later-pass and 4 global visits x 2). The
+    //  same norm and the same int8 rows, bit for bit. UNTESTED HERE)
+    cl_mem src12[3] = {nullptr, nullptr, nullptr}, nw12[3] = {nullptr, nullptr, nullptr};  // (in[1], in[2]: norm later)
+    // (deferred only where its source is not ink_in_[0], which in[0]'s norm overwrites in place: a global layer whose
+    //  mix has one query has in[0] = in[1] = in[2] = ink_in_[0], and those are normed at once, before in[0]'s, as
+    //  before; the Researcher's review of 2e63603)
+    auto defer = [&](int j, cl_mem w) {
+      if (in[j] == ink_in_[0]) ink_rmsnorm(in[j], E, w, ink_in_[j], T);
+      else src12[j] = in[j], nw12[j] = w;
+    };
     if (!L.glob) {
       if (msgs) {
-        for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.an, ink_in_[j], T);
+        for (int j = 1; j < 3; ++j) defer(j, L.an);
         ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       } else {
@@ -820,7 +927,7 @@
         in[0] = in[1] = in[2] = ink_in_[0];
       }
     } else {
-      for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.inorm[j], ink_in_[j], T);
+      for (int j = 1; j < 3; ++j) defer(j, L.inorm[j]);
       ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
       for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
     }
@@ -828,13 +935,33 @@
     // (I2 step 1: grouped by input, each input quantized once: in[0] for q / rel / sink / gate, in[1] for k / kcp,
     //  in[2] for v / vcp; a sliding layer outside the loop has one input for all. Independent outputs: the order of
     //  the launches changes no sum)
-    ink_mm("ink_q", L.q, in[0], ink_q_, T, Mp, true);  // (quantized by ink_rmsnorm_q)
-    ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp, true);
+    // (2026-11-24, the user's goal of under 600 launches a token: one token runs one GEMV over the layer's stack,
+    //  ink_stack_load: q, gate, rel, and k and v where they read the same input (a sliding layer outside the loop's
+    //  later passes), the layer's q / gate / rel / k / v buffers then its output's views for this visit. Each row's sum
+    //  as its own matrix's. ARC_INK_STACK=0 at load: the matrices apart, the launches as before. UNTESTED HERE)
+    struct Back {  // (the chunk buffers back after this visit)
+      cl_mem *a[5], v[5];
+      ~Back() { for (int i = 0; i < 5; ++i) *a[i] = v[i]; }
+    } back{{&ink_q_, &ink_g_, &ink_r_, &ink_k0_, &ink_v0_}, {ink_q_, ink_g_, ink_r_, ink_k0_, ink_v0_}};
+    bool stk_q = false, stk_r = false, stk_kv = false;
+    if (T == 1 && L.so[0] >= 0 && ink_stk_out_) {
+      const bool all = L.so[3] >= 0 && in[1] == in[0] && in[2] == in[0];
+      ink_mm("ink_qkv_stack", all ? L.stk : L.stk3, in[0], ink_stk_out_, T, Mp, true);  // (quantized by ink_rmsnorm_q)
+      ink_q_ = L.sv[0], ink_g_ = L.sv[1], stk_q = true;
+      if (L.so[2] >= 0) ink_r_ = L.sv[2], stk_r = true;
+      if (all) ink_k0_ = L.sv[3], ink_v0_ = L.sv[4], stk_kv = true;
+    }
+    if (!stk_q) ink_mm("ink_q", L.q, in[0], ink_q_, T, Mp, true);  // (quantized by ink_rmsnorm_q)
+    if (!stk_r) ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp, true);
     ink_mm("ink_sink", L.sink, in[0], ink_s_, T, Mp, true);
-    ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp, true);
-    ink_mm("ink_k", L.k, in[1], ink_k0_, T, Mp, true);
+    if (!stk_q) ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp, true);
+    // (the deferred norms after every GEMV of in[0], the stack's included: their quantization replaces in[0]'s;
+    //  a visit whose k / v were in the stack defers none)
+    if (src12[1]) ink_rmsnorm_q(src12[1], E, nw12[1], ink_in_[1], T, Mp);  // (in[1] normed and quantized for k / kcp)
+    if (!stk_kv) ink_mm("ink_k", L.k, in[1], ink_k0_, T, Mp, true);
     if (L.glob) ink_mm("ink_kcp", L.kcp, in[1], ink_kd_, T, Mp, true);
-    ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp, true);
+    if (src12[2]) ink_rmsnorm_q(src12[2], E, nw12[2], ink_in_[2], T, Mp);  // (in[2] for v / vcp)
+    if (!stk_kv) ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp, true);
     if (L.glob) ink_mm("ink_vcp", L.vcp, in[2], ink_vd_, T, Mp, true);
     ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T, nullptr, dsp_save(S, 0));
     ink_conv(ink_v0_, L.v_conv, L.glob ? ink_vd_ : nullptr, S.conv[1], ink_vc_, KG, T, nullptr, dsp_save(S, 1));
