@@ -236,9 +236,11 @@ its failsafes: [docs/multi-gpu.md](docs/multi-gpu.md). The plan: QUEUE.md, F31.
 
 ## Support the project
 
-inferzero is built by one person on one laptop; the speed work on discrete cards (B60, B70, A770, B390) is measured
-by the users who own them. If it is useful to you, you can [sponsor it on GitHub](https://github.com/sponsors/rizagp):
-sponsorship pays for test hardware, so more of the work can be checked before it reaches you.
+**Support this project so the code can run on real hardware, to make development faster and more accurate.**
+inferzero is built by one person on one laptop; today the speed work on discrete cards (B60, B70, A770, B390) is
+measured only by the users who own them, so every change waits for someone's run. Sponsorship buys test hardware, so
+each change can be measured and checked before it reaches you:
+[sponsor it on GitHub](https://github.com/sponsors/rizagp).
 
 ## License
 
