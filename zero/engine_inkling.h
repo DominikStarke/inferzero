@@ -787,10 +787,13 @@
     if (L.res_q) {
       // (I2 step 1: the mix writes the rows the layer reads, where ink_take copied them out of ink_mix_ before)
       if (L.nq == 1 && !msgs) {
-        if (mixq) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T, 0, nullptr, nullptr, nullptr, nullptr,
+        // (a global layer with one query: in[1] and in[2] are ink_in_[0] too, and their norms read it before in[0]'s norm in
+        //  place, so that one stays two launches; the Researcher's review of f7bcce5)
+        const bool mq1 = mixq && !L.glob;
+        if (mq1) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T, 0, nullptr, nullptr, nullptr, nullptr,
                                 nullptr, nullptr, L.glob ? L.inorm[0] : L.an, Mp);
         else ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T);  // ([T][1][E] is [T][E])
-        q0_done = mixq;
+        q0_done = mq1;
         in[0] = in[1] = in[2] = ink_in_[0];
       } else {
         if (mixq) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1],
