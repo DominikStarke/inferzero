@@ -114,6 +114,7 @@
         <tr><td>Qwen3.8 27B</td><td class="n">637</td><td class="n">5.9</td><td class="n">16.8</td><td>2026.11.18.06</td></tr>
         <tr><td>Qwen3.6 35B-A3B UD-IQ4_XS</td><td class="n">1,738</td><td class="n">37.1</td><td class="n">60.3</td><td>2026.11.23.08 (mulin11111, #86, Linux)</td></tr>
         <tr><td>Qwen3.8 Flash Next UD-Q4_K_XL <small>83 GB</small></td><td class="n">237-244</td><td class="n">6.5-7.6</td><td class="n">14.3</td><td>2026.11.21.18 (gee456, #1)</td></tr>
+        <tr><td>Inkling 2 Mini UD-IQ4_XS, Linux</td><td class="n">97-104 <small>(2K)</small></td><td class="n">7.8 <small>(10.3 short)</small></td><td class="n">–</td><td>2026.11.24.02 (kludged, #83)</td></tr>
       </tbody>
     </table></div>
     <p class="note">Flash Next UD-Q4_K_XL with every expert in the expert cache; drafting on a coding question, 79 % of the drafts accepted. The 35B-A3B row: a GMKtec NucBox EVO-T2S (LPDDR5-8533, Ubuntu 24.04, runtime 26.40), MTP drafting on a 256-token coding answer with 71 % of the drafts accepted; it was 1,370 / 26 / 46 on release 2026.11.18.06.</p>
@@ -228,6 +229,7 @@
         <tr><td>Qwen3.8 27B, Linux <small>runtime 26.40</small></td><td class="n">1,984-1,992</td><td class="n">24.3-24.4</td><td class="n">–</td><td>2026.11.22.10 (MaineTim, <a href="https://github.com/rizagp/inferzero/issues/19">#19</a>)</td></tr>
         <tr><td>Qwen3.6 35B-A3B, Linux</td><td class="n">–</td><td class="n">83.9-85.6</td><td class="n">98.5</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.8 Flash Next IQ3_S, Linux</td><td class="n">531 <small>(16K: 672)</small></td><td class="n">22.3-22.7</td><td class="n">–</td><td>main 566d84e / a62be02</td></tr>
+        <tr><td>Inkling 2 Mini IQ4_NL, Linux</td><td class="n">~315-322 <small>(2K)</small></td><td class="n">35.2</td><td class="n">36.9 <small>DSpark</small></td><td>2026.11.24.02 (skipzx-lab, #45)</td></tr>
       </tbody>
     </table></div>
     <p class="note">The 27B under Windows: generation 23.9 with <code>ARC_GEMV_WAVE=0</code> on main 0cf5283 (MaineTim); on 2026.11.21.01 the prompt 1,909 (manoreken2, #4), 1,836 with <code>ARC_GEMM_XW_GU=0</code>; generation 22.7 on .14.09; the drafting figure is skipzx-lab's Linux card (main d252b86).</p>
