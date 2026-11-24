@@ -25,7 +25,9 @@
 // (NV16: NVFP4 in the expert GEMVs (-DMOE_Q, decode_moe.cl) exact per 16, each 16-value half's DP4a sum times its own
 //  scale; the bug of 2026-11-24 (#45): the fold per 32 rounds the smaller half's codes. -DNV_FOLD (ARC_NVFP4_FOLD=1):
 //  the fold there too, as before, for A/B)
-#if defined(MOE_Q) && QT == NVFP4 && !defined(NV_FOLD)
+// (-DW8_NV16, 2026-11-24: decode_w8 the same way for the GEMM's Q8_16 form (kernels/gemm.cl QTYPE 9), a header of 16
+//  f32 per superblock, each half's scale as the file has it; ARC_INK_MOE_GEMM's NVFP4 experts)
+#if (defined(MOE_Q) || defined(W8_NV16)) && QT == NVFP4 && !defined(NV_FOLD)
 #define NV16 1
 #define NV16_ON 1
 #else
@@ -65,7 +67,10 @@ inline void ar4_unpack(uint4 q, uint* w) {
 #endif
 // header uints per superblock and lane: W8 (d, dmin, 16 scales, 16 mins) or, for PER32, the 8 f32 block scales in
 // the layout of the GEMM's native Q8_0 form (kernels/gemm.cl QTYPE 8), which reads the decoded weights directly
-#if PER32
+#if PER32 && defined(NV16) && defined(W8_NV16)
+#define W8N16 1
+#define HSTR 16  // (the Q8_16 form: a scale per 16 values, d for values 0..15 of a 32-block, dmin for 16..31)
+#elif PER32
 #define HSTR 8
 #else
 #define HSTR 10
@@ -813,7 +818,10 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
 #pragma unroll
     for (int k = 0; k < 8; ++k) dst[k * GL] = w[k];
-#if PER32
+#if defined(W8N16)
+    hd[(2 * ib) * GL + lane] = as_uint(d);
+    hd[(2 * ib + 1) * GL + lane] = as_uint(dmin);
+#elif PER32
     hd[ib * GL + lane] = as_uint(d);
 #else
     const int b0 = 2 * ib, b1 = 2 * ib + 1;
@@ -1030,7 +1038,10 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
 #pragma unroll
     for (int k = 0; k < 8; ++k) dst[k * GL] = w[k];
-#if PER32
+#if defined(W8N16)
+    hd[(2 * ib) * GL + lane] = as_uint(d);
+    hd[(2 * ib + 1) * GL + lane] = as_uint(dmin);
+#elif PER32
     hd[ib * GL + lane] = as_uint(d);
 #else
     const int b0 = 2 * ib, b1 = 2 * ib + 1;
@@ -1751,7 +1762,10 @@ __kernel void decode_w8_vb(__global const uchar* raw, int N, int K, __global con
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
 #pragma unroll
     for (int k = 0; k < 8; ++k) dst[k * GL] = w[k];
-#if PER32
+#if defined(W8N16)
+    hd[(2 * ib) * GL + lane] = as_uint(d);
+    hd[(2 * ib + 1) * GL + lane] = as_uint(dmin);
+#elif PER32
     hd[ib * GL + lane] = as_uint(d);
 #else
     const int b0 = 2 * ib, b1 = 2 * ib + 1;

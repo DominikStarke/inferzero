@@ -158,7 +158,9 @@
         while (NE % moe_group_) --moe_group_;
         const size_t G = moe_group_, rows = std::max(F, (size_t)hp.n_embd);
         moe_wq_ = buf(G * F * hp.n_embd);
-        moe_wh_ = buf(w8_bytes_h((int)(G * rows), (int)(F * hp.n_embd / rows)));
+        // (ARC_INK_MOE_GEMM's NVFP4 in the Q8_16 form: 16 header words a row and superblock, not 10)
+        const size_t hw = ink_moe_gemm_on() && hp.inkling ? 16 : 10;
+        moe_wh_ = buf(w8_bytes_h((int)(G * rows), (int)(F * hp.n_embd / rows)) / 10 * hw);
         if (moe_gemm_pad_on() && !opt.dry) {
           static std::once_flag said;
           std::call_once(said, [] {
