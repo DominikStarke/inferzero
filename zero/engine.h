@@ -1229,6 +1229,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   bool nv16_said_ = false;  // (the NVFP4 per-16 line said: engine_moe.h)
   bool ink_down_tile_said_ = false;  // (ARC_INK_DOWN_TILE's line said: engine_moe.h)
   bool ink_gemm_said_ = false;  // (the ARC_INK_MOE_GEMM line said: engine_moe.h)
+  uint64_t ink_gemm_layer_said_ = 0;  // (ARC_INK_MOE_GEMM: the layers whose choice was said, a bit each)
   bool gu2_said_ = false;   // (the ARC_MOE_GU2 line said: engine_moe.h)
   // ARC_MOE_GU_MC rounded down to a power of two in 1..16 (it must divide the tile's slots, TM)
   static int gu_mc_pow2(int v) {

@@ -214,6 +214,18 @@
     static const int ink_gemm_min = getenv("ARC_INK_MOE_GEMM_MIN") ? atoi(getenv("ARC_INK_MOE_GEMM_MIN")) : 256;
     const bool ink_g = ink_moe_gemm_on() && hp.inkling && moe_group_ > 0 && moe_gemm_part_ok(L, 0) &&
                        moe_gemm_part_ok(L, 1) && !tp_moe() && !q2g && tm == 16 && T > ink_gemm_min;
+    // (each layer's choice said once, the Researcher's run of a31263f: only 8 GEMM launches a forward against 96 per
+    //  tile; the per-32 types (NVFP4, IQ4_NL, Q5_0) decode to the GEMM's native Q8_0 form, which its tiles lack)
+    if (ink_moe_gemm_on() && hp.inkling && tm == 16 && T > ink_gemm_min && L.il >= 0 && L.il < 64 &&
+        !(ink_gemm_layer_said_ >> L.il & 1ull)) {
+      ink_gemm_layer_said_ |= 1ull << L.il;
+      zlog::eprintf("inferzero: ARC_INK_MOE_GEMM: layer %d, experts gate %s / up %s / down %s: gate / up %s\n", L.il,
+                    ggml_type_name(L.ex_type[0]), ggml_type_name(L.ex_type[1]), ggml_type_name(L.ex_type[2]),
+                    ink_g ? "decode + GEMM"
+                    : (is_per32_type(L.ex_type[0]) || is_per32_type(L.ex_type[1])) ? "per tile (a per-32 type: no tile GEMM form)"
+                    : !(moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1)) ? "per tile (a type decode_w8 / the GEMM do not take)"
+                    : "per tile");
+    }
     if (ink_g && !ink_gemm_said_ && (ink_gemm_said_ = true))
       zlog::eprintf("inferzero: Inkling 2: the prompt's expert gate / up through decode + the int8 GEMM in the layers "
                     "whose types take it, chunks of more than %d rows (ARC_INK_MOE_GEMM=1; W8 area of %d experts)\n",
