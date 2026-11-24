@@ -153,7 +153,7 @@ struct Dev {
   // (batch_append_for's answer for this GPU, looked up once: batching() asks it at every launch)
   mutable std::atomic<void*> batch_app{nullptr};
   mutable std::atomic<int> batch_app_known{0};
-  Replay* rp = nullptr;  // (ARC_REPLAY's recorded steps on this GPU, zero/replay.h; made at the first step)
+  std::atomic<Replay*> rp{nullptr};  // (ARC_REPLAY's recorded steps on this GPU, zero/replay.h; made at the first step)
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -242,7 +242,10 @@ struct BatchFns {
   bool ok = false;
   bool loader_append = false;  // (append is the loader's export, for every driver)
 };
-inline BatchFns& batch_fns() {
+// (say: the first ARC_BATCH caller prints the line; ARC_REPLAY's calls (say false) print none, so with ARC_BATCH off
+//  no "lists of up to 0" line appears: the Researcher's review of ede9772, 6)
+inline BatchFns& batch_fns(bool say = true) {
+  static std::once_flag said;
   static BatchFns f = [] {
     BatchFns b;
     void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
@@ -261,11 +264,14 @@ inline BatchFns& batch_fns() {
       if (ext && ext(driver, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) b.append = (decltype(b.append))p;
     }
     b.ok = b.create && b.close && b.reset && b.append;
-    zlog::eprintf(b.ok ? "inferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
-                         : "inferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
-            batch_max(), batch_max());
     return b;
   }();
+  if (say)
+    std::call_once(said, [] {
+      zlog::eprintf(f.ok ? "inferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
+                         : "inferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
+                    batch_max(), batch_max());
+    });
   return f;
 }
 inline int batch_max() { return batch_max(D()); }
@@ -273,7 +279,7 @@ inline int batch_max() { return batch_max(D()); }
 // unlike cards) that driver's own, looked up once per driver; null when it has none
 using BatchAppend = decltype(BatchFns::append);
 inline BatchAppend batch_append_for(const Dev& d) {
-  BatchFns& b = batch_fns();
+  BatchFns& b = batch_fns(false);  // (the line: batching() says it, ARC_REPLAY's callers do not)
   if (!b.ok) return nullptr;
   if (b.loader_append || !d.zdrv || d.zdrv == driver) return b.append;
   if (d.batch_app_known.load(std::memory_order_acquire)) return (BatchAppend)d.batch_app.load(std::memory_order_relaxed);
@@ -297,13 +303,14 @@ inline BatchAppend batch_append_for(const Dev& d) {
   by_drv.push_back({d.zdrv, f});
   return keep(f);
 }
-inline bool batching(const Dev& d) { return batch_max(d) > 0 && batch_append_for(d) != nullptr; }
+inline bool batching(const Dev& d) { return batch_max(d) > 0 && (batch_fns(), batch_append_for(d) != nullptr); }
 inline bool batching() { return batching(D()); }
 // the list being recorded appended to d's immediate list (no-op when none)
 inline void rp_flush(Dev& d);  // (zero/replay.h)
+inline void rp_drop_all(Dev& d);
 inline bool rp_launch(Dev& d, ZKernel* k, const ze_group_count_t& gc, const uint32_t* ls);
 inline void flush(Dev& d) {
-  if (d.rp) rp_flush(d);  // (ARC_REPLAY: a step's segment ends here, as ARC_BATCH's list does)
+  if (d.rp.load(std::memory_order_acquire)) rp_flush(d);  // (ARC_REPLAY: a step's segment ends here, as ARC_BATCH's list does)
   if (!d.rec) return;
   ze_command_list_handle_t l = d.rec;
   d.rec = nullptr;  // (before anything that could wait: an oom_hook that synchronizes comes back here)
@@ -426,6 +433,9 @@ inline void wait_plain(const Dev& d, W w, const char* what) {
 inline void sync() {
   Dev& d = D();
   if (launch_stats_on()) ++sync_n;
+  // (ARC_REPLAY: the step's taken commands are not on d.cl until their segment ends: it ends here, so the wait covers
+  //  them and "after sync() the GPU is idle" holds; the Researcher's review of ede9772, 2)
+  if (d.rp.load(std::memory_order_acquire)) rp_flush(d);
   if (d.rec) {
     flush(d);
     d.rec_cap = 0;  // (the GPU will be idle: the next lists start small again)
@@ -459,6 +469,7 @@ inline void sync() {
 template <class W>
 inline void wait_guarded(W w) {
   Dev& d = D();
+  if (d.rp.load(std::memory_order_acquire)) rp_flush(d);  // (ARC_REPLAY: as sync(), the step's taken commands first)
   Dev& gd = d.g();
   if (!tp_guarded || (gd.sync_timeout_ns.load() == UINT64_MAX && !gd.abort.load())) {
     wait_plain(d, w, "a list or event it was given");
@@ -1288,7 +1299,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   // (the switches once; whether this GPU batches, per GPU: tiered placement P0)
   static const bool batch_ok = !(getenv("ARC_ZE_SYNC_EACH") && atoi(getenv("ARC_ZE_SYNC_EACH")) != 0) && !getenv("ARC_FAKE_OOM");
   // (ARC_REPLAY, zero/replay.h: during a marked step, recorded or compared with the recording instead of appended)
-  if (batch_ok && !sig && zrt::D().rp && zrt::rp_launch(zrt::D(), k, gc, ls)) return CL_SUCCESS;
+  if (batch_ok && !sig && zrt::D().rp.load(std::memory_order_acquire) && zrt::rp_launch(zrt::D(), k, gc, ls)) return CL_SUCCESS;
   if (batch_ok && !sig && zrt::batching(zrt::D())) {
     zrt::Dev& d = zrt::D();
     if (zeCommandListAppendLaunchKernel(zrt::rec_list(d), k->k, &gc, nullptr, 0, nullptr) == ZE_RESULT_SUCCESS) {
@@ -1349,6 +1360,10 @@ inline cl_int clReleaseEvent(cl_event e) {  // (only kernel events are real: bac
 }
 inline cl_int clReleaseKernel(cl_kernel k) {
   if (!k) return CL_SUCCESS;
+  // (ARC_REPLAY: recorded lists may hold commands of this kernel, and a later kernel at its address would pass the
+  //  replay's comparison: every recording of this GPU dropped first; a model unload releases its kernels before its
+  //  modules, so this also runs before any module goes. The Researcher's review of ede9772, 5)
+  if (zrt::D().rp.load(std::memory_order_acquire)) zrt::rp_drop_all(zrt::D());
   if (zrt::last_k == k) zrt::last_k = nullptr;  // (the crash log must not read a kernel that is gone)
   {
     const char* nm = k->name.c_str();

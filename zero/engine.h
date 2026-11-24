@@ -702,8 +702,18 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   // (ARC_REPLAY's families, 2026-11-24: Inkling 2 first (the Researcher's plan); one GPU, no layer split, no DSpark,
   //  no profile (its events go through the immediate list). UNTESTED HERE: no build or run on the laptop)
+  //  (set but not covered: one line why, the switch-line rule; the Researcher's review of ede9772, 6)
+  mutable bool rp_said_ = false;
   bool replay_family() const {
-    return zrt::rp_env() && hp.inkling && !dsp_ && !profile && !zrt::tp_guarded && pp_first() && pp_last();
+    if (!zrt::rp_env()) return false;
+    const char* why = !hp.inkling ? "only Inkling 2 so far"
+                      : dsp_ ? "not with DSpark drafting"
+                      : profile ? "not with the profiler"
+                      : zrt::tp_guarded || !pp_first() || !pp_last() ? "not on a split model"
+                      : nullptr;
+    if (why && !rp_said_ && (rp_said_ = true) && first_for_device("replay_not_used"))  // (the flag first: no lock a token)
+      zlog::eprintf("inferzero: ARC_REPLAY=1 set but not used: %s\n", why);
+    return !why;
   }
   const std::vector<float>& forward(const int* tokens, int n) {
     TP_MIRROR(forward(tokens, n), TpMirror::kLogits, 0);
