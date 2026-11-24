@@ -506,6 +506,16 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       }
       xmx_ = got.xmx == 1;
       x2d_ = got.x2d == 1;
+      // (the XMX expert switches are skipped when XMX is off here: said, not silent (#45, skipzx-lab's A770, where the
+      //  speed check picks DP4a for the 35B and ARC_MOE_X8 / ARC_MOE_RG_XMX did nothing without a word). Untested here)
+      if (!xmx_ && !opt.dry && hp.n_expert > 0 && first_for_device("moe_xmx_unused")) {
+        const bool x8 = cl_.sg8 && moe_x8_env();
+        const bool rg = getenv("ARC_MOE_RG_XMX") && atoi(getenv("ARC_MOE_RG_XMX")) != 0;
+        if (x8 || rg)
+          zlog::eprintf("inferzero: %s%s%s set but not used: XMX is off on this GPU (%s); ARC_XMX_FORCE=1 forces it\n",
+                        x8 ? "ARC_MOE_X8" : "", x8 && rg ? " and " : "", rg ? "ARC_MOE_RG_XMX" : "",
+                        got.slow ? "the start-up speed check chose DP4a" : "its kernels do not build or differ, or the GPU has none");
+      }
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
       if (got.slow) xe2_ = false;
     }
