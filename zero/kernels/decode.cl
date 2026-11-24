@@ -27,6 +27,9 @@
 //  the fold there too, as before, for A/B)
 #if defined(MOE_Q) && QT == NVFP4 && !defined(NV_FOLD)
 #define NV16 1
+#define NV16_ON 1
+#else
+#define NV16_ON 0  // (for #if expressions: VB_TYPE below)
 #endif
 #define Q5_1 7  // (Unsloth's UD-Q4_K_XL Flash Next: its down experts; requantized per block, see decode32)
 #define Q4_1 3  // (#88, 2026-11-23: as Q5_1 without the fifth bit; it was requantized to Q8_0 on the CPU at load)
@@ -41,8 +44,11 @@
 #define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1 || QT == Q4_1 || QT == Q5_0 || QT == Q8_1 || \
                QT == NVFP4)
 // a vector decoder, vblock (gemv_v, and the experts' MOE_VB / moe_rg): each 32-block read straight into registers
+// (NVFP4 only in its exact per-16 form, NV16: the expert kernels of -DMOE_Q; its folded form stays on decode32, so
+//  gemv_v and the dense paths are as before. 2026-11-24, after skipzx-lab's B60: the per-tile experts still 1.50x /
+//  1.64x IQ4_NL's time through the staged window, #45)
 #define VB_TYPE (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || \
-                 QT == MXFP4)
+                 QT == MXFP4 || (QT == NVFP4 && NV16_ON))
 
 #if QT == AR4_128
 // AR4_128's GPU superblock: the two 128-groups' f16 scales, then 8 x 16 nibble bytes in Q4_0 order, 4 pad bytes. A
@@ -1414,9 +1420,9 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 // memory): E4B IQ4_XS matrices 44-65 -> 67-70 GB/s, Q6_K output heads 66-67 -> 72 GB/s; Q4_K / Q5_K matrices were
 // as fast or faster with gemv (their decoding is cheap and every lane would reload the shared header), so they
 // stay there. Q4_0 (Google's QAT Gemma 4) in its regrouped GPU form: one 16-byte vector load per block.
-#if QT == IQ4_XS || QT == IQ4_NL || QT == MXFP4
+#if QT == IQ4_XS || QT == IQ4_NL || QT == MXFP4 || (QT == NVFP4 && NV16_ON)
 #define VB_TABLES 64
-#if QT == MXFP4
+#if QT == MXFP4 || QT == NVFP4  // (NVFP4: the same E2M1 values, kvalues_mxfp4)
 #define VB_TAB TAB_KFP4
 #else
 #define VB_TAB TAB_KVAL
@@ -1543,6 +1549,35 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
     const uint bk = k == 0 ? q.x : k == 1 ? q.y : k == 2 ? q.z : q.w;
     w[k] = kt[bk & 15u] | kt[16 + ((bk >> 8) & 15u)] | kt[32 + ((bk >> 16) & 15u)] | kt[48 + ((bk >> 24) & 15u)];
     w[4 + k] = kt[(bk >> 4) & 15u] | kt[16 + ((bk >> 12) & 15u)] | kt[32 + ((bk >> 20) & 15u)] | kt[48 + (bk >> 28)];
+  }
+#elif QT == NVFP4 && NV16_ON
+  // (2026-11-24, #45: NVFP4 in the expert kernels exact per 16, as decode32's NV16 branch, the block read straight into
+  //  registers instead of a sub-group-staged window. The superblock's 16 UE4M3 scale bytes, then 16 code bytes per
+  //  32-block: 8 a half, the half's values 0..3 in the low nibbles of its bytes 0..3, 4..7 in bytes 4..7's, 8..11 in
+  //  bytes 0..3's high nibbles, 12..15 in bytes 4..7's (decode32's word order). The same int8 words and the same two
+  //  scales as decode32 under NV16 (d the values 0..15's, dmin 16..31's, moe_term multiplying each half's sum), so the
+  //  same terms bit for bit; the kernels' order of terms over the lanes is the MOE_VB one, as for every VB type)
+  const uint4 q = vload4(0, (__global const uint*)(p + 16 + 16 * ib));
+  float s[2];
+#pragma unroll
+  for (int h = 0; h < 2; ++h) {  // (UE4M3 as decode32 reads it: 0 and 0x7F are 0)
+    const uint x = p[2 * ib + h];
+    const uint e = (x >> 3) & 15u, m = x & 7u;
+    const bool z = x == 0u || x == 0x7Fu;
+    const int M = z ? 0 : (e == 0u ? (int)m : 8 + (int)m), E = z || e == 0u ? 1 : (int)e;
+    s[h] = ldexp((float)M, E - 11);
+  }
+  *d = s[0];
+  *dmin = s[1];
+  *sc0 = *sc1 = 1;
+  *mn0 = *mn1 = 0;
+#pragma unroll
+  for (int h = 0; h < 2; ++h) {
+    const uint lo = h ? q.z : q.x, hi = h ? q.w : q.y;
+    w[4 * h + 0] = kt[lo & 15u] | kt[16 + ((lo >> 8) & 15u)] | kt[32 + ((lo >> 16) & 15u)] | kt[48 + ((lo >> 24) & 15u)];
+    w[4 * h + 1] = kt[hi & 15u] | kt[16 + ((hi >> 8) & 15u)] | kt[32 + ((hi >> 16) & 15u)] | kt[48 + ((hi >> 24) & 15u)];
+    w[4 * h + 2] = kt[(lo >> 4) & 15u] | kt[16 + ((lo >> 12) & 15u)] | kt[32 + ((lo >> 20) & 15u)] | kt[48 + (lo >> 28)];
+    w[4 * h + 3] = kt[(hi >> 4) & 15u] | kt[16 + ((hi >> 12) & 15u)] | kt[32 + ((hi >> 20) & 15u)] | kt[48 + (hi >> 28)];
   }
 #elif QT == Q2_0
   const uint2 q = vload2(0, (__global const uint*)(p + 8 + 16 * (ib / 2) + 8 * (ib % 2)));
