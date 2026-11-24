@@ -181,50 +181,45 @@ __kernel void ink_ctrl_fused(__global float* x, __global const float* Wf, __glob
 }
 // (ARC_INK_CTRL1=1, 2026-11-24, the user's goal of under 600 launches a token) a controller in one launch, for a few
 // rows: ink_rms2's two norms, ctrl_down's R rows on them (f16 weights Wd [R][2E], float activations: not the int8
-// GEMV's rounding, KL-checked), then, by the last of the row's work-groups to finish (a counter, as ink_attn_dec: device-
-// scope release before it, acquire after), ink_ctrl_fused's gates and the update of x in place. grid (256 NW, T),
-// local (256, 1): work-group w the rows w, w + NW, ... of ctrl_down; every group reads x and the message for the norms
-// (18 KB), x is written only by the last, after all have read it. Registers: a handful of floats a work-item; local
-// R + INK_LS floats (R <= 256). UNTESTED HERE: no build or run on the laptop, the user's rule of 2026-11-24
-__kernel void ink_ctrl1(__global float* x, int xstride, __global const float* m, int moff, int mstride,
-                        __global const half* Wd, __global const float* Wf, __global const float* Wg, __global float* lo,
-                        __global int* cnt, int E, int R) {
+// GEMV's rounding, KL-checked), then ink_ctrl_fused's gates, written to y (not x: other work-groups still read x).
+// grid (256 NW, T) with NW = ceil(E / 256), local (256, 1): every work-group the two norms and all R rows of ctrl_down
+// itself (a sub-group a row, 4 rows a sub-group for R 64: Wd's 590 KB shared through L2), then its own 256 outputs,
+// one a work-item. No counter and no work-group alone at the end: skipzx-lab's B60 (#45) measured the last-group form
+// 20.6 % slower than the three launches (its tail, 2,304 outputs and 1.2 MB of gates on one work-group); the
+// Researcher's form. The same values in every work-group (the same reductions in the same order): deterministic.
+// Registers: a handful of floats a work-item; local R + INK_LS floats (R <= 256). UNTESTED HERE: no build or run on
+// the laptop, the user's rule of 2026-11-24
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void ink_ctrl1(__global const float* x, int xstride, __global const float* m, int moff, int mstride,
+                        __global const half* Wd, __global const float* Wf, __global const float* Wg,
+                        __global float* y, int E, int R) {
   __local float red[INK_LS];
   __local float los[256];
-  __local int last;
-  const int t = get_group_id(1), w = get_group_id(0), nw = get_num_groups(0), l = get_local_id(0), n = get_local_size(0);
-  __global float* a = x + (size_t)t * xstride;
+  const int t = get_group_id(1), w = get_group_id(0), l = get_local_id(0), n = get_local_size(0);
+  const int sg = get_sub_group_id(), nsg = get_num_sub_groups(), lane = get_sub_group_local_id();
+  __global const float* a = x + (size_t)t * xstride;
   __global const float* b = m + moff + (size_t)t * mstride;
   float sa = 0.0f, sb = 0.0f;
   for (int i = l; i < E; i += n) { sa += a[i] * a[i]; sb += b[i] * b[i]; }
   const float ra = rsqrt(ink_wg_sum(sa, red) / (float)E + 1e-6f), rb = rsqrt(ink_wg_sum(sb, red) / (float)E + 1e-6f);
-  for (int r = w; r < R; r += nw) {  // (the same rows for the whole work-group: uniform)
+  for (int r = sg; r < R; r += nsg) {  // (a sub-group a row: the same row for its lanes, uniform)
     __global const half* wr = Wd + (size_t)r * 2 * E;
     float s = 0.0f;
-    for (int i = l; i < E; i += n) s += vload_half(i, wr) * (a[i] * ra) + vload_half(E + i, wr) * (b[i] * rb);
-    s = ink_wg_sum(s, red);
-    if (l == 0) lo[(size_t)t * R + r] = s;
-  }
-  barrier(CLK_GLOBAL_MEM_FENCE | CLK_LOCAL_MEM_FENCE);  // (this work-group's rows written, its reads of x done)
-  if (l == 0) {
-    atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_device);
-    last = atomic_inc(&cnt[t]) == nw - 1;
+    for (int i = lane; i < E; i += 16) s += vload_half(i, wr) * (a[i] * ra) + vload_half(E + i, wr) * (b[i] * rb);
+    s = sub_group_reduce_add(s);
+    if (lane == 0) los[r] = s;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (!last) return;  // (uniform)
-  atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_device);
-  for (int k = l; k < R; k += n) los[k] = ((__global volatile const float*)lo)[(size_t)t * R + k];
-  barrier(CLK_LOCAL_MEM_FENCE);
-  for (int e = l; e < E; e += n) {  // (ink_ctrl_fused's step)
+  const int e = w * n + l;
+  if (e < E) {  // (ink_ctrl_fused's step for this work-group's slice)
     __global const float* wf = Wf + (size_t)e * R;
     __global const float* wg = Wg + (size_t)e * R;
     float f = 0.0f, g = 0.0f;
     for (int k = 0; k < R; ++k) f += wf[k] * los[k];
     for (int k = 0; k < R; ++k) g += wg[k] * los[k];
     const float v = a[e];
-    a[e] = v - tanh(f) * v + tanh(g) * b[e];
+    y[(size_t)t * xstride + e] = v - tanh(f) * v + tanh(g) * b[e];
   }
-  if (l == 0) cnt[t] = 0;  // (for the next launch)
 }
 
 // llama's convolve on a chunk of T tokens after the slot's history (any size; one work-item per value):

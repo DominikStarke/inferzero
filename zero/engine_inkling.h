@@ -509,10 +509,8 @@
     ink_msgs_ = f(4 * (size_t)E);
     ink_cg_ = f(2 * (size_t)E);
     ink_lo_ = f(std::max(k.rank, 1));
-    if (ink_ctrl1_env() && k.loop) {  // (ARC_INK_CTRL1=1: ink_ctrl1's counters, 8 rows, zero)
-      ink_ccnt_ = buf(8 * 4);
-      fill(ink_ccnt_, 8 * 4);
-    }
+    if (ink_ctrl1_env() && k.loop)  // (ARC_INK_CTRL1=1: ink_ctrl1's outputs, 4 x 8 rows of E)
+      for (int c = 0; c < 4; ++c) ink_cy_[c] = buf((size_t)8 * E * 4);
     ink_gain_ = f(E); ink_fgt_ = f(E);
     ink_rl_ = f(NE);
     ink_ids_ = f(NU); ink_w_ = f(NU);
@@ -812,23 +810,25 @@
     static const bool on = getenv("ARC_INK_CTRL1") && atoi(getenv("ARC_INK_CTRL1")) != 0;
     return on;
   }
-  cl_mem ink_ccnt_ = nullptr;  // (its counters, a row each, 0 between launches)
+  //  (its outputs, a buffer a controller, 8 rows of E: the work-groups read x while others write, so not in place)
+  cl_mem ink_cy_[4] = {nullptr, nullptr, nullptr, nullptr};
   mutable bool ink_ctrl1_said_ = false;
   // the controller of input c (0..3: q, k, v, ffn) on x: x - tanh(forget) x + tanh(gain) message
-  void ink_control(const InkLayer& L, cl_mem x, int c, int T, int Mp) {
+  // (returns the buffer that holds the result: x, updated in place, or ARC_INK_CTRL1's ink_cy_[c])
+  cl_mem ink_control(const InkLayer& L, cl_mem x, int c, int T, int Mp) {
     const int E = hp.n_embd;
     int moff = c * E, mst = 4 * E, EE = E, TT = T, xs = E;
     static const bool unfused = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;  // (A/B: the launches of before)
-    if (!unfused && T <= 8 && L.cd_h[c] && ink_ccnt_ && ink_.rank <= 256) {
+    if (!unfused && T <= 8 && L.cd_h[c] && ink_cy_[c] && ink_.rank <= 256) {
       if (!ink_ctrl1_said_ && (ink_ctrl1_said_ = true) && first_for_device("ink_ctrl1"))
         zlog::eprintf("inferzero: Inkling 2: each loop controller in one launch for rows of up to 8 (ARC_INK_CTRL1=1)\n");
       cl_kernel kc = ink_k("ink_ctrl1");
       int R = ink_.rank;
-      set_args(kc, 0, x, xs, ink_msgs_, moff, mst, L.cd_h[c], L.ctrl_forget[c].f, L.ctrl_gain[c].f, ink_lo_, ink_ccnt_, EE,
-               R);
-      size_t gws[2] = {(size_t)256 * 8, (size_t)T}, lws[2] = {256, 1};  // (8 work-groups a row, 8 of the 64 rows each)
+      set_args(kc, 0, x, xs, ink_msgs_, moff, mst, L.cd_h[c], L.ctrl_forget[c].f, L.ctrl_gain[c].f, ink_cy_[c], EE, R);
+      // (a work-group per 256 outputs, each with all of ctrl_down's rows: no work-group alone at the end)
+      size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};
       run("ink_ctrl1", kc, 2, gws, lws);
-      return;
+      return ink_cy_[c];
     }
     if (!unfused && !L.ctrl_down[c].f && (2 * E) % 256 == 0) {
       // (I2 step 1: ink_rms2 and ctrl_down's quantization in one launch)
@@ -851,13 +851,14 @@
       int KR = L.ctrl_gain[c].K;
       set_args(kf, 0, x, L.ctrl_forget[c].f, L.ctrl_gain[c].f, ink_lo_, ink_msgs_, moff, mst, EE, KR, TT);
       ink_run1("ink_ctrl_fused", kf, (size_t)E * T);
-      return;
+      return x;
     }
     ink_mm("ink_ctrl_gain", L.ctrl_gain[c], ink_lo_, ink_gain_, T, Mp);
     ink_mm("ink_ctrl_forget", L.ctrl_forget[c], ink_lo_, ink_fgt_, T, Mp);
     cl_kernel ka = ink_k("ink_ctrl_apply");
     set_args(ka, 0, x, ink_fgt_, ink_gain_, ink_msgs_, moff, mst, EE, TT);
     ink_run1("ink_ctrl_apply", ka, (size_t)E * T);
+    return x;
   }
 
   // one layer in cache slot `slot` (llama's build_layer); msgs: a later loop pass (ink_msgs_ holds its messages);
@@ -903,7 +904,7 @@
       }
     }
     if (msgs)
-      for (int j = 0; j < 3; ++j) ink_control(L, in[j], j, T, Mp);
+      for (int j = 0; j < 3; ++j) in[j] = ink_control(L, in[j], j, T, Mp);  // (its result's buffer: in place or its own)
     // (I2 step 1: in[0]'s norm last, with its quantization for the q / rel / sink / gate GEMMs in the same launch)
     // (2026-11-24, the user's goal of under 600 launches a token: in[1]'s and in[2]'s norms likewise, each with its
     //  quantization in one launch, ink_rmsnorm_q, right before the k / kcp and the v / vcp GEMMs that take it; they
@@ -1020,11 +1021,12 @@
     }
     // the MoE: its input a mix over the blocks (with the new one) and the stream, the controller, ffn_norm
     ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
-    if (msgs) ink_control(L, ink_xm_, 3, T, Mp);
+    // (the controller's result where it is: ink_xm_, or ARC_INK_CTRL1's own buffer, normed back into ink_xm_ below)
+    const cl_mem xm_in = msgs ? ink_control(L, ink_xm_, 3, T, Mp) : ink_xm_;
     // (I2 step 1: on the streamed path the norm also quantizes its rows for the experts, layer_moe's aq_ / asc_; the
     //  router between them is f32 and leaves them alone)
-    if (ink_fast_moe_) ink_rmsnorm_q(ink_xm_, E, L.fn, ink_xm_, T, Mp);
-    else ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
+    if (ink_fast_moe_) ink_rmsnorm_q(xm_in, E, L.fn, ink_xm_, T, Mp);
+    else ink_rmsnorm(xm_in, E, L.fn, ink_xm_, T);
     ink_dump("xm", ip, ink_xm_, (size_t)T * E, T);
     ink_mm("ink_router", L.router, ink_xm_, ink_rl_, T, Mp);
     ink_dump("rl", ip, ink_rl_, (size_t)T * hp.n_expert, T);
