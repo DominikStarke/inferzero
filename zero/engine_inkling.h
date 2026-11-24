@@ -1014,7 +1014,25 @@
       //  for long prompts (pp4096: ink_attn 23 % with ink_attn_pp); S from 2 to 16 / G, 4 if given as 1. UNTESTED HERE)
       static const int ps_env = getenv("ARC_INK_ATTN_PS") ? atoi(getenv("ARC_INK_ATTN_PS")) : 0;
       const int ps = ps_env <= 0 ? 0 : std::clamp(ps_env == 1 ? 4 : ps_env, 2, std::max(2, 16 / G));
-      if (ps > 0 && T > 8 && D == 128 && nrel <= 32 && G * ps <= 16) {
+      // (ARC_INK_ATTN_QB=1, opt-in, 2026-11-24: ink_attn_qb, query blocks of ARC_INK_ATTN_QB_ROWS rows (default 16) x G
+      //  heads a work-group, the keys staged in local memory 16 at a time and read once for the block (the Researcher:
+      //  the cost at pp4096 is K / V traffic, T^2, not parallelism); ARC_INK_ATTN_QB_QPS query vectors a sub-group
+      //  (default 3: no spills at 128 on mtl; 4 spilled 57 messages). Ahead of ARC_INK_ATTN_PS / _PP. UNTESTED HERE)
+      static const bool qb_on = getenv("ARC_INK_ATTN_QB") && atoi(getenv("ARC_INK_ATTN_QB")) != 0;
+      static const int qb_rows = getenv("ARC_INK_ATTN_QB_ROWS") ? std::max(1, atoi(getenv("ARC_INK_ATTN_QB_ROWS"))) : 16;
+      static const int qb_qps = getenv("ARC_INK_ATTN_QB_QPS") ? std::clamp(atoi(getenv("ARC_INK_ATTN_QB_QPS")), 1, 8) : 3;
+      const int qb_q = qb_rows * G, qb_nsg = qb_q / qb_qps;
+      if (qb_on && T > 8 && D == 128 && nrel <= 32 && qb_q % qb_qps == 0 && qb_nsg >= 1 && qb_nsg <= 16) {
+        if (!ink_attn_qb_said_ && (ink_attn_qb_said_ = true))
+          zlog::eprintf("inferzero: Inkling 2: the prompt attention in query blocks of %d rows x %d heads, the keys staged 16 "
+                        "at a time (ARC_INK_ATTN_QB=1, %d queries a sub-group)\n", qb_rows, G, qb_qps);
+        cl_kernel kq = kernel("ops", "-DINK_LS=256 -DINK_D=" + std::to_string(hp.head_dim) + " -DINK_EXT=1024 -DIQB_Q=" +
+                                         std::to_string(qb_q) + " -DIQB_QPS=" + std::to_string(qb_qps), "ink_attn_qb");
+        int TN = T;
+        set_args(kq, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap,
+                 TN);
+        ink_rung("ink_attn", kq, (size_t)HKV * ((T + qb_rows - 1) / qb_rows), (size_t)16 * qb_nsg);
+      } else if (ps > 0 && T > 8 && D == 128 && nrel <= 32 && G * ps <= 16) {
         if (!ink_attn_ps_said_ && (ink_attn_ps_said_ = true))
           zlog::eprintf("inferzero: Inkling 2: the prompt attention with each row's keys in %d slices of a work-group "
                         "(ARC_INK_ATTN_PS)\n", ps);

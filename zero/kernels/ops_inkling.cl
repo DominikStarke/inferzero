@@ -548,6 +548,130 @@ __kernel void ink_attn_ps(__global const float* q, __global const float* r, __gl
   const float8 g8 = vload8(lane, gate + qo);
   vstore8(aa / zz * (1.0f / (1.0f + exp(-g8))), lane, out + qo);
 }
+
+// ---- ARC_INK_ATTN_QB=1 (opt-in, 2026-11-24): the prompt attention in query blocks, flash-attention style. The laptop's
+// pp4096: ink_attn 8.6 s with ink_attn_pp, 14.5 s with ink_attn_ps (one row a work-group): the cost is K / V traffic,
+// each row reading all its keys on its own (T^2), not parallelism (the Researcher). Here a work-group is one KV head
+// and a block of IQB_Q / G consecutive rows with its G query heads (IQB_Q query vectors, IQB_QPS a sub-group); the
+// block's keys go through local memory 16 at a time, read once for all its rows. In a key block lane j is key j: it
+// scores the key against the sub-group's queries in one pass over D (q from local memory, broadcast; the key's f16
+// row padded against bank conflicts), plus the bias term inside ext (r . bias[dist], dist = the row's position - u),
+// minus the sink; outside the row's window or causal range -inf. Each query's online softmax over the block (one
+// sub-group max and one sum), then its V sums, lane = 8 values of D, over the block's 16 keys (each key's weight
+// broadcast from its lane, its V row from local memory). From the zero sink logit (m 0, z 1) as ink_attn; then the
+// sigmoid gate. Another order of sums: KL-checked. Registers (128 GRF): per query 8 sums + m + z, the block's 3
+// scores: ~34 floats a lane at QPS 3, the V sums after the scores (each V row loaded once). Local: q IQB_Q x D f32, r IQB_Q x 32, K 16 x (D + 2) f16, V 16 x D f16
+// (31 KB at 48 queries). grid (16 NSG x HKV ceil(T / BQ)), local (16 NSG): NSG = IQB_Q / IQB_QPS <= 16, BQ = IQB_Q / G.
+// The tile helpers (iqb_load_kv, iqb_score) take plain pointers, for a shared include later. UNTESTED HERE.
+#ifndef IQB_Q
+#define IQB_Q 48  // (query vectors a work-group: BQ rows x G heads; Inkling 2 Mini 16 x 3)
+#endif
+#ifndef IQB_QPS
+#define IQB_QPS 3  // (query vectors a sub-group: 3 spills nothing at 128 on mtl, arl-h, dg2, bmg; 4 spilled 57 messages on mtl)
+#endif
+#define IQB_BK 16  // (keys a block: one a lane)
+#define IQB_KP (INK_D + 2)  // (a staged key row's stride, f16: odd in 32-bit words, no two lanes on one bank)
+// the K / V rows of keys u0 .. u0 + 15 (those past ue as zero) of KV head kvh into local memory, by the work-group
+inline void iqb_load_kv(__local half* ks, __local half* vs, __global const half* kc, __global const half* vc, int u0,
+                        int ue, int kvh, int HKV, int cap) {
+  for (int i = get_local_id(0); i < IQB_BK * INK_D; i += get_local_size(0)) {
+    const int j = i / INK_D, d = i % INK_D, u = u0 + j;
+    const size_t src = ((size_t)(u % cap) * HKV + kvh) * INK_D + d;
+    ks[j * IQB_KP + d] = u <= ue ? kc[src] : (half)0.0f;
+    vs[j * INK_D + d] = u <= ue ? vc[src] : (half)0.0f;
+  }
+}
+// lane j's key (row j of ks) against IQB_QPS queries qs[q0 ..] (rows of INK_D): the dot products, unscaled
+inline void iqb_score(__local const float* qs, int q0, __local const half* ks, int lane, float* s) {
+#pragma unroll
+  for (int k = 0; k < IQB_QPS; ++k) s[k] = 0.0f;
+  __local const half* kr = ks + lane * IQB_KP;
+#pragma unroll 4
+  for (int d = 0; d < INK_D; ++d) {
+    const float kd = vload_half(d, kr);
+#pragma unroll
+    for (int k = 0; k < IQB_QPS; ++k) s[k] += qs[(q0 + k) * INK_D + d] * kd;
+  }
+}
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void ink_attn_qb(__global const float* q, __global const float* r, __global const float* sink,
+                          __global const float* gate, __global const half* kc, __global const half* vc,
+                          __global const float* bias, int ext, int NREL, __global float* out, int H, int HKV, int pos0,
+                          int window, int cap, int T) {
+  __local float qs[IQB_Q * INK_D];
+  __local float rs[IQB_Q * 32];
+  __local half ks[IQB_BK * IQB_KP];
+  __local half vs[IQB_BK * INK_D];
+  const int G = H / HKV, BQ = IQB_Q / G, lid = get_local_id(0), sg = get_sub_group_id(), lane = get_sub_group_local_id();
+  const int kvh = get_group_id(0) % HKV, t0 = (get_group_id(0) / HKV) * BQ;
+  // (the block's queries: vector i = row t0 + i / G, query head kvh G + i % G; rows past T zero, never stored)
+  for (int i = lid; i < IQB_Q * INK_D; i += get_local_size(0)) {
+    const int qi = i / INK_D, d = i % INK_D, t = t0 + qi / G, h = kvh * G + qi % G;
+    qs[i] = t < T ? q[((size_t)t * H + h) * INK_D + d] : 0.0f;
+  }
+  for (int i = lid; i < IQB_Q * 32; i += get_local_size(0)) {
+    const int qi = i / 32, j = i % 32, t = t0 + qi / G, h = kvh * G + qi % G;
+    rs[i] = t < T && j < NREL ? r[((size_t)t * H + h) * NREL + j] : 0.0f;
+  }
+  const int q0 = sg * IQB_QPS;  // (this sub-group's first query vector)
+  int qpos[IQB_QPS], qlo[IQB_QPS];
+  float qsk[IQB_QPS], m[IQB_QPS], z[IQB_QPS];
+  float8 acc[IQB_QPS];
+#pragma unroll
+  for (int k = 0; k < IQB_QPS; ++k) {
+    const int qi = q0 + k, t = t0 + qi / G, h = kvh * G + qi % G;
+    qpos[k] = pos0 + t;
+    qlo[k] = window > 0 ? max(0, pos0 + t - window + 1) : 0;
+    qsk[k] = t < T ? sink[(size_t)t * H + h] : 0.0f;
+    m[k] = 0.0f;  // (the zero sink logit)
+    z[k] = 1.0f;
+    acc[k] = (float8)0.0f;
+  }
+  // (the keys any row of the block needs: from the first row's window start to the last row's position)
+  const int tl = min(T, t0 + BQ) - 1, ub = window > 0 ? max(0, pos0 + t0 - window + 1) : 0, ue = pos0 + tl;
+  const float inv = rsqrt((float)INK_D);
+  for (int u0 = ub; u0 <= ue; u0 += IQB_BK) {  // (uniform over the work-group: every barrier reached by all)
+    barrier(CLK_LOCAL_MEM_FENCE);  // (the previous block's keys read by all; the first: qs / rs written)
+    iqb_load_kv(ks, vs, kc, vc, u0, ue, kvh, HKV, cap);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float s[IQB_QPS];
+    iqb_score(qs, q0, ks, lane, s);
+    const int u = u0 + lane;
+    float p[IQB_QPS];  // (lane j: key j's weight for each query)
+#pragma unroll
+    for (int k = 0; k < IQB_QPS; ++k) {
+      const int dist = qpos[k] - u;
+      float b = 0.0f;
+      if (dist >= 0 && dist < ext) {  // (ink_attn's table: bias[dist] . r inside ext, 0 past it)
+        __global const float* br = bias + (size_t)dist * NREL;
+        __local const float* rq = rs + (q0 + k) * 32;
+        for (int j = 0; j < NREL; ++j) b += br[j] * rq[j];
+      }
+      const bool ok = u <= qpos[k] && u >= qlo[k] && u <= ue;
+      const float sc = ok ? s[k] * inv + b - qsk[k] : -INFINITY;
+      const float mn = fmax(m[k], sub_group_reduce_max(sc)), corr = exp(m[k] - mn);
+      p[k] = ok ? exp(sc - mn) : 0.0f;
+      z[k] = z[k] * corr + sub_group_reduce_add(p[k]);
+      acc[k] *= corr;
+      m[k] = mn;
+    }
+    // (then the V sums: each staged V row loaded once, 8 values a lane, and added into every query of the sub-group)
+#pragma unroll 2
+    for (int j = 0; j < IQB_BK; ++j) {
+      const float8 v8 = vload_half8(lane, vs + j * INK_D);
+#pragma unroll
+      for (int k = 0; k < IQB_QPS; ++k) acc[k] += sub_group_broadcast(p[k], j) * v8;
+    }
+  }
+#pragma unroll
+  for (int k = 0; k < IQB_QPS; ++k) {
+    const int qi = q0 + k, t = t0 + qi / G, h = kvh * G + qi % G;
+    if (t >= T || qi >= IQB_Q) continue;
+    const size_t o = ((size_t)t * H + h) * INK_D;
+    const float8 g8 = vload8(lane, gate + o);
+    vstore8(acc[k] / z[k] * (1.0f / (1.0f + exp(-g8))), lane, out + o);
+  }
+}
 #endif  // INK_D == 128
 
 // situ on a fused gate-up row pair (any size): out[i] = beta tanh(g / beta) sigmoid(g) * lb tanh(u / lb), g and u the
