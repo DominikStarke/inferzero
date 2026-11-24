@@ -773,9 +773,14 @@
     if (msgs)
       for (int j = 0; j < 3; ++j) ink_control(L, in[j], j, T, Mp);
     // (I2 step 1: in[0]'s norm last, with its quantization for the q / rel / sink / gate GEMMs in the same launch)
+    // (2026-11-24, the user's goal of under 600 launches a token: in[1]'s and in[2]'s norms likewise, each with its
+    //  quantization in one launch, ink_rmsnorm_q, right before the k / kcp and the v / vcp GEMMs that take it; they
+    //  quantized it again before: -56 launches a token on Inkling 2 Mini (24 later-pass and 4 global visits x 2). The
+    //  same norm and the same int8 rows, bit for bit. UNTESTED HERE)
+    cl_mem src12[3] = {nullptr, nullptr, nullptr}, nw12[3] = {nullptr, nullptr, nullptr};  // (in[1], in[2]: norm later)
     if (!L.glob) {
       if (msgs) {
-        for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.an, ink_in_[j], T);
+        for (int j = 1; j < 3; ++j) src12[j] = in[j], nw12[j] = L.an;
         ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       } else {
@@ -783,7 +788,7 @@
         in[0] = in[1] = in[2] = ink_in_[0];
       }
     } else {
-      for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.inorm[j], ink_in_[j], T);
+      for (int j = 1; j < 3; ++j) src12[j] = in[j], nw12[j] = L.inorm[j];
       ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
       for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
     }
@@ -795,8 +800,10 @@
     ink_mm("ink_rel", L.rel, in[0], ink_r_, T, Mp, true);
     ink_mm("ink_sink", L.sink, in[0], ink_s_, T, Mp, true);
     ink_mm("ink_gate", L.gate, in[0], ink_g_, T, Mp, true);
+    if (src12[1]) ink_rmsnorm_q(src12[1], E, nw12[1], ink_in_[1], T, Mp);  // (in[1] normed and quantized for k / kcp)
     ink_mm("ink_k", L.k, in[1], ink_k0_, T, Mp, true);
     if (L.glob) ink_mm("ink_kcp", L.kcp, in[1], ink_kd_, T, Mp, true);
+    if (src12[2]) ink_rmsnorm_q(src12[2], E, nw12[2], ink_in_[2], T, Mp);  // (in[2] for v / vcp)
     ink_mm("ink_v", L.v, in[2], ink_v0_, T, Mp, true);
     if (L.glob) ink_mm("ink_vcp", L.vcp, in[2], ink_vd_, T, Mp, true);
     ink_conv(ink_k0_, L.k_conv, L.glob ? ink_kd_ : nullptr, S.conv[0], ink_kc_, KG, T, nullptr, dsp_save(S, 0));
