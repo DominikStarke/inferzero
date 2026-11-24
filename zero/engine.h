@@ -510,11 +510,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       //  speed check picks DP4a for the 35B and ARC_MOE_X8 / ARC_MOE_RG_XMX did nothing without a word). Untested here)
       if (!xmx_ && !opt.dry && hp.n_expert > 0 && first_for_device("moe_xmx_unused")) {
         const bool x8 = cl_.sg8 && moe_x8_env();
-        const bool rg = getenv("ARC_MOE_RG_XMX") && atoi(getenv("ARC_MOE_RG_XMX")) != 0;
+        // (ARC_MOE_RG_XEMU: moe_rg's XMX form emulated and used whatever xmx_ is, so not this line's case. ARC_XMX_FORCE
+        //  skips only the speed check: its hint only where that check chose DP4a. The Researcher's review of 1920822)
+        const bool rg = getenv("ARC_MOE_RG_XMX") && atoi(getenv("ARC_MOE_RG_XMX")) != 0 && !rgx_emu();
         if (x8 || rg)
-          zlog::eprintf("inferzero: %s%s%s set but not used: XMX is off on this GPU (%s); ARC_XMX_FORCE=1 forces it\n",
+          zlog::eprintf("inferzero: %s%s%s set but not used: XMX is off on this GPU (%s)\n",
                         x8 ? "ARC_MOE_X8" : "", x8 && rg ? " and " : "", rg ? "ARC_MOE_RG_XMX" : "",
-                        got.slow ? "the start-up speed check chose DP4a" : "its kernels do not build or differ from DP4a");
+                        got.slow ? "the start-up speed check chose DP4a; ARC_XMX_FORCE=1 forces XMX, which also puts the "
+                                   "dense prompt GEMMs on it, where the check found it slower"
+                                 : "its kernels do not build or differ from DP4a");
       }
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
       if (got.slow) xe2_ = false;
