@@ -139,12 +139,12 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (!so.mmproj.empty() && so.mmproj != "-")
       LOG_WRN("--gpus %d: images are not read with a split model yet; %s is not loaded (text only)\n", so.gpus,
               so.mmproj.c_str());
-    if (so.eo.mtp || !so.eo.dflash.empty())
-      LOG_INF("--gpus %d: drafting (MTP / DFlash2) is off for a split model for now\n", so.gpus);
+    if (!so.eo.dflash.empty())
+      LOG_INF("--gpus %d: DFlash2 is off for a split model (its drafter is one GPU's); the model's MTP block drafts\n",
+              so.gpus);
     if (!so.split_layer && !so.shares.empty())
       LOG_WRN("--tensor-split is for --split layer (each GPU's share of the layers); the tensor split ignores it\n");
-    so.eo.mtp = false;
-    so.eo.dflash.clear();
+    so.eo.dflash.clear();  // (the MTP block drafts on every shard: zero/mgpu/engine_tp_shard.h)
     so.dflash_auto = false;
     so.mmproj = "-";
     so.prefix_cache = false;

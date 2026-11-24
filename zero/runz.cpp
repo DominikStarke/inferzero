@@ -457,21 +457,55 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
   }
   FILE* dl = dump_logits.empty() ? nullptr : fopen(dump_logits.c_str(), "wb");
   if (dl) fwrite(lg.data(), sizeof(float), lg.size(), dl);
+  const size_t V = (size_t)tp.vocab();  // (the joined vocabulary: each shard's rows in rank order)
   int tok = (int)(std::max_element(lg.begin(), lg.end()) - lg.begin());
   if (bench_pp > 0) tok = 1000;
   std::vector<int> gen;
   std::vector<double> step_ms;
+  int steps = 0, drafted = 0, accepted = 0;  // (--mtp on the split: the same counting as one GPU's)
   const uint64_t b0 = read_bytes();
   const auto [w0, n0] = syncs();
   const auto t1 = std::chrono::steady_clock::now();
-  for (int i = 0; i < n_gen; ++i) {
-    gen.push_back(tok);
-    if (bench_pp <= 0 && tok == vocab.eos) break;
-    const auto ts = std::chrono::steady_clock::now();
-    const auto& l2 = tp.forward(&tok, 1);
-    step_ms.push_back(ms_since(ts));
-    if (dl) fwrite(l2.data(), sizeof(float), l2.size(), dl);
-    tok = (int)(std::max_element(l2.begin(), l2.end()) - l2.begin());
+  if (e0.has_mtp && e0.opt.mtp && bench_pp <= 0) {  // (MTP drafting on every shard, zero/engine_drafters.h)
+    auto argmax_row = [&](const std::vector<float>& l, int r) {
+      return (int)(std::max_element(l.begin() + r * (ptrdiff_t)V, l.begin() + (r + 1) * (ptrdiff_t)V) - (l.begin() + r * (ptrdiff_t)V));
+    };
+    std::vector<int> hist(prompt.begin(), prompt.end());
+    while ((int)gen.size() < n_gen) {
+      gen.push_back(tok);
+      if (tok == vocab.eos || (int)gen.size() >= n_gen) break;
+      hist.resize(prompt.size());
+      hist.insert(hist.end(), gen.begin(), gen.end() - 1);
+      const std::vector<int> drafts = tp.mtp_draft(tok, e0.opt.mtp_drafts, &hist);
+      const auto& lv = tp.verify(tok, drafts);
+      int acc = 0, next = argmax_row(lv, 0);
+      if (dl) fwrite(lv.data(), sizeof(float), V, dl);
+      bool stop = false;
+      while (acc < (int)drafts.size() && next == drafts[acc]) {
+        gen.push_back(next);
+        ++acc;
+        if (next == vocab.eos || (int)gen.size() >= n_gen) { stop = true; break; }
+        next = argmax_row(lv, acc);
+        if (dl) fwrite(lv.data() + acc * V, sizeof(float), V, dl);
+      }
+      tp.verify_done(acc);
+      ++steps;
+      drafted += (int)drafts.size();
+      accepted += acc;
+      if (stop) break;
+      tok = next;
+    }
+    step_ms.assign(steps, 0);  // (the statistics below are per generated token, as the plain loop's)
+  } else {
+    for (int i = 0; i < n_gen; ++i) {
+      gen.push_back(tok);
+      if (bench_pp <= 0 && tok == vocab.eos) break;
+      const auto ts = std::chrono::steady_clock::now();
+      const auto& l2 = tp.forward(&tok, 1);
+      step_ms.push_back(ms_since(ts));
+      if (dl) fwrite(l2.data(), sizeof(float), l2.size(), dl);
+      tok = (int)(std::max_element(l2.begin(), l2.end()) - l2.begin());
+    }
   }
   if (dl) fclose(dl);
   const double gms = ms_since(t1);
@@ -483,7 +517,14 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     // (the one-GPU path's line, the same count: tests/gemm_golden.ps1 reads it for every path, 2026-11-28)
     printf("generation: %zu tokens in %.1f ms (%.2f t/s)\n", gen.size(), gms, gen.size() / gms * 1000.0);
   }
-  if (!step_ms.empty()) {
+  if (steps > 0) {  // (--mtp: what the drafts were worth, as one GPU's run says it)
+    printf("MTP: %d tokens in %d steps, %.1f drafts per step, %.1f%% of them accepted, %.2f tokens per step\n",
+           (int)gen.size(), steps, drafted / (double)steps, 100.0 * accepted / std::max(1, drafted),
+           gen.size() / (double)steps);
+    printf("tg%d: %.1f ms  ->  %.2f tokens/s (%.2f per step, %.2f ms) | sums per step %.0f, %.2f ms of each waiting\n",
+           (int)gen.size(), gms, gen.size() / gms * 1000.0, steps / gms * 1000.0, gms / steps,
+           (double)(n1 - n0) / steps, (w1 - w0) / steps);
+  } else if (!step_ms.empty()) {
     std::vector<double> st = step_ms;
     std::sort(st.begin(), st.end());
     printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms | sums per token %.0f, %.2f ms of each token waiting\n",
@@ -494,7 +535,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     printf("weights read: %.0f MB per token over %d GPUs, %.1f GB/s together\n", gb * 1000 / step_ms.size(), gpus, gb / gms * 1000);
   }
   if (prof_gen) {
-    printf("(over %zu generation steps, profiled: slower)\n", step_ms.size());
+    printf("(over %zu generation steps, profiled: slower)\n", steps > 0 ? (size_t)steps : step_ms.size());
     shard_tables("generation, GPU");
   }
   if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());

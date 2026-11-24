@@ -41,6 +41,9 @@ struct TpComm {
   size_t slot_floats = 0;  // rows x n_embd of one part
   float* host = nullptr;   // pinned host memory: [2 halves][n shards][slot_floats]
   int* flags = nullptr;    // pinned host memory: per shard, its f16 part went out of range (tp_reduce_rs)
+  // MTP drafting on a split model (Engine::tp_draft_conf): 4 doubles a shard, one barrier a draft — the shards' highest
+  // logit, that row's token and their softmax sums (the vocabulary rows are split, the draft must not be)
+  double* draft = nullptr;
   // Direct GPU-to-GPU sums (TpEngine::choose_sums): per GPU an inbox in its own memory, [2 halves][half_b bytes].
   // In a half: the reduce-scatter's f16 parts at k * slot_floats halves and its sums after the N parts (as in host
   // memory), or the one-step f32 sum's parts packed (k * rows * E floats). The f32 failsafe and the flags stay in host
@@ -296,8 +299,33 @@ inline bool Engine::tp_cancelled() {
   return v;
 }
 
-inline void Engine::tp_wrap_host() {
+// MTP drafting over a split model's vocabulary rows (Engine::tp_draft_conf, engine_tp_shard.h): the shards' highest
+// logit and token, then their softmax sums. Two barriers, no GPU wait of its own: the logits are on the host already.
+inline void Engine::tp_draft_conf(const float* l, size_t nl, int& tok, double& p) {
   TpComm& c = *tp_;
+  const int r = opt.tp_rank, n = c.n;
+  double mx = -1e30;
+  size_t at = 0;
+  for (size_t i = 0; i < nl; ++i)
+    if ((double)l[i] > mx) mx = l[i], at = i;
+  double* sl = c.draft + (size_t)r * 4;
+  sl[0] = mx;
+  sl[1] = (double)(tpv_.first + (int64_t)at);
+  c.barrier(r);
+  double gm = -1e30, gtok = 0;
+  for (int k = 0; k < n; ++k)  // (rank order: a tie goes to the lower rank, as the whole vocabulary's first row)
+    if (c.draft[(size_t)k * 4] > gm) gm = c.draft[(size_t)k * 4], gtok = c.draft[(size_t)k * 4 + 1];
+  double zs = 0;
+  for (size_t i = 0; i < nl; ++i) zs += std::exp((double)l[i] - gm);
+  sl[2] = zs;
+  c.barrier(r);
+  double z = 0;
+  for (int k = 0; k < n; ++k) z += c.draft[(size_t)k * 4 + 2];
+  tok = (int)gtok;
+  p = 1.0 / z;  // (the highest row's probability: exp(gm - gm) / z)
+}
+
+inline void Engine::tp_wrap_host() {  TpComm& c = *tp_;
   if (!tp_host_) {
     tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
     mems_.push_back(tp_host_);
@@ -958,6 +986,34 @@ class TpEngine {
     }
     return logits_;
   }
+  // MTP drafting on every shard (zero/engine_drafters.h): each shard drafts in its own state, the decision taken over
+  // the whole vocabulary by Engine::tp_draft_conf, so all of them get the same drafts. `spec` holds the verification
+  // pass's logits rows (each the whole vocabulary, as forward()'s).
+  std::vector<int> mtp_draft(int tok, int max_drafts, const std::vector<int>* hist = nullptr) {
+    std::vector<int> d;
+    run_all([&](int r) {
+      std::vector<int> x = shards_[r]->mtp_draft(tok, max_drafts, hist);
+      if (r == 0) d = std::move(x);
+    });
+    return d;
+  }
+  const std::vector<float>& verify(int tok, const std::vector<int>& drafts) {
+    run_all([&](int r) { shards_[r]->verify(tok, drafts); });
+    return spec_joined((int)drafts.size() + 1);
+  }
+  const std::vector<float>& spec_joined(int rows) {
+    const size_t V = (size_t)vocab();
+    spec_.assign(V * (size_t)rows, 0.0f);
+    size_t at = 0;
+    for (int r = 0; r < n_; ++r) {
+      const size_t per = (size_t)shards_[r]->n_logits();
+      const std::vector<float>& l = shards_[r]->spec_logits_host();
+      for (int b = 0; b < rows; ++b) std::copy(l.begin() + b * per, l.begin() + (b + 1) * per, spec_.begin() + b * V + at);
+      at += per;
+    }
+    return spec_;
+  }
+  void verify_done(int accepted) { run_all([&](int r) { shards_[r]->verify_done(accepted); }); }
   void reset() {  // (the bound slot)
     run_all([&](int r) { shards_[r]->reset(); });
     std::fill(comm_.half.begin(), comm_.half.end(), 0);
@@ -1128,12 +1184,14 @@ class TpEngine {
     try {
       comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);
       comm_.flags = (int*)zrt::host_alloc((size_t)n * sizeof(int));
+      comm_.draft = (double*)zrt::host_alloc((size_t)n * 4 * sizeof(double));
     } catch (...) {
       zrt::oom_throws = false;
       throw;
     }
     zrt::oom_throws = false;
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
+    for (int r = 0; r < n * 4; ++r) comm_.draft[r] = 0.0;
     comm_.ev_n.reset(new std::atomic<int64_t>[n]);
     for (int r = 0; r < n; ++r) comm_.ev_n[r] = 0;
     // (ARC_TP_EVSUM, events between the GPUs for a generated token's sums, removed 2026-11-24 (#89): it hung or
@@ -1256,6 +1314,7 @@ class TpEngine {
     free_events();
     if (comm_.host) zrt::mem_free(zrt::ctx, comm_.host);
     if (comm_.flags) zrt::mem_free(zrt::ctx, comm_.flags);
+    if (comm_.draft) zrt::mem_free(zrt::ctx, comm_.draft);
     for (char* p : comm_.inbox)
       if (p) zrt::mem_free(zrt::ctx, p);
     comm_.inbox.clear();
@@ -1521,7 +1580,7 @@ class TpEngine {
   bool quit_ = false;
   std::atomic<bool> broken_{false};  // (a shard failed during a call: the others' barrier count and parts are out of step)
   int pending_ = 0;
-  std::vector<float> logits_, batch_logits_;
+  std::vector<float> logits_, batch_logits_, spec_;
   std::vector<char> stuck_;  // (per shard: its thread was given up on, wait_done)
   // A thread given up on may finish its job long after (a free that took 10 s after a failure, a GPU that answers late):
   // what it touches of this TpEngine afterwards, it touches under life_->mu and only while gone is false. shutdown sets
@@ -1813,6 +1872,18 @@ inline void TpMirror::finish() {
     for (int r = 1; r < t.gpus(); ++r) {
       const size_t per = (size_t)t.shard(r).n_logits();
       const std::vector<float>& s = t.shard(r).batch_logits_host();
+      for (size_t b = 0; b < B; ++b) std::copy(s.begin() + b * per, s.begin() + (b + 1) * per, l.begin() + b * V + at);
+      at += per;
+    }
+  } else if (g_ == kSpec) {  // (verify: `rows_` rows of the shards' spec_logits_host_, each its vocabulary rows)
+    std::vector<float>& l = e.spec_logits_host_;
+    const size_t n0 = (size_t)e.n_logits(), B = (size_t)rows_;
+    if (l.size() < V * B) l.resize(V * B);
+    for (size_t b = B; b-- > 0;) memmove(&l[b * V], &l[b * n0], n0 * 4);
+    size_t at = n0;
+    for (int r = 1; r < t.gpus(); ++r) {
+      const size_t per = (size_t)t.shard(r).n_logits();
+      const std::vector<float>& s = t.shard(r).spec_logits_host();
       for (size_t b = 0; b < B; ++b) std::copy(s.begin() + b * per, s.begin() + (b + 1) * per, l.begin() + b * V + at);
       at += per;
     }
