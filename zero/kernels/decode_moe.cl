@@ -87,6 +87,18 @@ inline float moe_term(uint8 a8, const uint* w, float d, float dmin, int sc0, int
   shi += dot_4x8packed_ss_int(a8.s6, one);
   shi += dot_4x8packed_ss_int(a8.s7, one);
   return d * (float)moe_dot(a8, w, sc0, sc1) - dmin * (float)(mn0 * slo + mn1 * shi);
+#elif defined(NV16)
+  // (NVFP4 exact per 16, decode.cl NV16: decode32 gives the codes as they are, d the scale of values 0..15 and dmin
+  //  that of 16..31; each half's DP4a sum times its own scale, no fold)
+  int lo = dot_4x8packed_ss_int(a8.s0, w[0]);
+  lo += dot_4x8packed_ss_int(a8.s1, w[1]);
+  lo += dot_4x8packed_ss_int(a8.s2, w[2]);
+  lo += dot_4x8packed_ss_int(a8.s3, w[3]);
+  int hi = dot_4x8packed_ss_int(a8.s4, w[4]);
+  hi += dot_4x8packed_ss_int(a8.s5, w[5]);
+  hi += dot_4x8packed_ss_int(a8.s6, w[6]);
+  hi += dot_4x8packed_ss_int(a8.s7, w[7]);
+  return d * (float)lo + dmin * (float)hi;
 #else
   return d * (float)moe_dot(a8, w, sc0, sc1);
 #endif

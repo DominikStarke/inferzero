@@ -221,6 +221,30 @@
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
     // of a split token (ARC_XSPLIT_TAB below)
     cl_mem xtab_l = xc_ ? xc_->xtab[L.il] : nullptr;
+    // (NVFP4 experts in the per-tile kernels: exact per 16 since 2026-11-24 (decode.cl NV16, #45); ARC_NVFP4_FOLD=1 folds
+    //  the two halves per 32 there too, as the prompt's decode_w8 / moe_rg do, for A/B. UNTESTED HERE: no build or run
+    //  on the laptop, the user's rule of 2026-11-24)
+    static const bool nv_fold = getenv("ARC_NVFP4_FOLD") && atoi(getenv("ARC_NVFP4_FOLD")) != 0;
+    auto nvd = [&](int t) { return t == GGML_NVFP4 && nv_fold ? std::string(" -DNV_FOLD") : std::string(); };
+    // (the line once: a member flag checked first, so the per-token path takes no lock and builds no string; the
+    //  Researcher's review of f1d38f9)
+    // (what takes which path, said as it is (the Researcher's question after skipzx-lab's run): the per-tile kernels run
+    //  generation and chunks under rg_min tokens; where decode + GEMM is off for the model (moe_group_ 0: some layer's
+    //  experts are not a W8 type, as Inkling 2's BF16 / Q8_0 layers 20-23), they also run every chunk's gate / up, and
+    //  only longer chunks' down projection folds, on moe_rg; with decode + GEMM, longer chunks fold in gate / up too)
+    if (!nv16_said_ && (L.ex_type[0] == GGML_NVFP4 || L.ex_type[2] == GGML_NVFP4) && (nv16_said_ = true) &&
+        first_for_device("nvfp4_per16")) {
+      if (nv_fold)
+        zlog::eprintf("inferzero: NVFP4 experts: the two scales folded per 32 everywhere (ARC_NVFP4_FOLD=1)\n");
+      else if (moe_group_ == 0)
+        zlog::eprintf("inferzero: NVFP4 experts: exact per 16 in generation and every prompt chunk's gate / up; the down "
+                      "projection of chunks of %d tokens or more (moe_rg) folds the two scales per 32 "
+                      "(ARC_NVFP4_FOLD=1: folded everywhere)\n", rg_min);
+      else
+        zlog::eprintf("inferzero: NVFP4 experts: exact per 16 in generation and prompt chunks under %d tokens; longer "
+                      "chunks (moe_rg, decode + GEMM) fold the two scales per 32 (ARC_NVFP4_FOLD=1: folded everywhere)\n",
+                      rg_min);
+    }
     // standard expert types, per tile (zero/kernels/decode.cl moe_gateup_q / moe_down_q): the tiles in `tiles`
     auto gateup_q = [&](cl_mem tiles) {
       const int grows = gr_gu;
@@ -234,7 +258,7 @@
       cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : moe_grf_env) +
                                          "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
                                          std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +
-                                         (asct ? " -DASCT" : "") + ds_swi_defs(), "moe_gateup_q");
+                                         (asct ? " -DASCT" : "") + ds_swi_defs() + nvd(L.ex_type[0]), "moe_gateup_q");
       int M = Mp, K = E, FF = F;
       cl_mem sc = asc_;
       if (asct) {
@@ -271,7 +295,8 @@
       cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
-                                         (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd, "moe_down_q");
+                                         (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd +
+                                         nvd(L.ex_type[2]), "moe_down_q");
       int NN = E, K = Fp, S = slots_;
       if (xc_)
         set_args(k, 0, xtab_l, NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xtab_l, xoff(L, 2));
