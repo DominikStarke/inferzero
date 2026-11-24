@@ -445,7 +445,7 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   int nn = (int)n, np = c.n;
   if (p2p) tp_inbox_fence(c, r, h);
   set_args(ks.add, 0, a.x, p2p ? tp_in_ : tp_host_, off, nn, np, stride);
-  tp_run(a, "tp_add", ks.add, (n + 255) / 256 * 256, 256);
+  tp_run(a, "tp_add", ks.add, (n / 4 + 255) / 256 * 256, 256);  // (tp_add takes 4 values a thread)
   c.half[r] = h ^ 1;
 }
 
@@ -524,7 +524,7 @@ inline void Engine::tp_reduce_rs(int rows, const TpSum& a) {
     int np = N;
     cl_ulong st = stride;
     set_args(ks.add, 0, a.x, tp_host_, off, nn, np, st);
-    tp_run(a, "tp_add", ks.add, g1, l1);
+    tp_run(a, "tp_add", ks.add, (n / 4 + 255) / 256 * 256, 256);  // (4 values a thread)
     c.half[r] = h ^ 1;
     return;
   }
@@ -637,7 +637,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     int np = N;
     cl_ulong st = stride;
     set_args(ks.add, 0, a.x, tp_host_, off, nn, np, st);
-    tp_run(a, "tp_add", ks.add, g1, l1);
+    tp_run(a, "tp_add", ks.add, (n / 4 + 255) / 256 * 256, 256);  // (4 values a thread)
     c.half[r] = h ^ 1;
     return;
   }

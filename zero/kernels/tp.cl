@@ -3,11 +3,22 @@
 // x[i] += part 0 + part 1 + ... (each GPU's partial sum of an output projection, in pinned host memory), added in
 // rank order so every GPU's residual stream gets the same float sum
 __kernel void tp_add(__global float* x, __global const float* p, ulong off, int n, int np, ulong stride) {
-  const int i = get_global_id(0);
-  if (i >= n) return;
-  float s = x[i];
-  for (int k = 0; k < np; ++k) s += p[off + k * stride + i];
-  x[i] = s;
+  // The parts lie `stride` floats apart (a 4096-token chunk of the 27B: 80 MB), so every k is its own page range and
+  // a generated token's 128 sums read 4 far-apart regions of n_embd values each. A thread takes four values: the
+  // same sums in the same rank order, four loads in flight where one was (the scalar form read 5 GB/s a sum, 15.5 us
+  // of a 35 ms step on 4 B60s). n is rows * n_embd, a multiple of 4 for every model.
+  const int i0 = get_global_id(0) * 4;
+  if (i0 + 3 < n) {
+    float4 s = vload4(0, x + i0);
+    for (int k = 0; k < np; ++k) s += vload4(0, p + off + k * stride + i0);
+    vstore4(s, 0, x + i0);
+    return;
+  }
+  for (int i = i0; i < n; ++i) {  // (a tail of 1-3 values, never reached: n_embd is a multiple of 4)
+    float s = x[i];
+    for (int k = 0; k < np; ++k) s += p[off + k * stride + i];
+    x[i] = s;
+  }
 }
 
 // Prompt chunks (zero/mgpu/engine_tp.h, tp_reduce_rs): a reduce-scatter in f16. Each GPU sends the other GPUs' rows of
