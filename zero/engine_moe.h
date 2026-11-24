@@ -237,7 +237,12 @@
     //  GU_MC slots a pass (ARC_MOE_GU_MC, default 4): spill-free in 128 registers on mtl / arl-h / dg2 / bmg, ocloc
     //  26.40, where one pass spilled up to 166 scratch messages on Xe-LPG; meant bit-identical. UNTESTED HERE: built,
     //  not run. The kernel ignores it for Q2F and the TM 1 vector-decoder form)
-    static const bool gu2_on = getenv("ARC_MOE_GU2") && atoi(getenv("ARC_MOE_GU2")) != 0;
+    // (the user, 2026-11-24, "Yes, generation only": by default on an integrated GPU for T <= 8, generation and small
+    //  chunks, where the laptop measured Inkling UD-IQ4_XS's tg16 8.77 -> 9.87 tok/s; the prompt tiles stay the single
+    //  pass, which spills but measured fastest there (pp512 88.5 against 72.2 with GU2, 79.0 at 256 registers).
+    //  ARC_MOE_GU2=0 off, =1 everywhere. Meant bit-identical: the --dump-logits check before main)
+    static const int gu2_env = getenv("ARC_MOE_GU2") ? (atoi(getenv("ARC_MOE_GU2")) != 0 ? 1 : 0) : -1;
+    const bool gu2_on = gu2_env == 1 || (gu2_env < 0 && zrt::integrated() && T <= 8);
     // (built per call, not a static string: the laptop's run of 2026-11-24 22:02 said the line below, yet every
     //  moe_gateup_q / moe_down_q it built had no -DGU_TWO in its options; the cause not found by reading)
     static const int gu_mc_env = getenv("ARC_MOE_GU_MC") ? gu_mc_pow2(atoi(getenv("ARC_MOE_GU_MC"))) : 0;
@@ -247,7 +252,9 @@
       if (gu_mc_env > 0) gu2_def += " -DGU_MC=" + std::to_string(gu_mc_env);
     }
     if (gu2_on && !gu2_said_ && (gu2_said_ = true))
-      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (ARC_MOE_GU2=1:%s)\n", gu2_def.c_str());
+      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (%s:%s)\n",
+                    gu2_env == 1 ? "ARC_MOE_GU2=1, every chunk" : "up to 8 rows on an integrated GPU; ARC_MOE_GU2=0 off",
+                    gu2_def.c_str());
     std::string xdef = xc_ ? std::string(" -DXCACHE") : std::string();
     xdef += gu2_def;
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
