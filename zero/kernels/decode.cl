@@ -22,6 +22,12 @@
 #define Q2_0 42
 #define MXFP4 39
 #define NVFP4 40  // (Inkling 2 Mini's experts: blocks of 64, a UE4M3 scale per 16; folded per 32 in decode32)
+// (NV16: NVFP4 in the expert GEMVs (-DMOE_Q, decode_moe.cl) exact per 16, each 16-value half's DP4a sum times its own
+//  scale; the bug of 2026-11-24 (#45): the fold per 32 rounds the smaller half's codes. -DNV_FOLD (ARC_NVFP4_FOLD=1):
+//  the fold there too, as before, for A/B)
+#if defined(MOE_Q) && QT == NVFP4 && !defined(NV_FOLD)
+#define NV16 1
+#endif
 #define Q5_1 7  // (Unsloth's UD-Q4_K_XL Flash Next: its down experts; requantized per block, see decode32)
 #define Q4_1 3  // (#88, 2026-11-23: as Q5_1 without the fifth bit; it was requantized to Q8_0 on the CPU at load)
 #define Q5_0 6  // (the same day: d (q - 16), q = 0..31, exact in int8)
@@ -436,7 +442,9 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
     // 32-block (8 per half: low nibbles values 0..7 of the half, high 8..15). The per-32 form has one scale, so the two
     // halves' scales s0, s1 are folded as src/quants.h nvfp4_block32_w8 does, in the same integers: equal halves keep
     // their codes (d = s); else d = max / 8, the larger half's codes x 8, the other's round(|kv| 8 M_h / (M_big
-    // 2^(E_big - E_h))) half away from zero. Every path decodes through here, so prompt and generation agree.
+    // 2^(E_big - E_h))) half away from zero. The prompt paths decode through this fold (decode_w8, moe_rg); the expert
+    // GEMVs (decode_moe.cl moe_gateup_q / moe_down_q, built with -DMOE_Q) read the halves exactly per 16 (NV16, below)
+    // since 2026-11-24, so a prompt and the tokens after it no longer use bit-identical weights.
     const uchar* kv = (const uchar*)aux;
     int M[2], E[2];
 #pragma unroll
@@ -449,8 +457,16 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
     }
     const float s0 = ldexp((float)M[0], E[0] - 11), s1 = ldexp((float)M[1], E[1] - 11);
     const int big = s1 > s0 ? 1 : 0;
+#ifdef NV16
+    // (NV16: the codes as they are and each half's own scale, d for values 0..15, dmin for 16..31; moe_term multiplies
+    //  each half's DP4a sum by its scale. Exact per 16 as the file stores it: no fold, no rounding)
+    const bool same = true;
+    d = s0;
+    dmin = s1;
+#else
     const bool same = s0 == s1;
     d = same ? s0 : fmax(s0, s1) * 0.125f;
+#endif
     sc0 = sc1 = 1;
 #pragma unroll
     for (int h = 0; h < 2; ++h) {

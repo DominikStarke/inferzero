@@ -221,6 +221,15 @@
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
     // of a split token (ARC_XSPLIT_TAB below)
     cl_mem xtab_l = xc_ ? xc_->xtab[L.il] : nullptr;
+    // (NVFP4 experts in the per-tile kernels: exact per 16 since 2026-11-24 (decode.cl NV16, #45); ARC_NVFP4_FOLD=1 folds
+    //  the two halves per 32 there too, as the prompt's decode_w8 / moe_rg do, for A/B. UNTESTED HERE: no build or run
+    //  on the laptop, the user's rule of 2026-11-24)
+    static const bool nv_fold = getenv("ARC_NVFP4_FOLD") && atoi(getenv("ARC_NVFP4_FOLD")) != 0;
+    auto nvd = [&](int t) { return t == GGML_NVFP4 && nv_fold ? std::string(" -DNV_FOLD") : std::string(); };
+    if ((L.ex_type[0] == GGML_NVFP4 || L.ex_type[2] == GGML_NVFP4) && first_for_device("nvfp4_per16"))
+      zlog::eprintf("inferzero: NVFP4 experts: %s in the per-tile expert kernels (generation, short chunks); the prompt GEMMs fold "
+                    "the two scales per 32%s\n", nv_fold ? "folded per 32 (ARC_NVFP4_FOLD=1)" : "exact per 16",
+                    nv_fold ? "" : " (ARC_NVFP4_FOLD=1: folded in both)");
     // standard expert types, per tile (zero/kernels/decode.cl moe_gateup_q / moe_down_q): the tiles in `tiles`
     auto gateup_q = [&](cl_mem tiles) {
       const int grows = gr_gu;
@@ -234,7 +243,7 @@
       cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : moe_grf_env) +
                                          "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
                                          std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +
-                                         (asct ? " -DASCT" : "") + ds_swi_defs(), "moe_gateup_q");
+                                         (asct ? " -DASCT" : "") + ds_swi_defs() + nvd(L.ex_type[0]), "moe_gateup_q");
       int M = Mp, K = E, FF = F;
       cl_mem sc = asc_;
       if (asct) {
@@ -271,7 +280,8 @@
       cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
-                                         (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd, "moe_down_q");
+                                         (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd +
+                                         nvd(L.ex_type[2]), "moe_down_q");
       int NN = E, K = Fp, S = slots_;
       if (xc_)
         set_args(k, 0, xtab_l, NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xtab_l, xoff(L, 2));
