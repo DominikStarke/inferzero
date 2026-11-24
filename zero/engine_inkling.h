@@ -782,7 +782,13 @@
     const int H = hp.n_head, HKV = hp.n_head_kv, G = H / HKV, ext = L.ext, nrel = ink_.nrel;
     // (the chunk: at most 64 a (row, KV head), at least 64 keys, a multiple of 16; the longest row's keys decide)
     const int len = win > 0 ? std::min(win, p0 + T) : p0 + T;
-    const int ck = std::max(64, ((len + 63) / 64 + 15) / 16 * 16);
+    // (ARC_INK_ATTN_DEC_CK=N, a test, 2026-11-24, after skipzx-lab's KL max over the limit (#45): N keys a chunk
+    //  instead (at least 16; the chunks still at most 64, so a short N grows back), 0 one chunk a row: then no merge
+    //  across work-groups, so a KL run tells the chunks' merge from the attention inside a chunk)
+    static const int ck_env = getenv("ARC_INK_ATTN_DEC_CK") ? std::max(0, atoi(getenv("ARC_INK_ATTN_DEC_CK"))) : -1;
+    int ck = std::max(64, ((len + 63) / 64 + 15) / 16 * 16);
+    if (ck_env == 0) ck = std::max(len, 1);
+    else if (ck_env > 0) ck = std::max(ck, std::max(16, ck_env));
     const int nch = std::max(1, (len + ck - 1) / ck);
     // (built once a model (a member: kernel() keeps it until the engine goes): ink_k's options with the query heads a KV
     //  head)
