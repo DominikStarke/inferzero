@@ -812,8 +812,8 @@
       // (I2 step 1: gain, forget and apply in one launch where both are f32, the rank-64 matrices)
       int KR = L.ctrl_gain[c].K;
       // (2026-11-29: prompt chunks (more than 8 rows) through the tiled form, ink_ctrl_fused_t: the same values bit for
-      //  bit, the weights and lo rows staged in local memory; ARC_INK_CTRL_TILE=0 the plain kernel. UNTESTED HERE)
-      static const bool tile = !(getenv("ARC_INK_CTRL_TILE") && atoi(getenv("ARC_INK_CTRL_TILE")) == 0);
+      //  bit, the weights and lo rows staged in local memory; opt-in, ARC_INK_CTRL_TILE=1, until a hash check. UNTESTED HERE)
+      static const bool tile = getenv("ARC_INK_CTRL_TILE") && atoi(getenv("ARC_INK_CTRL_TILE")) != 0;
       if (tile && T > 8 && KR <= 64) {
         cl_kernel kt = ink_k("ink_ctrl_fused_t");
         set_args(kt, 0, x, L.ctrl_forget[c].f, L.ctrl_gain[c].f, ink_lo_, ink_msgs_, moff, mst, EE, KR, TT);
