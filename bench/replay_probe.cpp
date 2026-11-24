@@ -190,8 +190,7 @@ int main(int argc, char** argv) {
   ClRt cl;
   if (!cl.init()) return 1;
   void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");  // (Windows and Linux: src/platform.h)
-  if (!zl) { fprintf(stderr, "Level Zero: the loader is not loaded
-"); return 1; }
+  if (!zl) { fprintf(stderr, "Level Zero: the loader is not loaded\n"); return 1; }
   auto listCreate = (PFN_listCreate)plat::dl_sym(zl, "zeCommandListCreate");
   auto listClose = (PFN_listClose)plat::dl_sym(zl, "zeCommandListClose");
   auto queueCreate = (PFN_queueCreate)plat::dl_sym(zl, "zeCommandQueueCreate");
