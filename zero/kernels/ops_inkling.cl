@@ -469,6 +469,85 @@ __kernel void ink_attn_pp(__global const float* q, __global const float* r, __gl
   const float8 g8 = vload8(lane, gate + qo);
   vstore8(acc / z * (1.0f / (1.0f + exp(-g8))), lane, out + qo);
 }
+
+// ---- ARC_INK_ATTN_PS=S (opt-in, 2026-11-24): ink_attn_pp with each row's keys split into S slices. The laptop's
+// 125H, Inkling UD-IQ4_XS, pp4096 (chunks of 2048): ink_attn 8.3-8.5 s, 22-23 % of the prompt, against 0.17 s at
+// pp512: ink_attn_pp walks all of a row's keys serially in one sub-group, and the global layers' rows grow with the
+// context. Here a work-group is one (row, KV head): its G query heads x S slices, one sub-group each (G S <= 16);
+// slice s walks the contiguous keys lo + s c .. min(pos, lo + (s + 1) c - 1), c = ceil(keys / S), with its own online
+// softmax from empty (m -inf, z 0), the same score as ink_attn_pp (q . k / sqrt(D) + r . bias[dist] inside ext - sink,
+// one sub_group_reduce_add). Its m, z and 8 sums a lane go to local memory; after one work-group barrier, the head's
+// slice 0 merges the S slices in order from the zero sink logit (m 0, z 1) and writes out with the sigmoid gate. All
+// in one work-group: no counters, no global partials (the decode kernel's cross-group merge is not used). Another order
+// of sums: KL-checked. Registers as ink_attn_pp's (~36 floats a lane); local G S (INK_D + 2) floats (7.8 KB at 3 x 5).
+// grid (16 G S x HKV T), local (16 G S). UNTESTED HERE: built, not run.
+#ifndef IAS_MAX
+#define IAS_MAX 16  // (sub-groups a work-group: G S)
+#endif
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void ink_attn_ps(__global const float* q, __global const float* r, __global const float* sink,
+                          __global const float* gate, __global const half* kc, __global const half* vc,
+                          __global const float* bias, int ext, int NREL, __global float* out, int H, int HKV, int pos0,
+                          int window, int cap, int NS) {
+  __local float pm[IAS_MAX], pz[IAS_MAX];
+  __local float pa[IAS_MAX][INK_D];
+  const int G = H / HKV, sg = get_sub_group_id(), lane = get_sub_group_local_id();
+  const int kvh = get_group_id(0) % HKV, t = get_group_id(0) / HKV;
+  const int hg = sg / NS, sl = sg % NS, h = kvh * G + hg;  // (sub-group sg: query head hg of the KV head, slice sl)
+  const bool live = sg < G * NS;  // (every sub-group reaches the barrier below)
+  const int pos = pos0 + t, lo = window > 0 ? max(0, pos - window + 1) : 0;
+  const int nk = pos - lo + 1, ck = (nk + NS - 1) / NS;
+  const int u0 = lo + sl * ck, u1 = live ? min(pos, lo + (sl + 1) * ck - 1) : u0 - 1;
+  const size_t qo = ((size_t)t * H + (live ? h : 0)) * INK_D;
+  const float inv = rsqrt((float)INK_D), sk = live ? sink[(size_t)t * H + h] : 0.0f;
+  __global const float* rr = r + ((size_t)t * H + (live ? h : 0)) * NREL;
+  const float r0 = lane < NREL ? rr[lane] : 0.0f, r1 = lane + 16 < NREL ? rr[lane + 16] : 0.0f;
+  const float8 q8 = vload8(lane, q + qo);
+  float m = -INFINITY, z = 0.0f;  // (an empty slice: z 0, skipped in the merge)
+  float8 acc = (float8)0.0f;
+  for (int u = u0; u <= u1; ++u) {  // (uniform over the sub-group)
+    const size_t row = ((size_t)(u % cap) * HKV + kvh) * INK_D;
+    const float8 kv = vload_half8(lane, kc + row), vv = vload_half8(lane, vc + row);
+    float pd = q8.s0 * kv.s0;
+    pd += q8.s1 * kv.s1;
+    pd += q8.s2 * kv.s2;
+    pd += q8.s3 * kv.s3;
+    pd += q8.s4 * kv.s4;
+    pd += q8.s5 * kv.s5;
+    pd += q8.s6 * kv.s6;
+    pd += q8.s7 * kv.s7;
+    float part = pd * inv;
+    const int dist = pos - u;
+    if (dist < ext) {  // (as ink_attn_pp)
+      __global const float* br = bias + (size_t)dist * NREL;
+      part += (lane < NREL ? br[lane] * r0 : 0.0f) + (lane + 16 < NREL ? br[lane + 16] * r1 : 0.0f);
+    }
+    const float s = sub_group_reduce_add(part) - sk;
+    const float mn = fmax(m, s), corr = exp(m - mn), e = exp(s - mn);
+    z = z * corr + e;
+    acc = acc * corr + e * vv;
+    m = mn;
+  }
+  if (live) {
+    if (lane == 0) pm[sg] = m, pz[sg] = z;
+    vstore8(acc, lane, &pa[sg][0]);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (!live || sl != 0) return;
+  float mm = 0.0f, zz = 1.0f;  // (the zero sink logit)
+  float8 aa = (float8)0.0f;
+  for (int s2 = 0; s2 < NS; ++s2) {  // (the head's slices in key order)
+    const int j = hg * NS + s2;
+    const float zc = pz[j];
+    if (zc == 0.0f) continue;  // (an empty slice)
+    const float mc = pm[j], mn = fmax(mm, mc), a = exp(mm - mn), b = exp(mc - mn);
+    zz = zz * a + zc * b;
+    aa = aa * a + vload8(lane, &pa[j][0]) * b;
+    mm = mn;
+  }
+  const float8 g8 = vload8(lane, gate + qo);
+  vstore8(aa / zz * (1.0f / (1.0f + exp(-g8))), lane, out + qo);
+}
 #endif  // INK_D == 128
 
 // situ on a fused gate-up row pair (any size): out[i] = beta tanh(g / beta) sigmoid(g) * lb tanh(u / lb), g and u the
