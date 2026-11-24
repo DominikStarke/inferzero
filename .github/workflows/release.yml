@@ -1,6 +1,7 @@
 # A release built and published on GitHub's runners (2026-11-24: since then the laptop builds nothing, the user's
 # rule, so the packages that scripts/make-package.ps1 / make-package-linux.sh made there are made here). Started by
-# hand: Actions > release > Run workflow, or `gh workflow run release.yml -f release=2026.11.24.03 -f notes_file=...`.
+# hand, after the release's tag is pushed on the commit to release (git tag N <commit> && git push origin N):
+# `gh workflow run release.yml --ref main -f release=N -f notes_file=...`; the release is made on that tag.
 # The packages are those of the scripts, as before: the Windows zip from the same build.ps1 and MSVC, the Linux
 # tar.gz on the oldest Ubuntu it is for (24.04), as ci.yml's linux-package job. No GPU here: what is checked is that
 # they build and start; the GPU checks stay with the release's notes on users' cards.
@@ -95,4 +96,10 @@ jobs:
             awk 'BEGIN{n=0} /^## /{n++; if(n==2) exit} n==1' CHANGELOG.md > /tmp/notes.md
             notes=/tmp/notes.md
           fi
-          gh release create "$rel" out/win64/*.zip out/linux-x64/*.tar.gz --title "$rel" --notes-file "$notes" --target "$GITHUB_SHA"
+          # (the tag first, pushed with the user's own git: the workflow's token may not create a ref on a commit that
+          #  changes a workflow file, the HTTP 403 of 2026.11.24.03. It must name the dispatched commit)
+          tagsha=$(git ls-remote origin "refs/tags/$rel^{}" | cut -f1)
+          [ -n "$tagsha" ] || tagsha=$(git ls-remote origin "refs/tags/$rel" | cut -f1)
+          [ -n "$tagsha" ] || { echo "no tag $rel: push it first (git tag $rel <commit> && git push origin $rel)" >&2; exit 2; }
+          [ "$tagsha" = "$GITHUB_SHA" ] || { echo "tag $rel is $tagsha, the run is at $GITHUB_SHA" >&2; exit 2; }
+          gh release create "$rel" out/win64/*.zip out/linux-x64/*.tar.gz --title "$rel" --notes-file "$notes" --verify-tag

@@ -1,6 +1,8 @@
 # Changelog
 
-## 2026-11-24: NVFP4 experts another 7 % faster in generation
+## 2026-11-24: NVFP4 experts another 7 % faster in generation; a warning when a kernel spills registers
+
+- **A warning when a GPU kernel spills registers** to memory on your card (one line per kernel, naming it and its build options): such a kernel runs slower than it should, so please report the line with your GPU's name. `ARC_ZE_KPROPS=1` lists every kernel's private and spill memory as before; `ARC_ZE_KPROPS=0` turns both off.
 
 - **NVFP4 experts read straight into registers in generation** (#45): each 32-value block of an expert's weights is now loaded in one go, as MXFP4's are, instead of through a staged copy in local memory. The same numbers bit for bit. A Pro B60, Inkling 2 Mini UD-Q4_K_XL: generation 20.24 -> 21.73 tok/s (+7.4 %); the expert GEMVs moe_gateup 832 -> 596 ms, moe_down 496 -> 297 ms over 128 tokens, now level with IQ4_NL's 556 / 303 (skipzx-lab).
 
