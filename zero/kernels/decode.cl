@@ -470,7 +470,9 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
         const float inv = 1.0f / (float)dd;
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
-          const int n = 2 * (int)(char)kv[i] * mh + den;
+          // (kvalues_mxfp4 0..7 = {0, 1, 2, 3, 4, 6, 8, 12} as literals, folded by the unrolled loop: no local loads)
+          const int mag = i < 5 ? i : 2 * (i - 2) + (i == 7 ? 2 : 0);
+          const int n = 2 * mag * mh + den;
           int q = (int)((float)n * inv);
           if (q * dd > n) --q;
           else if ((q + 1) * dd <= n) ++q;
