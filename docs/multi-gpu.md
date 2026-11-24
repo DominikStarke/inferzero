@@ -660,6 +660,18 @@ times a batched step for 1..N slots against one slot alone. Laptop (ARC_TP_SIM, 
 something): both checks bit-identical; 4 slots together 3.26x one slot's tokens per second (27B over 2) and 2.41x
 (35B over 4; one GPU 2.82x).
 
+## What a sum costs (2026-11-24)
+
+`bench/tp_add_bench`, the kernel alone on its own layout: 6.00 / 7.65 / 9.27 us for 2 / 3 / 4 parts at 5120 values
+80 MB apart — 1.6 us a part over a 4.3 us floor, and the parts' distance plus the number of them both matter (a
+4.3 us floor at 128 sums a token is ~0.55 ms). It is latency, not bytes: `ARC_TP_P2P=0`, which reads the parts from
+host memory instead of the GPUs' inboxes, changes nothing, and `ARC_TP_DEVSYNC=1` (the GPUs meet on their own) is
+worth +4 % on 2 GPUs. The vector form of the kernel is 3-4 % ahead of the scalar one, which is what `tp_add` now
+uses.
+
+Two host-only paths that never touch the sums keep the single-GPU code unchanged: the guard is one pointer test, and
+`runz --dump-logits` of a single GPU run before and after this change are byte-identical.
+
 ## The server: `serverz --gpus N`
 
 ```powershell
