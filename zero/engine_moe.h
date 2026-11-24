@@ -238,13 +238,18 @@
     //  26.40, where one pass spilled up to 166 scratch messages on Xe-LPG; meant bit-identical. UNTESTED HERE: built,
     //  not run. The kernel ignores it for Q2F and the TM 1 vector-decoder form)
     static const bool gu2_on = getenv("ARC_MOE_GU2") && atoi(getenv("ARC_MOE_GU2")) != 0;
-    static const std::string gu2_def =
-        !gu2_on ? std::string()
-                : " -DGU_TWO" + (getenv("ARC_MOE_GU_MC") ? " -DGU_MC=" + std::to_string(gu_mc_pow2(atoi(getenv("ARC_MOE_GU_MC"))))
-                                                          : std::string());
+    // (built per call, not a static string: the laptop's run of 2026-11-24 22:02 said the line below, yet every
+    //  moe_gateup_q / moe_down_q it built had no -DGU_TWO in its options; the cause not found by reading)
+    static const int gu_mc_env = getenv("ARC_MOE_GU_MC") ? gu_mc_pow2(atoi(getenv("ARC_MOE_GU_MC"))) : 0;
+    std::string gu2_def;
+    if (gu2_on) {
+      gu2_def = " -DGU_TWO";
+      if (gu_mc_env > 0) gu2_def += " -DGU_MC=" + std::to_string(gu_mc_env);
+    }
     if (gu2_on && !gu2_said_ && (gu2_said_ = true))
-      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (ARC_MOE_GU2=1)\n");
-    const std::string xdef = (xc_ ? std::string(" -DXCACHE") : std::string()) + gu2_def;
+      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (ARC_MOE_GU2=1:%s)\n", gu2_def.c_str());
+    std::string xdef = xc_ ? std::string(" -DXCACHE") : std::string();
+    xdef += gu2_def;
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
     // of a split token (ARC_XSPLIT_TAB below)
     cl_mem xtab_l = xc_ ? xc_->xtab[L.il] : nullptr;
@@ -282,10 +287,14 @@
       // (tried 2026-11-05: the tile's activations loaded once per step into local memory for the work-group's 16
       //  rows, two work-group barriers a step: bit-identical but gate / up 6.2 -> 9.6 s of a Flash Next 4K prompt)
       static const std::string moe_grf_env = grf_env("ARC_MOE_GRF");  // (read once: every MoE layer of every token)
-      cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : moe_grf_env) +
-                                         "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
-                                         std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +
-                                         (asct ? " -DASCT" : "") + ds_swi_defs() + nvd(L.ex_type[0]), "moe_gateup_q");
+      const std::string gopts = (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : moe_grf_env) +
+                                "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" + std::to_string(grows) +
+                                " -DTM=" + std::to_string(tm) + xdef + hld + q2fd + (asct ? " -DASCT" : "") + ds_swi_defs() +
+                                nvd(L.ex_type[0]);
+      static bool gopts_said = false;  // (ARC_MOE_GU2: the first tile build's options, to see -DGU_TWO in them)
+      if (gu2_on && tm > 1 && !gopts_said && (gopts_said = true))
+        zlog::eprintf("inferzero: ARC_MOE_GU2: moe_gateup_q built with %s\n", gopts.c_str());
+      cl_kernel k = kernel("decode", gopts, "moe_gateup_q");
       int M = Mp, K = E, FF = F;
       cl_mem sc = asc_;
       if (asct) {
