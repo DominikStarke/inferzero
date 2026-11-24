@@ -964,10 +964,28 @@
         set_args(ks, 0, ink_kc_, ink_vc_, S.kc, S.vc, kg, TT, p0, cap);
         ink_run1("ink_kv_store", ks, (size_t)KG * T);
       }
-      cl_kernel ka = ink_k("ink_attn");
       int ext = L.ext, nrel = k.nrel, HH = H, HK = HKV, win = L.glob ? 0 : k.swa;
-      set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);
-      ink_rung("ink_attn", ka, (size_t)T * H, (size_t)D);
+      // (ARC_INK_ATTN_PP=1, opt-in, 2026-11-29: chunks of more than 8 rows through ink_attn_pp, one sub-group a (row,
+      //  query head), the bias of each key's distance where it is used; zero/kernels/ops_inkling.cl. KL-checked, not
+      //  bit for bit; UNTESTED HERE: built, not run. ARC_INK_ATTN_PP_TT: rows a work-group, default 4)
+      static const bool attn_pp = getenv("ARC_INK_ATTN_PP") && atoi(getenv("ARC_INK_ATTN_PP")) != 0;
+      const int G = H / HKV;
+      static const int pp_tt_env = getenv("ARC_INK_ATTN_PP_TT") ? atoi(getenv("ARC_INK_ATTN_PP_TT")) : 4;
+      const int pp_tt = std::clamp(pp_tt_env, 1, std::max(1, 16 / G));
+      if (attn_pp && T > 8 && D == 128 && nrel <= 32 && G * pp_tt <= 16) {
+        if (!ink_attn_pp_said_ && (ink_attn_pp_said_ = true))
+          zlog::eprintf("inferzero: Inkling 2: the prompt attention one sub-group a row and head, %d rows a work-group "
+                        "(ARC_INK_ATTN_PP=1)\n", pp_tt);
+        cl_kernel kp = ink_k("ink_attn_pp");
+        int TN = T, tt = pp_tt;
+        set_args(kp, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap,
+                 TN, tt);
+        ink_rung("ink_attn", kp, (size_t)HKV * ((T + pp_tt - 1) / pp_tt), (size_t)16 * G * pp_tt);
+      } else {
+        cl_kernel ka = ink_k("ink_attn");
+        set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);
+        ink_rung("ink_attn", ka, (size_t)T * H, (size_t)D);
+      }
     }
     ink_dump("att", ip, ink_att_, (size_t)T * H * D, T);
     ink_mm("ink_o", L.o, ink_att_, ink_ao_, T, Mp);
