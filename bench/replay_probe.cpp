@@ -44,16 +44,133 @@ static double median(std::vector<double> v) {
   return v[v.size() / 2];
 }
 
+// ---- (2026-11-24, the command-list replay plan's first question) a step recorded ONCE into a mutable command list
+// (Level Zero ZE_experimental_mutable_command_list, 1.9+: zeCommandListGetNextCommandIdExp before a kernel is appended,
+// zeCommandListUpdateMutableCommandsExp to change its arguments later), then per step only the arguments that change
+// (as a token's position does in ~20 kernels) updated, the list closed again and replayed. Its results are compared
+// bit for bit with the same sequence appended kernel by kernel to the immediate list, so a driver that accepts the
+// calls but does not apply the update is caught. Structures as ze_api.h (oneapi-src/level-zero) defines them.
+struct MutListDesc { ze_structure_type_t stype; const void* pNext; uint32_t flags; };   // (stype 0x00020016)
+struct MutCmdIdDesc { ze_structure_type_t stype; const void* pNext; uint32_t flags; };  // (0x00020017)
+struct MutCmdsDesc { ze_structure_type_t stype; const void* pNext; uint32_t flags; };   // (0x00020018)
+struct MutArgDesc {                                                                      // (0x00020019)
+  ze_structure_type_t stype;
+  const void* pNext;
+  uint64_t commandId;
+  uint32_t argIndex;
+  size_t argSize;
+  const void* pArgValue;
+};
+typedef ze_result_t(__stdcall* PFN_nextId)(ze_command_list_handle_t, const MutCmdIdDesc*, uint64_t*);
+typedef ze_result_t(__stdcall* PFN_update)(ze_command_list_handle_t, const MutCmdsDesc*);
+static const char* kSrcA = R"CLC(
+__kernel void step_a(__global float* y, __global const float* x, int n, float a) {
+  const int i = get_global_id(0);
+  if (i < n) y[i] = y[i] * 0.999f + a * x[i];
+}
+)CLC";
+static void mutable_replay(ClRt& cl, HMODULE zl, PFN_listCreate listCreate, PFN_listClose listClose, PFN_queueExec queueExec,
+                           PFN_queueSync queueSync, ze_command_queue_handle_t q, uint32_t ord, int nk, int nf, int reps,
+                           int nu, ze_group_count_t gc, uint32_t lws) {
+  const char* what = "mutable list, recorded once";
+  auto extAddr = (PFN_extAddr)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+  auto find = [&](const char* name) -> void* {
+    void* f = (void*)GetProcAddress(zl, name);
+    if (!f && extAddr) extAddr(zrt::driver, name, &f);
+    return f;
+  };
+  auto nextId = (PFN_nextId)find("zeCommandListGetNextCommandIdExp");
+  auto update = (PFN_update)find("zeCommandListUpdateMutableCommandsExp");
+  if (!nextId || !update) { printf("%-40s not supported by this driver (no mutable command lists)\n", what); return; }
+  cl_program pa = cl.build(kSrcA, "-cl-std=CL3.0");
+  cl_kernel ka = cl.kernel(pa, "step_a");
+  cl_mem ym = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4), yr = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4),
+         x1 = cl.buffer(CL_MEM_READ_WRITE, (size_t)nf * 4);
+  const float zero = 0.0f, one = 1.0f;
+  CL_CHECK(clEnqueueFillBuffer(cl.queue, ym, &zero, 4, 0, (size_t)nf * 4, 0, nullptr, nullptr));
+  CL_CHECK(clEnqueueFillBuffer(cl.queue, yr, &zero, 4, 0, (size_t)nf * 4, 0, nullptr, nullptr));
+  CL_CHECK(clEnqueueFillBuffer(cl.queue, x1, &one, 4, 0, (size_t)nf * 4, 0, nullptr, nullptr));
+  clFinish(cl.queue);
+  ZE_CHECK(zeKernelSetGroupSize(ka->k, lws, 1, 1));
+  nu = std::clamp(nu, 0, nk);
+  // (kernel i's a at step r: the nu updated kernels (every nk / nu-th) take a value that changes every step, the rest 1)
+  const int stride = nu ? std::max(1, nk / nu) : nk + 1;
+  auto a_of = [&](int i, int r) {
+    return (nu && i % stride == 0 && i / stride < nu) ? 1.0f + 0.001f * (float)(r + 1) + 0.0001f * (float)i : 1.0f;
+  };
+  // the reference: the same reps x nk kernels appended to the immediate list, each with its own a
+  for (int r = 0; r < reps; ++r)
+    for (int i = 0; i < nk; ++i) {
+      const float a = a_of(i, r);
+      set_args(ka, 0, yr, x1, nf, a);
+      ZE_CHECK(zeCommandListAppendLaunchKernel(zrt::D().cl, ka->k, &gc, nullptr, 0, nullptr));
+    }
+  zrt::sync();
+  // the mutable list: in order (flag 8), recorded once with step 0's values, each kernel's command id kept
+  const MutListDesc md{(ze_structure_type_t)0x00020016, nullptr, 0};
+  ze_command_list_desc_t ld{0xfu, &md, ord, 8};
+  ze_command_list_handle_t rl = nullptr;
+  if (listCreate(zrt::ctx, zrt::D().dev, &ld, &rl) != 0) { printf("%-40s not supported (the list does not create)\n", what); return; }
+  std::vector<uint64_t> ids((size_t)nk);
+  const MutCmdIdDesc idd{(ze_structure_type_t)0x00020017, nullptr, 1u /* kernel arguments */};
+  const auto tr = std::chrono::steady_clock::now();
+  for (int i = 0; i < nk; ++i) {
+    if (nextId(rl, &idd, &ids[(size_t)i]) != 0) {
+      printf("%-40s not supported (no command id)\n", what);
+      zeCommandListDestroy(rl);
+      return;
+    }
+    const float a = a_of(i, 0);
+    set_args(ka, 0, ym, x1, nf, a);
+    ZE_CHECK(zeCommandListAppendLaunchKernel(rl, ka->k, &gc, nullptr, 0, nullptr));
+  }
+  ZE_CHECK(listClose(rl));
+  const double rec = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tr).count();
+  std::vector<double> t, tu;
+  std::vector<float> av((size_t)nk);
+  std::vector<MutArgDesc> ad;
+  bool upd_ok = true;
+  for (int r = 0; r < reps; ++r) {
+    const auto t0 = std::chrono::steady_clock::now();
+    if (r > 0 && nu > 0) {  // (step 0 ran with the recorded values)
+      ad.clear();
+      for (int i = 0; i < nk; ++i)
+        if (a_of(i, r) != a_of(i, r - 1)) {
+          av[(size_t)i] = a_of(i, r);
+          ad.push_back(MutArgDesc{(ze_structure_type_t)0x00020019, nullptr, ids[(size_t)i], 3u, sizeof(float), &av[(size_t)i]});
+        }
+      for (size_t j = 0; j + 1 < ad.size(); ++j) ad[j].pNext = &ad[j + 1];
+      const MutCmdsDesc cd{(ze_structure_type_t)0x00020018, ad.empty() ? nullptr : &ad[0], 0};
+      if (update(rl, &cd) != 0 || listClose(rl) != 0) { upd_ok = false; break; }
+    }
+    tu.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    ZE_CHECK(queueExec(q, 1, &rl, nullptr));
+    ZE_CHECK(queueSync(q, UINT64_MAX));
+    t.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  zeCommandListDestroy(rl);
+  if (!upd_ok) { printf("%-40s not supported (the update or the second close failed)\n", what); return; }
+  std::vector<float> hm((size_t)nf), hr((size_t)nf);
+  CL_CHECK(clEnqueueReadBuffer(cl.queue, ym, CL_TRUE, 0, (size_t)nf * 4, hm.data(), 0, nullptr, nullptr));
+  CL_CHECK(clEnqueueReadBuffer(cl.queue, yr, CL_TRUE, 0, (size_t)nf * 4, hr.data(), 0, nullptr, nullptr));
+  const bool same = memcmp(hm.data(), hr.data(), (size_t)nf * 4) == 0;
+  printf("%-40s %8.3f ms per step (%.2f us per kernel; %d kernels' arguments updated a step in %.3f ms; recorded once in "
+         "%.2f ms); results %s\n", what, median(t), median(t) * 1000 / nk, nu, median(tu), rec,
+         same ? "the same as appended, bit for bit" : "DIFFER from appended (the update is not applied: please report)");
+}
+
 int main(int argc, char** argv) {
-  int nk = 700, nf = 65536, reps = 30;
+  int nk = 700, nf = 65536, reps = 30, nu = 20;
   for (int i = 1; i < argc; ++i)
     if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-      printf("usage: replay_probe [--kernels 700] [--floats 65536] [--reps 30]\n"
+      printf("usage: replay_probe [--kernels 700] [--floats 65536] [--reps 30] [--updates 20]\n"
              "Times a chain of small dependent kernels launched one by one, as the engine does, against the same chain\n"
              "recorded once in a command list and replayed: the GPU's idle time between kernels that a replay saves.\n"
              "  --kernels N   kernels per chain (default 700, about one token of the 35B-A3B; 930 for the 27B)\n"
              "  --floats N    floats each kernel reads and writes (default 65536)\n"
-             "  --reps N      chains timed per way, the median counts (default 30)\n");
+             "  --reps N      chains timed per way, the median counts (default 30)\n"
+             "  --updates N   the mutable list's kernels whose argument changes every step (default 20, as a token's\n"
+             "                position in ~20 kernels; 0: a pure replay)\n");
       return 0;
     }
   for (int i = 1; i + 1 < argc; i += 2) {
@@ -61,6 +178,7 @@ int main(int argc, char** argv) {
     if (a == "--kernels") nk = atoi(argv[i + 1]);
     else if (a == "--floats") nf = atoi(argv[i + 1]);
     else if (a == "--reps") reps = atoi(argv[i + 1]);
+    else if (a == "--updates") nu = atoi(argv[i + 1]);
   }
   ClRt cl;
   if (!cl.init()) return 1;
@@ -130,6 +248,7 @@ int main(int argc, char** argv) {
   printf("%-40s %8.3f ms per step (%.2f us per kernel)\n", "immediate list (the engine now)", median(imm), median(imm) * 1000 / nk);
   replay(0, true, "replayed list, barrier after each kernel");
   replay(8, false, "replayed list, in-order flag");
+  mutable_replay(cl, zl, listCreate, listClose, queueExec, queueSync, q, ord, nk, nf, reps, nu, gc, (uint32_t)lws);
 
   // 3. the engine's way to a replay without recording a step once for all (its arguments change every token):
   // each step recorded again into regular in-order lists of `chunk` kernels, each list appended to the immediate list
