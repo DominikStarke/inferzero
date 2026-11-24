@@ -217,7 +217,18 @@
     // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
     const bool use_gemm_gu = use_gemm || (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
                                           !hp.ds41 && tm == 16 && T >= gemm_min);
-    const std::string xdef = xc_ ? " -DXCACHE" : "";
+    // (ARC_MOE_GU2=1, opt-in, 2026-11-29: the per-tile kernels' tiles in passes over K, the gate's sums then the up's,
+    //  GU_MC slots a pass (ARC_MOE_GU_MC, default 4): spill-free in 128 registers on mtl / arl-h / dg2 / bmg, ocloc
+    //  26.40, where one pass spilled up to 166 scratch messages on Xe-LPG; meant bit-identical. UNTESTED HERE: built,
+    //  not run. The kernel ignores it for Q2F and the TM 1 vector-decoder form)
+    static const bool gu2_on = getenv("ARC_MOE_GU2") && atoi(getenv("ARC_MOE_GU2")) != 0;
+    static const std::string gu2_def =
+        !gu2_on ? std::string()
+                : " -DGU_TWO" + (getenv("ARC_MOE_GU_MC") ? " -DGU_MC=" + std::to_string(gu_mc_pow2(atoi(getenv("ARC_MOE_GU_MC"))))
+                                                          : std::string());
+    if (gu2_on && !gu2_said_ && (gu2_said_ = true))
+      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (ARC_MOE_GU2=1)\n");
+    const std::string xdef = (xc_ ? std::string(" -DXCACHE") : std::string()) + gu2_def;
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
     // of a split token (ARC_XSPLIT_TAB below)
     cl_mem xtab_l = xc_ ? xc_->xtab[L.il] : nullptr;
