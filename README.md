@@ -233,6 +233,12 @@ its failsafes: [docs/multi-gpu.md](docs/multi-gpu.md). The plan: QUEUE.md, F31.
 | [CHANGELOG.md](CHANGELOG.md), [QUEUE.md](QUEUE.md) | what changed recently; open work and decisions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | where the speed is still missing, how to measure your card, how to send code |
 
+## Support the project
+
+inferzero is built by one person on one laptop; the speed work on discrete cards (B60, B70, A770, B390) is measured
+by the users who own them. If it is useful to you, you can [sponsor it on GitHub](https://github.com/sponsors/rizagp):
+sponsorship pays for test hardware, so more of the work can be checked before it reaches you.
+
 ## License
 
 inferzero is licensed under the [Apache License 2.0](LICENSE).
