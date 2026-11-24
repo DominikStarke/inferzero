@@ -461,7 +461,10 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
       //  now, the values looked up: r = (2 a mh + den) / (2 den) exactly as before, through a float reciprocal and a
       //  correction of the quotient by one either way (n < 2^20, so the float quotient is within one), so the same
       //  integers bit for bit. UNTESTED HERE: no build or run on the laptop, the user's rule of 2026-11-24)
-      int rt[8];
+      //  (the 8 rounded magnitudes as bytes of two words, rt0 values 0..3, rt1 4..7, each at most 12 x 8 = 96: a
+      //  private array indexed by the code at run time may go to scratch memory; two registers and a shift do not, the
+      //  Researcher's review of 7d8ad6e)
+      uint rt0 = 0u, rt1 = 0u;
       if (!same && h != big) {
         const int dd = 2 * den;
         const float inv = 1.0f / (float)dd;
@@ -471,7 +474,8 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
           int q = (int)((float)n * inv);
           if (q * dd > n) --q;
           else if ((q + 1) * dd <= n) ++q;
-          rt[i] = q;
+          if (i < 4) rt0 |= (uint)q << (8 * i);
+          else rt1 |= (uint)q << (8 * (i - 4));
         }
       }
 #pragma unroll
@@ -487,7 +491,11 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
           int v = c;
           if (!same) {
             if (h == big) v = 8 * c;
-            else v = c < 0 ? -rt[code & 7u] : rt[code & 7u];  // (|kv[code]| = kv[code & 7]: the table's two signs)
+            else {
+              // (|kv[code]| = kv[code & 7]: the table's two signs)
+              const int r = (int)((((code & 4u) ? rt1 : rt0) >> (8u * (code & 3u))) & 0xFFu);
+              v = c < 0 ? -r : r;
+            }
           }
           word |= ((uint)v & 0xFFu) << (8 * j);
         }
