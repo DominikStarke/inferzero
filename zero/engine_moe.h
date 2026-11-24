@@ -211,8 +211,19 @@
     //  takes the XMX form as it is)
     const bool rgx = rg_ok && gemm_ok && rgx_layer(L);
     const bool use_rg = rg_ok && (rgx || q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
-                                  (tp_moe() && tp_rg_gu)),
-               rg_down = rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
+                                  (tp_moe() && tp_rg_gu));
+    // (ARC_INK_DOWN_TILE=1, opt-in, 2026-11-29: Inkling 2's down projection of prompt chunks per tile (moe_down_q)
+    //  instead of moe_rg on an integrated GPU or where XMX is off. The laptop's 125H, UD-IQ4_XS, --bench-pp 512: moe_rg
+    //  46 % of the prompt, 73.8 ms a visit; per tile (ARC_MOE_RG_MIN=100000) moe_down 3,540 -> 1,021 ms, 65.5 -> 98-100
+    //  tok/s. NVFP4 experts then read exactly per 16 in the down projection too (moe_rg folds per 32): another rounding,
+    //  so opt-in until a KL run makes it the default. ARC_MOE_RG_MIN set: that decides, as before. UNTESTED HERE)
+    static const bool ink_down_tile = getenv("ARC_INK_DOWN_TILE") && atoi(getenv("ARC_INK_DOWN_TILE")) != 0 &&
+                                      !getenv("ARC_MOE_RG_MIN");
+    const bool down_tile = ink_down_tile && hp.inkling && !q2g && (zrt::integrated() || !xmx_);
+    if (down_tile && !ink_down_tile_said_ && (ink_down_tile_said_ = true))
+      zlog::eprintf("inferzero: Inkling 2: the prompt's expert down projection per tile, not moe_rg (ARC_INK_DOWN_TILE=1: "
+                    "an integrated GPU or XMX off)\n");
+    const bool rg_down = !down_tile && rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
     const bool use_gemm_gu = use_gemm || (!use_rg && moe_group_ > 0 && Fp != F && moe_gemm_gu_layer_ok(L) && !tp_moe() &&
