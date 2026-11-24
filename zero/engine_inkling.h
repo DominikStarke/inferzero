@@ -484,9 +484,13 @@
     const uint64_t fixed = dense + exps + (768ull << 20), row = 2 * ink_row_bytes();
     int c = 4096;
     while (c > 512 && (double)(fixed + (uint64_t)c * row) > 0.92 * (double)limit) c /= 2;
-    while (c > 512 && ctx > 0 && c / 2 >= ctx) c /= 2;  // (no longer than the context needs: --bench-pp 512's ctx 544)
+    // (no longer than the context needs: the smallest power of two from 512 that holds it, so --bench-pp 512's ctx 544
+    //  takes 1024; the order holds: max_chunk is set here, the buffers allocated, then the expert cache sized from what
+    //  is left, engine.h)
+    while (c > 512 && ctx > 0 && c / 2 >= ctx) c /= 2;
     const double GiB = 1024.0 * 1024.0 * 1024.0;
-    zlog::eprintf("inferzero: Inkling 2 on an integrated GPU: chunk %d (ARC_INK_CHUNK_AUTO=1; ~%.2f GiB more than at 512, "
+    static bool said = false;  // (once: a dry plan or another engine in the process asks again)
+    if (!said && (said = true)) zlog::eprintf("inferzero: Inkling 2 on an integrated GPU: chunk %d (ARC_INK_CHUNK_AUTO=1; ~%.2f GiB more than at 512, "
                   "the experts %.2f GiB kept whole in the cache, limit %.2f GiB)\n",
                   c, (double)((uint64_t)(c - 512) * row) / GiB, exps / GiB, limit / GiB);
     return c;
