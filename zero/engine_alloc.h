@@ -201,7 +201,7 @@
       hver_ = buf((size_t)(1 + max_drafts()) * hw * 4);
       mtp_h_ = buf(hw * 4);
       fill(hlast_, hw * 4);
-      mtp_logits_host_.resize(hp.n_vocab);
+      mtp_logits_host_.resize(std::max(hp.n_vocab, n_logits()));  // (a split model's shard: its rows)
     }
     for (int r = 0; r < kRoles; ++r)
       if (stage_need_q_[r]) {
@@ -233,7 +233,7 @@
     }
     fill(x_, M * hp.hce() * 4);
     logits_host_.resize(n_logits());
-    if (has_mtp) spec_logits_host_.resize((size_t)hp.n_vocab * (1 + max_drafts()));
+    if (has_mtp) spec_logits_host_.resize((size_t)hp.n_vocab * (1 + max_drafts()));  // (a split model's shard grows it)
     x_host_.resize(M * hp.hce());
   }
   // tokens per layer-major prompt segment (Flash Next: 8192, its residual rows are 4 streams wide)

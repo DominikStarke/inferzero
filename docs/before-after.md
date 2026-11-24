@@ -371,6 +371,18 @@ That property is what every speed change is held to:
       gate / up stay equal. The Q4_K down / qkv and the Q5_K z lose 2-4 %.
     - About 1 % in all, within run-to-run spread: not made the default.
 
+- **2026-11-24, MTP drafting on a split model (`--gpus N --mtp`):** the nextn block drafts over the whole
+  vocabulary, two host barriers a draft (`Engine::tp_draft_conf`), and verdicts run as any split pass
+  (`TpMirror::kSpec`). Measured on 4 Arc Pro B60s (PCIe 4.0 x4), Qwen3.8 27B IQ3_S GSQ, prompt "The capital of France
+  is", 32 tokens, two runs each, warm: over 2 GPUs plain 39.9 / 39.2 tok/s against `--mtp --mtp-drafts 3` 56.8 / 63.3
+  (+47 %); over 4 GPUs 53.8 / 51.6 against 75.2 / 74.7 (+41 %). The answer is the same as plain decoding's, token for
+  token; 2.3 drafts a step, 60 % (2 GPUs) and 71 % (4 GPUs) accepted. Single GPU: `runz --dump-logits` of the same
+  prompt and 16 tokens byte-identical before and after (md5 db01a99020011304e14d94ee8d300709), and the split's prompt
+  logits byte-identical to its plain pass's. Accuracy: KL against the f32 reference not re-measured (a 27B f32
+  reference needs ~108 GB of RAM, this machine has 32); the drafts are verified by the main model, so the answer is the
+  plain path's by construction, and the logits check above is what was run. `runz` needs `ARC_TP_P2P=0` on this box (an
+  out-of-memory on the direct sums' inbox, with and without `--mtp`; see docs/multi-gpu.md).
+
 - **2026-11-18, `ARC_TP_EVSUM=1` (opt-in): generation's split sums on GPU events:** the laptop, Qwen3.5 4B over 2
   shards (`ARC_TP_SIM`, on 2 queues), logits of every generated token against the host sums: a 48-token answer 6 / 6
   runs 901D5D90... both ways; `USAGE.md` (18.6K tokens, the reduce-scatter, then event sums) + 8 tokens 52771C66... both

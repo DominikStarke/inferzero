@@ -743,8 +743,8 @@ the engine follows that file's structure closely, NOTICE gets an ollama credit.
 - Taps from visits on earlier stages travel with the stage's activations: 4 x 2304 floats a row, copied to the last
   stage with the stream at the boundary that passes them.
 - Verification is the split's normal 8-row chunk. The conv-state rollback runs on each stage for its own visits, with
-  the accepted count sent to every stage (as the split's MTP plan, "MTP / drafting is not used on a split model yet",
-  needs anyway).
+  the accepted count sent to every stage (as the tensor split's MTP drafting does, `Engine::tp_draft_conf` and
+  `TpMirror::kSpec`).
 
 **What stays open until code or a run:**
 - ollama's draft rows come from a runner that passes the block's logits for the 7 mask rows (`Unembed` of rows with

@@ -433,6 +433,9 @@
     const int B = (int)slots.size();
     int R = 0;
     for (const auto& r : rows) R += (int)r.size();
+    // (a split model: the same pass on every shard, their vocabulary rows joined — the rows as verify's, kSpec's layout
+    //  of batch_logits_host_ being the same as kBatch's)
+    TP_MIRROR(verify_batch(slots, rows), tp_on() ? TpMirror::kBatch : TpMirror::kNone, R);
     if (!batch_verify_ok() || B < 1 || B != (int)rows.size() || R > batch_rows_ || (dfl_ && R > dfl_vrows_rows_))
       throw std::runtime_error("verify_batch: not for this model or too many rows");
     std::vector<int> n(B);

@@ -818,6 +818,7 @@
   // hist: the tokens before `tok` (positions 0 .. pos - 1, the accepted drafts included). With opt.copy_draft, when the
   // last tokens up to `tok` appeared earlier in it, the tokens that followed there are the drafts (copy drafting, R1)
   std::vector<int> mtp_draft(int tok, int max_drafts, const std::vector<int>* hist = nullptr) {
+    TP_MIRROR(mtp_draft(tok, max_drafts, hist), TpMirror::kNone, 0);
     copy_used_ = false;
     if (dsp_) return dsp_draft(tok, max_drafts);  // (Inkling 2's DSpark drafter, zero/engine_dspark.h)
     if (hist && copy_on()) {
@@ -854,17 +855,25 @@
     if (pos + 1 + max_drafts > ctx) max_drafts = std::max(1, ctx - pos - 1);
     std::vector<int> drafts;
     mtp_rows(toks.data(), hfin_, np + 1, pos - np, true, max_drafts > 1 ? mtp_h_ : nullptr);
-    // (ARC_MTP_VOCAB: the reduced head's N logits, row i the token draft_ids_[i])
+    // (ARC_MTP_VOCAB: the reduced head's N logits, row i the token draft_ids_[i]; never on a split model, load_draft_head)
     const size_t nl = draft_head_on() ? (size_t)draft_head_.N : (size_t)hp.n_vocab;
     for (int k = 0;; ++k) {
-      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, nl * 4, mtp_logits_host_.data(), 0, nullptr, nullptr));
-      const auto first = mtp_logits_host_.begin(), last = first + nl;
-      const auto mx = std::max_element(first, last);
-      const int d = draft_head_on() ? draft_ids_[(size_t)(mx - first)] : (int)(mx - first);
+      // (a split model: this shard's rows of the vocabulary, joined over the shards for the token and its probability)
+      const size_t rows = tp_on() ? (size_t)n_logits() : nl;
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, rows * 4, mtp_logits_host_.data(), 0, nullptr, nullptr));
+      int d = 0;
+      double p = 1.0;
+      if (tp_on()) {
+        tp_draft_conf(mtp_logits_host_.data(), rows, d, p);  // (the shards' rows joined: token and probability)
+      } else {
+        const auto first = mtp_logits_host_.begin(), last = first + nl;
+        const auto mx = std::max_element(first, last);
+        d = draft_head_on() ? draft_ids_[(size_t)(mx - first)] : (int)(mx - first);
+        if ((int)drafts.size() + 1 < max_drafts) p = 1.0 / softmax_den(&*first, nl, *mx);
+      }
       drafts.push_back(d);
       if ((int)drafts.size() >= max_drafts) break;
-      const double z = softmax_den(&*first, nl, *mx);
-      if (1.0 / z < opt.mtp_min_p) break;  // not confident: verify one draft only
+      if (p < opt.mtp_min_p) break;  // not confident: verify one draft only
       mtp_rows(&d, mtp_h_, 1, pos + 1 + k, true, mtp_h_);
     }
     collect_profile();
@@ -876,6 +885,8 @@
   const std::vector<float>& verify(int tok, const std::vector<int>& drafts) {
     if (dsp_) return dsp_verify(tok, drafts);
     const int T = 1 + (int)drafts.size();
+    // (a split model: the same pass on every shard, their vocabulary rows joined into shard 0's spec_logits_host_)
+    TP_MIRROR(verify(tok, drafts), tp_on() ? TpMirror::kSpec : TpMirror::kNone, T);
     if (drafts.empty() || (int)drafts.size() > max_drafts()) throw std::runtime_error("verify: too many drafts");
     if (pos + T > ctx) throw std::runtime_error("context overflow");
     flush_mtp_pending();
@@ -894,7 +905,8 @@
     spec_ = false;
     pos += T;
     head_rows(0, T, out_norm_, hver_);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * T * 4, spec_logits_host_.data(),
+    // (a split model: this shard's rows of the vocabulary per row; TpMirror::kSpec joins them)
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * T * 4, spec_logits_host_.data(),
                                  0, nullptr, nullptr));
     if (pos > written_hi_) written_hi_ = pos;
     collect_profile();
@@ -903,6 +915,7 @@
   // The first `accepted` drafts of the last verify() turned out right; the rest are dropped.
   void verify_done(int accepted) {
     if (dsp_) return dsp_verify_done(accepted);
+    TP_MIRROR(verify_done(accepted), TpMirror::kNone, 0);  // (a split model: every shard rolls its own state back)
     const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
     const cl_mem dfl_src = vrows_ ? dfl_vrows_ : nullptr;  // (a batched pass: the slot's own copy of its rows)
     vrows_ = false;

@@ -66,7 +66,7 @@ class PpEngine {
     if (o.mtp || !o.dflash.empty()) {
       static std::once_flag said;
       std::call_once(said, [] {
-        zlog::eprintf("inferzero: MTP / drafting is not used on a split model yet (--gpus 2 or more): plain decoding\n");
+        zlog::eprintf("inferzero: MTP / drafting is not used on a layer split (--split layer): plain decoding\n");
       });
     }
     so.npu = 0;

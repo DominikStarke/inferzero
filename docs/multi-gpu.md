@@ -239,8 +239,8 @@ The limits:
 - N at most half the k-heads, at most the kv-heads, at most the FFN width / 256;
 - 2 to 4 GPUs for the 27B and 4B.
 
-MTP / DFlash2 drafting and the NPU are off in a split model. Slots (batched decoding) work since 2026-11-02 (see
-below).
+DFlash2 drafting and the NPU are off in a split model. The model's **MTP block drafts** since 2026-11-24 (see
+"MTP drafting on a split model" below). Slots (batched decoding) work since 2026-11-02 (see below).
 
 ### The sums in pieces (`ARC_TP_PIPE`, 2026-11-12, on by default since the same evening; `=0` off)
 
@@ -456,8 +456,8 @@ identical. Sums per token: 2 per layer over 2 GPUs (96), 84 over 3 or 4 (the att
 the 35B already has). Over 4 B60s each holds a quarter of the experts, which fits; over 2 the cache holds what fits of
 each half and streams the rest, as one GPU does with all of them.
 
-**Off in a split model:** MTP and DFlash2 drafting (as for every split model), and the sums beside the next chunk
-(`ARC_TP_OVERLAP`, dense models only).
+**Off in a split model:** DFlash2 drafting (its drafter is one GPU's), and the sums beside the next chunk
+(`ARC_TP_OVERLAP`, dense models only). The MTP block drafts (2026-11-24, below).
 
 **Cost left on every GPU:** the mixers are ~0.9 GB of Q8_0 per token read by each GPU (97 mixers of ~9 MB), as much as
 the routed experts of a token on one GPU; the next step for speed, if the B60s show it, is to divide each mixer's up
@@ -660,6 +660,49 @@ times a batched step for 1..N slots against one slot alone. Laptop (ARC_TP_SIM, 
 something): both checks bit-identical; 4 slots together 3.26x one slot's tokens per second (27B over 2) and 2.41x
 (35B over 4; one GPU 2.82x).
 
+## MTP drafting on a split model (2026-11-24)
+
+The model's MTP (nextn) block drafts on a split model too, with `--mtp` as on one GPU: `runz --gpus N --mtp` and
+`serverz --gpus N --mtp` (it was dropped with a line "drafting is off for a split model for now" before, #92).
+DFlash2 stays one GPU's.
+
+**Why the block had to learn the split.** The block is one more layer (`blk.<n_layer>.*`, a full-attention layer
+with a dense FFN), so its attention and FFN are divided as any layer's are (`T()` in
+[zero/mgpu/engine_tp_shard.h](../zero/mgpu/engine_tp_shard.h)), while its `nextn.*` tensors stay whole on every GPU:
+`eh_proj` reads the whole residual row — both `enorm(embed)` and `hnorm(h)` halves — so every GPU computes the same
+output and no sum is needed. Before this, `T()` returned the block's attention unsliced while the load had already
+allocated its KV cache from the shard's reduced head count: turning `--mtp` on would have loaded full-width
+attention weights into a shard-sized cache.
+
+**The draft is one decision for all.** The vocabulary rows are split, so the token and its probability are decided
+over the whole vocabulary: each GPU writes its highest logit, that row's token id and its softmax sum into
+`TpComm::draft` (4 doubles per GPU, pinned host memory), and `Engine::tp_draft_conf` meets at two host barriers per
+draft. Every GPU therefore chains and stops at the same draft, which keeps `mtp_draft`'s loop and its barriers in
+step.
+
+**The verification pass** (`verify`) runs on every GPU as any pass does, and `TpMirror::kSpec` interleaves the GPUs'
+vocabulary rows into shard 0's `spec_logits_host_`, so the server sees the whole vocabulary as it does for a plain
+step. `verify_done` rolls every GPU's state back the same way. Drafting over several slots at once
+(`verify_batch`, `TpMirror::kBatch`) works the same.
+
+**Numbers** (4 Arc Pro B60s on PCIe 4.0 x4, Qwen3.8 27B IQ3_S GSQ, same prompt, two runs each, warm):
+
+| GPUs | plain | `--mtp --mtp-drafts 3` | |
+|---|---|---|---|
+| 2 | 39.9 / 39.2 tok/s | 56.8 / 63.3 tok/s | +47 % |
+| 4 | 53.8 / 51.6 tok/s | 75.2 / 74.7 tok/s | +41 % |
+
+The text is the same as plain decoding's, token for token (2.3 drafts a step, 60-71 % accepted). On the 4 GPUs the
+per-step waiting for the sums rises from 14.5 to 22.7 ms of a 35.5 ms step: a verification pass has 4 rows, so its
+sums cost more, which is where the rest of the gain would come from.
+
+Two host-only paths that never touch the sums keep the single-GPU code unchanged: the guard is one pointer test, and
+`runz --dump-logits` of a single GPU run before and after this change are byte-identical.
+
+**`runz` on 4 GPUs needs `ARC_TP_P2P=0` on this machine** (4 x B60, driver 26.40): the P2P inbox copy fails with
+`0x70000003` (out of memory) at the same spot with and without `--mtp`, so it is not this change's; `serverz` on the
+same box loads 4 GPUs with the direct path. Not chased yet.
+
 ## The server: `serverz --gpus N`
 
 ```powershell
@@ -673,7 +716,7 @@ at once, and their logits are joined into shard 0's, so the server sees the whol
 is one pointer test (logits bit-identical to the build before). A request's cancel (the web UI's stop) is asked on
 shard 0 and its answer shared, so every shard stops at the same point.
 
-Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up.
+Not with `--gpus` yet: DFlash2, images, the prompt and session caches on disk, the warm-up.
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
 B60s 1,298.9 -> 1,368.8 tok/s, 4 Pro B60s 1,629.6 -> 1,734.0; a 27B IQ4_XS 32K prompt over two Arcs, the second
@@ -867,7 +910,7 @@ and 2: the parts of a sum are added in another order, and the second token is a 
   both GPUs work at once. Generation would run the GPUs one after the other: about one GPU's speed, against the tensor
   split's two. So the engine would choose it at load, from the links timed above, only when the link is too slow.
 
-- The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
+- The launcher (a choice of which GPUs), and with `serverz --gpus`: DFlash2, images, the prompt and session
   caches on disk.
 - MoE models: Gemma 4 26B; the 35B and Flash Next are split and measured over B60s (above).
 - Fewer host round trips per sum: **built 2026-11-18 for generation's sums, opt-in `ARC_TP_EVSUM=1`** (each GPU
