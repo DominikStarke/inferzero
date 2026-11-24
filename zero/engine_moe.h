@@ -218,9 +218,9 @@
     //  tok/s. NVFP4 experts then read exactly per 16 in the down projection too (moe_rg folds per 32): another rounding,
     //  so opt-in until a KL run makes it the default. ARC_MOE_RG_MIN set: that decides, as before. UNTESTED HERE)
     // (also NVFP4 expert layers on every GPU: hibagus's B70 (#92), Inkling 2K prompt, UD-Q4_K_XL (NVFP4 in 20 of 24
-    //  layers) moe_down 2,275 ms against 238 with ggml-org's IQ4_NL. The down kernel is built with -DGU_TWO here, the
-    //  form that spills nothing at 128 registers on mtl / arl-h / dg2 / bmg; chunks of more than 8 rows only, so
-    //  generation's kernels are as before)
+    //  layers) moe_down 2,275 ms against 238 with ggml-org's IQ4_NL. Chunks of more than 8 rows only, so generation's
+    //  kernels are as before. The down kernel is the prompt tiles' single pass (no -DGU_TWO since 2026-11-24: the
+    //  user's rule, GU2 for generation only; the laptop's moe_down with it forced here 1,565 ms, 1,021 without)
     static const bool ink_down_tile = getenv("ARC_INK_DOWN_TILE") && atoi(getenv("ARC_INK_DOWN_TILE")) != 0 &&
                                       !getenv("ARC_MOE_RG_MIN");
     const bool down_tile = ink_down_tile && hp.inkling && !q2g && T > 8 &&
@@ -237,7 +237,12 @@
     //  GU_MC slots a pass (ARC_MOE_GU_MC, default 4): spill-free in 128 registers on mtl / arl-h / dg2 / bmg, ocloc
     //  26.40, where one pass spilled up to 166 scratch messages on Xe-LPG; meant bit-identical. UNTESTED HERE: built,
     //  not run. The kernel ignores it for Q2F and the TM 1 vector-decoder form)
-    static const bool gu2_on = getenv("ARC_MOE_GU2") && atoi(getenv("ARC_MOE_GU2")) != 0;
+    // (the user, 2026-11-24, "Yes, generation only": by default on an integrated GPU for T <= 8, generation and small
+    //  chunks, where the laptop measured Inkling UD-IQ4_XS's tg16 8.77 -> 9.87 tok/s; the prompt tiles stay the single
+    //  pass, which spills but measured fastest there (pp512 88.5 against 72.2 with GU2, 79.0 at 256 registers).
+    //  ARC_MOE_GU2=0 off, =1 everywhere. Meant bit-identical: the --dump-logits check before main)
+    static const int gu2_env = getenv("ARC_MOE_GU2") ? (atoi(getenv("ARC_MOE_GU2")) != 0 ? 1 : 0) : -1;
+    const bool gu2_on = gu2_env == 1 || (gu2_env < 0 && zrt::integrated() && T <= 8);
     // (built per call, not a static string: the laptop's run of 2026-11-24 22:02 said the line below, yet every
     //  moe_gateup_q / moe_down_q it built had no -DGU_TWO in its options; the cause not found by reading)
     static const int gu_mc_env = getenv("ARC_MOE_GU_MC") ? gu_mc_pow2(atoi(getenv("ARC_MOE_GU_MC"))) : 0;
@@ -247,7 +252,9 @@
       if (gu_mc_env > 0) gu2_def += " -DGU_MC=" + std::to_string(gu_mc_env);
     }
     if (gu2_on && !gu2_said_ && (gu2_said_ = true))
-      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (ARC_MOE_GU2=1:%s)\n", gu2_def.c_str());
+      zlog::eprintf("inferzero: MoE experts per tile in passes over K, gate then up (%s:%s)\n",
+                    gu2_env == 1 ? "ARC_MOE_GU2=1, every chunk" : "up to 8 rows on an integrated GPU; ARC_MOE_GU2=0 off",
+                    gu2_def.c_str());
     std::string xdef = xc_ ? std::string(" -DXCACHE") : std::string();
     xdef += gu2_def;
     // the per-tile kernels' expert table: the layer's row in host memory, or its copy on the GPU for the missed experts
@@ -335,7 +342,7 @@
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
                                          (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd +
-                                         nvd(L.ex_type[2]) + (down_tile && !gu2_on ? " -DGU_TWO" : ""), "moe_down_q");
+                                         nvd(L.ex_type[2]), "moe_down_q");
       int NN = E, K = Fp, S = slots_;
       if (xc_)
         set_args(k, 0, xtab_l, NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xtab_l, xoff(L, 2));
