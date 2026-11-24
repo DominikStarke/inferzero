@@ -52,13 +52,11 @@ inline float ink_sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 // (normed state . q_j) / sqrt(E); out[t][j] = the softmax-weighted sum of the normed states. Rows of E per token.
 // (I2 step 1, 2026-11-24: sep 1 writes query j's rows to outj ([T][E] each) instead of out's [T][nq][E]; sep 2 (nq 1)
 //  writes the one query's rows to out, out1 and out2: what ink_take copied out after it. The same values)
-__kernel void ink_mix(__global const float* blocks, int nb, long bstride, __global const float* cur,
+// (the body as a function of the token t, the local arrays the kernel's: ink_mix and ink_mix_fused run the same code)
+inline void ink_mix_t(int t, __global const float* blocks, int nb, long bstride, __global const float* cur,
                       __global const float* q, int nq, __global float* out, int E, __global float* out1,
-                      __global float* out2, int sep) {
-  __local float red[INK_LS];
-  __local float rs[INK_MAXS];
-  __local float sc[4 * INK_MAXS];
-  const int t = get_group_id(0), l = get_local_id(0), n = get_local_size(0), S = nb + 1;
+                      __global float* out2, int sep, __local float* red, __local float* rs, __local float* sc) {
+  const int l = get_local_id(0), n = get_local_size(0), S = nb + 1;
 #define INK_STATE(s) ((s) < nb ? blocks + (s) * bstride + (size_t)t * E : cur + (size_t)t * E)
   for (int s = 0; s < S; ++s) {
     __global const float* x = INK_STATE(s);
@@ -99,6 +97,14 @@ __kernel void ink_mix(__global const float* blocks, int nb, long bstride, __glob
       }
     }
 #undef INK_STATE
+}
+__kernel void ink_mix(__global const float* blocks, int nb, long bstride, __global const float* cur,
+                      __global const float* q, int nq, __global float* out, int E, __global float* out1,
+                      __global float* out2, int sep) {
+  __local float red[INK_LS];
+  __local float rs[INK_MAXS];
+  __local float sc[4 * INK_MAXS];
+  ink_mix_t(get_group_id(0), blocks, nb, bstride, cur, q, nq, out, E, out1, out2, sep, red, rs, sc);
 }
 
 // the controller's input, one work-group per token: g[t] = [rms(x[t]), rms(m[t])] (eps 1e-6, no weight), 2E values;
@@ -517,12 +523,11 @@ __kernel void ink_rmsnorm(__global const float* x, int xstride, __global const f
 // ink_rmsnorm computes it (work-groups of 256, ink_wg_sum), written to out (in place allowed), then its superblocks
 // quantized from out as swiglu_quant does (quant_store16, per-32 or per-256 scales by act32); rows >= M_valid quantize
 // as zeros and write no f32 row, as quant_rows' pad rows. grid (256, Mp), local (256, 1)
-__attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global const float* w, __global float* out, int E,
-                                float eps, int M, int M_valid, __global char* aq, __global float* asc,
-                                __global ushort* absum, int act32) {
-  __local float red[INK_LS];
-  const int t = get_group_id(1), l = get_local_id(0), n = get_local_size(0), lane = get_sub_group_local_id();
+// (the body as a function of the row t: ink_rmsnorm_quant and ink_mix_fused run the same code)
+inline void ink_norm_quant_t(int t, __global const float* x, int xstride, __global const float* w, __global float* out,
+                             int E, float eps, int M, int M_valid, __global char* aq, __global float* asc,
+                             __global ushort* absum, int act32, __local float* red) {
+  const int l = get_local_id(0), n = get_local_size(0), lane = get_sub_group_local_id();
   const bool valid = t < M_valid;
   if (valid) {  // (the work-group's own row: the same branch for all of it)
     __global const float* a = x + (size_t)t * xstride;
@@ -546,6 +551,49 @@ __kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global c
     }
     quant_store16(v, s, t, M, E, aq, asc, absum, act32);
   }
+}
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ink_rmsnorm_quant(__global const float* x, int xstride, __global const float* w, __global float* out, int E,
+                                float eps, int M, int M_valid, __global char* aq, __global float* asc,
+                                __global ushort* absum, int act32) {
+  __local float red[INK_LS];
+  ink_norm_quant_t(get_group_id(1), x, xstride, w, out, E, eps, M, M_valid, aq, asc, absum, act32, red);
+}
+
+// (2026-11-24, Inkling (a): fewer launches a token, the same values) up to three launches in one, a work-group per
+// token (grid (256, has_nq ? M : M_valid), local (256, 1)):
+//   has_conv (one token, M_valid 1): ink_conv1's conv of the attention output and its add into the stream cur, the
+//     work-group's 256 work-items over the E channels (ink_conv1_c and the volatile read back, as ink_conv1);
+//   then ink_mix's mix of the blocks and cur into out (ink_mix_t, the same code);
+//   has_nq: then ink_rmsnorm_quant's norm of out's rows in place (weight w) and their quantization (ink_norm_quant_t,
+//     the same code; rows >= M_valid only quantize zeros, as there).
+// Each step's values as its own launch's: a barrier with a global fence between them, as between two launches. The
+// launches it replaces: ARC_INK_FUSE_MIXQ=0 / ARC_INK_FUSE_CONVMIX=0 (engine_inkling.h). UNTESTED HERE: no build or
+// run on the laptop, the user's rule of 2026-11-24
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ink_mix_fused(int has_conv, __global const float* ccur, __global const float* cw, __global float* cstate,
+                            __global float* cout, int NC, float cscale, __global const float* blocks, int nb,
+                            long bstride, __global float* cur, __global const float* q, int nq, __global float* out,
+                            int E, __global float* out1, __global float* out2, int sep, int has_nq,
+                            __global const float* w, float eps, int M, int M_valid, __global char* aq,
+                            __global float* asc, __global ushort* absum, int act32) {
+  __local float red[INK_LS];
+  __local float rs[INK_MAXS];
+  __local float sc[4 * INK_MAXS];
+  const int t = get_group_id(1);
+  if (t < M_valid) {  // (the work-group's own token: the same branch for all of it)
+    if (has_conv) {
+      for (int c = get_local_id(0); c < E; c += get_local_size(0)) {
+        const float o = ink_conv1_c(ccur[c], cw, cw, 0, 1, cstate, c, E, NC, cscale);
+        cout[c] = o;
+        cur[c] = cur[c] + ((volatile __global float*)cout)[c];  // (as ink_conv1's add: no fma across the two)
+      }
+      barrier(CLK_GLOBAL_MEM_FENCE);
+    }
+    ink_mix_t(t, blocks, nb, bstride, cur, q, nq, out, E, out1, out2, sep, red, rs, sc);
+    if (has_nq) barrier(CLK_GLOBAL_MEM_FENCE);
+  }
+  if (has_nq) ink_norm_quant_t(t, out, E, w, out, E, eps, M, M_valid, aq, asc, absum, act32, red);
 }
 
 // out = a + b, element-wise (any size; in place allowed)

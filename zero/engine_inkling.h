@@ -655,6 +655,30 @@
              out2 ? out2 : ink_dummy_, sp);
     ink_rung("ink_mix", kk, T, 256);
   }
+  // (2026-11-24, Inkling (a): ink_mix with the steps either side of it in one launch, ops_inkling.cl ink_mix_fused:
+  //  conv_in set: first one token's ink_conv1 of conv_in into conv_out with its add into cur (the post-attention conv);
+  //  nw set: then the norm of out's rows in place with weight nw and their quantization for the next GEMM, as
+  //  ink_rmsnorm_q (out's rows then count as quantized for ink_mm's reuse). The same values as the separate launches.
+  //  ARC_INK_FUSE_MIXQ=0 / ARC_INK_FUSE_CONVMIX=0 (or ARC_INK_FUSE=0): the separate launches. UNTESTED HERE)
+  static bool ink_fuse_sw(const char* name) {
+    const bool all_off = getenv("ARC_INK_FUSE") && atoi(getenv("ARC_INK_FUSE")) == 0;
+    return !all_off && !(getenv(name) && atoi(getenv(name)) == 0);
+  }
+  void ink_mix_fused(cl_mem blocks, int nb, cl_mem cur, cl_mem q, int nq, cl_mem out, int T, int sep, cl_mem out1,
+                     cl_mem out2, cl_mem conv_in, cl_mem conv_w, cl_mem conv_state, cl_mem conv_out, cl_mem nw, int Mp) {
+    cl_kernel kk = ink_k("ink_mix_fused");
+    int hc = conv_in ? 1 : 0, NC = ink_.nc, NB = nb, NQ = nq, E = hp.n_embd, sp = sep, hq = nw ? 1 : 0, MM = Mp, TT = T,
+        a32 = 1;
+    float csc = 1.0f / std::sqrt((float)(NC + 1)), eps = hp.eps;
+    int64_t bs = (int64_t)max_chunk * hp.n_embd;
+    cl_mem d = ink_dummy_;
+    set_args(kk, 0, hc, conv_in ? conv_in : d, conv_w ? conv_w : d, conv_state ? conv_state : d, conv_out ? conv_out : d,
+             NC, csc, blocks ? blocks : d, NB, bs, cur, q, NQ, out, E, out1 ? out1 : d, out2 ? out2 : d, sp, hq,
+             nw ? nw : d, eps, MM, TT, aq_, asc_, absum_, a32);
+    size_t gws[2] = {256, (size_t)(nw ? Mp : T)}, lws[2] = {256, 1};
+    run("ink_mix_fused", kk, 2, gws, lws);
+    if (nw) ink_q_x_ = out, ink_q_k_ = E;
+  }
   void ink_take(cl_mem src, int nq, int j, cl_mem out, int T) {
     cl_kernel kk = ink_k("ink_take");
     int E = hp.n_embd;
@@ -755,13 +779,24 @@
     const size_t rowE = (size_t)E * 4;
     // the attention inputs: a mix (one query, SWA; three, global) of the blocks and the stream, from layer 1 on
     cl_mem in[3] = {ink_cur_, ink_cur_, ink_cur_};
+    // (Inkling (a), 2026-11-24: outside the loop's later passes the mix and in[0]'s norm + quantization in one launch,
+    //  ink_mix_fused; ARC_INK_FUSE_MIXQ=0: the two launches)
+    static const bool fuse_mixq = ink_fuse_sw("ARC_INK_FUSE_MIXQ");
+    const bool mixq = fuse_mixq && !msgs && E % 256 == 0;
+    bool q0_done = false;  // (in[0]'s norm and quantization done by the mix's launch)
     if (L.res_q) {
       // (I2 step 1: the mix writes the rows the layer reads, where ink_take copied them out of ink_mix_ before)
       if (L.nq == 1 && !msgs) {
-        ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T);  // ([T][1][E] is [T][E])
+        if (mixq) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T, 0, nullptr, nullptr, nullptr, nullptr,
+                                nullptr, nullptr, L.glob ? L.inorm[0] : L.an, Mp);
+        else ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, 1, ink_in_[0], T);  // ([T][1][E] is [T][E])
+        q0_done = mixq;
         in[0] = in[1] = in[2] = ink_in_[0];
       } else {
-        ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1], ink_in_[2]);
+        if (mixq) ink_mix_fused(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1],
+                                ink_in_[2], nullptr, nullptr, nullptr, nullptr, L.glob ? L.inorm[0] : L.an, Mp);
+        else ink_mix(ink_blocks_, nb, ink_cur_, L.res_q, L.nq, ink_in_[0], T, L.nq == 1 ? 2 : 1, ink_in_[1], ink_in_[2]);
+        q0_done = mixq;
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       }
     } else if (msgs) {  // (layer 0 is never a loop layer: the loop core starts after a block)
@@ -779,12 +814,12 @@
         ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
       } else {
-        ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
+        if (!q0_done) ink_rmsnorm_q(in[0], E, L.an, ink_in_[0], T, Mp);
         in[0] = in[1] = in[2] = ink_in_[0];
       }
     } else {
       for (int j = 1; j < 3; ++j) ink_rmsnorm(in[j], E, L.inorm[j], ink_in_[j], T);
-      ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
+      if (!q0_done) ink_rmsnorm_q(in[0], E, L.inorm[0], ink_in_[0], T, Mp);
       for (int j = 0; j < 3; ++j) in[j] = ink_in_[j];
     }
     // the projections; K and V through their convolutions (global: the input-dependent taps)
@@ -847,20 +882,39 @@
     // a block's first layer: the stream before it joins the blocks, the attention output starts a new one; else the
     // output is added to the stream (in the conv's launch, ink_conv's add)
     const bool bstart = ip % k.block == 0;
-    ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_, dsp_save(S, 2));
-    ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
+    // (Inkling (a), 2026-11-24: one token outside a block's start and outside DSpark's verification, the conv with
+    //  its add into the stream joins the FFN mix's launch, ink_mix_fused; ARC_INK_FUSE_CONVMIX=0: its own launch)
+    static const bool fuse_convmix = ink_fuse_sw("ARC_INK_FUSE_CONVMIX");
+    cl_mem save2 = dsp_save(S, 2);
+    const bool convmix = fuse_convmix && T == 1 && !bstart && !save2;
+    if (!convmix) {
+      ink_conv(ink_ao_, L.post_conv, nullptr, S.conv[2], ink_tmp_, E, T, bstart ? nullptr : ink_cur_, save2);
+      ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
+    }
     if (bstart) {
       ink_copy(ink_cur_, 0, ink_blocks_, (size_t)nb * max_chunk * rowE, rowE * T);
       ++nb;
       ink_copy(ink_tmp_, 0, ink_cur_, 0, rowE * T);
     }
     // the MoE: its input a mix over the blocks (with the new one) and the stream, the controller, ffn_norm
-    ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
+    // (Inkling (a): outside the loop's later passes on the streamed path, the norm + quantization below joins the
+    //  mix's launch too, as ink_mix_fused's nw; ARC_INK_FUSE_MIXQ=0: its own launch)
+    const bool ffn_q = mixq && ink_fast_moe_;
+    if (convmix || ffn_q) {
+      ink_mix_fused(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T, 0, nullptr, nullptr, convmix ? ink_ao_ : nullptr,
+                    L.post_conv, S.conv[2], ink_tmp_, ffn_q ? L.fn : nullptr, Mp);
+      if (convmix) ink_dump("ao", ip, ink_tmp_, (size_t)T * E, T);
+    } else {
+      ink_mix(ink_blocks_, nb, ink_cur_, L.ffn_res_q, 1, ink_xm_, T);
+    }
     if (msgs) ink_control(L, ink_xm_, 3, T, Mp);
     // (I2 step 1: on the streamed path the norm also quantizes its rows for the experts, layer_moe's aq_ / asc_; the
     //  router between them is f32 and leaves them alone)
-    if (ink_fast_moe_) ink_rmsnorm_q(ink_xm_, E, L.fn, ink_xm_, T, Mp);
-    else ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
+    if (ink_fast_moe_) {
+      if (!ffn_q) ink_rmsnorm_q(ink_xm_, E, L.fn, ink_xm_, T, Mp);
+    } else {
+      ink_rmsnorm(ink_xm_, E, L.fn, ink_xm_, T);
+    }
     ink_dump("xm", ip, ink_xm_, (size_t)T * E, T);
     ink_mm("ink_router", L.router, ink_xm_, ink_rl_, T, Mp);
     ink_dump("rl", ip, ink_rl_, (size_t)T * hp.n_expert, T);
