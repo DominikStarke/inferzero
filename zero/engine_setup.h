@@ -538,7 +538,7 @@
       static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
       return kernel("x8", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : "") +
-                              (moe_dpasw_on() ? " -DX8_DPASW" : "") + (situ ? ink_situ_defs() : std::string()),
+                              (moe_dpasw_on() ? (moe_dpasw_swap() ? " -DX8_DPASW -DX8_DPASW_SWAP" : " -DX8_DPASW") : "") + (situ ? ink_situ_defs() : std::string()),
                     "gemm_x8");
     }
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
@@ -569,6 +569,13 @@
   // tiles (-DX8_DPASW) and moe_rg's 8-lane form (-DRG_DPASW): a work-group's two sub-groups share the token operand, each
   // reading half. Discrete 8-lane cards only (Alchemist; the big tile's ARC_GEMM_XW_DPASW gained 3.6 % on an A770, #45).
   // Covered by the same checks as the plain forms (xmx_check's tiles, moe_rg's first use), bit for bit against DP4a
+  // ARC_MOE_DPASW_SWAP=1 (a test, 2026-11-24, #45: the split DPAS differing on an A770): each sub-group of a pair gives
+  // the other half of the token rows (gemm_x8 -DX8_DPASW_SWAP, moe_rg -DRG_DPASW_SWAP); if the check then passes, the
+  // pairing is the other way round from the dense big tile's
+  static bool moe_dpasw_swap() {
+    static const bool on = getenv("ARC_MOE_DPASW_SWAP") && atoi(getenv("ARC_MOE_DPASW_SWAP")) != 0;
+    return on;
+  }
   bool moe_dpasw_on() const {
     static const bool on = getenv("ARC_MOE_DPASW") && atoi(getenv("ARC_MOE_DPASW")) != 0;
     return on && cl_.sg8 && cl_.xmx && !zrt::integrated();
@@ -726,7 +733,29 @@
         if (!std::isfinite(out[0][i])) { sane = false; break; }
         sane = sane || out[0][i] != c0[i];
       }
-      if (!sane || memcmp(out[0].data(), out[1].data(), out[0].size() * 4)) bad += " " + name;
+      if (!sane || memcmp(out[0].data(), out[1].data(), out[0].size() * 4)) {
+        bad += " " + name;
+        // (2026-11-24, ARC_MOE_DPASW differing on an A770 in every form, #45: where the XMX result parts from DP4a's,
+        //  by the output's row in its 8-row group (0-3 / 4-7, the split DPAS's halves) and column in its 16 (0-7 / 8-15,
+        //  the two sub-groups' columns), and whether it is DP4a's with the row halves (row ^ 4) or the column halves
+        //  (col ^ 8) swapped: one line, so that one run says which part of the split is wrong. Untested here)
+        if (sane && N > 0 && out[0].size() % (size_t)N == 0) {
+          const size_t R = out[0].size() / (size_t)N;
+          size_t d[2][2] = {{0, 0}, {0, 0}}, rsw = 0, csw = 0, nd = 0;
+          for (size_t r = 0; r < R; ++r)
+            for (size_t c = 0; c < (size_t)N; ++c) {
+              const size_t i = r * N + c;
+              if (out[1][i] == out[0][i]) continue;
+              ++nd;
+              ++d[(r % 8) >= 4][(c % 16) >= 8];
+              if ((r ^ 4) < R && out[1][i] == out[0][(r ^ 4) * N + c]) ++rsw;
+              if ((c ^ 8) < (size_t)N && out[1][i] == out[0][r * N + (c ^ 8)]) ++csw;
+            }
+          zlog::eprintf("inferzero: XMX check %s: %zu of %zu outputs differ; rows 0-3 / 4-7 of 8 x columns 0-7 / 8-15 of 16: "
+                        "%zu %zu / %zu %zu; equal to DP4a's with the row halves swapped %zu, the column halves %zu\n",
+                        name.c_str(), nd, out[0].size(), d[0][0], d[0][1], d[1][0], d[1][1], rsw, csw);
+        }
+      }
     };
     struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
     cl_.soft_fail = true;

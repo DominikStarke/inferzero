@@ -67,7 +67,7 @@
   }
   std::string rgx_defs(const Layer& L, int i) const {
     if (!rgx_part(L, i)) return std::string();
-    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (cl_.sg8 && moe_dpasw_on() ? " -DRG_DPASW" : "") +
+    return std::string(" -DRG_XMX") + (cl_.sg8 ? " -DRG_SG8" : "") + (cl_.sg8 && moe_dpasw_on() ? (moe_dpasw_swap() ? " -DRG_DPASW -DRG_DPASW_SWAP" : " -DRG_DPASW") : "") +
            (rgx_emu() ? " -DRG_XEMU" : "") +
            (cl_.sg8 && rgx_emu() && atoi(getenv("ARC_MOE_RG_XEMU")) == 2 ? " -DRG_XBAD" : "");
   }

@@ -90,6 +90,12 @@ inline int8 x8_mad(int8 a, int8 b, int8 c) {
 #if defined(X8_DPASW) && !defined(X8_EMU)
 #pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
 #define X8_SPLIT 1
+// (-DX8_DPASW_SWAP, ARC_MOE_DPASW_SWAP=1, a test, 2026-11-24: each sub-group gives the other half of the rows, hg 0 rows 4-7)
+#ifdef X8_DPASW_SWAP
+#define X8_HR (((hg) ^ 1) * 4)
+#else
+#define X8_HR ((hg) * 4)
+#endif
 #define X8_AMAD(a, b, c) intel_sub_group_i8_i8_split_matrix_mad_k32((a), (b), (c))
 #else
 #define X8_AMAD(a, b, c) x8_mad((a), (b), (c))
@@ -270,8 +276,8 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
 #define X8_ROW(p, o) intel_sub_group_block_read((__global const uint*)(ap + (size_t)(mg + (p)) * K + s * 256 + j * 64 + (o)))
 #endif
 #ifdef X8_SPLIT  // (this sub-group's half of the 8 token rows)
-        const int4 al = (int4)(X8_ROW(hg * 4, 0), X8_ROW(hg * 4 + 1, 0), X8_ROW(hg * 4 + 2, 0), X8_ROW(hg * 4 + 3, 0));
-        const int4 ah = (int4)(X8_ROW(hg * 4, 32), X8_ROW(hg * 4 + 1, 32), X8_ROW(hg * 4 + 2, 32), X8_ROW(hg * 4 + 3, 32));
+        const int4 al = (int4)(X8_ROW(X8_HR, 0), X8_ROW(X8_HR + 1, 0), X8_ROW(X8_HR + 2, 0), X8_ROW(X8_HR + 3, 0));
+        const int4 ah = (int4)(X8_ROW(X8_HR, 32), X8_ROW(X8_HR + 1, 32), X8_ROW(X8_HR + 2, 32), X8_ROW(X8_HR + 3, 32));
 #else
         const int8 al = (int8)(X8_ROW(0, 0), X8_ROW(1, 0), X8_ROW(2, 0), X8_ROW(3, 0), X8_ROW(4, 0), X8_ROW(5, 0), X8_ROW(6, 0), X8_ROW(7, 0));
         const int8 ah = (int8)(X8_ROW(0, 32), X8_ROW(1, 32), X8_ROW(2, 32), X8_ROW(3, 32), X8_ROW(4, 32), X8_ROW(5, 32), X8_ROW(6, 32), X8_ROW(7, 32));

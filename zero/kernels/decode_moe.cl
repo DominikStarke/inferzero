@@ -557,6 +557,12 @@ inline int8 rg8_mad(int8 a, int8 b) {
 #if defined(RG_DPASW) && !defined(RG_XEMU)
 #pragma OPENCL EXTENSION cl_intel_subgroup_split_matrix_multiply_accumulate : enable
 #define RG8_SPLIT 1
+// (-DRG_DPASW_SWAP, ARC_MOE_DPASW_SWAP=1, a test, 2026-11-24: each sub-group gives the other half of the rows)
+#ifdef RG_DPASW_SWAP
+#define RG8_HR(hg) (((hg) ^ 1) * 4)
+#else
+#define RG8_HR(hg) ((hg) * 4)
+#endif
 #endif
 __attribute__((intel_reqd_sub_group_size(8)))
 __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* restrict aq,
@@ -651,7 +657,7 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
           int al[4], ah[4];  // (this sub-group's half of the 8 token rows: hg 0 rows 0-3, hg 1 rows 4-7)
 #pragma unroll
           for (int r = 0; r < 4; ++r) {
-            __global const uint* ap = (__global const uint*)(aq + (size_t)RG_B(tokl[tg], hg * 4 + r) * K + s * 256 + j * 64);
+            __global const uint* ap = (__global const uint*)(aq + (size_t)RG_B(tokl[tg], RG8_HR(hg) + r) * K + s * 256 + j * 64);
             al[r] = as_int(intel_sub_group_block_read(ap));
             ah[r] = as_int(intel_sub_group_block_read(ap + 8));
           }
