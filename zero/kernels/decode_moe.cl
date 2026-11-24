@@ -133,7 +133,7 @@ inline float moe_term(uint8 a8, const uint* w, float d, float dmin, int sc0, int
 #undef GU_TWO
 #endif
 #ifndef GU_MC  // (4 / GROWS slots: down's 4-row form for 2..8 tokens, Q5_K TM 8, spilled 48 messages on mtl at 2, none at 1)
-#define GU_MC (TM < (GROWS >= 4 ? 1 : 4 / GROWS) ? TM : (GROWS >= 4 ? 1 : 4 / GROWS))
+#define GU_MC (TM <= 2 || GROWS >= 4 ? 1 : TM < 4 / GROWS ? TM : 4 / GROWS)
 #elif GU_MC > TM  // (ARC_MOE_GU_MC, a power of two up to 16: no more than the tile's slots)
 #undef GU_MC
 #define GU_MC TM
