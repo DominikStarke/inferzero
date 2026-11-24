@@ -217,12 +217,17 @@
     //  46 % of the prompt, 73.8 ms a visit; per tile (ARC_MOE_RG_MIN=100000) moe_down 3,540 -> 1,021 ms, 65.5 -> 98-100
     //  tok/s. NVFP4 experts then read exactly per 16 in the down projection too (moe_rg folds per 32): another rounding,
     //  so opt-in until a KL run makes it the default. ARC_MOE_RG_MIN set: that decides, as before. UNTESTED HERE)
+    // (also NVFP4 expert layers on every GPU: hibagus's B70 (#92), Inkling 2K prompt, UD-Q4_K_XL (NVFP4 in 20 of 24
+    //  layers) moe_down 2,275 ms against 238 with ggml-org's IQ4_NL. The down kernel is built with -DGU_TWO here, the
+    //  form that spills nothing at 128 registers on mtl / arl-h / dg2 / bmg; chunks of more than 8 rows only, so
+    //  generation's kernels are as before)
     static const bool ink_down_tile = getenv("ARC_INK_DOWN_TILE") && atoi(getenv("ARC_INK_DOWN_TILE")) != 0 &&
                                       !getenv("ARC_MOE_RG_MIN");
-    const bool down_tile = ink_down_tile && hp.inkling && !q2g && (zrt::integrated() || !xmx_);
+    const bool down_tile = ink_down_tile && hp.inkling && !q2g && T > 8 &&
+                           (zrt::integrated() || !xmx_ || L.ex_type[2] == GGML_NVFP4);
     if (down_tile && !ink_down_tile_said_ && (ink_down_tile_said_ = true))
       zlog::eprintf("inferzero: Inkling 2: the prompt's expert down projection per tile, not moe_rg (ARC_INK_DOWN_TILE=1: "
-                    "an integrated GPU or XMX off)\n");
+                    "an integrated GPU, XMX off or NVFP4 experts)\n");
     const bool rg_down = !down_tile && rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
@@ -318,7 +323,7 @@
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
                                          (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd +
-                                         nvd(L.ex_type[2]), "moe_down_q");
+                                         nvd(L.ex_type[2]) + (down_tile && !gu2_on ? " -DGU_TWO" : ""), "moe_down_q");
       int NN = E, K = Fp, S = slots_;
       if (xc_)
         set_args(k, 0, xtab_l, NN, K, tabs_, mhq_, mhsc_, S, tiles, swt_, my_, xtab_l, xoff(L, 2));
