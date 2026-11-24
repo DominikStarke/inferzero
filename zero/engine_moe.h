@@ -226,7 +226,10 @@
     //  on the laptop, the user's rule of 2026-11-24)
     static const bool nv_fold = getenv("ARC_NVFP4_FOLD") && atoi(getenv("ARC_NVFP4_FOLD")) != 0;
     auto nvd = [&](int t) { return t == GGML_NVFP4 && nv_fold ? std::string(" -DNV_FOLD") : std::string(); };
-    if ((L.ex_type[0] == GGML_NVFP4 || L.ex_type[2] == GGML_NVFP4) && first_for_device("nvfp4_per16"))
+    // (the line once: a member flag checked first, so the per-token path takes no lock and builds no string; the
+    //  Researcher's review of f1d38f9)
+    if (!nv16_said_ && (L.ex_type[0] == GGML_NVFP4 || L.ex_type[2] == GGML_NVFP4) && (nv16_said_ = true) &&
+        first_for_device("nvfp4_per16"))
       zlog::eprintf("inferzero: NVFP4 experts: %s in the per-tile expert kernels (generation, short chunks); the prompt GEMMs fold "
                     "the two scales per 32%s\n", nv_fold ? "folded per 32 (ARC_NVFP4_FOLD=1)" : "exact per 16",
                     nv_fold ? "" : " (ARC_NVFP4_FOLD=1: folded in both)");
