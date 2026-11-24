@@ -37,7 +37,7 @@
   <h1>Install and uninstall</h1>
   <p class="lead">Installing takes about five minutes, plus the model's download. Nothing is installed into Windows itself: removing inferzero is deleting its folders. Check <a href="index.html#need">what you need</a> first.</p>
   <nav class="jump" aria-label="On this page">
-    <a href="#install">Install</a><a href="#docker">Docker and Unraid</a><a href="#uninstall">Uninstall</a><a href="#apps">From your own apps</a>
+    <a href="#install">Install</a><a href="#docker">Docker, Unraid and Nix</a><a href="#uninstall">Uninstall</a><a href="#apps">From your own apps</a>
   </nav>
 </div>
 
@@ -62,7 +62,7 @@
         </ol>
       </div>
     </div>
-    <h3 class="sub" id="docker">Docker and Unraid</h3>
+    <h3 class="sub" id="docker">Docker, Unraid and Nix</h3>
     <div class="steps">
       <div class="card">
         <h3>Docker (Linux)</h3>
@@ -76,6 +76,12 @@ docker compose logs -f</pre>
         <h3>Unraid</h3>
         <p>A template kept by catduckgnaf, not by this project: <a href="https://github.com/catduckgnaf/catduck-unraid-templates/blob/main/templates/inferzero.xml">the template</a> and <a href="https://github.com/catduckgnaf/catduck-unraid-templates#inferzero">its setup notes</a>. Their other templates are in Community Applications; Inferzero was not listed there yet on 21 November, so add it from the template meanwhile. Its image, <code>ghcr.io/catduckgnaf/inferzero:2026.11.21.18</code>, is built from that release.</p>
         <p class="note">So far it was started on an Intel GPU host and found the GPU, but no model has been run with it yet (<a href="https://github.com/rizagp/inferzero/issues/46#issuecomment-7064820396">#46</a>); results are welcome. For several GPUs on Unraid, see <a href="multi-gpu.html#p2pdma">P2PDMA</a>: Unraid's stock kernel lacks it.</p>
+      </div>
+      <div class="card" id="nix">
+        <h3>Nix and NixOS</h3>
+        <p>A community flake kept by That1LinuxGuy, not by this project: <a href="https://github.com/That1LinuxGuy/inferzero-nix">inferzero-nix</a>. It builds inferzero from this repository's source and installs the server, <code>runz</code>, the kernels and the chat page (x86_64 Linux):</p>
+<pre>nix run github:That1LinuxGuy/inferzero-nix -- --help</pre>
+        <p class="note">Its README shows how to add it to your own flake for a lasting install. It follows our source through its <code>flake.lock</code>, so it can trail the latest release by a little. The terminal menu (<code>zero-launcher.sh</code>) is not part of it: start <code>serverz</code> with a model yourself. We don't test it here; results and problems go to its repository (<a href="https://github.com/rizagp/inferzero/pull/85">#85</a>).</p>
       </div>
     </div>
     <h3 class="sub" id="uninstall">Uninstall cleanly</h3>
