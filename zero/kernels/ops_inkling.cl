@@ -414,6 +414,63 @@ __kernel void ink_attn(__global const float* q, __global const float* r, __globa
   out[o] = acc / z * ink_sigmoid(gate[o]);
 }
 
+// ---- ARC_INK_ATTN_PP=1 (opt-in, 2026-11-29): ink_attn's prompt form, for chunks of more than 8 rows. The laptop's
+// 125H (Inkling 2 UD-IQ4_XS, --bench-pp 512 --prof): ink_attn 15.5 % of the prompt, one work-group of 128 a (row,
+// head) building the whole bias table (ext x NREL products) again, a key dotted serially by each work-item, and ~14
+// work-group barriers every 128 keys. Here one sub-group a (row, query head), 16 lanes along D (8 values a lane):
+// every key of the row in order, the dot's lane parts and the bias's (r . bias[dist], lane j its term j, inside ext)
+// summed by one sub_group_reduce_add, the online softmax from the zero sink logit (m 0, z 1) as ink_attn, then the
+// sigmoid gate. No local memory, no barrier, no table: the bias of a key's distance where it is used. A work-group
+// holds the G = H / HKV query heads of one KV head for RW consecutive rows (G RW sub-groups), so a K / V row is read
+// from memory once for them and from L1 after. The same scores and softmax; another order of sums: KL-checked, not
+// bit for bit. Registers (128 GRF): q, acc, the K and V rows 8 each, r 2, m, z: ~36 live floats a lane, ~72
+// registers on 32-byte ones. NREL <= 32. grid (16 G RW x HKV ceil(T / RW)), local (16 G RW): G RW <= 16.
+// UNTESTED HERE: built, not run (the user's rule of 2026-11-24).
+#if INK_D == 128
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void ink_attn_pp(__global const float* q, __global const float* r, __global const float* sink,
+                          __global const float* gate, __global const half* kc, __global const half* vc,
+                          __global const float* bias, int ext, int NREL, __global float* out, int H, int HKV, int pos0,
+                          int window, int cap, int T, int RW) {
+  const int G = H / HKV, sg = get_sub_group_id(), lane = get_sub_group_local_id();
+  const int kvh = get_group_id(0) % HKV, t = (get_group_id(0) / HKV) * RW + sg / G, h = kvh * G + sg % G;
+  if (sg >= G * RW || t >= T) return;  // (no barrier below: a sub-group may leave)
+  const int pos = pos0 + t, lo = window > 0 ? max(0, pos - window + 1) : 0;
+  const size_t qo = ((size_t)t * H + h) * INK_D;
+  const float inv = rsqrt((float)INK_D), sk = sink[(size_t)t * H + h];
+  __global const float* rr = r + ((size_t)t * H + h) * NREL;
+  const float r0 = lane < NREL ? rr[lane] : 0.0f, r1 = lane + 16 < NREL ? rr[lane + 16] : 0.0f;
+  const float8 q8 = vload8(lane, q + qo);
+  float m = 0.0f, z = 1.0f;  // (the zero sink logit)
+  float8 acc = (float8)0.0f;
+  for (int u = lo; u <= pos; ++u) {  // (uniform over the sub-group)
+    const size_t row = ((size_t)(u % cap) * HKV + kvh) * INK_D;
+    const float8 kv = vload_half8(lane, kc + row), vv = vload_half8(lane, vc + row);
+    float pd = q8.s0 * kv.s0;
+    pd += q8.s1 * kv.s1;
+    pd += q8.s2 * kv.s2;
+    pd += q8.s3 * kv.s3;
+    pd += q8.s4 * kv.s4;
+    pd += q8.s5 * kv.s5;
+    pd += q8.s6 * kv.s6;
+    pd += q8.s7 * kv.s7;
+    float part = pd * inv;
+    const int dist = pos - u;
+    if (dist < ext) {  // (ink_attn's table: bias[dist] . r inside ext, 0 past it; uniform)
+      __global const float* br = bias + (size_t)dist * NREL;
+      part += (lane < NREL ? br[lane] * r0 : 0.0f) + (lane + 16 < NREL ? br[lane + 16] * r1 : 0.0f);
+    }
+    const float s = sub_group_reduce_add(part) - sk;
+    const float mn = fmax(m, s), corr = exp(m - mn), e = exp(s - mn);
+    z = z * corr + e;
+    acc = acc * corr + e * vv;
+    m = mn;
+  }
+  const float8 g8 = vload8(lane, gate + qo);
+  vstore8(acc / z * (1.0f / (1.0f + exp(-g8))), lane, out + qo);
+}
+#endif  // INK_D == 128
+
 // situ on a fused gate-up row pair (any size): out[i] = beta tanh(g / beta) sigmoid(g) * lb tanh(u / lb), g and u the
 // expert's outputs times its scale (llama: the scale on the matmul's output, before the activation). gu: rows of 2F
 // (gate F, then up F) per (token, slot); sc: the experts' gate-up scales (indexed by ids[row]), or has_scale 0

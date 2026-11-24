@@ -1235,6 +1235,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     while (p * 2 <= std::min(v, 16)) p *= 2;
     return p;
   }
+  bool ink_attn_pp_said_ = false;  // (the ARC_INK_ATTN_PP line said: engine_inkling.h)
   // true the first time for this tag on this kind of GPU (cl_.device_id) in the process: a line about the GPU, said
   // once for each GPU of a layer split of unlike cards, not only for the first (audit 2026-11-23)
   bool first_for_device(const char* tag) const {
