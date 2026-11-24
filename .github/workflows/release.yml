@@ -24,9 +24,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build and package
         shell: powershell
+        env:
+          REL: ${{ inputs.release }}  # (through env, not pasted into the script; checked before use)
         run: |
           $ErrorActionPreference = 'Stop'
-          powershell -ExecutionPolicy Bypass -File scripts\make-package.ps1 -Release "${{ inputs.release }}"
+          if ($env:REL -notmatch '^\d{4}\.\d{2}\.\d{2}\.\d{2}$') { throw "release: yyyy.MM.dd.NN (got $env:REL)" }
+          powershell -ExecutionPolicy Bypass -File scripts\make-package.ps1 -Release $env:REL
           if (-not $?) { throw "make-package failed" }
           Get-ChildItem dist\*.zip
       - name: The programs start
@@ -52,12 +55,17 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build and package
         shell: bash
+        env:
+          REL: ${{ inputs.release }}
         run: |
           set -e
-          bash scripts/make-package-linux.sh --release "${{ inputs.release }}"
+          [[ "$REL" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]] || { echo "release: yyyy.MM.dd.NN (got $REL)" >&2; exit 2; }
+          bash scripts/make-package-linux.sh --release "$REL"
           pkg=$(ls -d dist/inferzero-*-linux-x64 | head -1)
-          "$pkg/bin/serverz" --help | head -3
-          "$pkg/bin/runz" --help | head -3
+          # (into a file, then head: under pipefail a head that closes early can end the step with 141)
+          "$pkg/bin/serverz" --help > /tmp/serverz_help.txt; head -3 /tmp/serverz_help.txt
+          "$pkg/bin/runz" --help > /tmp/runz_help.txt 2>&1 || true; head -3 /tmp/runz_help.txt
+          grep -q "usage: runz" /tmp/runz_help.txt
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64
@@ -75,10 +83,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release }}
+          NOTES: ${{ inputs.notes_file }}
         run: |
           set -e
-          rel="${{ inputs.release }}"
-          notes="${{ inputs.notes_file }}"
+          rel="$REL"
+          notes="$NOTES"
+          [[ "$rel" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]] || { echo "release: yyyy.MM.dd.NN (got $rel)" >&2; exit 2; }
+          if [ -n "$notes" ] && [ ! -f "$notes" ]; then echo "no notes file $notes" >&2; exit 2; fi
           if [ -z "$notes" ]; then  # (CHANGELOG.md's first section: from its first '## ' line to the next)
             awk 'BEGIN{n=0} /^## /{n++; if(n==2) exit} n==1' CHANGELOG.md > /tmp/notes.md
             notes=/tmp/notes.md
