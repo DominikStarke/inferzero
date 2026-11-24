@@ -212,18 +212,18 @@
     const bool rgx = rg_ok && gemm_ok && rgx_layer(L);
     // (ARC_INK_MOE_GEMM=1: this layer's gate / up through decode + GEMM where its types take it; see ink_moe_gemm_on)
     static const int ink_gemm_min = getenv("ARC_INK_MOE_GEMM_MIN") ? atoi(getenv("ARC_INK_MOE_GEMM_MIN")) : 256;
-    const bool ink_g = ink_moe_gemm_on() && hp.inkling && moe_group_ > 0 && moe_gemm_part_ok(L, 0) &&
-                       moe_gemm_part_ok(L, 1) && !tp_moe() && !q2g && tm == 16 && T > ink_gemm_min;
+    const bool ink_g = ink_moe_gemm_on() && hp.inkling && moe_group_ > 0 && ink_gemm_part_ok(L, 0) &&
+                       ink_gemm_part_ok(L, 1) && !tp_moe() && !q2g && tm == 16 && T > ink_gemm_min;
     // (each layer's choice said once, the Researcher's run of a31263f: only 8 GEMM launches a forward against 96 per
-    //  tile; the per-32 types (NVFP4, IQ4_NL, Q5_0) decode to the GEMM's native Q8_0 form, which its tiles lack)
+    //  tile, as the per-32 types (NVFP4, IQ4_NL, Q5_0) were left out; they take the tiles' Q8_0 form now)
     if (ink_moe_gemm_on() && hp.inkling && tm == 16 && T > ink_gemm_min && L.il >= 0 && L.il < 64 &&
         !(ink_gemm_layer_said_ >> L.il & 1ull)) {
       ink_gemm_layer_said_ |= 1ull << L.il;
       zlog::eprintf("inferzero: ARC_INK_MOE_GEMM: layer %d, experts gate %s / up %s / down %s: gate / up %s\n", L.il,
                     ggml_type_name(L.ex_type[0]), ggml_type_name(L.ex_type[1]), ggml_type_name(L.ex_type[2]),
-                    ink_g ? "decode + GEMM"
-                    : (is_per32_type(L.ex_type[0]) || is_per32_type(L.ex_type[1])) ? "per tile (a per-32 type: no tile GEMM form)"
-                    : !(moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1)) ? "per tile (a type decode_w8 / the GEMM do not take)"
+                    ink_g ? (is_per32_type(L.ex_type[0]) || is_per32_type(L.ex_type[1]) ? "decode + GEMM (Q8_0 form)"
+                                                                                         : "decode + GEMM")
+                    : !(ink_gemm_part_ok(L, 0) && ink_gemm_part_ok(L, 1)) ? "per tile (a type decode_w8 / the GEMM do not take)"
                     : "per tile");
     }
     if (ink_g && !ink_gemm_said_ && (ink_gemm_said_ = true))
@@ -625,7 +625,7 @@
     //  BF16 / Q8_0 experts, which blocked it for the whole model, keep their per-tile kernels)
     if (ink_moe_gemm_on() && hp.inkling) {  // (gate / up only: K = n_embd; the down's K = 1152 is no whole superblocks)
       for (const Layer& L : layers_)
-        if (moe_gemm_part_ok(L, 0) && moe_gemm_part_ok(L, 1)) return true;
+        if (ink_gemm_part_ok(L, 0) && ink_gemm_part_ok(L, 1)) return true;
       return false;
     }
     for (const Layer& L : layers_)
@@ -641,6 +641,15 @@
   // (ARC_INK_DOWN_TILE=1: per tile). Layers whose experts the GEMM does not take (Q8_0 / BF16, layers 20-23) as before.
   // Another order of sums than the per-tile kernels, and NVFP4 folded per 32 in decode_w8: KL-checked. Extra memory:
   // the W8 area of moe_group_ experts (the start line). UNTESTED HERE: built, not run.
+  // (a part ARC_INK_MOE_GEMM takes: moe_gemm_part_ok's types, and the per-32 ones (NVFP4, IQ4_NL, Q5_0, Q8_0: W8
+  //  variant 4), which decode_w8 writes in the GEMM's native Q8_0 layout (decode.cl PER32) and the tiles then run as
+  //  QTYPE 8 (moe_gemm_qtype). ocloc 26.40, gemm.cl -DMOE_TILES -DQTYPE=8 at 256 registers, with and without situ: 0
+  //  scratch messages on mtl and bmg-g21; arl-h 4 and dg2-g10 50 without situ (other GPUs: Sunday). Inkling only, so
+  //  the other models' decode + GEMM choices are as before)
+  static bool ink_gemm_part_ok(const Layer& L, int i) {
+    return moe_gemm_part_ok(L, i) || (is_w8_type(L.ex_type[i]) && w8_variant(L.ex_type[i]) == 4);
+  }
+  static int moe_gemm_qtype(uint32_t t) { return w8_variant(t) == 4 ? (int)GGML_Q8_0 : 100 + w8_variant(t); }
   static bool ink_moe_gemm_on() {
     static const bool on = getenv("ARC_INK_MOE_GEMM") && atoi(getenv("ARC_INK_MOE_GEMM")) != 0;
     return on;
@@ -735,7 +744,7 @@
         }
       }
       const bool ink_up = hp.inkling && i == 1;  // (Inkling: the up pass with situ and the gate-up scales)
-      cl_kernel k = moe_gemm_kernel(100 + w8_variant(L.ex_type[i]), -1, ink_up);
+      cl_kernel k = moe_gemm_kernel(moe_gemm_qtype(L.ex_type[i]), -1, ink_up);  // (per-32 types: the Q8_0 form, ARC_INK_MOE_GEMM only)
       // tile work-groups per launch: about the average tile count of a group (more loop over the tiles)
       // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
       //  sums in the same order whatever the shape)
