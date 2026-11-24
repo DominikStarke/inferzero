@@ -4,6 +4,28 @@ Status: design, to build. The user's targets are **prompt 6,000 tok/s on a Pro B
 6000tok/s for B70") **prompt 4,000 tok/s on an A770** (the user: "Use 4,000"), **and generation 130 tok/s on both** (#83). The model facts below come from the other session's analysis of the GGUF headers (unsloth/Inkling-2-Mini-GGUF:
 the mainline Q8_K_XL, the mmproj, the DSpark drafter; all in the laptop's HF cache).
 
+## Where it stands (2026-11-24 evening, users' measurements)
+
+Built and released: runz and serverz run Inkling 2 Mini in every quant type since 2026.11.24.02. The numbers below are
+skipzx-lab's Pro B60 (#45), the model and experts on the NVMe, every expert cached, `--bench-pp 512 --n 128`.
+
+| what | before | after | checks | where |
+|---|---|---|---|---|
+| NVFP4 experts read exactly per 16 (UD-Q4_K_XL) | 11.40 tok/s, moe_gateup 3,859 ms | 20.22 tok/s, 832 ms | KL 0.00468 -> 0.00450 (480 positions), `ARC_NVFP4_FOLD=1` the old numbers exactly | 2026.11.24.03 |
+| NVFP4 in the vector decoder (UD-Q4_K_XL) | 20.24 tok/s, moe_gateup / down 832 / 496 ms | 21.73 tok/s, 596 / 297 ms (IQ4_NL 556 / 303) | the logits bit for bit | 2026.11.24.04 |
+| DSpark's new drafter file (IQ4_NL) | refused | 207 drafts, 59 accepted (the old file's), +4.7 % over plain | the old file bit for bit, the text as plain | 2026.11.24.03 |
+| the projections of one input as one GEMV (IQ4_NL) | 24.44 tok/s, 1,548 launches a token | 24.62 tok/s, 1,412 | the logits bit for bit | main (next release) |
+| the k / v norms with their quantization (IQ4_NL) | 1,548 launches | 1,492, the same speed | the logits bit for bit | main (next release) |
+| the decode attention, `ARC_INK_ATTN_DEC=1` (IQ4_NL) | 21.9 / 13.9 tok/s at 512 / 4K positions, ink_attn 41 % / 64 % of the GPU time | 31.5 / 28.7 tok/s (+44 % / +106 %), the kernel 7.4x / 7.8x faster | **KL max 0.065 / 0.164 at 4K / 16K, over 0.015**: being found (a merge / stale-read test asked); spilled on the A770 in its first form, the 128-register form to measure | fix/ink-attn-dec |
+| each loop controller in one launch, `ARC_INK_CTRL1=1` (IQ4_NL) | 24.43 tok/s, 1,548 launches | first form 19.40 tok/s (-20.6 %: one work-group did the end alone), 1,356 launches | KL 0.00076, max 0.0121, 244 / 244 without near-ties: passes; no spill | fix/ink-ctrl1 (the no-tail form to measure) |
+| the mix with its norm and quantization, `ARC_INK_FUSE_MIXQ=1` | 24.42 tok/s | 24.44 (+0.17 %, within the spread) | the logits bit for bit | fix/ink-fuse-mix, left unmerged |
+
+What this says for the targets: the user's launch goal (under 600 a token, "like qwen") stands, but on the B60 a launch
+costs ~2.5 us of host time, overlapped with the GPU, so fewer launches alone gave +0.7 % at most. The time is in the
+slow kernels: the attention first (the decode form), then ink_mix (8.7 % of generation, one work-group a token), then
+the small GEMVs (~3 % each). Generation targets (130 tok/s) and prompt targets (6,000 on a B70, 4,000 on an A770) are
+still far: the B60's IQ4_NL prompt is ~315-322 tok/s at 2K.
+
 ## Work rules for this phase (the user: no GPU and no CPU use)
 
 This phase is **code and documents only**:

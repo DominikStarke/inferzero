@@ -120,10 +120,11 @@ these rows: [docs/models.md](docs/models.md).
 | Qwen3.5 / 3.6 / 3.8 | 0.8B-27B dense, 35B-A3B MoE, Flash Next (512 experts; also with Intel's AutoRound INT4 experts, `setup -Models flash-ar4`) | text, images (`mmproj`) | MTP block, DFlash2 |
 | DeepSeek-V4.1 | Flash (384 experts: ISTA's GSQ-RCO IQ2_XS, Unsloth's UD-Q8_K_XL), one GPU or several | text | |
 | Gemma 4 | E4B, 12B, 26B-A4B MoE, 31B (Google's QAT Q4_0) | text, images, audio | Gemma 4 assistant drafters |
+| Inkling 2 | Mini (26B looped MoE, 128 experts; every quant type, NVFP4 UD files included) | text | DSpark drafter (both file layouts) |
 | OCR | Xiaomi-OCR-0 | images, PDFs | |
 | Speech to text | Qwen3-ASR, Whisper large-v3 | audio, video | |
 
-GGUF files as they are (IQ1-IQ4, Q2_K-Q8_0, Q5_1, MXFP4; F16 / BF16 matrices taken as Q8_0 at load, but a MoE
+GGUF files as they are (IQ1-IQ4, Q2_K-Q8_0, Q5_1, MXFP4, NVFP4; F16 / BF16 matrices taken as Q8_0 at load, but a MoE
 model's experts in quantized types only: a BF16 MoE GGUF is refused before its expert file is written); the architectures, weight types and each
 model's details: [docs/models.md](docs/models.md).
 

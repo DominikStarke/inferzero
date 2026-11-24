@@ -230,7 +230,8 @@
         <tr><td>Qwen3.8 27B, Linux <small>runtime 26.40</small></td><td class="n">1,984-1,992</td><td class="n">24.3-24.4</td><td class="n">–</td><td>2026.11.22.10 (MaineTim, <a href="https://github.com/rizagp/inferzero/issues/19">#19</a>)</td></tr>
         <tr><td>Qwen3.6 35B-A3B, Linux</td><td class="n">–</td><td class="n">83.9-85.6</td><td class="n">98.5</td><td>2026.11.18.08</td></tr>
         <tr><td>Qwen3.8 Flash Next IQ3_S, Linux</td><td class="n">531 <small>(16K: 672)</small></td><td class="n">22.3-22.7</td><td class="n">–</td><td>main 566d84e / a62be02</td></tr>
-        <tr><td>Inkling 2 Mini IQ4_NL, Linux</td><td class="n">~315-322 <small>(2K)</small></td><td class="n">35.2</td><td class="n">36.9 <small>DSpark</small></td><td>2026.11.24.02 (skipzx-lab, #45)</td></tr>
+        <tr><td>Inkling 2 Mini IQ4_NL, Linux</td><td class="n">~315-322 <small>(2K)</small></td><td class="n">35.2 <small>(24.6 after 512)</small></td><td class="n">36.9 <small>DSpark</small></td><td>2026.11.24.02; 24.6 on main (skipzx-lab, #45)</td></tr>
+        <tr><td>Inkling 2 Mini UD-Q4_K_XL <small>NVFP4 experts</small>, Linux</td><td class="n">–</td><td class="n">21.7 <small>(after 512)</small></td><td class="n">–</td><td>2026.11.24.04 (skipzx-lab, #45; 11.4 before .03)</td></tr>
       </tbody>
     </table></div>
     <p class="note">The 27B under Windows: generation 23.9 with <code>ARC_GEMV_WAVE=0</code> on main 0cf5283 (MaineTim); on 2026.11.21.01 the prompt 1,909 (manoreken2, #4), 1,836 with <code>ARC_GEMM_XW_GU=0</code>; generation 22.7 on .14.09; the drafting figure is skipzx-lab's Linux card (main d252b86).</p>
