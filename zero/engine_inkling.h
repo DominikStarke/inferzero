@@ -746,6 +746,60 @@
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, b, CL_TRUE, 0, n * 4, v.data(), 0, nullptr, nullptr));
     if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(v.data(), 4, n, f); fclose(f); }
   }
+  // (ARC_INK_ATTN_DEC=1, opt-in, 2026-11-24: ink_attn's decode form, ops_inkling.cl ink_attn_tab / _part / _comb,
+  //  for up to 8 rows (a token, DSpark's 8-row verification): the bias table once a (row, head), the keys in chunks over
+  //  many work-groups, one a KV head serving its query heads, then the chunks merged. skipzx-lab's B60 (#45): ink_attn
+  //  37.6 % of generation's GPU time, 24 work-groups a token. Another order of sums than ink_attn: KL-checked, not bit
+  //  for bit. A start line says it is on. UNTESTED HERE: no build or run on the laptop)
+  cl_mem ink_atab_ = nullptr, ink_apart_ = nullptr;
+  size_t ink_atab_n_ = 0, ink_apart_n_ = 0;
+  mutable bool ink_attn_dec_said_ = false;  // (the line once: the flag first, no lock in the per-layer path)
+  bool ink_attn_dec_on(int T) const {
+    static const bool on = getenv("ARC_INK_ATTN_DEC") && atoi(getenv("ARC_INK_ATTN_DEC")) != 0;
+    if (on && !ink_attn_dec_said_ && (ink_attn_dec_said_ = true) && first_for_device("ink_attn_dec"))
+      zlog::eprintf("inferzero: Inkling 2: the decode attention (ARC_INK_ATTN_DEC=1) for rows of up to 8: the keys split "
+                    "over many work-groups, one a KV head\n");
+    return on && T <= 8 && hp.head_dim == 128 && hp.n_head % hp.n_head_kv == 0 && hp.n_head / hp.n_head_kv <= 4;
+  }
+  void ink_attn_dec(const InkLayer& L, const InkSlot& S, int T, int p0, int win, int cap) {
+    const int H = hp.n_head, HKV = hp.n_head_kv, D = hp.head_dim, ext = L.ext, nrel = ink_.nrel;
+    // (the chunk: at most 64 a (row, KV head), at least 64 keys, a multiple of 16; the longest row's keys decide)
+    const int len = win > 0 ? std::min(win, p0 + T) : p0 + T;
+    const int ck = std::max(64, ((len + 63) / 64 + 15) / 16 * 16);
+    const int nch = std::max(1, (len + ck - 1) / ck);
+    const size_t tab_n = (size_t)8 * H * (ext + 1), part_n = (size_t)8 * H * 64 * (D + 2);
+    if (ink_atab_n_ < tab_n) {
+      if (ink_atab_) free_buf(ink_atab_);
+      ink_atab_ = buf(tab_n * 4);
+      ink_atab_n_ = tab_n;
+    }
+    if (ink_apart_n_ < part_n) {
+      if (ink_apart_) free_buf(ink_apart_);
+      ink_apart_ = buf(part_n * 4);
+      ink_apart_n_ = part_n;
+    }
+    {
+      cl_kernel kt = ink_k("ink_attn_tab");
+      int EX = ext, NR = nrel, HH = H;
+      set_args(kt, 0, ink_r_, ink_s_, L.rel_bias, EX, NR, HH, ink_atab_);
+      size_t g[2] = {((size_t)ext + 1 + 63) / 64 * 64, (size_t)T * H}, l[2] = {64, 1};
+      run("ink_attn_tab", kt, 2, g, l);
+    }
+    {
+      cl_kernel kp = ink_k("ink_attn_part");
+      int EX = ext, HH = H, HK = HKV, P0 = p0, W = win, CP = cap, CK = ck, NCH = nch;
+      set_args(kp, 0, ink_q_, S.kc, S.vc, ink_atab_, EX, HH, HK, P0, W, CP, CK, NCH, ink_apart_);
+      size_t g[2] = {(size_t)64 * nch, (size_t)T * HKV}, l[2] = {64, 1};
+      run("ink_attn_part", kp, 2, g, l);
+    }
+    {
+      cl_kernel kc = ink_k("ink_attn_comb");
+      int NCH = nch;
+      set_args(kc, 0, ink_apart_, NCH, ink_g_, ink_att_);
+      size_t g[1] = {(size_t)T * H * D}, l[1] = {(size_t)D};
+      run("ink_attn_comb", kc, 1, g, l);
+    }
+  }
   void ink_layer(int slot, int T, int Mp, bool msgs, int& nb) {
     const InkSlot& S = inks_[slot];
     const int ip = S.ip;
@@ -837,10 +891,14 @@
         set_args(ks, 0, ink_kc_, ink_vc_, S.kc, S.vc, kg, TT, p0, cap);
         ink_run1("ink_kv_store", ks, (size_t)KG * T);
       }
-      cl_kernel ka = ink_k("ink_attn");
       int ext = L.ext, nrel = k.nrel, HH = H, HK = HKV, win = L.glob ? 0 : k.swa;
-      set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);
-      ink_rung("ink_attn", ka, (size_t)T * H, (size_t)D);
+      if (ink_attn_dec_on(T)) {
+        ink_attn_dec(L, S, T, p0, win, cap);
+      } else {
+        cl_kernel ka = ink_k("ink_attn");
+        set_args(ka, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap);
+        ink_rung("ink_attn", ka, (size_t)T * H, (size_t)D);
+      }
     }
     ink_dump("att", ip, ink_att_, (size_t)T * H * D, T);
     ink_mm("ink_o", L.o, ink_att_, ink_ao_, T, Mp);
