@@ -219,15 +219,21 @@
     if (ink_moe_gemm_on() && hp.inkling && tm == 16 && T > ink_gemm_min && L.il >= 0 && L.il < 64 &&
         !(ink_gemm_layer_said_ >> L.il & 1ull)) {
       ink_gemm_layer_said_ |= 1ull << L.il;
-      zlog::eprintf("inferzero: ARC_INK_MOE_GEMM: layer %d, experts gate %s / up %s / down %s: gate / up %s\n", L.il,
-                    ggml_type_name(L.ex_type[0]), ggml_type_name(L.ex_type[1]), ggml_type_name(L.ex_type[2]),
-                    ink_g ? (is_per32_type(L.ex_type[0]) || is_per32_type(L.ex_type[1]) ? "decode + GEMM (Q8_0 form)"
-                                                                                         : "decode + GEMM")
-                    : !(ink_gemm_part_ok(L, 0) && ink_gemm_part_ok(L, 1)) ? "per tile (a type decode_w8 / the GEMM do not take)"
-                    : "per tile");
+      // (the form: Q8_16 for NVFP4 (exact per 16, from the expert cache), Q8_0 for the other per-32 types, else W8)
+      auto form = [&](int i) {
+        static const bool fold = getenv("ARC_NVFP4_FOLD") && atoi(getenv("ARC_NVFP4_FOLD")) != 0;
+        return L.ex_type[i] == GGML_NVFP4 && xc_ && !fold ? "Q8_16" : is_per32_type(L.ex_type[i]) ? "Q8_0" : "W8";
+      };
+      const bool dn_ok = ink_gemm_part_ok(L, 2) && Fp % 256 == 0;
+      zlog::eprintf("inferzero: ARC_INK_MOE_GEMM: layer %d, experts gate %s / up %s / down %s: gate / up %s%s, down %s%s\n",
+                    L.il, ggml_type_name(L.ex_type[0]), ggml_type_name(L.ex_type[1]), ggml_type_name(L.ex_type[2]),
+                    ink_g ? "decode + GEMM " : !(ink_gemm_part_ok(L, 0) && ink_gemm_part_ok(L, 1))
+                                                   ? "per tile (a type decode_w8 / the GEMM do not take)"
+                                                   : "per tile",
+                    ink_g ? form(0) : "", ink_g && dn_ok ? "decode + GEMM " : "as before", ink_g && dn_ok ? form(2) : "");
     }
     if (ink_g && !ink_gemm_said_ && (ink_gemm_said_ = true))
-      zlog::eprintf("inferzero: Inkling 2: the prompt's expert gate / up through decode + the int8 GEMM in the layers "
+      zlog::eprintf("inferzero: Inkling 2: the prompt's experts (gate / up and down) through decode + the int8 GEMM in the layers "
                     "whose types take it, chunks of more than %d rows (ARC_INK_MOE_GEMM=1; W8 area of %d experts)\n",
                     ink_gemm_min, moe_group_);
     const bool use_rg = !ink_g && rg_ok && (rgx || q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
@@ -248,7 +254,11 @@
     if (down_tile && !ink_down_tile_said_ && (ink_down_tile_said_ = true))
       zlog::eprintf("inferzero: Inkling 2: the prompt's expert down projection per tile, not moe_rg (ARC_INK_DOWN_TILE=1: "
                     "an integrated GPU, XMX off or NVFP4 experts)\n");
-    const bool rg_down = !down_tile && rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
+    // (ARC_INK_MOE_GEMM: the down projection too, K = Fp = 1,280: the expert records' down rows are padded to whole
+    //  superblocks with zero bytes, which decode to zero codes and zero scales, and moe_quant (-DFV) writes h's tail as
+    //  zeros with scale 0, so the padded blocks add exact zeros. Ahead of moe_rg and the per-tile down)
+    const bool ink_dn = ink_g && ink_gemm_part_ok(L, 2) && Fp % 256 == 0;
+    const bool rg_down = !ink_dn && !down_tile && rg_ok && (rgx || q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     // (ARC_MOE_GEMM_PAD: gate / up alone through decode + GEMM, padded experts; their down stays on moe_rg, rg_down)
     const bool use_gemm_gu = use_gemm || ink_g ||
@@ -536,7 +546,7 @@
     }
     if (rg_down) {
       moe_rg(L, 2, Mp, max_tiles);
-    } else if (use_gemm) {
+    } else if (use_gemm || ink_dn) {
       moe_gemm(L, 2, Mp);
     } else if (hp.moe_std) {
       if (xgpu) down_q(tiles);
@@ -731,7 +741,9 @@
   void moe_gemm(Layer& L, int part, int Mp) {
     const int E = hp.n_embd, F = hp.n_ff_exp, NE = hp.n_expert, G = moe_group_, Fp = hp.n_ff_exp_pad;
     for (int i = part; i < (part == 0 ? 2 : 3); ++i) {
-      const int N = i == 2 ? E : F, K = i == 2 ? F : E;
+      // (Inkling's down: K = Fp, the padded rows as the per-tile down reads them; ARC_INK_MOE_GEMM only, other models'
+      //  down projections take this path only where Fp == F)
+      const int N = i == 2 ? E : F, K = i == 2 ? (hp.inkling ? Fp : F) : E;
       const size_t eb = (size_t)N * (K / 256) * raw_padded_sb_bytes(L.ex_type[i]);  // raw bytes per expert
       if (L.ex_sub[i].empty() && !xc_) {
         const size_t total = NE * eb + kRawSlack;  // (upload_padded: the superblocks + the slack)
