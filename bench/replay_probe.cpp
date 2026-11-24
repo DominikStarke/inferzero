@@ -2,7 +2,9 @@
 // sequence of small dependent kernels, as the engine launches them now (each appended to the in-order immediate
 // command list) against a regular command list recorded once and executed again (in order: a barrier between
 // kernels, or the in-order list flag). The difference is the GPU's idle time between kernels that a replay removes.
-//   bin\replay_probe.exe [--kernels 700] [--floats 65536] [--reps 30]
+//   bin\replay_probe.exe [--kernels 700] [--floats 65536] [--reps 30] [--updates 20]
+// (2026-11-24) Also a mutable command list: recorded once, the changing arguments updated each step and replayed, its
+// results checked bit for bit against the appended sequence: does the driver support it, and what does it save.
 // 700 kernels ~ one token of the 35B-A3B, 930 of the 27B (ARC_LAUNCH_STATS=1 with runz counts them).
 #include "../zero/clrt.h"
 #include <algorithm>
