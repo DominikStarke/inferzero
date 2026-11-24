@@ -121,6 +121,26 @@ inline float moe_term(uint8 a8, const uint* w, float d, float dmin, int sc0, int
 #ifndef GU_ORDER
 #define GU_ORDER 1  // 1: gate decoded and accumulated before the up block is decoded (fewer live registers)
 #endif
+// GU_TWO (ARC_MOE_GU2=1, 2026-11-29): the tiles (not the TM 1 vector-decoder form) in passes over K, the gate's sums
+// first (reduced, slot m's kept by lane m), then the up's: one decoded block and GU_MC slots' sums live at a time, so
+// they fit 128 registers on Xe-LPG (32-byte registers; one pass spilled 45-166 scratch messages at TM 16 / 8 on mtl,
+// ocloc 26.40, and 51 for Q5_K at TM 1, which takes this path). Same terms in the same order: bit-identical; the
+// tile's activations are read again each pass (from cache). Not with Q2F (256 registers there).
+// GU_MC: the slots one pass takes (each chunk decodes the expert's blocks again, from cache; TM 16 in chunks of 4:
+// 8 passes). ocloc 26.40, IQ4_XS / Q5_K / Q8_0 at TM 16 and 8, one row a sub-group: chunks of 4 spill nothing on mtl,
+// arl-h, dg2-g10 and bmg-g21; chunks of 8 still spilled 4-40 messages at TM 8. With GROWS rows, 4 / GROWS slots.
+#if defined(GU_TWO) && (defined(MOE_T1) || defined(Q2F) || TM > 16)
+#undef GU_TWO
+#endif
+#ifndef GU_MC  // (4 / GROWS slots: down's 4-row form for 2..8 tokens, Q5_K TM 8, spilled 48 messages on mtl at 2, none at 1)
+#define GU_MC (TM <= 2 || GROWS >= 4 ? 1 : TM < 4 / GROWS ? TM : 4 / GROWS)
+#elif GU_MC > TM  // (ARC_MOE_GU_MC, a power of two up to 16: no more than the tile's slots)
+#undef GU_MC
+#define GU_MC TM
+#endif
+#if defined(GU_TWO) && (TM % GU_MC != 0)
+#error GU_MC must divide TM
+#endif
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, int F, int K, __global const uint* tabs,
                            __global const char* aq, __global const float* asc, int M, __global const int* tiles,
@@ -213,6 +233,90 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
       }
     }
   }
+#elif defined(GU_TWO)
+  float gk[GROWS];  // (lane m: slot m's reduced gate sum)
+#pragma unroll
+  for (int r = 0; r < GROWS; ++r) gk[r] = 0.0f;
+#pragma unroll 1
+  for (int pp = 0; pp < 2 * (TM / GU_MC); ++pp) {
+    const int pass = pp / (TM / GU_MC), m0 = (pp % (TM / GU_MC)) * GU_MC;  // (gate's chunks of slots, then up's)
+    if (m0 >= nr) continue;  // (uniform: a chunk past the tile's slots)
+    __global const uchar* ew = pass ? eu : eg;
+    float acc[GROWS][GU_MC];
+#pragma unroll
+    for (int r = 0; r < GROWS; ++r)
+#pragma unroll
+      for (int j = 0; j < GU_MC; ++j) acc[r][j] = 0.0f;
+    for (int sp = 0; sp < nsb; sp += 2) {
+      const int b = sp * 8 + lane;
+      const bool has = sp + lane / 8 < nsb;
+#pragma unroll
+      for (int r = 0; r < GROWS; ++r) {
+        const int n = min(n0 + r, F - 1);
+        uint w[8];
+        int s0, s1, mn0 = 0, mn1 = 0;
+        float d, dmin = 0.0f;
+#ifdef MOE_VB
+        {
+          const int sbi = has ? sp + lane / 8 : sp;
+          vblock(XR(ew, n, sbi), lane % 8, kt, w, &d, &dmin, &s0, &s1, &mn0, &mn1);
+        }
+#else
+        {
+          __global const uint* src = (__global const uint*)XR(ew, n, sp);
+#pragma unroll
+          for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
+          sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+          decode32((const uchar*)win + (has ? lane / 8 : 0) * BBP, lane % 8, MOE_GRID, MOE_AUX, w, &s0, &s1, &mn0, &mn1, &d, &dmin);
+          sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+        }
+#endif
+#pragma unroll
+        for (int j = 0; j < GU_MC; ++j) {
+          const int m = m0 + j;
+          if (m < nr) {
+            const int tok = stok[r0 + m];
+            const uint8 a8 = has ? vload8(0, (__global const uint*)(aq + (size_t)tok * K + 32 * b)) : (uint8)0;
+#ifdef ASCT
+            const float sa = has ? asc[(size_t)tok * (K / 32) + b] : 0.0f;
+#else
+            const float sa = has ? asc[(size_t)b * M + tok] : 0.0f;
+#endif
+            acc[r][j] += sa * moe_term(a8, w, d, dmin, s0, s1, mn0, mn1);
+          }
+        }
+      }
+    }
+#pragma unroll
+    for (int r = 0; r < GROWS; ++r)
+#pragma unroll
+      for (int j = 0; j < GU_MC; ++j) {
+        const int m = m0 + j;
+        const float s = sub_group_reduce_add(acc[r][j]);
+        if (pass == 0) {
+          gk[r] = lane == m ? s : gk[r];
+        } else {
+          const float g = sub_group_broadcast(gk[r], m), u = s;
+          const int n = n0 + r;
+#if defined(MOE_SITU)  // (as below)
+          if (lane == 0 && n < F && m < nr) {
+            const float es = esc_gu[e];
+            h[(size_t)(r0 + m) * HLD + n] = situ_act(g * es, u * es);
+          }
+#elif defined(MOE_GELU)
+          if (lane == 0 && n < F && m < nr)
+            h[(size_t)(r0 + m) * HLD + n] = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u;
+#elif defined(SWI_CLAMP)
+          if (lane == 0 && n < F && m < nr) {
+            const float gc = fmin(g, SWI_CLAMP), uc = clamp(u, -SWI_CLAMP, SWI_CLAMP);
+            h[(size_t)(r0 + m) * HLD + n] = gc / (1.0f + exp(-gc)) * uc;
+          }
+#else
+          if (lane == 0 && n < F && m < nr) h[(size_t)(r0 + m) * HLD + n] = g / (1.0f + exp(-g)) * u;
+#endif
+        }
+      }
+  }
 #else
   for (int sp = 0; sp < nsb; sp += 2) {
     const int b = sp * 8 + lane;
@@ -267,6 +371,7 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
     }
   }
 #endif
+#ifndef GU_TWO  // (GU_TWO stored h in its second pass)
 #pragma unroll
   for (int r = 0; r < GROWS; ++r)
 #pragma unroll
@@ -295,6 +400,7 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
       if (lane == 0 && n < F && m < nr) h[(size_t)(r0 + m) * HLD + n] = g / (1.0f + exp(-g)) * u;
 #endif
     }
+#endif
 }
 
 // y[slot][N] = weight(slot) * (h[slot] W_down_e^T); h quantized per slot (hq [slot][K], scales hsc [K/32][S]).
@@ -433,6 +539,58 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
 #endif
 #endif
   }
+#elif defined(GU_TWO)
+  // (GU_TWO, as moe_gateup_q: the tile's slots in chunks of GU_MC, the blocks decoded again for each chunk; Q5_K at
+  //  TM 16 spilled 78 scratch messages on mtl in one pass, ocloc 26.40; same terms in the same order: bit-identical)
+#pragma unroll 1
+  for (int m0 = 0; m0 < TM; m0 += GU_MC) {
+    if (m0 >= nr) break;  // (uniform)
+    float ac[GROWS][GU_MC];
+#pragma unroll
+    for (int r = 0; r < GROWS; ++r)
+#pragma unroll
+      for (int j = 0; j < GU_MC; ++j) ac[r][j] = 0.0f;
+    for (int sp = 0; sp < nsb; sp += 2) {
+      const int b = sp * 8 + lane;
+      const bool has = sp + lane / 8 < nsb;
+#pragma unroll
+      for (int r = 0; r < GROWS; ++r) {
+        const int n = min(n0 + r, N - 1);
+        uint w[8];
+        int sc0, sc1, mn0 = 0, mn1 = 0;
+        float d, dmin = 0.0f;
+#ifdef MOE_VB
+        vblock(XR(ed, n, (has ? sp + lane / 8 : sp)), lane % 8, kt, w, &d, &dmin, &sc0, &sc1, &mn0, &mn1);
+#else
+        __global const uint* src = (__global const uint*)XR(ed, n, sp);
+#pragma unroll
+        for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
+        sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+        decode32((const uchar*)win + (has ? lane / 8 : 0) * BBP, lane % 8, MOE_GRID, MOE_AUX, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+        sub_group_barrier(CLK_LOCAL_MEM_FENCE);
+#endif
+#pragma unroll
+        for (int j = 0; j < GU_MC; ++j) {
+          const int m = m0 + j;
+          if (m < nr) {
+            const int row = r0 + m;
+            const uint8 a8 = has ? vload8(0, (__global const uint*)(hq + (size_t)row * K + 32 * b)) : (uint8)0;
+            const float sa = has ? hsc[(size_t)b * S + row] : 0.0f;
+            ac[r][j] += sa * moe_term(a8, w, d, dmin, sc0, sc1, mn0, mn1);
+          }
+        }
+      }
+    }
+#pragma unroll
+    for (int r = 0; r < GROWS; ++r)
+#pragma unroll
+      for (int j = 0; j < GU_MC; ++j) {
+        const int m = m0 + j;
+        const float v = sub_group_reduce_add(ac[r][j]);
+        const int n = n0 + r;
+        if (lane == 0 && n < N && m < nr) y[(size_t)(r0 + m) * N + n] = swt[r0 + m] * v;
+      }
+  }
 #else
   for (int sp = 0; sp < nsb; sp += 2) {
     const int b = sp * 8 + lane;
@@ -471,6 +629,7 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
     }
   }
 #endif
+#ifndef GU_TWO  // (GU_TWO stored y chunk by chunk)
 #pragma unroll
   for (int r = 0; r < GROWS; ++r)
 #pragma unroll
@@ -484,6 +643,7 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
       if (lane == 0 && n < N && m < nr) y[(size_t)(r0 + m) * N + n] = swt[r0 + m] * v;
 #endif
     }
+#endif
 }
 
 #endif  // MOE_Q
