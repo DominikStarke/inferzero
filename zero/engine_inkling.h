@@ -972,7 +972,20 @@
       const int G = H / HKV;
       static const int pp_tt_env = getenv("ARC_INK_ATTN_PP_TT") ? atoi(getenv("ARC_INK_ATTN_PP_TT")) : 4;
       const int pp_tt = std::clamp(pp_tt_env, 1, std::max(1, 16 / G));
-      if (attn_pp && T > 8 && D == 128 && nrel <= 32 && G * pp_tt <= 16) {
+      // (ARC_INK_ATTN_PS=S, opt-in, 2026-11-24: ink_attn_ps, each row's keys in S slices of one work-group merged in it,
+      //  for long prompts (pp4096: ink_attn 23 % with ink_attn_pp); S from 2 to 16 / G, 4 if given as 1. UNTESTED HERE)
+      static const int ps_env = getenv("ARC_INK_ATTN_PS") ? atoi(getenv("ARC_INK_ATTN_PS")) : 0;
+      const int ps = ps_env <= 0 ? 0 : std::clamp(ps_env == 1 ? 4 : ps_env, 2, std::max(2, 16 / G));
+      if (ps > 0 && T > 8 && D == 128 && nrel <= 32 && G * ps <= 16) {
+        if (!ink_attn_ps_said_ && (ink_attn_ps_said_ = true))
+          zlog::eprintf("inferzero: Inkling 2: the prompt attention with each row's keys in %d slices of a work-group "
+                        "(ARC_INK_ATTN_PS)\n", ps);
+        cl_kernel kp = ink_k("ink_attn_ps");
+        int ns = ps;
+        set_args(kp, 0, ink_q_, ink_r_, ink_s_, ink_g_, S.kc, S.vc, L.rel_bias, ext, nrel, ink_att_, HH, HK, p0, win, cap,
+                 ns);
+        ink_rung("ink_attn", kp, (size_t)HKV * T, (size_t)16 * G * ps);
+      } else if (attn_pp && T > 8 && D == 128 && nrel <= 32 && G * pp_tt <= 16) {
         if (!ink_attn_pp_said_ && (ink_attn_pp_said_ = true))
           zlog::eprintf("inferzero: Inkling 2: the prompt attention one sub-group a row and head, %d rows a work-group "
                         "(ARC_INK_ATTN_PP=1)\n", pp_tt);
