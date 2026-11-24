@@ -514,7 +514,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         if (x8 || rg)
           zlog::eprintf("inferzero: %s%s%s set but not used: XMX is off on this GPU (%s); ARC_XMX_FORCE=1 forces it\n",
                         x8 ? "ARC_MOE_X8" : "", x8 && rg ? " and " : "", rg ? "ARC_MOE_RG_XMX" : "",
-                        got.slow ? "the start-up speed check chose DP4a" : "its kernels do not build or differ, or the GPU has none");
+                        got.slow ? "the start-up speed check chose DP4a" : "its kernels do not build or differ from DP4a");
       }
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
       if (got.slow) xe2_ = false;
