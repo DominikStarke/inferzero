@@ -1,0 +1,83 @@
+# A release built and published on GitHub's runners (2026-11-24: since then the laptop builds nothing, the user's
+# rule, so the packages that scripts/make-package.ps1 / make-package-linux.sh made there are made here). Started by
+# hand: Actions > release > Run workflow, or `gh workflow run release.yml -f release=2026.11.24.03 -f notes_file=...`.
+# The packages are those of the scripts, as before: the Windows zip from the same build.ps1 and MSVC, the Linux
+# tar.gz on the oldest Ubuntu it is for (24.04), as ci.yml's linux-package job. No GPU here: what is checked is that
+# they build and start; the GPU checks stay with the release's notes on users' cards.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "The release's number, yyyy.MM.dd.NN (two digits for NN)"
+        required: true
+      notes_file:
+        description: "A Markdown file in the repository with the release's notes (empty: CHANGELOG.md's first section)"
+        required: false
+        default: ""
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -ExecutionPolicy Bypass -File scripts\make-package.ps1 -Release "${{ inputs.release }}"
+          if (-not $?) { throw "make-package failed" }
+          Get-ChildItem dist\*.zip
+      - name: The programs start
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $z = Get-ChildItem dist\*.zip | Select-Object -First 1
+          Expand-Archive $z.FullName -DestinationPath dist\check
+          $pkg = Get-ChildItem dist\check -Directory | Select-Object -First 1
+          & (Join-Path $pkg.FullName "bin\serverz.exe") --help | Select-Object -First 3
+          & (Join-Path $pkg.FullName "bin\runz.exe") --help 2>&1 | Select-Object -First 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win64
+          path: dist/*.zip
+          retention-days: 7
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and package
+        shell: bash
+        run: |
+          set -e
+          bash scripts/make-package-linux.sh --release "${{ inputs.release }}"
+          pkg=$(ls -d dist/inferzero-*-linux-x64 | head -1)
+          "$pkg/bin/serverz" --help | head -3
+          "$pkg/bin/runz" --help | head -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: dist/*.tar.gz
+          retention-days: 7
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: The release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          rel="${{ inputs.release }}"
+          notes="${{ inputs.notes_file }}"
+          if [ -z "$notes" ]; then  # (CHANGELOG.md's first section: from its first '## ' line to the next)
+            awk 'BEGIN{n=0} /^## /{n++; if(n==2) exit} n==1' CHANGELOG.md > /tmp/notes.md
+            notes=/tmp/notes.md
+          fi
+          gh release create "$rel" out/win64/*.zip out/linux-x64/*.tar.gz --title "$rel" --notes-file "$notes" --target "$GITHUB_SHA"
