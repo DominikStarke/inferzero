@@ -442,9 +442,10 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
     // 32-block (8 per half: low nibbles values 0..7 of the half, high 8..15). The per-32 form has one scale, so the two
     // halves' scales s0, s1 are folded as src/quants.h nvfp4_block32_w8 does, in the same integers: equal halves keep
     // their codes (d = s); else d = max / 8, the larger half's codes x 8, the other's round(|kv| 8 M_h / (M_big
-    // 2^(E_big - E_h))) half away from zero. The prompt paths decode through this fold (decode_w8, moe_rg); the expert
-    // GEMVs (decode_moe.cl moe_gateup_q / moe_down_q, built with -DMOE_Q) read the halves exactly per 16 (NV16, below)
-    // since 2026-11-24, so a prompt and the tokens after it no longer use bit-identical weights.
+    // 2^(E_big - E_h))) half away from zero. The longer prompt chunks' paths decode through this fold (decode_w8,
+    // moe_rg); the per-tile expert kernels (decode_moe.cl moe_gateup_q / moe_down_q, built with -DMOE_Q: generation,
+    // short chunks, and every chunk's gate / up where decode + GEMM is off) read the halves exactly per 16 (NV16, below)
+    // since 2026-11-24, so those paths no longer use bit-identical weights (engine_moe.h's start line says which runs).
     const uchar* kv = (const uchar*)aux;
     int M[2], E[2];
 #pragma unroll
