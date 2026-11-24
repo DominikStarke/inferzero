@@ -771,10 +771,15 @@
       //  says so and, on Linux, where nothing pages the GPU's memory gracefully, stops before the GPU is lost.
       //  UNTESTED HERE: no build or run on the laptop)
       const double need = std::max(0.0, total - (budget - keep));
-      const double reserve = std::max(4.0 * GiB, 0.30 * (double)plat::ram_total());
+      // (the reserve 30 % of the RAM, at least 4 and at most 6 GiB: a 32 / 64 GB PC keeps 6, not 9.6 / 19.2, so loads
+      //  that worked there still do. And the CPU copy goes also where the weights and their copy would be more than 40 %
+      //  of the RAM: xtronema's 13.1-13.5 GiB free left the copy's ~6.9 GiB in under the reserve alone, the same anon
+      //  memory as his OOM report shows; 6.9 > 0.40 x 15.4. The Researcher's review of 4b748ca; to tune with his RSS)
+      const double ram_all = (double)plat::ram_total();
+      const double reserve = std::max(4.0 * GiB, std::min(0.30 * ram_all, 6.0 * GiB));
       const double ram_free = std::max(0.0, (double)plat::ram_available() - reserve);
       double per_byte = host_cpu_on() && total > 0 ? 1.0 + cpu_copy / total : 1.0;
-      if (per_byte > 1.0 && need * per_byte > ram_free && need > 0) {
+      if (per_byte > 1.0 && need > 0 && (need * per_byte > ram_free || need * per_byte > 0.40 * ram_all)) {
         host_cpu_ram_off_ = true;
         per_byte = 1.0;
       }
