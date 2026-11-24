@@ -179,6 +179,35 @@ __kernel void ink_ctrl_fused(__global float* x, __global const float* Wf, __glob
   const float v = x[i];
   x[i] = v - tanh(f) * v + tanh(g) * m[moff + (size_t)t * mstride + e];
 }
+// (2026-11-29, prompt chunks: the laptop's 125H spent 12.8 % of Inkling's 512-token prompt in ink_ctrl_fused, 10.2 ms a
+// launch, each output reading its 2 x 64 weights and its row's 64 lo values from global memory; oneDNN does the same
+// 512 x 64 x 2,304 product in 0.06 ms) ink_ctrl_fused as a tiled product: a work-group of 16 rows x 16 outputs, the
+// rows' lo values and the outputs' Wf / Wg rows staged in local memory once and reused by the 16 x 16 work-items. Each
+// output's two sums over k = 0 .. K - 1 in the same order with the same operands (wf[k] * lo[k]), then the same update:
+// the same values as ink_ctrl_fused, bit for bit. K <= 64 (the controllers' rank). grid (E rounded up to 16, T rounded up
+// to 16), local (16, 16). Registers: a few floats; local 3 x 16 x 65 floats (12.5 KB). UNTESTED HERE: built only
+__kernel void ink_ctrl_fused_t(__global float* x, __global const float* Wf, __global const float* Wg,
+                               __global const float* lo, __global const float* m, int moff, int mstride, int E, int K,
+                               int T) {
+  __local float ll[16][65], lf[16][65], lg[16][65];  // (65: no bank conflicts along k)
+  const int le = get_local_id(0), lt = get_local_id(1), lid = lt * 16 + le;
+  const int e0 = get_group_id(0) * 16, t0 = get_group_id(1) * 16;
+  for (int i = lid; i < 16 * K; i += 256) {
+    const int r = i / K, k = i % K;
+    ll[r][k] = t0 + r < T ? lo[(size_t)(t0 + r) * K + k] : 0.0f;
+    lf[r][k] = e0 + r < E ? Wf[(size_t)(e0 + r) * K + k] : 0.0f;
+    lg[r][k] = e0 + r < E ? Wg[(size_t)(e0 + r) * K + k] : 0.0f;
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int t = t0 + lt, e = e0 + le;
+  if (t >= T || e >= E) return;
+  float f = 0.0f, g = 0.0f;
+  for (int k = 0; k < K; ++k) f += lf[le][k] * ll[lt][k];
+  for (int k = 0; k < K; ++k) g += lg[le][k] * ll[lt][k];
+  const size_t i = (size_t)t * E + e;
+  const float v = x[i];
+  x[i] = v - tanh(f) * v + tanh(g) * m[moff + (size_t)t * mstride + e];
+}
 
 // llama's convolve on a chunk of T tokens after the slot's history (any size; one work-item per value):
 // out[t][c] = (cur[t][c] + sum_i w[c][i] x(t - (NC - 1) + i) + [dyn] sum_lag x(t - lag) dyn[t][h(c)][lag]) * scale,
