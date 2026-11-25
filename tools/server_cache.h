@@ -406,7 +406,20 @@
     head.insert(head.end(), cached_.begin(), cached_.end());
     head.insert(head.end(), {last_gen_cut_, floor, (int32_t)res.size()});
     head.insert(head.end(), res.begin(), res.end());
-    const uint64_t bytes = head.size() * 4 + eng_.saved_size(last_gen_cut_);
+    // (the host snapshot is the state that is saved, not save_state's KV caches: they are position-indexed and would
+    //  have to be copied off the GPUs, ~700 MB a shard on a 34K conversation, which a split cannot afford between two
+    //  steps of a request -- its shards would hold each other at a sum's barrier. The recurrent states are ~13 MB a
+    //  shard and snapshot_host() copies them in milliseconds, zero/engine_slots.h)
+    std::vector<uint8_t> snap;
+    const bool snap_ok = eng_.save_host_snapshot_split([&snap](const void* p, size_t n) {
+      snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+      return true;
+    });
+    if (!snap_ok) {
+      LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read)\n", cached_.size());
+      return;
+    }
+    const uint64_t bytes = head.size() * 4 + snap.size();
     const bool bg = plat::ram_available() > bytes + (2ull << 30);
     auto failed = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::thread> writer;
@@ -415,10 +428,8 @@
     if (bg) {
       auto pieces = std::make_shared<std::vector<std::vector<uint8_t>>>();
       pieces->emplace_back((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size()));
-      ok = eng_.save_state([&](const void* p, size_t n) {
-        pieces->emplace_back((const uint8_t*)p, (const uint8_t*)p + n);
-        return true;
-      }, last_gen_cut_);
+      pieces->emplace_back(snap.begin(), snap.end());
+      ok = true;
       if (ok)
         writer = start_writer([pieces, file, failed] {
           FILE* f = fopen((file + ".tmp").c_str(), "wb");
@@ -436,8 +447,10 @@
         });
     } else {
       FILE* f = fopen((file + ".tmp").c_str(), "wb");
-      ok = f && with_file(f, [&] { return fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_); },
-                          file + ".tmp");
+      ok = f && with_file(f, [&] {
+        return fwrite(head.data(), 4, head.size(), f) == head.size() &&
+               (snap.empty() || fwrite(snap.data(), 1, snap.size(), f) == snap.size());
+      }, file + ".tmp");
       if (f) ok = fclose(f) == 0 && ok;
       if (ok) std::filesystem::rename(file + ".tmp", file, ec);
       ok = ok && !ec;
@@ -489,7 +502,11 @@
     const bool done = written(s);  // a background write of this conversation finishes first
     FILE* f = done ? fopen(s.file.c_str(), "rb") : nullptr;
     SavedConv tmp;
-    const bool ok = f && with_file(f, [&] { return read_header(f, tmp) && eng_.load_state(f); });
+    const bool ok = f && with_file(f, [&] {
+      if (!read_header(f, tmp)) return false;
+      if (!eng_.load_host_snapshot_split(f)) return false;
+      return eng_.restore_host();  // (the snapshot into the GPU: a TpMirror call, so every shard takes its own)
+    });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
       LOG_WRN("session cache: could not read %s (damaged, or from another version): forgotten; the conversation is processed again\n", s.file.c_str());

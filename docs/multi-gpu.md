@@ -757,13 +757,14 @@ and 0.38 s to load. As on one GPU it only hits when the system prompt is identic
 `--split layer` keeps the system-prompt cache off too: its stages are separate engines with state files of their
 own, not one mirrored call, so a layer split says so once at start.
 
-**Why the saved conversations stay off** (`--session-cache-gb`). Its save runs between two steps of a request that is
-being served (`ServerCache::save_current`, called from the chat path), and on a split a shard that writes its state
-then holds its peers at a sum's barrier until it is done: with two B60s the second request of such a server hung for
-the barrier's 120 s and returned 500, twice. Writing the shards one after the other (the form the system-prompt cache
-uses) cannot help here, because the peers are mid-request, not between requests. Done properly it needs a `TpMirror`
-around the save, so every shard writes its own part into a buffer of its own at the same point; until then a split
-keeps it off and says so once.
+**Saved conversations (`--session-cache-gb`) work too, through the host snapshot instead of `save_state`.** Both go
+through the same shape of state on a split: `save_state`'s KV caches are position-indexed and huge (a 34K
+conversation is ~700 MB a shard), and copying them off the GPU between two steps of a request held the shards at each
+other's sum barrier until the 120 s timeout — tried three ways on 2026-11-25, and it failed every time, once with a
+segfault and once by exhausting the machine's RAM. The recurrent states are ~13 MB a shard, `snapshot_host()` copies
+them in milliseconds and is a `TpMirror` call (all shards at one point), and `Engine::save_host_snapshot_split`
+writes the parts in rank order afterwards: 150 MB per conversation, 0.26 s to save, 0.19 s to load, 2,654 of 2,659
+prompt tokens reusable on a 2-B60 start. `--split layer` keeps both off, as its stages are engines of their own.
 
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
