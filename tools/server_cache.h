@@ -410,11 +410,18 @@
     //  have to be copied off the GPUs, ~700 MB a shard on a 34K conversation, which a split cannot afford between two
     //  steps of a request -- its shards would hold each other at a sum's barrier. The recurrent states are ~13 MB a
     //  shard and snapshot_host() copies them in milliseconds, zero/engine_slots.h)
+    // (the host snapshot first, then the VRAM snapshot slots -- slot 2 is the last turn's start, which is where a
+    //  conversation that comes back should resume. ~13 MB a shard each)
     std::vector<uint8_t> snap;
-    const bool snap_ok = eng_.save_host_snapshot_split([&snap](const void* p, size_t n) {
+    bool snap_ok = eng_.save_host_snapshot_split([&snap](const void* p, size_t n) {
       snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
       return true;
     });
+    for (int slot = 0; slot < kSnaps && snap_ok; ++slot)
+      snap_ok = eng_.save_snap_split([&snap](const void* p, size_t n) {
+        snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+        return true;
+      }, slot);
     if (!snap_ok) {
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read)\n", cached_.size());
       return;
@@ -502,10 +509,30 @@
     const bool done = written(s);  // a background write of this conversation finishes first
     FILE* f = done ? fopen(s.file.c_str(), "rb") : nullptr;
     SavedConv tmp;
+    int resumed_at = -1;  // (the position the loaded state stands at: cached_ goes no further than this)
     const bool ok = f && with_file(f, [&] {
       if (!read_header(f, tmp)) return false;
-      if (!eng_.load_host_snapshot_split(f)) return false;
-      return eng_.restore_host();  // (the snapshot into the GPU: a TpMirror call, so every shard takes its own)
+      const bool host_ok = eng_.load_host_snapshot_split(f);
+      for (int slot = 0; slot < kSnaps; ++slot)
+        if (!eng_.load_snap_split(f, slot)) return false;
+      // (the furthest resumable point wins: the snapshot slots are taken at the turn's start and at the generation's,
+      //  so the last one that is set is the nearest to where this conversation stood; the host snapshot is the
+      //  prompt's end and what a new conversation resumes at, so it is the fallback)
+      int best_slot = -1, best_pos = -1;
+      for (int slot = 0; slot < kSnaps; ++slot) {
+        const int p = eng_.snapshot_pos(slot);
+        if (p > best_pos) best_pos = p, best_slot = slot;
+      }
+      const int host_pos = eng_.host_snapshot_pos();
+      if (best_slot >= 0 && best_pos > host_pos && best_pos <= (int)eng_.pos + 1 && eng_.restore(best_slot)) {
+        resumed_at = eng_.pos;
+        return host_ok;
+      }
+      if (host_ok && eng_.restore_host()) {
+        resumed_at = eng_.pos;
+        return true;
+      }
+      return false;
     });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
@@ -516,8 +543,11 @@
       cur_saved_ = false;
       return;
     }
+    // (only up to where the loaded state stands: prepare_prefix compares the next request against this, and a longer
+    //  cached_ made it skip tokens the state does not have)
     cached_ = s.tokens;
-    last_gen_cut_ = s.gen_cut;
+    if (resumed_at >= 0 && (size_t)resumed_at < cached_.size()) cached_.resize((size_t)resumed_at);
+    last_gen_cut_ = std::min(s.gen_cut, (int)cached_.size());
     s.used = ++use_clock_;
     cur_saved_ = true;
     zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable\n",

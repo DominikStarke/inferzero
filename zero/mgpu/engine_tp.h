@@ -1916,3 +1916,45 @@ inline bool Engine::load_host_snapshot_split(FILE* f) {
   }
   return all_ok;
 }
+
+// A VRAM snapshot slot's contents on disk: every shard's, in rank order (Engine::save_snap reads a slot's buffers).
+template <class Out_>
+inline bool Engine::save_snap_split(const Out_& out, int slot) {
+  const int32_t n = tp_engine_ ? (int32_t)tp_engine_->gpus() : 1;
+  if (!out(&n, 4)) return false;
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    Engine& e = tp_engine_ ? tp_engine_->shard(r) : *this;
+    std::vector<uint8_t> buf;
+    const bool ok = e.save_snap([&buf](const void* p, size_t k) {
+      buf.insert(buf.end(), (const uint8_t*)p, (const uint8_t*)p + k);
+      return true;
+    }, slot);
+    if (!ok) all_ok = false;
+    const int64_t len = (int64_t)buf.size();
+    if (!out(&len, 8) || (len && !out(buf.data(), (size_t)len))) return false;
+  }
+  return all_ok;
+}
+inline bool Engine::load_snap_split(FILE* f, int slot) {
+  int32_t n = 0;
+  if (fread(&n, 4, 1, f) != 1 || n <= 0 || n > 64) return false;
+  const int gpus = tp_engine_ ? tp_engine_->gpus() : 1;
+  if (n != gpus) return false;  // (saved on another split)
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    int64_t len = 0;
+    if (fread(&len, 8, 1, f) != 1 || len < 0 || len > ((int64_t)1 << 32)) return false;
+    std::vector<uint8_t> buf((size_t)len);
+    if (len && fread(buf.data(), 1, (size_t)len, f) != (size_t)len) return false;
+    Engine& e = tp_engine_ ? tp_engine_->shard(r) : *this;
+    FILE* mem = tmpfile();
+    if (!mem) return false;
+    const bool wrote = len == 0 || fwrite(buf.data(), 1, (size_t)len, mem) == (size_t)len;
+    if (fseek(mem, 0, SEEK_SET) != 0) { fclose(mem); return false; }
+    const bool ok = wrote && e.load_snap(mem, slot);
+    fclose(mem);
+    if (!ok) all_ok = false;
+  }
+  return all_ok;
+}
