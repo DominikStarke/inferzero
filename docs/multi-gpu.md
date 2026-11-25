@@ -763,8 +763,17 @@ conversation is ~700 MB a shard), and copying them off the GPU between two steps
 other's sum barrier until the 120 s timeout — tried three ways on 2026-11-25, and it failed every time, once with a
 segfault and once by exhausting the machine's RAM. The recurrent states are ~13 MB a shard, `snapshot_host()` copies
 them in milliseconds and is a `TpMirror` call (all shards at one point), and `Engine::save_host_snapshot_split`
-writes the parts in rank order afterwards: 150 MB per conversation, 0.26 s to save, 0.19 s to load, 2,654 of 2,659
-prompt tokens reusable on a 2-B60 start. `--split layer` keeps both off, as its stages are engines of their own.
+writes the parts in rank order afterwards.
+
+A saved conversation carries the **snapshot slots** too, not only the host snapshot: a request takes a recurrent-state
+snapshot at its last turn's start (`snapshot(2)`), where a new message of that conversation diverges, and the session
+cache keeps all three slots (`Engine::save_snap` / `load_snap`). So going back to a conversation resumes at its last
+turn rather than at its first prompt — which is what makes going back to a chat, or branching one from an earlier
+point, cheap. Measured on 2 B60s with the prompt cache off and a botany system prompt in between, so nothing but the
+session cache could help: back to the first conversation, 2,706 of 2,711 tokens came from the cache, 449 MB on disk,
+0.38 s to load, the answer the same.
+
+`--split layer` keeps both off, as its stages are engines of their own.
 
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
