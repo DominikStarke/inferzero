@@ -7,6 +7,7 @@
 - **`ARC_140T_RES=1`** (resident and just in time together, on Alchemist cards) keeps the copy only where it fits, and says so when it does not.
 - **Launchers**: the "best measured" setting for the 4B / 9B on Alchemist (resident weights for short prompts, measured on a 16 GB A770) now applies to an A770 only (the need `a770` in `scripts/best-setups.tsv`), not to an A380 or A580. `./zero-launcher.sh`'s check asks for 8 GB of RAM with a discrete card (it asked for 15, so a 14.3 GiB PC with an A380 could not start it); 16 GB on an integrated GPU as before.
 - **The refusal message names the driver on Linux**, not Windows.
+- **A limit**: the engine's own check counts the weights only, not the buffers or the context. So a card where the weights fit but a long context does not (an 8 GB A770 with the 4B) still keeps them resident, and relies on `--ctx auto`'s fallback; `runz` with a large `--ctx` given is refused there rather than falling back, for now.
 
 ## 2026-11-24: Inkling 2 generates with about 190 fewer GPU launches a token
 

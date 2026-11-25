@@ -891,7 +891,7 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
         r.ctx = floor_of(c);
         r.resident = r3;
         zlog::eprintf("--ctx auto: no context with the weights resident; %d tokens with them decoded just in time%s\n",
-                      r.ctx, host ? " (part of them in host memory)" : "");
+                      r.ctx, m3.host_gb > 0 ? " (part of them in host memory)" : "");  // (this probe's own)
       }
     }
   }
