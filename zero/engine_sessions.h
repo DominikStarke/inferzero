@@ -13,6 +13,10 @@
   }
   // save_state() writes through `out` (a file, or memory for a write in the background); saved_size() is its length.
   using Sink = std::function<bool(const void*, size_t)>;
+  // (a split model: every shard's state, in rank order; defined in zero/mgpu/engine_tp.h where TpEngine is complete)
+  template <class Out_>
+  bool save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot);
+  bool load_state_mirrored(FILE* f);
   // host_snapshot = false: without the host snapshot (a state saved exactly where it was taken holds it already)
   bool save_state(FILE* f, int keep_from, bool host_snapshot = true) {
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
@@ -33,6 +37,9 @@
     return n;
   }
   bool save_state(const Sink& out, int keep_from, bool host_snapshot = true) {
+    // (a split model: TP_MIRROR would run this on every shard at once, and they would all write into the same stream.
+    //  TpEngine::save_state_split drives them one after the other in rank order instead)
+    if (tp_engine_) return save_state_mirrored(out, keep_from, host_snapshot);  // (zero/mgpu/engine_tp.h)
     if (hp.inkling) return false;  // (as saved_size)
     if (hp.ds41) return ds_save_state(out, host_snapshot);
     if (!opt.attn_int8) return false;
@@ -48,6 +55,7 @@
     return ok;
   }
   bool load_state(FILE* f) {
+    if (tp_engine_) return load_state_mirrored(f);  // (zero/mgpu/engine_tp.h)
     if (hp.inkling) return false;  // (as saved_size: nothing of it was saved)
     reset();
     for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);

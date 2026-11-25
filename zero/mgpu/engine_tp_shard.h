@@ -36,6 +36,9 @@
 
  public:
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
+  // every shard's own TpEngine (Engine::save_state / load_state: a split's state is every shard's, written one after
+  // the other -- a mirrored call would have them all write the same stream at once)
+  TpEngine* tp_engine_ = nullptr;
   // serverz --gpus (zero/mgpu/tp_mirror.h): on shard 0 the TpEngine whose other shards mirror its calls
   TpEngine* tp_front_ = nullptr;
   // serverz --split layer (zero/mgpu/engine_pp.h): on the last stage the PpEngine whose earlier stages run its calls first
