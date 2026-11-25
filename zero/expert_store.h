@@ -451,9 +451,14 @@ struct ExpertStore {
       if (on_load) check_sums(false);
     }
     for (int i = 0; i < 2 * kQD; ++i) slots_[i].id = i;  // (before the open: no path reads with ids unset)
-    const int op = af_.open(path.c_str(), 2 * kQD);  // (unbuffered, reads in flight: src/platform.h AsyncFile)
+    // ARC_XBUF=1: reads through the OS file cache (a machine with hundreds of GB of RAM keeps the whole expert file
+    // there, and a RAM tier miss costs a cache hit, not an SSD read; the cache is pageable, so unlike the tier it
+    // takes nothing from what Windows lets the GPU pin). Default: unbuffered, reads in flight: src/platform.h AsyncFile
+    static const bool xbuf = getenv("ARC_XBUF") && atoi(getenv("ARC_XBUF")) != 0;
+    const int op = af_.open(path.c_str(), 2 * kQD, xbuf);
     if (op == 1) throw std::runtime_error("cannot open " + path);
     if (op == 2) throw std::runtime_error("cannot create the read events");
+    if (xbuf) zlog::eprintf("inferzero: expert file reads go through the OS file cache (ARC_XBUF)\n");
   }
 
   // ---- RAM tier (a GPU with memory of its own and a large system RAM: Arc B60 + hundreds of GB): the unbuffered
