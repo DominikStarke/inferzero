@@ -148,6 +148,45 @@
     hsnap_.pos = pos;
   }
   int host_snapshot_pos() const { return hsnap_.pos; }
+  // The host snapshot on disk, byte for byte (zero/mgpu/engine_tp.h writes every shard's, in rank order): a split
+  // model's state is every shard's, and this is the form small enough to carry -- a 27B's recurrent states are ~13 MB
+  // a shard against the ~700 MB of save_state's KV caches, which is why a split can save these between two steps of a
+  // request and cannot save those.
+  // (a split model: every shard's part, in rank order; zero/mgpu/engine_tp.h)
+  template <class Out_>
+  bool save_host_snapshot_split(const Out_& out) const;
+  bool load_host_snapshot_split(FILE* f);
+  template <class Out_>
+  bool save_host_snapshot(const Out_& out) const {
+    const int32_t pos = hsnap_.pos, ns = (int32_t)hsnap_.S.size();
+    if (!out(&pos, 4) || !out(&ns, 4)) return false;
+    for (const auto& v : hsnap_.S) {
+      const int64_t n = (int64_t)v.size();
+      if (!out(&n, 8) || (n && !out(v.data(), (size_t)n))) return false;
+    }
+    const int64_t hn = (int64_t)hsnap_.h.size();
+    if (!out(&hn, 8) || (hn && !out(hsnap_.h.data(), (size_t)hn))) return false;
+    return true;
+  }
+  bool load_host_snapshot(FILE* f) {
+    int32_t pos = -1, ns = 0;
+    if (fread(&pos, 4, 1, f) != 1 || fread(&ns, 4, 1, f) != 1 || ns < 0 || ns > 4096) return false;
+    hsnap_ = HostSnap();
+    hsnap_.pos = pos;
+    hsnap_.S.resize((size_t)ns);
+    for (auto& v : hsnap_.S) {
+      int64_t n = 0;
+      if (fread(&n, 8, 1, f) != 1 || n < 0 || n > ((int64_t)1 << 32)) return false;
+      v.resize((size_t)n);
+      if (n && fread(v.data(), 1, (size_t)n, f) != (size_t)n) return false;
+    }
+    int64_t hn = 0;
+    if (fread(&hn, 8, 1, f) != 1 || hn < 0 || hn > ((int64_t)1 << 32)) return false;
+    hsnap_.h.resize((size_t)hn);
+    if (hn && fread(hsnap_.h.data(), 1, (size_t)hn, f) != (size_t)hn) return false;
+    return true;
+  }
+
   void drop_host_snapshot() {
     TP_MIRROR(drop_host_snapshot(), TpMirror::kNone, 0);
     hsnap_ = HostSnap();

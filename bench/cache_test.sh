@@ -71,7 +71,8 @@ done
 SPID=""
 cleanup() {
   if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null; fi
-  rm -rf "$WORK"
+  # (a failing run keeps its folder: the server's log there says why nothing was saved)
+  if [ "${fail:-0}" = 0 ]; then rm -rf "$WORK"; else printf 'kept for inspection: %s\n' "$WORK"; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -152,6 +153,14 @@ ask $((PORT + 2)) "$WORK/q2.json" > /dev/null   # the second request saves the f
 sleep 25
 NARC=$(find "$DATA" -name '*.arcs' 2>/dev/null | wc -l)
 printf '  saved conversations: %s\n' "$NARC"
+if [ "$NARC" -gt 0 ]; then
+  LOADED=$(grep -c "session cache: loaded" "$WORK"/d.log 2>/dev/null || echo 0)
+  if [ "${LOADED:-0}" -gt 0 ]; then
+    printf '  OK a conversation was found again on the next start\n'
+  else
+    printf '  (the prefix cache covered this prompt: the saved conversation was not needed)\n'
+  fi
+fi
 [ "$NARC" -gt 0 ] && printf '  OK a conversation was saved\n' || { printf '  FAIL none saved (cached tokens below 1024?)\n'; fail=1; }
 stop_server
 start_server $((PORT + 3)) "$WORK/d.log" || die "phase 2: the third start did not start"
