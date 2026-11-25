@@ -147,15 +147,23 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     so.eo.dflash.clear();  // (the MTP block drafts on every shard: zero/mgpu/engine_tp_shard.h)
     so.dflash_auto = false;
     so.mmproj = "-";
-    // (the prefix and session caches work on a split model since 2026-11-25: save_state / load_state run on every
-    //  shard, which writes its own part of the KV caches and DeltaNet states in rank order, so a load gives each shard
-    //  its own back. A layer split (--split layer) keeps them off: its stages are separate engines with their own
-    //  state files, not one mirrored call)
+    // (the system-prompt cache works on a split model since 2026-11-25: save_state / load_state run on every shard,
+    //  which writes its own part of the KV caches and DeltaNet states in rank order, so a load gives each shard its
+    //  own back. A layer split (--split layer) keeps it off: its stages are separate engines with their own state
+    //  files, not one mirrored call)
+    // (--session-cache-gb stays off for a split: save_current() runs between two steps of a request that is being
+    //  served, and a shard writing its state then holds its peers at a sum's barrier until it is done -- with 2 B60s
+    //  the second request of such a server hung 120 s and failed. The prefix cache writes between requests, at the end
+    //  of a prompt, which is where this does not happen. To be done properly: save behind a TpMirror so every shard
+    //  writes its own part into a buffer of its own at the same point; until then a split keeps it off)
+    if (so.sess_gb > 0 && !so.split_layer)
+      LOG_INF("--gpus %d: saved conversations are off for a split model (the system-prompt cache works)\n", so.gpus);
+    so.sess_gb = 0;
     if (so.split_layer) {
-      if (so.prefix_cache || so.sess_gb > 0)
-        LOG_INF("--gpus %d --split layer: the prefix and session caches are not on a layer split yet\n", so.gpus);
+      if (so.prefix_cache)
+        LOG_INF("--gpus %d --split layer: the system-prompt cache is not on a layer split (its stages keep their own)\n",
+                so.gpus);
       so.prefix_cache = false;
-      so.sess_gb = 0;
     }
   }
   EngineOptions eo = so.eo;

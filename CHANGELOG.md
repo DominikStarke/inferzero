@@ -370,7 +370,10 @@
 
 - **`serverz --gpus N` keeps the system-prompt cache (`--prefix-cache-gb`, on by default) and the saved conversations (`--session-cache-gb`)** — both were off for a split model since 2026-11-03. A split model's state is every shard's (its rows of every KV cache, its DeltaNet states), and `TpMirror` cannot carry a save: a mirrored call runs on shards 1..n-1 at the same time as shard 0's own, so every shard wrote the same `FILE*` at once (the first 2-GPU server died of it). `Engine::save_state_mirrored` / `load_state_mirrored` write and read the shards' parts one after the other in rank order instead; each shard writes its own rows, with `tp_engine_` cleared.
 - **Measured** (Swift-1.5-Qwen3.8-27B Q4_K_M, 2 Arc Pro B60s, `--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system prompt, the same prompt in every start): time to the first token 2.19 s cold, then 0.63 s and 0.63 s on two later starts, 2,643 of 2,659 tokens cached, the answer the same ("Paris"). The cache file is 239 MB, 0.34 s to write and 0.38 s to load. As on one GPU it only hits when the system prompt is identical.
-- **`--split layer` keeps both off** and says so once: its stages are separate engines with state files of their own, not one mirrored call.
+- **`--split layer` keeps the system-prompt cache off** and says so once: its stages are separate engines with state files of their own, not one mirrored call.
+- **Saved conversations (`--session-cache-gb`) stay off for a split.** Their save runs between two steps of a request being served, and a shard writing its state then holds its peers at a sum's barrier: with two B60s the second request hung for the barrier's 120 s and returned 500. The fix needs a `TpMirror` around the save, so every shard writes its own part into a buffer of its own at the same point; until then a split says so once at start.
+- **`bench/cache_test.sh`** checks both paths on a split model -- the system-prompt cache across two starts (cold against warm, the same answer, the file written) and the saved conversations -- and leaves a server on other GPUs of the same machine alone.
+
 
 ## 2026-11-24: a split model's sums read four values a thread; a benchmark for the sum kernel
 

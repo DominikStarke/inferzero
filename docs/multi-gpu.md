@@ -728,8 +728,9 @@ Not with `--gpus` yet: DFlash2, images, the warm-up. The prompt and session cach
 
 ## The caches on disk on a split model (2026-11-25)
 
-`serverz --gpus N` keeps the system-prompt cache (`--prefix-cache-gb`, on by default) and the saved conversations
-(`--session-cache-gb`) again; both were off for a split model since 2026-11-03, when the split was new.
+`serverz --gpus N` keeps the system-prompt cache again (`--prefix-cache-gb`, on by default); it was off for a split
+model since 2026-11-03, when the split was new. Saved conversations (`--session-cache-gb`) stay off for a split: see
+the last paragraph here.
 
 **Why it needed more than switching them on.** A split model's state is not one engine's: each shard holds its own
 rows of every KV cache and its own DeltaNet states. `Engine::save_state` / `load_state` write and read one engine's
@@ -753,8 +754,16 @@ prompt, the same prompt in every start):
 3.5x faster to the first token, the answer the same ("Paris"); the cache file is 239 MB and takes 0.34 s to write
 and 0.38 s to load. As on one GPU it only hits when the system prompt is identical.
 
-`--split layer` keeps both off: its stages are separate engines with state files of their own, not one mirrored
-call, so a layer split says so once at start.
+`--split layer` keeps the system-prompt cache off too: its stages are separate engines with state files of their
+own, not one mirrored call, so a layer split says so once at start.
+
+**Why the saved conversations stay off** (`--session-cache-gb`). Its save runs between two steps of a request that is
+being served (`ServerCache::save_current`, called from the chat path), and on a split a shard that writes its state
+then holds its peers at a sum's barrier until it is done: with two B60s the second request of such a server hung for
+the barrier's 120 s and returned 500, twice. Writing the shards one after the other (the form the system-prompt cache
+uses) cannot help here, because the peers are mid-request, not between requests. Done properly it needs a `TpMirror`
+around the save, so every shard writes its own part into a buffer of its own at the same point; until then a split
+keeps it off and says so once.
 
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
