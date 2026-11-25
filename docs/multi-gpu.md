@@ -708,13 +708,22 @@ and 0.38 s to load. As on one GPU it only hits when the system prompt is identic
 `--split layer` keeps the system-prompt cache off too: its stages are separate engines with state files of their
 own, not one mirrored call, so a layer split says so once at start.
 
-**Saved conversations (`--session-cache-gb`) stay off on a split.** A saved conversation needs the KV caches: they
-*are* the context. An attempt that carried only the recurrent states (the host snapshot, ~13 MB a shard) restored a
-position whose attention saw nothing, and the model repeated itself endlessly — seen on a real chat, not in a test. The
-KV caches cannot simply be used either: at 46K they are ~700 MB a shard, and writing them between two steps of a
-request held the shards at each other's sum barrier for the 120 s timeout (three forms tried on 2026-11-25). The
-system-prompt cache does not have the problem: it restores a position at the end of the prompt, where everything
-before it is computed within the same request.
+**Saved conversations (`--session-cache-gb`) work the same way**, and they need the KV caches: they *are* the context.
+Two things had to change for that, both in `zero/mgpu/engine_tp.h`:
+
+- **Every shard writes and reads its part at the same time** (`TpEngine::save_parts_run_all` /
+  `load_parts_run_all`). Shard 0 runs on the calling thread, the others on their own, each into a buffer of its own, and
+  the buffers go to the stream in rank order with a length in front. Doing it one shard after the other held the peers
+  at a sum's barrier until the 120 s timeout — four forms were tried in one afternoon: a segfault from all shards
+  writing one `FILE*`, a machine out of RAM, a deadlock from barriers wrapped around the save, and the timeout again.
+- **The calls inside `load_state` that carry a `TpMirror` have local forms** (`reset_local`, `drop_snapshot_local`,
+  `drop_host_snapshot_local`). Every shard is in `load_state` at once, so a mirrored call there ran a job on peers that
+  were inside the same call: the load failed, and a conversation restored from only the recurrent states put the model
+  at a position whose attention saw nothing — it then repeated itself endlessly.
+
+Measured on 2 B60s: an 8K conversation is 871 MB, 1.5 s to save, 0.9 s to load, with 7,951 of 7,956 prompt tokens
+reusable and the same answer across the restart. Going back to a conversation after another one in between: 3,990 of
+3,995 tokens from the cache, 0.57 s.
 
 `--split layer` keeps both off, as its stages are engines of their own.
 

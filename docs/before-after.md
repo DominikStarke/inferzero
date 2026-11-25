@@ -401,6 +401,18 @@ That property is what every speed change is held to:
   timeout again). It stays off for a split, with the reason in the code and in docs/multi-gpu.md. The system-prompt
   cache is unaffected: everything before the restored position is computed within the same request.
 
+- **2026-11-25, both caches on disk on a split model, and Ctrl-C saving the held conversation:** the system-prompt
+  cache and the saved conversations were off for a split since the split was new. They go through `save_state`, whose
+  KV caches are what a restored position needs. Two changes made that possible: every shard writes and reads its part
+  at the same time (`TpEngine::save_parts_run_all` / `load_parts_run_all`; doing it one shard after the other held the
+  peers at a sum's barrier until the 120 s timeout, tried four ways), and the calls inside `load_state` that carry a
+  `TpMirror` have local forms (every shard is in `load_state` at once; without them the load failed and a restored
+  conversation came back without its context, which made the model repeat itself). Measured, Swift-1.5-Qwen3.8-27B
+  Q4_K_M over 2 Arc Pro B60s: an 8K conversation 871 MB, 1.5 s to save, 0.9 s to load, 7,951 of 7,956 tokens reusable,
+  the same answer across the restart; back to a conversation after another one in between 3,990 of 3,995 tokens from
+  the cache, 0.57 s; the system-prompt cache 2.19 s cold against 0.63 s warm. Separately, `serverz` now ends on
+  Ctrl-C/SIGTERM instead of dying, so `save_held()` runs — a hard kill never saved anything.
+
 - **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
   of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a
   generated token's 128 sums are latency-bound, not bandwidth-bound. A thread now takes four values with

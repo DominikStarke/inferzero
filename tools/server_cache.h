@@ -410,18 +410,14 @@
     //  have to be copied off the GPUs, ~700 MB a shard on a 34K conversation, which a split cannot afford between two
     //  steps of a request -- its shards would hold each other at a sum's barrier. The recurrent states are ~13 MB a
     //  shard and snapshot_host() copies them in milliseconds, zero/engine_slots.h)
-    // (the host snapshot first, then the VRAM snapshot slots -- slot 2 is the last turn's start, which is where a
-    //  conversation that comes back should resume. ~13 MB a shard each)
+    // (save_state, not the host snapshot: the KV caches ARE the context. Saving only the recurrent states restores a
+    //  position whose attention sees nothing, and the model repeats itself -- that was the fault of 2026-11-25. On a
+    //  split every shard writes its own part at the same time, TpEngine::save_parts_run_all.)
     std::vector<uint8_t> snap;
-    bool snap_ok = eng_.save_host_snapshot_split([&snap](const void* p, size_t n) {
+    const bool snap_ok = eng_.save_state([&snap](const void* p, size_t n) {
       snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
       return true;
-    });
-    for (int slot = 0; slot < kSnaps && snap_ok; ++slot)
-      snap_ok = eng_.save_snap_split([&snap](const void* p, size_t n) {
-        snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
-        return true;
-      }, slot);
+    }, last_gen_cut_);
     if (!snap_ok) {
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read)\n", cached_.size());
       return;
@@ -522,31 +518,10 @@
     int resumed_slot = -1;  // (-1: the host snapshot; else the VRAM slot it came from)
     const bool ok = f && with_file(f, [&] {
       if (!read_header(f, tmp)) return false;
-      const bool host_ok = eng_.load_host_snapshot_split(f);
-      for (int slot = 0; slot < kSnaps; ++slot)
-        if (!eng_.load_snap_split(f, slot)) return false;
-      // (the furthest resumable point wins: the snapshot slots are taken at the turn's start and at the generation's,
-      //  so the last one that is set is the nearest to where this conversation stood; the host snapshot is the
-      //  prompt's end and what a new conversation resumes at, so it is the fallback)
-      int best_slot = -1, best_pos = -1;
-      for (int slot = 0; slot < kSnaps; ++slot) {
-        const int p = eng_.snapshot_pos(slot);
-        if (p > best_pos) best_pos = p, best_slot = slot;
-      }
-      // (no check against eng_.pos: restore() sets it. Comparing against it was wrong on a fresh start, where pos is 0
-      //  and every slot looked "beyond" it -- the host snapshot was taken instead, and a 46K conversation restarted at
-      //  its system prompt's end)
-      const int host_pos = eng_.host_snapshot_pos();
-      if (best_slot >= 0 && best_pos > host_pos && eng_.restore(best_slot)) {
-        resumed_at = eng_.pos;
-        resumed_slot = best_slot;
-        return host_ok;
-      }
-      if (host_ok && eng_.restore_host()) {
-        resumed_at = eng_.pos;
-        return true;
-      }
-      return false;
+      // (save_state's own form: the KV caches are in it, and they ARE the restored position's context)
+      if (!eng_.load_state(f)) return false;
+      resumed_at = eng_.pos;
+      return true;
     });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
