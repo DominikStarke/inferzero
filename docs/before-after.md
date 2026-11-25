@@ -387,6 +387,20 @@ That property is what every speed change is held to:
   afterwards. Measured on 2 B60s: 150 MB a conversation, 0.26 s to save, 0.19 s to load, 2,654 of 2,659 prompt tokens
   reusable. `bench/cache_test.sh` checks both (prefix: 2.2 s cold against 0.7 s warm, the same answer, a file written).
 
+- **2026-11-25, the system-prompt cache on a split model, and Ctrl-C saving the held conversation:** the system-prompt
+  cache was off for a split since the split was new. It goes through `save_state`, whose KV caches are what a restored
+  position needs: `save_state_mirrored` / `load_state_mirrored` write and read every shard's part in rank order.
+  Measured, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, a 2,643-token system prompt: 2.19 s cold against 0.63 s
+  warm, the same answer ("Paris"). Separately, `serverz` now ends on Ctrl-C/SIGTERM instead of dying, so `save_held()`
+  runs: a hard kill never saved anything, and a 48K session was reprocessed from its first token after a restart (a
+  user's log, 2026-11-25).
+- **2026-11-25, measured and not kept: the saved conversations on a split.** A session cache carrying only the host
+  snapshot (~13 MB a shard, no KV caches) restored a position whose attention saw nothing, and the model repeated
+  itself; with `save_state` (~700 MB a shard at 46K) the shards held each other at a sum's barrier for the 120 s
+  timeout, in three different forms (a segfault from all shards writing one `FILE*`, an out-of-RAM machine, then the
+  timeout again). It stays off for a split, with the reason in the code and in docs/multi-gpu.md. The system-prompt
+  cache is unaffected: everything before the restored position is computed within the same request.
+
 - **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
   of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a
   generated token's 128 sums are latency-bound, not bandwidth-bound. A thread now takes four values with
