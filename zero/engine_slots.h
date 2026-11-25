@@ -260,8 +260,9 @@
 
   void drop_host_snapshot() {
     TP_MIRROR(drop_host_snapshot(), TpMirror::kNone, 0);
-    hsnap_ = HostSnap();
+    drop_host_snapshot_local();
   }
+  void drop_host_snapshot_local() { hsnap_ = HostSnap(); }  // (no mirror: a split model's load_state runs on all shards)
   bool restore_host() {
     TP_MIRROR(restore_host(), TpMirror::kNone, 0);
     if (hsnap_.pos < 0) return false;

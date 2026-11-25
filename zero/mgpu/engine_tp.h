@@ -1027,6 +1027,115 @@ class TpEngine {
     return spec_;
   }
   void verify_done(int accepted) { run_all([&](int r) { shards_[r]->verify_done(accepted); }); }
+  // load_state on every shard AT THE SAME TIME, each from its own bytes: load_state calls reset() first, which is a
+  // TpMirror call (all shards at one point) -- driving the shards one after the other made shard 0's reset run a job on
+  // peers that were not in load_state yet, which is the barrier fault that left a restored conversation without its
+  // context (2026-11-25).
+  bool load_parts_run_all(const std::vector<const std::vector<uint8_t>*>& part) {
+    std::vector<std::exception_ptr> errs((size_t)n_);
+    std::vector<int> all;
+    for (int r = 0; r < n_; ++r) all.push_back(r);
+    run_on(all, [&, this](int r) {
+      Engine& s = *shards_[r];
+      errs[(size_t)r] = nullptr;
+      if (r >= (int)part.size() || !part[(size_t)r]) {
+        errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("load_state: no part"));
+        return;
+      }
+      const std::vector<uint8_t>* mine = part[(size_t)r];
+      size_t at = 0;
+      TpEngine* const saved = s.tp_engine_;
+      s.tp_engine_ = nullptr;  // (this shard's own part: reset() below must not mirror a job onto its peers, which are
+                               //  in this same call -- that is what made the load fail and left a restored conversation
+                               //  without its context)
+      try {
+        if (!s.load_state([mine, &at](void* p, size_t k) {
+              if (at + k > mine->size()) return false;
+              memcpy(p, mine->data() + at, k);
+              at += k;
+              return true;
+            }))
+          errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("load_state"));
+      } catch (...) {
+        errs[(size_t)r] = std::current_exception();
+      }
+      s.tp_engine_ = saved;
+    }, false, false);
+    for (size_t r = 0; r < errs.size(); ++r) {
+      if (!errs[r]) continue;
+      if (getenv("ARC_STATE_CMP")) {
+        try {
+          std::rethrow_exception(errs[r]);
+        } catch (const std::exception& x) {
+          zlog::eprintf("inferzero: load_parts_run_all: GPU %zu: %s\n", r, x.what());
+        } catch (...) {
+          zlog::eprintf("inferzero: load_parts_run_all: GPU %zu: unknown exception\n", r);
+        }
+      }
+      return false;
+    }
+    return true;
+  }
+  // save_state on every shard AT THE SAME TIME, each into a buffer of its own, then the parts in rank order.
+  // run_on's job is a shard's own turn between two jobs -- it does not stand at a barrier while it runs -- so all of
+  // them can write together; writing them one after the other left the others waiting at a sum's barrier until the
+  // 120 s timeout (2026-11-25). A TpMirror call cannot be used: it runs the shards' jobs and shard 0's own one after
+  // the other, which is the same problem, and every shard writing one stream crashed the first time.
+  template <class Out_>
+  bool save_parts_run_all(const Out_& out, int keep_from, bool host_snapshot) {
+    std::vector<std::shared_ptr<std::vector<uint8_t>>> part((size_t)n_);
+    std::vector<std::exception_ptr> errs((size_t)n_);
+    std::vector<int> rest;
+    for (int r = 1; r < n_; ++r) rest.push_back(r);
+    auto one = [&, this](int r) {
+      Engine& s = *shards_[r];
+      part[(size_t)r] = std::make_shared<std::vector<uint8_t>>();
+      std::shared_ptr<std::vector<uint8_t>> mine = part[(size_t)r];
+      TpEngine* const saved = s.tp_engine_;
+      s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
+      errs[(size_t)r] = nullptr;
+      try {
+        if (!s.save_state([mine](const void* p, size_t k) {
+              mine->insert(mine->end(), (const uint8_t*)p, (const uint8_t*)p + k);
+              return true;
+            }, keep_from, host_snapshot))
+          errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("save_state"));
+      } catch (...) {
+        errs[(size_t)r] = std::current_exception();
+      }
+      s.tp_engine_ = saved;
+    };
+    // (shard 0 runs here (this thread IS its engine), the others on their own threads: run_on would wait for shard 0
+    //  in wait_done, which this thread never leaves -- "GPU 1 still has a job running")
+    // (the last job's shards may still be clearing their w_[r].has: wait for them to be ready again)
+    for (int i = 0; i < 200 && n_ > 1; ++i) {
+      bool busy = false;
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (int r = 1; r < n_; ++r) busy = busy || w_[r].has || stuck_[r];
+      }
+      if (!busy) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (n_ > 1) start_others([&](int r) { one(r); });
+    one(0);
+    if (n_ > 1)
+      for (const auto& e : wait_others())
+        if (e) return false;
+    for (const auto& e : errs)
+      if (e) return false;
+    for (size_t r = 0; r < part.size(); ++r) {
+      if (!part[r]) return false;
+    }
+    // (each part with its length in front: load_parts_run_all needs to know where one ends and the next starts)
+    for (const auto& pc : part) {
+      if (!pc) return false;
+      const int64_t len = (int64_t)pc->size();
+      if (!out(&len, 8)) return false;
+      if (len && !out(pc->data(), (size_t)len)) return false;
+    }
+    return true;
+  }
 
   void reset() {  // (the bound slot)
     run_all([&](int r) { shards_[r]->reset(); });
@@ -1910,26 +2019,29 @@ inline void TpMirror::finish() {
 // stream at once (that crashed a 2-GPU server on 2026-11-25).
 template <class Out_>
 inline bool Engine::save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot) {
-  bool ok = true;
-  for (int r = 0; r < tp_engine_->gpus() && ok; ++r) {
-    Engine& s = tp_engine_->shard(r);
-    TpEngine* const saved = s.tp_engine_;
-    s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
-    ok = s.save_state(out, keep_from, host_snapshot);
-    s.tp_engine_ = saved;
-  }
-  return ok;
+  // (every shard at the same time, each into a buffer of its own: the shards are between two jobs then, not at a
+  //  barrier. TpEngine::save_parts_run_all)
+  return tp_engine_->save_parts_run_all(out, keep_from, host_snapshot);
 }
 inline bool Engine::load_state_mirrored(FILE* f) {
+  // (the parts as save_parts_run_all wrote them: a length in front of each, then every shard reads its own bytes, all
+  // of them at the same time -- load_state calls reset(), which is a TpMirror call, so driving them one after the other
+  // ran a job on peers that were not in load_state yet, and a restored conversation came back without its context)
+  std::vector<std::vector<uint8_t>> part;
   for (int r = 0; r < tp_engine_->gpus(); ++r) {
-    Engine& s = tp_engine_->shard(r);
-    TpEngine* const saved = s.tp_engine_;
-    s.tp_engine_ = nullptr;
-    const bool ok = s.load_state(f);
-    s.tp_engine_ = saved;
-    if (!ok) return false;
+    int64_t len = 0;
+    if (fread(&len, 8, 1, f) != 1 || len < 0 || len > ((int64_t)1 << 34)) return false;
+    part.emplace_back((size_t)len);
+    if (len && fread(part.back().data(), 1, (size_t)len, f) != (size_t)len) return false;
   }
-  return true;
+  if (getenv("ARC_STATE_CMP"))
+    zlog::eprintf("inferzero: load parts: %zu shard(s), sizes", part.size()),
+        [&] { for (const auto& v : part) zlog::eprintf(" %zu", v.size()); zlog::eprintf(" bytes\n"); }();
+  std::vector<const std::vector<uint8_t>*> ptrs;
+  for (const auto& v : part) ptrs.push_back(&v);
+  const bool ok = tp_engine_->load_parts_run_all(ptrs);
+  if (!ok && getenv("ARC_STATE_CMP")) zlog::eprintf("inferzero: load_parts_run_all failed\n");
+  return ok;
 }
 
 // A split model's host snapshot on disk: every shard's, in rank order, each with its length in front. snapshot_host()
