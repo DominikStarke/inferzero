@@ -110,5 +110,6 @@ section[id^="s-"]{padding:40px 0}
 /* (grid items shrink below their content, and long paths in code wrap: otherwise one path widened a card past a
    phone's edge and the whole page scrolled sideways) */
 .grid>*,.steps>*{min-width:0}
+.grid+p,.steps+p{margin-top:28px}  /* (a paragraph right after the cards: with only the 16px gap the cards also have between them, on a phone it read as part of the stack) */
 code{overflow-wrap:anywhere}
 [id]{scroll-margin-top:72px}  /* (a jump to a section stops below the sticky header) */
