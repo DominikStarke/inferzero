@@ -378,8 +378,11 @@ That property is what every speed change is held to:
   shard after the other in rank order instead. Measured, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s
   (`--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system prompt, the same prompt every start): time to the first
   token 2.19 s cold -> 0.63 / 0.63 s on two later starts, 2,643 of 2,659 tokens cached, the answer the same ("Paris").
-  The file is 239 MB, 0.34 s to write and 0.38 s to load. `--split layer` keeps both off (its stages are engines of
-  their own) and says so.
+  The file is 239 MB, 0.34 s to write and 0.38 s to load. `--split layer` keeps it off (its stages are engines of
+  their own) and says so. **The saved conversations (`--session-cache-gb`) stay off for a split:** their save runs
+  between two steps of a request being served, and a shard writing its state then holds its peers at a sum's barrier —
+  with two B60s the second request hung for the barrier's 120 s and returned 500. `bench/cache_test.sh` checks both
+  (prefix: 2.2 s cold against 0.7 s warm, the same answer, a file written).
 
 - **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
   of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a
