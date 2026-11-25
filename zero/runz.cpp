@@ -445,6 +445,10 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     const auto [w1, n1] = syncs();
     printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s (sums: %lld, %.1f ms waiting, barriers: %d)\n", prompt.size(), r, ms,
            prompt.size() / ms * 1000.0, (long long)(n1 - n0), w1 - w0, (int)tp.comm().gen.load());
+    if (getenv("ARC_TP_PROF"))
+      printf("  host time per shard: events %.1f ms, barriers %.1f ms (of the %.1f ms above)\n",
+             tp.comm().prof_evwait, tp.comm().prof_barrier, w1 - w0);
+    tp.comm().prof_evwait = tp.comm().prof_barrier = 0;
   }
   if (prof && !prof_gen) shard_tables("prompt, GPU");
   shard_prof(prof_gen);  // (--prof-gen: the generation steps below)

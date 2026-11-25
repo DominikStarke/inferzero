@@ -147,8 +147,16 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     so.eo.dflash.clear();  // (the MTP block drafts on every shard: zero/mgpu/engine_tp_shard.h)
     so.dflash_auto = false;
     so.mmproj = "-";
-    so.prefix_cache = false;
-    so.sess_gb = 0;
+    // (the prefix and session caches work on a split model since 2026-11-25: save_state / load_state run on every
+    //  shard, which writes its own part of the KV caches and DeltaNet states in rank order, so a load gives each shard
+    //  its own back. A layer split (--split layer) keeps them off: its stages are separate engines with their own
+    //  state files, not one mirrored call)
+    if (so.split_layer) {
+      if (so.prefix_cache || so.sess_gb > 0)
+        LOG_INF("--gpus %d --split layer: the prefix and session caches are not on a layer split yet\n", so.gpus);
+      so.prefix_cache = false;
+      so.sess_gb = 0;
+    }
   }
   EngineOptions eo = so.eo;
   eo.state_snaps = 3;  // (kSnaps, server.cpp: the memory a model that nearly fills a discrete card keeps for them)

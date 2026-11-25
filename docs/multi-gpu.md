@@ -723,7 +723,39 @@ at once, and their logits are joined into shard 0's, so the server sees the whol
 is one pointer test (logits bit-identical to the build before). A request's cancel (the web UI's stop) is asked on
 shard 0 and its answer shared, so every shard stops at the same point.
 
-Not with `--gpus` yet: DFlash2, images, the prompt and session caches on disk, the warm-up.
+Not with `--gpus` yet: DFlash2, images, the warm-up. The prompt and session caches on disk **are** back since
+2026-11-25 (see "The caches on disk" below).
+
+## The caches on disk on a split model (2026-11-25)
+
+`serverz --gpus N` keeps the system-prompt cache (`--prefix-cache-gb`, on by default) and the saved conversations
+(`--session-cache-gb`) again; both were off for a split model since 2026-11-03, when the split was new.
+
+**Why it needed more than switching them on.** A split model's state is not one engine's: each shard holds its own
+rows of every KV cache and its own DeltaNet states. `Engine::save_state` / `load_state` write and read one engine's
+part, and they are not `TpMirror` calls — a mirrored call runs on shards 1..n-1 at the same time as shard 0's own,
+so every shard would write into the same `FILE*` at once (a 2-GPU server died of that on the first try, 2026-11-25).
+
+So the state goes out **one shard after the other, in rank order** (`Engine::save_state_mirrored`,
+`zero/mgpu/engine_tp.h`): each shard writes its part with `tp_engine_` cleared, so it writes its own rows and not the
+split's again. A load reads them back in the same order. The file therefore holds the whole model's state, and its
+size is the sum of the shards'.
+
+**Measured** (Swift-1.5-Qwen3.8-27B Q4_K_M, 2 Arc Pro B60s, `--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system
+prompt, the same prompt in every start):
+
+| Start | prompt | of it cached | time to first token |
+|---|---|---:|---|
+| 1 (cold) | 2,659 tokens | 0 | **2.19 s** |
+| 2 | 2,659 tokens | 2,643 | **0.63 s** |
+| 3 | 2,659 tokens | 2,643 | **0.63 s** |
+
+3.5x faster to the first token, the answer the same ("Paris"); the cache file is 239 MB and takes 0.34 s to write
+and 0.38 s to load. As on one GPU it only hits when the system prompt is identical.
+
+`--split layer` keeps both off: its stages are separate engines with state files of their own, not one mirrored
+call, so a layer split says so once at start.
+
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
 B60s 1,298.9 -> 1,368.8 tok/s, 4 Pro B60s 1,629.6 -> 1,734.0; a 27B IQ4_XS 32K prompt over two Arcs, the second

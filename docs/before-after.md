@@ -371,6 +371,16 @@ That property is what every speed change is held to:
       gate / up stay equal. The Q4_K down / qkv and the Q5_K z lose 2-4 %.
     - About 1 % in all, within run-to-run spread: not made the default.
 
+- **2026-11-25, the prompt and session caches on disk on a split model (`serverz --gpus N`):** both were off for a
+  split since the split was new. A split model's state is every shard's, and `TpMirror` cannot carry it — a mirrored
+  call runs on shards 1..n-1 at the same time as shard 0's own, so every shard wrote the same `FILE*` at once (the
+  first 2-GPU server died of it). `Engine::save_state_mirrored` / `load_state_mirrored` write and read the parts one
+  shard after the other in rank order instead. Measured, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s
+  (`--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system prompt, the same prompt every start): time to the first
+  token 2.19 s cold -> 0.63 / 0.63 s on two later starts, 2,643 of 2,659 tokens cached, the answer the same ("Paris").
+  The file is 239 MB, 0.34 s to write and 0.38 s to load. `--split layer` keeps both off (its stages are engines of
+  their own) and says so.
+
 - **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
   of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a
   generated token's 128 sums are latency-bound, not bandwidth-bound. A thread now takes four values with

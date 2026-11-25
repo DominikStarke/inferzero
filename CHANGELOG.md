@@ -366,6 +366,12 @@
 - **The refusal message names the driver on Linux**, not Windows.
 - **A limit**: the engine's own check counts the weights only, not the buffers or the context. So a card where the weights fit but a long context does not (an 8 GB A770 with the 4B) still keeps them resident, and relies on `--ctx auto`'s fallback; `runz` with a large `--ctx` given is refused there rather than falling back, for now.
 
+## 2026-11-25: the prompt and session caches on disk work on several GPUs
+
+- **`serverz --gpus N` keeps the system-prompt cache (`--prefix-cache-gb`, on by default) and the saved conversations (`--session-cache-gb`)** — both were off for a split model since 2026-11-03. A split model's state is every shard's (its rows of every KV cache, its DeltaNet states), and `TpMirror` cannot carry a save: a mirrored call runs on shards 1..n-1 at the same time as shard 0's own, so every shard wrote the same `FILE*` at once (the first 2-GPU server died of it). `Engine::save_state_mirrored` / `load_state_mirrored` write and read the shards' parts one after the other in rank order instead; each shard writes its own rows, with `tp_engine_` cleared.
+- **Measured** (Swift-1.5-Qwen3.8-27B Q4_K_M, 2 Arc Pro B60s, `--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system prompt, the same prompt in every start): time to the first token 2.19 s cold, then 0.63 s and 0.63 s on two later starts, 2,643 of 2,659 tokens cached, the answer the same ("Paris"). The cache file is 239 MB, 0.34 s to write and 0.38 s to load. As on one GPU it only hits when the system prompt is identical.
+- **`--split layer` keeps both off** and says so once: its stages are separate engines with state files of their own, not one mirrored call.
+
 ## 2026-11-24: a split model's sums read four values a thread; a benchmark for the sum kernel
 
 - **`tp_add` takes four values a thread** (a split model's sums, `zero/kernels/tp.cl`): the kernel reads the other shards' parts out of one pinned host buffer, a `stride` apart (80 MB between two at a 4096-token chunk of the 27B), so a generated token's 128 sums wait on latency rather than bandwidth. `vload4`/`vstore4`, the same sums in the same rank order and the same bit for bit. 4 Arc Pro B60s, 27B IQ3_S GSQ: `tp_add` 15.92 -> 13.42 ms (13.1 -> 11.3 % of the GPU time), generation 43.8 -> 48.5 tok/s; the logits md5 56bd8706a5f76d2064a0cc53567a2d63 before and after.

@@ -86,6 +86,8 @@ struct TpComm {
   bool served = false;              // (serverz drives shard 0: TpEngine::serve)
   std::atomic<bool> cancel_now{false};  // (served: shard 0's answer to the request's cancel, for every shard)
   std::vector<double> wait_ms;      // per shard: time in reduce from its GPU wait to the barrier's end
+  // ARC_TP_PROF=1: where a pipelined sum's host time goes, per shard (see tp_reduce_rs_pipe)
+  double prof_evwait = 0, prof_barrier = 0;
   std::vector<int64_t> reduces;       // per shard: how many
   // Failsafe against a GPU that hangs: a shard waiting longer than this at a barrier (ARC_TP_TIMEOUT seconds,
   // default 120: far beyond one layer of a prompt chunk) stops every shard and names the GPUs that did not come.
@@ -597,6 +599,13 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   }
   const auto t0 = std::chrono::steady_clock::now();
   auto waited = [&] { c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+  // (ARC_TP_PROF=1: what the host waits on in a pipelined sum)
+  static const bool prof_on = getenv("ARC_TP_PROF") && atoi(getenv("ARC_TP_PROF")) != 0;
+  auto pb = [&] {  // (a host barrier, timed)
+    const auto q = std::chrono::steady_clock::now();
+    c.barrier(r);
+    if (prof_on) c.prof_barrier += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q).count();
+  };
   // 1. the part to f16 (and range-checked), then its other blocks' pieces put by the copy list, piece by piece
   static const float lim = getenv("ARC_TP_F16_LIMIT") ? (float)atof(getenv("ARC_TP_F16_LIMIT")) : 65504.0f;  // (tests)
   c.flags[r] = 0;
@@ -627,7 +636,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     static std::atomic<long> warned{0};
     if (r == 0 && warned++ < 3) zlog::eprintf("inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
     zrt::event_wait(ev_put(P - 1));
-    c.barrier(r);
+    pb();
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
     zrt::copy_ok(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4);
     zrt::sync();
@@ -647,9 +656,13 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
                  res_off = put_off + (cl_ulong)N * stride;
   for (int p = 0; p < P; ++p) {
     if (p > 0) {
+      const auto q = std::chrono::steady_clock::now();
       zrt::event_wait(ev_put(p));
+      if (prof_on) c.prof_evwait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q).count();
+      const auto q2 = std::chrono::steady_clock::now();
       const int64_t t = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
       c.wait_all(c.put_n.get(), t, r, "a piece of its part");
+      if (prof_on) c.prof_barrier += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q2).count();
     }
     size_t p0, p1;
     piece(r, p, p0, p1);
@@ -1014,6 +1027,7 @@ class TpEngine {
     return spec_;
   }
   void verify_done(int accepted) { run_all([&](int r) { shards_[r]->verify_done(accepted); }); }
+
   void reset() {  // (the bound slot)
     run_all([&](int r) { shards_[r]->reset(); });
     std::fill(comm_.half.begin(), comm_.half.end(), 0);
@@ -1161,6 +1175,7 @@ class TpEngine {
         return;
       }
       made->tp_ = &comm_;
+      made->tp_engine_ = this;
       shards_[r] = std::move(made);
     };
     run_on({0}, make, false, false);  // (loads: no barrier to show progress, not watched)
@@ -1888,4 +1903,31 @@ inline void TpMirror::finish() {
       at += per;
     }
   }
+}
+
+// A split model's state is every shard's (its KV cache rows, its DeltaNet states): written one shard after the other in
+// rank order, so a load gives each of them its own part back. Not a TpMirror call: the shards would all write the same
+// stream at once (that crashed a 2-GPU server on 2026-11-25).
+template <class Out_>
+inline bool Engine::save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot) {
+  bool ok = true;
+  for (int r = 0; r < tp_engine_->gpus() && ok; ++r) {
+    Engine& s = tp_engine_->shard(r);
+    TpEngine* const saved = s.tp_engine_;
+    s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
+    ok = s.save_state(out, keep_from, host_snapshot);
+    s.tp_engine_ = saved;
+  }
+  return ok;
+}
+inline bool Engine::load_state_mirrored(FILE* f) {
+  for (int r = 0; r < tp_engine_->gpus(); ++r) {
+    Engine& s = tp_engine_->shard(r);
+    TpEngine* const saved = s.tp_engine_;
+    s.tp_engine_ = nullptr;
+    const bool ok = s.load_state(f);
+    s.tp_engine_ = saved;
+    if (!ok) return false;
+  }
+  return true;
 }
