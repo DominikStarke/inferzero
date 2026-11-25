@@ -708,21 +708,13 @@ and 0.38 s to load. As on one GPU it only hits when the system prompt is identic
 `--split layer` keeps the system-prompt cache off too: its stages are separate engines with state files of their
 own, not one mirrored call, so a layer split says so once at start.
 
-**Saved conversations (`--session-cache-gb`) work too, through the host snapshot instead of `save_state`.** Both go
-through the same shape of state on a split: `save_state`'s KV caches are position-indexed and huge (a 34K
-conversation is ~700 MB a shard), and copying them off the GPU between two steps of a request held the shards at each
-other's sum barrier until the 120 s timeout — tried three ways on 2026-11-25, and it failed every time, once with a
-segfault and once by exhausting the machine's RAM. The recurrent states are ~13 MB a shard, `snapshot_host()` copies
-them in milliseconds and is a `TpMirror` call (all shards at one point), and `Engine::save_host_snapshot_split`
-writes the parts in rank order afterwards.
-
-A saved conversation carries the **snapshot slots** too, not only the host snapshot: a request takes a recurrent-state
-snapshot at its last turn's start (`snapshot(2)`), where a new message of that conversation diverges, and the session
-cache keeps all three slots (`Engine::save_snap` / `load_snap`). So going back to a conversation resumes at its last
-turn rather than at its first prompt — which is what makes going back to a chat, or branching one from an earlier
-point, cheap. Measured on 2 B60s with the prompt cache off and a botany system prompt in between, so nothing but the
-session cache could help: back to the first conversation, 2,706 of 2,711 tokens came from the cache, 449 MB on disk,
-0.38 s to load, the answer the same.
+**Saved conversations (`--session-cache-gb`) stay off on a split.** A saved conversation needs the KV caches: they
+*are* the context. An attempt that carried only the recurrent states (the host snapshot, ~13 MB a shard) restored a
+position whose attention saw nothing, and the model repeated itself endlessly — seen on a real chat, not in a test. The
+KV caches cannot simply be used either: at 46K they are ~700 MB a shard, and writing them between two steps of a
+request held the shards at each other's sum barrier for the 120 s timeout (three forms tried on 2026-11-25). The
+system-prompt cache does not have the problem: it restores a position at the end of the prompt, where everything
+before it is computed within the same request.
 
 `--split layer` keeps both off, as its stages are engines of their own.
 

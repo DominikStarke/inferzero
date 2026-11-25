@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <csignal>
 #include <cctype>
 #include <charconv>
 #include <cstring>
@@ -283,8 +284,23 @@ class HttpServer {
     return ls_ != plat::kNoSocket;
   }
 
+  // A signal (Ctrl-C, a service manager's stop) asks the loop to end instead of killing the process: the server's
+  // shutdown then still saves the held conversation (serverz's session cache), which a hard kill never does. The flag
+  // is read without a lock, safe for a sig_atomic_t-sized atomic.
+  static std::atomic<bool>& stop_flag() {
+    static std::atomic<bool> f{false};
+    return f;
+  }
+  // (the listening socket, for a signal handler: shutdown() on it wakes a blocked accept, close() alone does not on
+  //  every platform. A signal handler may only touch this and the flag)
+  static std::atomic<plat::socket_t>& stop_socket() {
+    static std::atomic<plat::socket_t> s{plat::kNoSocket};
+    return s;
+  }
+  void request_stop() { stop_flag() = true; }
   void run() {
-    while (true) {
+    stop_socket() = ls_;
+    while (!stop_flag()) {
       plat::socket_t c = plat::sock_accept(ls_);
       if (c == plat::kNoSocket) {  // (out of sockets or memory, a network change: tried again shortly, not in a busy loop)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));

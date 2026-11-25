@@ -503,13 +503,23 @@
       const int u = usable(P, saved_[i].tokens, saved_[i].resume, saved_[i].floor);
       if (u > bu) { bi = (int)i; bu = u; }
     }
-    if (bi < 0) return;
+    if (bi < 0) {
+      // (nothing was worth loading: said once a conversation is at stake, so a log shows why a start recomputed a long
+      //  prompt -- the prefix cache covered it, the saved one was too little better, or none matched at all)
+      static std::atomic<long> said{0};
+      if (P.size() >= 1024 && said++ < 20)
+        zlog::eprintf("session cache: nothing to load for this %zu-token prompt (best saved: %d tokens reusable, "
+                      "needed %d more than the %d it holds; %zu conversations saved)\n",
+                      P.size(), bu - 512, bu - u_cur, u_cur, saved_.size());
+      return;
+    }
     SavedConv& s = saved_[bi];
     const auto t0 = clk::now();
     const bool done = written(s);  // a background write of this conversation finishes first
     FILE* f = done ? fopen(s.file.c_str(), "rb") : nullptr;
     SavedConv tmp;
     int resumed_at = -1;  // (the position the loaded state stands at: cached_ goes no further than this)
+    int resumed_slot = -1;  // (-1: the host snapshot; else the VRAM slot it came from)
     const bool ok = f && with_file(f, [&] {
       if (!read_header(f, tmp)) return false;
       const bool host_ok = eng_.load_host_snapshot_split(f);
@@ -523,9 +533,13 @@
         const int p = eng_.snapshot_pos(slot);
         if (p > best_pos) best_pos = p, best_slot = slot;
       }
+      // (no check against eng_.pos: restore() sets it. Comparing against it was wrong on a fresh start, where pos is 0
+      //  and every slot looked "beyond" it -- the host snapshot was taken instead, and a 46K conversation restarted at
+      //  its system prompt's end)
       const int host_pos = eng_.host_snapshot_pos();
-      if (best_slot >= 0 && best_pos > host_pos && best_pos <= (int)eng_.pos + 1 && eng_.restore(best_slot)) {
+      if (best_slot >= 0 && best_pos > host_pos && eng_.restore(best_slot)) {
         resumed_at = eng_.pos;
+        resumed_slot = best_slot;
         return host_ok;
       }
       if (host_ok && eng_.restore_host()) {
@@ -550,6 +564,8 @@
     last_gen_cut_ = std::min(s.gen_cut, (int)cached_.size());
     s.used = ++use_clock_;
     cur_saved_ = true;
-    zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable\n",
-            s.tokens.size(), s.bytes / 1048576.0, ms_since(t0) / 1000, bu);
+    zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable "
+                  "(slot %d, resumed at %d; the prompt has %zu)\n",
+            s.tokens.size(), s.bytes / 1048576.0, ms_since(t0) / 1000, bu,
+            resumed_slot, resumed_at, P.size());
   }

@@ -162,6 +162,15 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       so.prefix_cache = false;
       so.sess_gb = 0;
     }
+    // (--session-cache-gb stays off for a tensor split too: a saved conversation needs the KV caches -- they ARE the
+    //  context, and the recurrent states alone restore a position the attention cannot use, which made a model repeat
+    //  itself (2026-11-25). Those are ~700 MB a shard at 46K, and writing them between two steps of a request held the
+    //  shards at a sum's barrier for the 120 s timeout. The system-prompt cache does not have the problem: it restores
+    //  a position at the end of the prompt, where everything before it is still computed in that request)
+    if (so.sess_gb > 0 && !so.split_layer)
+      LOG_INF("--gpus %d: saved conversations are off for a split model (their KV caches are too large to write "
+              "between two steps; the system-prompt cache works)\n", so.gpus);
+    so.sess_gb = 0;
   }
   EngineOptions eo = so.eo;
   eo.state_snaps = 3;  // (kSnaps, server.cpp: the memory a model that nearly fills a discrete card keeps for them)

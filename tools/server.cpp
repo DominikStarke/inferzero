@@ -983,6 +983,15 @@ class Server {
 #include "server_file_tools.h"  // (the model's file tools, /v1/tools/*, and the files API)
 #include "server_mcp.h"         // (MCP servers' tools for the model, /v1/mcp)
 
+// Ctrl-C / a service manager's stop: only what a signal handler may touch (an atomic flag and shutdown() on the
+// listening socket, which wakes the blocked accept). The server then saves the held conversation before it exits --
+// a hard kill never reached save_held, and a 48K session was reprocessed from its first token after a restart.
+extern "C" void on_stop_signal(int) {
+  HttpServer::stop_flag() = true;
+  const plat::socket_t s = HttpServer::stop_socket().load();
+  if (s != plat::kNoSocket) plat::sock_shutdown(s);
+}
+
 // (one top-level catch, docs/gpu-failsafe.md 1: an exception that reaches main is an error line and code 1; _Exit,
 //  not a return, since the server's threads may still run and static destructors under them can hang)
 static int server_main(int argc, char** argv);
@@ -2747,7 +2756,20 @@ static int server_main(int argc, char** argv) {
             host.c_str());
   // (the saved transcripts' queue: started once the server answers; stopped before the locals its GPU turns use go)
   if (wh) wh->start_library(std::filesystem::path(app_dir()) / "transcripts");
+  // (Ctrl-C / SIGTERM: the loop ends instead of the process dying, so the held conversation is saved -- a hard kill
+  //  never reached save_held, and a cache_test showed a 48K session reprocessed from its first token after a restart.
+  //  The handler only sets the flag (async-signal-safe); the save happens here, after run() returns)
+  std::signal(SIGINT, on_stop_signal);
+  std::signal(SIGTERM, on_stop_signal);
   http.run();
+  if (cur && cur->srv) {
+    zlog::eprintf("stopping: saving the held conversation\n");
+    try {
+      cur->srv->save_held();
+    } catch (const std::exception& x) {
+      zlog::eprintf("stopping: the conversation was not saved: %s\n", x.what());
+    }
+  }
   if (wh) wh->stop_library();
   return 0;
 }
