@@ -878,6 +878,22 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       r.ctx = floor_of(c);
       r.resident = r2;
     }
+    // (the memory tiers, 2026-11-25, issue #99 (the user: "4B should use memory tiers too"): resident weights that
+    //  leave no context fall back to the weights just in time (the file's copy only), whose own plan then puts part of
+    //  them in host memory where even that is short (Engine::plan_tight). Only when that finds no context either is
+    //  the model refused)
+    if (r.ctx <= 0 && r.resident) {
+      bool r3 = false;
+      AutoCtx m3;
+      const int c = fit(0.0, r3, m3);
+      if (c > 0) {
+        r = m3;
+        r.ctx = floor_of(c);
+        r.resident = r3;
+        zlog::eprintf("--ctx auto: no context with the weights resident; %d tokens with them decoded just in time%s\n",
+                      r.ctx, host ? " (part of them in host memory)" : "");
+      }
+    }
   }
   if (host || tight) return r;  // (not remembered: see tight above)
   std::error_code ec;

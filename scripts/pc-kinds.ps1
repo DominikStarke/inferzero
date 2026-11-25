@@ -6,6 +6,7 @@
 #   igpu-140t     the Arc 140T (Xe-LPG Plus, 8-lane XMX: the 140T preset)
 #   igpu-xe-lpg   other Core Ultra iGPUs (Meteor Lake's Arc Graphics)
 #   alchemist     discrete Arc A-series (A770, A750, A580, ...)
+#   alchemist-a770  an A770 too (the A-series card with 16 GB; best-setups.tsv's need a770)
 #   b-series      discrete Arc B-series (B580, B570, Pro B50 / B60 / B65 / B70)
 #   multi-gpu     two or more discrete Arc cards
 # (the iGPU names first: Panther Lake's B370 / B390 have a B and three digits too, and are no discrete card; the
@@ -19,7 +20,10 @@ function Get-PcKinds {
       if ($g -match 'B3[0-9]0') { $k += "igpu-ptl" }  # (Panther Lake's B370 / B390 alone: best-setups.tsv's rows for it, 2026-11-22)
     }
     elseif ($g -match '140T') { $k += "igpu-140t" }
-    elseif ($g -match 'Arc\S* A\d{3}') { $k += "alchemist"; $discrete++ }
+    elseif ($g -match 'Arc\S* A\d{3}') {
+      $k += "alchemist"; $discrete++
+      if ($g -match 'A770') { $k += "alchemist-a770" }  # (best-setups.tsv's need a770: the only Alchemist with 16 GB, #99)
+    }
     elseif ($g -match 'Arc\S* (Pro )?B\d{2,3}\b') { $k += "b-series"; $discrete++ }
     elseif ($g -match 'Arc|Graphics') { $k += "igpu-xe-lpg" }
   }

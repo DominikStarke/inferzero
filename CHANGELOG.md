@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-25: small cards load models whose decoded copy does not fit (Arc A380)
+
+- **A model whose decoded weights do not fit the card is decoded just in time instead of failing to load** (#99): an Arc A380 (5.6 GiB) could not load the 4B. The file and its decoded copy (7.3 GiB) were within the 9 GB budget, so the copy was planned on a card that cannot hold it, `--ctx auto` found no room for any context, and the server refused the model. The copy is now also checked against the GPU's own memory (less the driver's part); where it does not fit, the weights are decoded just in time (the file's copy only, ~3 GiB for the 4B), with a line saying so. runz and the server alike. Where the copy fits, nothing changes. `--budget N` still keeps it resident on request.
+- **Memory tiers in `--ctx auto` for every model**: resident weights that leave no context fall back to the weights decoded just in time, and from there to part of them in host memory (as the 27B already did on a B580). A model is refused only when even that leaves no context.
+- **`ARC_140T_RES=1`** (resident and just in time together, on Alchemist cards) keeps the copy only where it fits, and says so when it does not.
+- **Launchers**: the "best measured" setting for the 4B / 9B on Alchemist (resident weights for short prompts, measured on a 16 GB A770) now applies to an A770 only (the need `a770` in `scripts/best-setups.tsv`), not to an A380 or A580. `./zero-launcher.sh`'s check asks for 8 GB of RAM with a discrete card (it asked for 15, so a 14.3 GiB PC with an A380 could not start it); 16 GB on an integrated GPU as before.
+- **The refusal message names the driver on Linux**, not Windows.
+
 ## 2026-11-24: Inkling 2 generates with about 190 fewer GPU launches a token
 
 - **Inkling 2's attention projections run as one matrix a token** (#45): q, gate and rel (and k and v on a sliding layer) read the same input, so they are stored as one stack of rows and a generated token runs one GEMV over them; no more memory. The same numbers bit for bit. A Pro B60, Inkling 2 Mini IQ4_NL: 1,548 -> 1,412 GPU launches a token, generation +0.7 % (skipzx-lab).

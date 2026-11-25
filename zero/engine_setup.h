@@ -411,7 +411,24 @@
     // (ARC_TP_SIM: every shard on the one GPU, so the budget is theirs together, as device_mem is divided there)
     const double budget =
         opt.w8_budget_gb / (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0 ? opt.tp_size : 1);
-    w8_resident = (tp_on() ? raw_s + w8_s : (double)(raw + w8)) / 1073741824.0 <= budget;
+    const double res_need = tp_on() ? raw_s + w8_s : (double)(raw + w8);
+    w8_resident = res_need / 1073741824.0 <= budget;
+    // (2026-11-25, issue #99: an Arc A380, 5.6 GiB, and the 4B: its file + W8 copy, 7.3 GiB, were within the 9 GB
+    //  budget, so the weights stayed resident on a card that cannot hold them, --ctx auto found no context, and the load
+    //  failed. The copy is now also checked against the GPU's memory less the driver's part (as the fit checks count
+    //  it): where it does not fit, the weights are decoded just in time (the file's copy only), unless --budget asked.
+    //  Where it fits, nothing changes. runz, serverz and --ctx auto's probes alike)
+    if (w8_resident && !opt.w8_budget_set) {
+      double room = (double)device_mem() - driver_slack();
+      if (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0) room /= opt.tp_size;  // (every shard on one GPU)
+      if (device_mem() > 0 && res_need > room) {
+        w8_resident = false;
+        if (!opt.dry)
+          LOG_INF("inferzero: the weights are decoded just in time: the file and its decoded copy need %.2f GiB, the GPU "
+                  "has %.2f GiB less %.1f for the driver (--budget N keeps them resident anyway)\n",
+                  res_need / 1073741824.0, device_mem() / 1073741824.0, driver_slack() / 1073741824.0);
+      }
+    }
     // (discrete cards with 8-lane XMX, the Alchemist A-series: the Arc 140T preset, which decodes the weights just in
     //  time, rather than resident weights on DP4a, unless --budget was given. An A770's 4B 4K prompt 3,600 -> 4,821
     //  tok/s with 3.98 GiB of buffers against 7.40, generation the same (hansong80, issue #35, release .02); the
@@ -422,6 +439,10 @@
       p140_res_ = true;
       return;
     }
+    // (#99: ARC_140T_RES=1 asked, but the resident copy does not fit this GPU (above): the preset just in time alone)
+    if (res && !w8_resident && !tp_on() && !zrt::integrated() && !opt.dry)
+      LOG_INF("inferzero: ARC_140T_RES=1: the resident copy does not fit this GPU, the Arc 140T preset decodes just in "
+              "time only\n");
     if (w8_resident && !opt.w8_budget_set && !tp_on() && !zrt::integrated() && p140_off_resident()) {
       w8_resident = false;
       if (!opt.dry)

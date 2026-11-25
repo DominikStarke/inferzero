@@ -133,7 +133,10 @@ run_check() {
     _c $acc "access to the render node (sudo usermod -aG render \$USER, then log in again)"
   fi
   local r; r=$(ram_gb)
-  [ "${r:-0}" -ge 15 ]; _c $? "RAM ${r} GB (16 GB for the 4B / 9B / E4B, 32 GB for the others)"
+  # (#99: a 14.3 GiB box with an A380 failed this at 15 GB, so plain ./zero-launcher.sh would not start; a discrete
+  #  card holds the 4B / 9B / E4B's weights itself, and 8 GB of RAM is enough for those)
+  local rneed=15; [ "$(sw_discrete)" -ge 1 ] 2>/dev/null && rneed=8  # (an integrated GPU's weights are in that RAM)
+  [ "${r:-0}" -ge "$rneed" ]; _c $? "RAM ${r} GB (the 4B / 9B / E4B: 8 GB with a discrete card, 16 GB on an integrated GPU; 32 GB for the others)"
   return $bad
 }
 print_check() { local rc=0; run_check || rc=1; printf '%s\n' "${CHECK_LINES[@]}"; return $rc; }
@@ -557,6 +560,7 @@ sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci)
     if [[ "$l" =~ B3[0-9]0|140V|130V|Lunar|Panther ]]; then k+=" igpu-xe2"; [[ "$l" =~ B3[0-9]0|Panther ]] && k+=" igpu-ptl"
     elif [[ "$l" =~ 140T|Arrow\ Lake ]]; then k+=" igpu-140t"
     elif [[ "$l" =~ DG2|Alchemist|A[0-9]{3}[^0-9] ]]; then k+=" alchemist"; discrete=$((discrete + 1))
+      [[ "$l" =~ A770 ]] && k+=" alchemist-a770"  # (best-setups.tsv's need a770: the only Alchemist with 16 GB, #99)
     elif [[ "$l" =~ Battlemage|BMG|B[0-9]{2,3}[^0-9] ]]; then k+=" b-series"; discrete=$((discrete + 1))
     elif [[ "$l" =~ Meteor|Arc ]]; then k+=" igpu-xe-lpg"; fi
   done <<< "$names"
@@ -1096,6 +1100,7 @@ best_auto() {
       case "$w" in
         -) ;;
         gpus2same) { [ "${n:-0}" -ge 2 ] && [[ " $SW_PC " == *" multi-same "* ]]; } || ok=0;;  # (every card one device ID, sw_pc_kinds)
+        a770) [[ " $SW_PC " == *" alchemist-a770 "* ]] || ok=0;;  # (an A770, the 16 GB Alchemist; #99: not an A380)
         *) ok=0;;
       esac
     done
