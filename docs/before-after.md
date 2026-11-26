@@ -88,6 +88,11 @@ That property is what every speed change is held to:
   h8r_act at HB=1024 (the 4B's down input) has 350 scratch messages, against 0 on mtl. H8's GEMM (QTYPE 111) has 616
   there, against 863 for the W8 GEMM Xe-LP runs today (101). The H8F forms of the quantization kernels are as their
   plain ones (gated_norm_quant 33 / 31). Xe-LP stays on the old path until someone measures it (`ARC_H8=1` forces it).
+  On mtl, rmsnorm_quant's -DH8F form has 2 scratch messages with 26.40: a real register spill, one register written to
+  scratch (an hword block write) and read back after a branch, 0 without H8F. Built with 256 registers on Xe-LPG
+  when it writes the float copy: 0, with the same instructions (~381); arl-h 0 either way. attn_gate_quant -DH8F:
+  0 on mtl / arl-h. rmsnorm_h8r (ARC_H8_NORM, off on iGPUs): the 4B's form (HB 512) 0 on mtl, the 9B's (HB 1024) 42;
+  tgllp 2 / 398.
   Memory plan: H8's buffers and float copy are allocated in alloc_buffers (h8_reserve, aq_ with h8f_off_), which
   `--ctx auto`'s dry run goes through, so the context it picks leaves room for them.
   Measured on the laptop (125H), tok/s over three passes, `ARC_H8=0` and the default alternated, two pairs:

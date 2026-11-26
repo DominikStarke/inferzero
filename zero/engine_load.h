@@ -9,7 +9,10 @@
     if (hp.moe) moe_src_ = read_file(dir + "/moe.cl");
     auto p = [&](const char* n) { return kernel("ops", "", n); };
     // (h8f_defs_: H8's float copy of the activations, zero/engine_h8.h; empty otherwise)
-    k_rmsnorm_ = kernel("ops", h8f_defs_, "rmsnorm_quant");
+    // (Xe-LPG with the float copy: 256 registers. ocloc 26.40 mtl spills its -DH8F form, one register written to
+    //  scratch and read back (2 scratch messages; 0 without H8F, 0 with 256 registers); the same arithmetic, 2026-11-26)
+    const bool rq256 = !h8f_defs_.empty() && zrt::integrated() && zrt::xe_lpg() && !cl_.xmx;
+    k_rmsnorm_ = kernel("ops", (rq256 ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + h8f_defs_, "rmsnorm_quant");
     if (hp.inkling) {  // (Inkling 2: its own kernels, built as used, zero/engine_inkling.h; quant_rows' k_swiglu_)
       k_swiglu_ = kernel("ops", h8f_defs_, "swiglu_quant");
       auto tabs = build_iq_tables();
