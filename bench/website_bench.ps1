@@ -124,7 +124,16 @@ foreach ($m in $Models) {
   #  which landed in the first size's generation: a B60's 4B generated 12.8 tok/s at 128 tokens, 61 at 512, issue #4)
   $null = Run @($m, "--bench-pp", "128", "--n", "8", "--must-fit") @{ ARC_BENCH_RUNS = "1" }
   # ---- A. prompt sizes
+  # (a size that ran but failed (no prompt speed: a lost GPU, an error) marks this model's larger sizes skipped; the
+  #  modes and the KL still run. #99: an A380's 4B reset the GPU at 131,072, and the KL line after it came out blank)
+  $failedAt = $null
   foreach ($n in $Sizes) {
+    if ($failedAt) {
+      Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "size"; tokens = $n; pp = $null; tg = $null;
+              ttft_s = $null; error = "skipped: $failedAt tokens failed" }
+      [string]::Format($inv, "  {0,7} tokens: skipped ({1} tokens failed)", $n, $failedAt)
+      continue
+    }
     $runs = if ($n -le 8192) { "2" } else { "1" }
     # (--must-fit: a context beyond the GPU share stops at load, so the size is marked "does not fit" instead of
     #  hours of paging: Qwen3.8 27B at 131K on a 16.5 GiB share ran at 8.6 instead of ~120 tok/s)
@@ -138,9 +147,18 @@ foreach ($m in $Models) {
     $pps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]::Parse($_.Groups[1].Value, $inv) }
     $pp = if ($pps) { ($pps | Measure-Object -Maximum).Maximum } else { $null }
     $tg = Num $o "tg\d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s"
-    $err = if (-not $pp) { ($o -split "`n" | Where-Object { $_ -match "error|cannot|failed|exception|out of" } | Select-Object -First 1) } else { $null }
+    $err = if (-not $pp) { ($o -split "`n" | Where-Object { $_ -match "GPU lost|device lost|hang|error|cannot|failed|exception|out of" } | Select-Object -First 1) } else { $null }
+    if (-not $pp) {
+      if (-not $err) { $err = "no prompt speed in the output" }
+      $err = "$err".TrimEnd("`r")
+      $failedAt = $n
+    }
+    # (the memory tiers: a size whose context pushed part of the weights into host RAM runs (the user, #99); the amount
+    #  is recorded)
+    $hw = Num $o "([\d.]+) GiB of the weights in host memory"
     Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "size"; tokens = $n; pp = $pp; tg = $tg;
-            ttft_s = $(if ($pp) { [math]::Round($n / $pp, 2) } else { $null }); error = $err }
+            ttft_s = $(if ($pp) { [math]::Round($n / $pp, 2) } else { $null }); host_weights_gib = $hw; error = $err }
+    if ($hw) { $err = "($hw GiB of the weights in host RAM) $err" }
     [string]::Format($inv, "  {0,7} tokens: prompt {1,8:F1} tok/s, first token {2,7:F2} s, generation {3,6:F2} tok/s {4}", $n, $pp,
                      $(if ($pp) { $n / $pp } else { 0 }), $tg, $err)
   }
@@ -178,6 +196,17 @@ foreach ($m in $Models) {
     if (Test-Path $rb) {
       $o = Run @($m, "--tokens-file", $ids, "--kl-ref", $rb)
       $kl = Num $o "KL\(ref \|\| inferzero\) = ([\d.]+)"
+      if ($null -eq $kl) {  # (once more after the cooldown: a GPU that was lost just before may be back; #99)
+        $o = Run @($m, "--tokens-file", $ids, "--kl-ref", $rb)
+        $kl = Num $o "KL\(ref \|\| inferzero\) = ([\d.]+)"
+      }
+      if ($null -eq $kl) {  # (no numbers: say why, not a line of empty fields)
+        $kerr = ($o -split "`n" | Where-Object { $_ -match "GPU lost|device lost|hang|error|cannot|failed|exception|out of" } | Select-Object -First 1)
+        $kerr = if ($kerr) { "$kerr".TrimEnd("`r") } else { "no KL in the output" }
+        Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "kl"; kl = $null; kl_max = $null; top_agree_pct = $null; top_agree_nt_pct = $null; error = $kerr }
+        "  KL against f32: the run failed ($kerr)"
+        continue  # (the model's last phase)
+      }
       $kmax = Num $o "max ([\d.]+)\)"
       $agree = [regex]::Match($o, "top token agrees (\d+) / (\d+)")
       $top = if ($agree.Success) { [math]::Round(100.0 * [int]$agree.Groups[1].Value / [int]$agree.Groups[2].Value, 1) } else { $null }

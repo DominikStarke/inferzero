@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-26: the website benchmark goes on after a failed size
+
+- **`bench/website_bench.sh` / `.ps1` keep going after a prompt size fails** (#99): a size that runs but gives no prompt speed (a lost GPU, an error) is recorded as failed with its error line, the model's larger sizes are marked skipped, and the generation modes and the KL still run. The KL run is tried once more after the cooldown, and where it still gives nothing the line says why instead of printing empty fields. An Arc A380's 4B reset its GPU at a 131,072-token context, and the KL line after it came out blank.
+- **The sizes that run with part of the weights in host RAM say so** (the memory tiers): each size's row records how much of the weights sat in host RAM (`host_weights_gib`), so such a size runs and is shown as what it is.
+
 ## 2026-11-25: small cards load models whose decoded copy does not fit (Arc A380)
 
 - **A model whose decoded weights do not fit the card is decoded just in time instead of failing to load** (#99): an Arc A380 (5.6 GiB) could not load the 4B. The file and its decoded copy (7.3 GiB) were within the 9 GB budget, so the copy was planned on a card that cannot hold it, `--ctx auto` found no room for any context, and the server refused the model. The copy is now also checked against the GPU's own memory (less the driver's part); where it does not fit, the weights are decoded just in time (the file's copy only, ~3 GiB for the 4B), with a line saying so. runz and the server alike. Where the copy fits, nothing changes. `--budget N` still keeps it resident on request.

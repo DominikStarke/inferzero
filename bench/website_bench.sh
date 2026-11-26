@@ -426,7 +426,16 @@ for m in "${MODELS[@]}"; do
   #  which landed in the first size's generation: a B60's 4B generated 12.8 tok/s at 128 tokens, 61 at 512, issue #4)
   run ARC_BENCH_RUNS=1 -- "$m" --bench-pp 128 --n 8 --must-fit
   # ---- A. prompt sizes
+  # (a size that ran but failed (no prompt speed: a lost GPU, an error) marks this model's larger sizes skipped; the
+  #  modes and the KL still run. #99: an A380's 4B reset the GPU at 131,072, and the KL line after it came out blank)
+  failed_at=""
   for n in "${SIZES[@]}"; do
+    if [ -n "$failed_at" ]; then
+      save "{$J_MODEL,\"test\":\"size\",\"tokens\":$n,\"pp\":null,\"tg\":null,\"ttft_s\":null,\"error\":\"skipped: $failed_at tokens failed\"}"
+      row "$name" size "$n" "" "" "" "" "" "" "" ""
+      printf '  %7s tokens: skipped (%s tokens failed)\n' "$n" "$failed_at"
+      continue
+    fi
     if [ "$n" -le 8192 ]; then runs=2; else runs=1; fi
     # (--must-fit: a context beyond the GPU share stops at load, so the size is marked "does not fit" instead of
     #  hours of paging: Qwen3.8 27B at 131K on a 16.5 GiB share ran at 8.6 instead of ~120 tok/s)
@@ -449,10 +458,16 @@ for m in "${MODELS[@]}"; do
     if truthy "$pp"; then
       ttft=$(awk -v n="$n" -v p="$pp" 'BEGIN { printf "%.2f", n / p }')
     else
-      err=$(grep -a -i -m1 -E 'error|cannot|failed|exception|out of' "$RUNOUT" | head -n 1)
+      err=$(grep -a -i -m1 -E 'GPU lost|device lost|hang|error|cannot|failed|exception|out of' "$RUNOUT" | head -n 1)
       err="${err%$'\r'}"
+      [ -n "$err" ] || err="no prompt speed in the output"
+      failed_at=$n
     fi
-    save "{$J_MODEL,\"test\":\"size\",\"tokens\":$n,\"pp\":$(jnum "$pp"),\"tg\":$(jnum "$tg"),\"ttft_s\":$(jnum "$ttft"),\"error\":$(jstr_or_null "$err")}"
+    # (the memory tiers: a size whose context pushed part of the weights into host RAM runs (the user, #99: "with
+    #  memory tier, the website bench should be able to run an 131k but using host RAM"); the amount is recorded)
+    hw=$(num "$RUNOUT" '([0-9.]+) GiB of the weights in host memory')
+    save "{$J_MODEL,\"test\":\"size\",\"tokens\":$n,\"pp\":$(jnum "$pp"),\"tg\":$(jnum "$tg"),\"ttft_s\":$(jnum "$ttft"),\"host_weights_gib\":$(jnum "$hw"),\"error\":$(jstr_or_null "$err")}"
+    if [ -n "$hw" ]; then err="($hw GiB of the weights in host RAM) $err"; fi
     row "$name" size "$n" "$pp" "$ttft" "$tg" "" "" "" "" ""
     if truthy "$pp"; then first=$(awk -v n="$n" -v p="$pp" 'BEGIN { printf "%.15g", n / p }'); else first=0; fi
     printf '  %7s tokens: prompt %s tok/s, first token %s s, generation %s tok/s %s\n' "$n" "$(fmt_f "$pp" 1 8)" \
@@ -507,6 +522,17 @@ for m in "${MODELS[@]}"; do
     if [ -e "$rb" ]; then
       run -- "$m" --tokens-file "$ids" --kl-ref "$rb"
       kl=$(num "$RUNOUT" 'KL\(ref \|\| inferzero\) = ([0-9.]+)')
+      if [ -z "$kl" ]; then  # (once more after the cooldown: a GPU that was lost just before may be back; #99)
+        run -- "$m" --tokens-file "$ids" --kl-ref "$rb"
+        kl=$(num "$RUNOUT" 'KL\(ref \|\| inferzero\) = ([0-9.]+)')
+      fi
+      if [ -z "$kl" ]; then  # (no numbers: say why, not a line of empty fields)
+        kerr=$(grep -a -i -m1 -E 'GPU lost|device lost|hang|error|cannot|failed|exception|out of' "$RUNOUT" | head -n 1)
+        kerr="${kerr%$'\r'}"
+        save "{$J_MODEL,\"test\":\"kl\",\"kl\":null,\"kl_max\":null,\"top_agree_pct\":null,\"top_agree_nt_pct\":null,\"error\":$(jstr_or_null "${kerr:-no KL in the output}")}"
+        printf '  KL against f32: the run failed (%s)\n' "${kerr:-no KL in the output}"
+        continue  # (the model's last phase)
+      fi
       kmax=$(num "$RUNOUT" 'max ([0-9.]+)\)')
       agree=$(grep -a -o -m1 -E 'top token agrees [0-9]+ / [0-9]+' "$RUNOUT" | head -n 1)
       top=""
