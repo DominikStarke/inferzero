@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-26: a split model's experts in RAM sized from the machine (DeepSeek-V4.1 over 4 B60s: an 8K prompt 2.2x)
+
+- **The RAM tier of a model split over several GPUs is sized from its parts** (manoreken2, PR #100): each GPU keeps up to its own share of the experts in RAM, and on Windows up to what the budget allows once it is divided by the GPUs twice. Each GPU counts the shared pinned memory against Windows' budget in full: on 4 Pro B60s with 1 TB of RAM every failure came at 205.45 GiB mapped against an ~818 GiB budget, 818 / 4. The fixed caps of 32 GiB a GPU and 128 GiB in all are gone on Windows. DeepSeek-V4.1-Flash Q8_K_XL, `--gpus 4`: the automatic size goes from 32 to ~45-47 GiB a GPU, where `ARC_XRAM_GB=47` took an 8K prompt from 63.5 to 142.3 tok/s. A layer split (`--split layer`) shares the same room by its stages' layers. Linux, which has no such budget, keeps half the free RAM beyond 16 GiB over the GPUs, now at most each GPU's share. One start line names the parts: the GPU's share, the budget, what is in use and the size chosen. `ARC_XRAM_GB` / `--expert-ram-gb` still set it by hand, with a warning past the same limit. One GPU and integrated GPUs: unchanged.
+
 ## 2026-11-25: small cards load models whose decoded copy does not fit (Arc A380)
 
 - **A model whose decoded weights do not fit the card is decoded just in time instead of failing to load** (#99): an Arc A380 (5.6 GiB) could not load the 4B. The file and its decoded copy (7.3 GiB) were within the 9 GB budget, so the copy was planned on a card that cannot hold it, `--ctx auto` found no room for any context, and the server refused the model. The copy is now also checked against the GPU's own memory (less the driver's part); where it does not fit, the weights are decoded just in time (the file's copy only, ~3 GiB for the 4B), with a line saying so. runz and the server alike. Where the copy fits, nothing changes. `--budget N` still keeps it resident on request.

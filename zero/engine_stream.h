@@ -43,20 +43,49 @@
     //  --precise do over their variables; the variable overrode it before, the repair list A3)
     const double ram_gb = opt.expert_ram_gb >= 0 ? opt.expert_ram_gb : getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : -1.0;
     uint64_t ram = 0;
+    std::string ram_note;
+    bool tp_sized = false;  // (a split model's automatic size, from its parts below: Windows' cap already applied)
     if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
     } else if (ram_gb < 0 && !zrt::integrated() && tp_on()) {
-      // (a split model: at most 32 GiB per GPU, and at most half the RAM free beyond 16 GiB shared by the GPUs. An
-      //  unbounded tier (a quarter of the free RAM each, ~240 GiB) ran DeepSeek-V4.1-Flash Q8_K_XL over 4 Pro B60s with
-      //  1 TB of RAM out of memory at its first prompt: the pinned host memory of the one context the shards share.
-      //  manoreken2's sweep over the same 4 B60s (issue #4, 2026-11-16, release .10), ARC_XRAM_GB 0 / 8 / 16 / 32 per GPU:
-      //  512-token prompt 14.4 / 14.5 / 15.9 / 23.9 tok/s, generation 3.55 / 6.69 / 8.51 / 9.25, every size without an
-      //  error. ARC_XRAM_GB=0: none; =N: N GiB per GPU)
-      // (and at most 128 GiB for all the GPUs together: the same machine with 48 and 64 GiB per GPU (192 / 256 GiB
-      //  pinned in all) stopped after loading, 4 x 32 = 128 ran; release .16, 2026-11-17)
-      const uint64_t keep = 16ull << 30, avail = plat::ram_available(),
-                     cap = std::min<uint64_t>(32ull << 30, (128ull << 30) / std::max(1, opt.tp_size));
-      ram = avail > keep ? std::min<uint64_t>(cap, (avail - keep) / 2 / std::max(1, opt.tp_size)) : 0;
+      // (a split model, sized from its parts since 2026-11-26 (manoreken2's PR #100; the user: "ARC_XRAM_GB= needs to
+      //  be filled with the size of experts", "automatic sizing"). 4 Pro B60s, 1 TB of RAM, Windows, DeepSeek-V4.1-Flash
+      //  Q8_K_XL (268.95 GiB of experts), --gpus 4 --split tensor: the old caps (32 GiB a GPU, 128 in all) gave an 8K
+      //  prompt 63.5 tok/s, ARC_XRAM_GB=47 142.3. Their search: 47 GiB a GPU runs, 48 fails (a hang or out of memory),
+      //  each failure at 205.45 GiB of RAM the GPU maps, with Windows' non-local budget at ~818 GiB: 818 / 4 = 204.5. The
+      //  pinned host memory of the one context the shards share counts against the budget once per GPU, so all the
+      //  shards together get about budget / N, and each GPU that / N.
+      //  - each GPU's target: its own share of the experts (file bytes x its experts / n_expert, as xcache.h's fill_tier
+      //    counts it), not the whole file;
+      //  - Windows: at most (budget - in use - 4 GiB) / N / N (the room divided twice: once for the per-GPU counting,
+      //    once to share it; ~45-47 GiB a GPU on that machine). No fixed 32 / 128 caps there any more;
+      //  - Linux: no such budget is known (the 128 GiB failure of release .16 was on Windows; Linux's own limit is not
+      //    measured): half the RAM free beyond 16 GiB over the GPUs, at most each GPU's share.
+      //  Earlier: manoreken2's sweep (issue #4, release .10), ARC_XRAM_GB 0 / 8 / 16 / 32 a GPU, 512-token prompt 14.4 /
+      //  14.5 / 15.9 / 23.9 tok/s; 48 and 64 a GPU stopped after loading (release .16). ARC_XRAM_GB / --expert-ram-gb N:
+      //  N GiB a GPU, kept, with the warning below)
+      const int N = std::max(1, opt.tp_size);
+      const uint64_t share = hp.n_expert > 0 ? (uint64_t)((double)xc_->st.file_bytes * xc_->nloc() / hp.n_expert)
+                                             : xc_->st.file_bytes;
+      uint64_t nb = 0, nu = 0;
+      if (zrt::video_budget(nb, nu, true)) {
+        const uint64_t margin = 4ull << 30, total = (nb > nu + margin ? nb - nu - margin : 0) / N;
+        ram = std::min<uint64_t>(share, total / N);
+        char b[300];
+        snprintf(b, sizeof b, " (this GPU's share of the experts %.1f GiB; Windows lets the GPUs map %.1f GiB of RAM, %.1f "
+                              "in use, %.1f for %d GPUs together as each counts the shared memory: %.1f a GPU; #100)",
+                 share / 1073741824.0, nb / 1073741824.0, nu / 1073741824.0, total / 1073741824.0, N,
+                 total / N / 1073741824.0);
+        ram_note = b;
+        tp_sized = true;
+      } else {
+        const uint64_t keep = 16ull << 30, avail = plat::ram_available();
+        ram = avail > keep ? std::min<uint64_t>(share, (avail - keep) / 2 / N) : 0;
+        char b[200];
+        snprintf(b, sizeof b, " (this GPU's share of the experts %.1f GiB; half the free RAM beyond 16 GiB over %d GPUs: "
+                              "%.1f a GPU)", share / 1073741824.0, N, (avail > keep ? (avail - keep) / 2 / N : 0) / 1073741824.0);
+        ram_note = b;
+      }
     } else if (ram_gb < 0 && !zrt::integrated()) {
       // (the free RAM less 16 GiB, or where more: half the free RAM, leaving at least 4 GiB, since 2026-11-22. A
       //  32 GB machine got no tier: StealthDrifter's B580 (#80), the 35B Q3_K_M with 14.09 GB of experts and 6.31 GiB
@@ -72,11 +101,13 @@
     //  copies' residency. LukaszBrzyszkiewicz's B70 (#82, 96 GB RAM, Flash Next): a 52.1 GiB tier against a 47.9 GiB
     //  budget, out of memory at the first prompt's copy. The automatic size is capped at the budget less the current
     //  use and 4 GiB; a size given by hand is kept, with a warning. Linux has no such budget)
-    std::string ram_note;
-    if (!zrt::integrated() && ram > 0) {
+    // (a split model: the room divided by N twice, as its automatic size above (each GPU counts the shared pinned
+    //  memory, #100), so a hand-set size past it warns at the size that failed there, 48 GiB a GPU; one GPU: once)
+    if (!zrt::integrated() && ram > 0 && !tp_sized) {
       uint64_t nb = 0, nu = 0;
       if (zrt::video_budget(nb, nu, true)) {
-        const uint64_t margin = 4ull << 30, room = (nb > nu + margin ? nb - nu - margin : 0) / std::max(1, opt.tp_size);
+        const uint64_t N = (uint64_t)std::max(1, opt.tp_size), margin = 4ull << 30,
+                       room = (nb > nu + margin ? nb - nu - margin : 0) / N / (tp_on() ? N : 1);
         char b[200];
         // (an automatic size: the engine's own, or a layer split's stage share (opt.expert_ram_auto); a size the user
         //  set is kept with the warning. A stage's share was taken for a hand-set one: no cap, and a warning naming
