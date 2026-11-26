@@ -98,7 +98,8 @@ That property is what every speed change is held to:
     kernel time saved is ~0.3 ms a token on the 4B and ~0.6 ms on the 9B, under 1 % of a step: within run-to-run
     noise here. The gain is the matrices' own.
   - **Spills:** none for the forms the rule builds (`gemv_v`, Q5_K, 2 rows, no `-DQ2F`), with ocloc 26.40 on mtl and
-    arl-h.
+    arl-h. None either for the forms it reaches with opt-in switches: `ARC_GEMV_GU=1` (`-DGU2`) and `ARC_GEMV_SPLITK=1`
+    (`-DSPLITK=2 / 4 / 8`), at 1, 2 and 4 rows.
 
 - **2026-11-26, `ARC_GV_K4=1` (opt-in, a test): Q4_K / Q5_K one-token GEMVs through `gemv_v`, no change by
   default:** the laptop, Qwen3.5 4B UD-Q4_K_XL, `--bench-pp 512 --n 64 --prof-gen`, two alternated runs each. The
