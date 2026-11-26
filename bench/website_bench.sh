@@ -530,6 +530,7 @@ for m in "${MODELS[@]}"; do
         kerr=$(grep -a -i -m1 -E 'GPU lost|device lost|hang|error|cannot|failed|exception|out of' "$RUNOUT" | head -n 1)
         kerr="${kerr%$'\r'}"
         save "{$J_MODEL,\"test\":\"kl\",\"kl\":null,\"kl_max\":null,\"top_agree_pct\":null,\"top_agree_nt_pct\":null,\"error\":$(jstr_or_null "${kerr:-no KL in the output}")}"
+        row "$name" kl "" "" "" "" "" "" "" "" "" ""  # (summary.md's KL line for the model, empty: the Researcher's review)
         printf '  KL against f32: the run failed (%s)\n' "${kerr:-no KL in the output}"
         continue  # (the model's last phase)
       fi
