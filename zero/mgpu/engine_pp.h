@@ -103,13 +103,14 @@ class PpEngine {
       // (and divided by the GPUs, since 2026-11-26: the stages' engines pin their tiers in the one context of the
       //  driver, which every GPU counts against the budget in full, as a tensor split's shards do (manoreken2's PR #100:
       //  the failures at 205.45 GiB mapped against an ~818 GiB budget over 4 GPUs, engine_stream.h). In return no fixed
-      //  128 / 32 GiB caps there: the stages share room / n by their layers, each at most its experts (engine_stream.h).
+      //  128 / 32 GiB caps there: the stages share budget / n less what is mapped and 8 GiB (the use off after the
+      //  division, as engine_stream.h's; the Researcher's review of 77d6ab8) by their layers, each at most its experts.
       //  Linux, no budget known: as before)
       uint64_t nb = 0, nu = 0;
       bool win = false;
       if (zrt::video_budget(nb, nu, true)) {
-        const double room = nb > nu + (4ull << 30) ? (double)(nb - nu - (4ull << 30)) : 0.0;
-        total = std::min(avail > keep ? (avail - keep) / 2 : 0.0, room / n);
+        const double top = (double)nb / n, used = (double)nu + (double)(8ull << 30), room = top > used ? top - used : 0.0;
+        total = std::min(avail > keep ? (avail - keep) / 2 : 0.0, room);
         win = true;
       }
       const int nl = std::max(1, c[n] - c[0]);
