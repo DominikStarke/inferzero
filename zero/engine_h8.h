@@ -277,6 +277,12 @@
   //  the plain GEMM would then read rotated weights with unrotated activations, wrong logits on a short chunk after a
   //  long one. Self audit 2026-11-20, A1; the 140T preset's resident form keeps its copy unrotated instead, p140_res_)
   bool h8_igpu_rows_ok(int Mp) const {
+    // (iGPUs without XMX, h8_dp4a_: every prompt chunk, but not a drafting verification pass (spec_: verify,
+    //  verify_batch, DSpark; a DFlash2 block of 16 rows passes cur_T_ > 8) for a weight decoded just in time, which H8
+    //  would decode and rotate again at every pass of ~16 rows, the short-chunk case where the 9B's H8 lost 16-29 %.
+    //  Resident weights are rotated in place once and so always take H8 (h8_takes' w.wq). The Researcher's audit,
+    //  2026-11-26; only the 9B measured among the just-in-time models)
+    if (h8_dp4a_ && !h8_env() && spec_) return false;
     if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;  // (iGPUs without XMX, h8_dp4a_: every chunk)
     static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 256;
     return Mp >= min_rows;
