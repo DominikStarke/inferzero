@@ -84,6 +84,12 @@ That property is what every speed change is held to:
   h8_dp4a_). Qwen dense models whose decoded weights are resident, or decoded just in time with a Q4_K / Q5_K FFN, take
   H8 on every prompt chunk: one path, so a prompt gives the same logits fed whole or resumed from the cache. Not the
   27B IQ3_S (just in time, IQ3_S), MoE, Gemma, Flash Next, two-pass models or GPUs with XMX. `ARC_H8=0`: off.
+  Xe-LPG only (PCI 0x7D00-0x7DFF: Meteor Lake, Arrow Lake-S), not Xe-LP (Iris Xe / UHD). With ocloc 26.40 on tgllp,
+  h8r_act at HB=1024 (the 4B's down input) has 350 scratch messages, against 0 on mtl. H8's GEMM (QTYPE 111) has 616
+  there, against 863 for the W8 GEMM Xe-LP runs today (101). The H8F forms of the quantization kernels are as their
+  plain ones (gated_norm_quant 33 / 31). Xe-LP stays on the old path until someone measures it (`ARC_H8=1` forces it).
+  Memory plan: H8's buffers and float copy are allocated in alloc_buffers (h8_reserve, aq_ with h8f_off_), which
+  `--ctx auto`'s dry run goes through, so the context it picks leaves room for them.
   Measured on the laptop (125H), tok/s over three passes, `ARC_H8=0` and the default alternated, two pairs:
   - 4B UD-Q4_K_XL (W8 resident): 4K 841-867 -> 852-896; 512 891-930 -> 891-937 (the first pass 584-603: the copy
     rotated in place once, ~0.3 s); 128 789-804 -> 746-749 (forced H8 at 128, 256 and 384: -6 / -3 / -1 %).

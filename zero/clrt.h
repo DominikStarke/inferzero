@@ -599,6 +599,13 @@ inline bool panther_lake() {
   const uint32_t id = pci_device_id();
   return id >= 0xB080 && id <= 0xB0BF;
 }
+// this thread's GPU is an Xe-LPG iGPU (0x7D00-0x7DFF: Meteor Lake, e.g. the Core Ultra 5 125H's 0x7D55, and Arrow
+// Lake), not Xe-LP (Tiger / Alder / Raptor Lake's Iris Xe and UHD, DG1), whose compiler spills kernels Xe-LPG keeps in
+// registers (no 256-register mode there: ocloc 26.40 tgllp, h8r_act at HB=1024, 350 scratch messages, 2026-11-26)
+inline bool xe_lpg() {
+  const uint32_t id = pci_device_id();
+  return id >= 0x7D00 && id <= 0x7DFF;
+}
 // this thread's GPU's hardware threads (EUs x threads per EU: a Pro B70 2,048, a B60 1,280); 0 if not known
 inline uint32_t hw_threads() {
   Dev& d = D();

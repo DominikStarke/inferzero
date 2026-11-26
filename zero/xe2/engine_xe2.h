@@ -53,11 +53,14 @@
   // H8's buffers and its float copy of the activations: ~0.02 GiB more on the 4B, 0.24 GiB on the 9B.
   // Not the 27B GSQ-RCO IQ3_S (just in time, IQ3_S): 512 tokens 105-109 -> 98-100, 4K 124-127 -> 124-125, +0.33 GiB.
   // So: decoded weights resident, or just in time with a Q4_K / Q5_K FFN (the types measured, layer 0's gate).
-  // ARC_H8=0: off
+  // Xe-LPG only (zrt::xe_lpg: Meteor Lake, Arrow Lake-S), not Xe-LP (Iris Xe, UHD: #76, #77), unmeasured there and its
+  // compiler spills H8's rotation (ocloc 26.40 tgllp: h8r_act at HB=1024 350 scratch messages, none on mtl; the
+  // Researcher's audit, 2026-11-26). ARC_H8=0: off; ARC_H8=1 still forces H8 anywhere
   bool h8_dp4a_ = false;
   bool h8_dp4a_wanted() const {
     if (getenv("ARC_H8")) return false;  // (=0 off; =1 H8 as before, which is the same path)
-    if (cl_.xmx || !zrt::integrated() || hp.moe || hp.gemma || hp.hc || hp.qwen3 || hp.ds41 || hp.inkling || !h8_row())
+    if (cl_.xmx || !zrt::integrated() || !zrt::xe_lpg() || hp.moe || hp.gemma || hp.hc || hp.qwen3 || hp.ds41 ||
+        hp.inkling || !h8_row())
       return false;
     if (w8_resident) return true;
     const GgufTensor* g = f_.find("blk.0.ffn_gate.weight");
