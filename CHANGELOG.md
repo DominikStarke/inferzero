@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-26: drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
+## 2026-11-26 (unreleased: in the next release): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
 
 - **Verification passes of more than 8 rows** (a DFlash2 block of 16) no longer take H8 for weights decoded per chunk on
   Xe-LPG iGPUs: they take the path they had before 2026.11.26.03. Only a model like a Qwen3.8 27B UD-Q4_K_XL with a
