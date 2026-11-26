@@ -81,7 +81,7 @@
     // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
     //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
     // (p140_: the Arc 140T preset; h8_auto_: the default on discrete cards for Qwen dense models; zero/xe2/engine_xe2.h)
-    h8_ = (h8_env() || p140_ || h8_auto_) && !q2mm_ && !npu_wanted();
+    h8_ = (h8_env() || p140_ || h8_auto_ || h8_dp4a_) && !q2mm_ && !npu_wanted();
     if (h8_ && h8_float()) {
       h8f_off_ = (size_t)max_chunk * aq_max_k();
       h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
@@ -271,12 +271,13 @@
   // lines cross at ~140 tokens (a 128-token prompt spends 59 % of its time decoding weights for H8). Accuracy: KL against
   // f32 on 480 tokens 0.00117 (max 0.029, top token 470 / 480) with H8, 0.00057 (473 / 480) without: both far inside
   // 0.015, and generation never runs H8. (The first threshold, 1,024, came from cold one-shot runs and made 256-1,023
-  // tokens 1.4-1.8x slower: release .05.) Discrete cards and ARC_H8=1 as before; the 125H never runs H8.
+  // tokens 1.4-1.8x slower: release .05.) Discrete cards and ARC_H8=1 as before; iGPUs without XMX (the 125H): every
+  // chunk for the Qwen3.5 4B / 9B-type models since 2026-11-26 (h8_dp4a_, zero/xe2/engine_xe2.h), else never.
   // (Weights resident in W8 always take H8 (h8_takes): h8_prepare rotates a resident copy in place the first time, so
   //  the plain GEMM would then read rotated weights with unrotated activations, wrong logits on a short chunk after a
   //  long one. Self audit 2026-11-20, A1; the 140T preset's resident form keeps its copy unrotated instead, p140_res_)
   bool h8_igpu_rows_ok(int Mp) const {
-    if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;
+    if (!h8_auto_ || !zrt::integrated() || h8_env()) return true;  // (iGPUs without XMX, h8_dp4a_: every chunk)
     static const int min_rows = getenv("ARC_H8_MIN") ? std::max(0, atoi(getenv("ARC_H8_MIN"))) : 256;
     return Mp >= min_rows;
   }

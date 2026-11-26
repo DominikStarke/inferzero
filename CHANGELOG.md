@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-26: H8 prompt GEMMs on iGPUs without XMX for the Qwen3.5 4B / 9B (4K prompt +3-5 %, the 4B's KL 7x lower)
+
+- **iGPUs without XMX** (such as the Core Ultra 5 125H) now use H8 for every prompt chunk of the Qwen dense models whose
+  decoded weights stay on the GPU, or are decoded per chunk from a Q4_K / Q5_K file (the Qwen3.5 4B and 9B UD-Q4_K_XL).
+  - **Long prompts are faster:** a 4K prompt 841-867 -> 852-896 tok/s (4B) and 455-461 -> 462-476 (9B).
+  - **Short prompts are slower:** -6 % for the 4B at 128 tokens, and -16 % to -29 % for the 9B below 1K tokens (about
+    0.3 s).
+  - **The 4B's first long prompt after loading** takes ~0.3 s once.
+  - **Accuracy against f32:** the 4B's KL goes from 0.0122 (one position fully flipped by the default's requantized
+    weights) to 0.0017; the 9B's from 0.0011 to 0.0017.
+  - **Unchanged:** generation, the 27B IQ3_S (slower with H8), MoE models, Gemma, two-pass models and GPUs with XMX.
+    One path, so a prompt resumed from the cache gives the same logits as fed whole. `ARC_H8=0` turns it off.
+- **`ARC_W8_MINS=1`** (a test): every model's prompt GEMMs on the exact Q4_K / Q5_K weights with their mins (Flash
+  Next's precise mode had them alone). The 4B's KL 0.0009, at 27 % less prompt speed.
+
 ## 2026-11-26: tall Q5_K GEMVs 7-13 % faster on iGPUs without XMX; Q4_K / Q5_K GEMVs measured per type
 
 - **Tall Q5_K matrices read their weights straight into registers** (`gemv_v` at 2 rows a sub-group) in one-token

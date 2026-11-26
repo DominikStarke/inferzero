@@ -80,6 +80,34 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-26, H8 by default for the Qwen3.5 4B / 9B-type prompts on iGPUs without XMX** (`zero/xe2/engine_xe2.h`
+  h8_dp4a_). Qwen dense models whose decoded weights are resident, or decoded just in time with a Q4_K / Q5_K FFN, take
+  H8 on every prompt chunk: one path, so a prompt gives the same logits fed whole or resumed from the cache. Not the
+  27B IQ3_S (just in time, IQ3_S), MoE, Gemma, Flash Next, two-pass models or GPUs with XMX. `ARC_H8=0`: off.
+  Measured on the laptop (125H), tok/s over three passes, `ARC_H8=0` and the default alternated, two pairs:
+  - 4B UD-Q4_K_XL (W8 resident): 4K 841-867 -> 852-896; 512 891-930 -> 891-937 (the first pass 584-603: the copy
+    rotated in place once, ~0.3 s); 128 789-804 -> 746-749 (forced H8 at 128, 256 and 384: -6 / -3 / -1 %).
+  - 9B UD-Q4_K_XL (just in time): 4K 455-461 -> 462-476; 3K 451-471 -> 433-482; 2K 440-460 -> 434-449; 1K 410-427 ->
+    382-386; 512 339-344 -> 287-289; 128 151-153 -> 108-109.
+  - 27B GSQ-RCO IQ3_S (left out): 512 105-109 -> 98-100, 4K 124-127 -> 124-125, +0.33 GiB.
+  - Generation: unchanged (4B tg32 19.4-20.5 both ways, 9B 12.0-12.3).
+  - Memory: +0.02 GiB GPU buffers on the 4B (6.74 -> 6.76), +0.24 GiB on the 9B (6.42 -> 6.66).
+  - **KL against f32,** 480 tokens of USAGE.md (`bench/kl_options.ps1`'s tokens):
+    - 4B: default 0.01221 (max 5.39) -> 0.00166 (max 0.023), top token 475 -> 470 / 480, without near-ties
+      460 -> 462 / 463. The 5.39 is one position, a markdown table's next row ("| `zero-pi"): the requantized Q4_K / Q5_K
+      weights of the default prompt GEMM flip f32's " |" (0.96) to " `" (0.98). The token-by-token path gives 0.17
+      there (its KL 0.00104).
+    - 9B: 0.00109 (max 0.016) -> 0.00168 (max 0.025).
+  - **Checks:** the default's logits equal `ARC_H8=1`'s bit for bit (4B, 9B), `ARC_H8=0`'s equal main's (4B, 9B), the
+    27B's equal main's. `--snap-test` passes on both (device / host snapshots, saved conversation: the next 159
+    tokens' logits bit-identical). No H8 kernel spills on this driver (`ARC_ZE_KPROPS=1`: only gdn_conv and
+    attn_prep, as on main).
+  - Also `ARC_W8_MINS=1` (a test): the exact Q4_K / Q5_K mins form for every model's prompt GEMMs. 4B KL 0.00091 (max
+    0.10), but 4K prompt 630-659 tok/s (-27 %); with H8 0.00154 at H8's speed.
+  - **H8R's GEMM against oneDNN** (the Researcher's question): gate 2.78 ms per 512-token chunk = 8.7 TOPS (qkv 8.6,
+    down 8.0) against the W8 GEMM's 8.1 and oneDNN's s8:s8 12.1 TOPS with one scale per row and column: ~71 %. Its
+    kernel is next.
+
 - **2026-11-26, tall Q5_K one-token GEMVs through `gemv_v` at 2 rows, by default on iGPUs without XMX:** the rule
   below's measurements kept only where `gemv_v` was faster (the user: "keep the faster for that specific ones"). The
   test is on the matrix, not its role: Q5_K, N >= 8,192 and N >= 2K. That takes in the 4B's and 9B's Q5_K gate / up and
