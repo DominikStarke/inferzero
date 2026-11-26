@@ -91,8 +91,13 @@ That property is what every speed change is held to:
   On mtl, rmsnorm_quant's -DH8F form has 2 scratch messages with 26.40: a real register spill, one register written to
   scratch (an hword block write) and read back after a branch, 0 without H8F. Built with 256 registers on Xe-LPG
   when it writes the float copy: 0, with the same instructions (~381); arl-h 0 either way. attn_gate_quant -DH8F:
-  0 on mtl / arl-h. rmsnorm_h8r (ARC_H8_NORM, off on iGPUs): the 4B's form (HB 512) 0 on mtl, the 9B's (HB 1024) 42;
-  tgllp 2 / 398.
+  0 on mtl / arl-h. rmsnorm_h8r (ARC_H8_NORM): the 4B's form (HB 512) 0 on mtl, the 9B's (HB 1024) 42; tgllp 2 / 398.
+  So with H8 on Xe-LPG the fused norm is on by default for HB <= 512 only (h8_norm_env(hb)): the 4B, 4K prompt, two
+  alternated rounds, h8_act + the norm 297-305 -> 244-249 ms, tok/s within noise (883-914 -> 887-919); its logits
+  equal the unfused ones bit for bit (57967119...), the 9B's are unchanged (BD727501...: its 4,096-wide rows stay
+  unfused). A 128-token prompt on the 4B: h8_act 6.8 ms of ~170 ms.
+  Release-fix checks (the 256-register rmsnorm_quant and the Xe-LPG limit): the 4B's and 9B's logits equal 573f929's,
+  H8 on (PCI 0x7D55); 4K prompt against 573f929 887-925 -> 883-914 tok/s, rmsnorm_quant 125-127 -> 123-129 ms.
   Memory plan: H8's buffers and float copy are allocated in alloc_buffers (h8_reserve, aq_ with h8f_off_), which
   `--ctx auto`'s dry run goes through, so the context it picks leaves room for them.
   Measured on the laptop (125H), tok/s over three passes, `ARC_H8=0` and the default alternated, two pairs:
