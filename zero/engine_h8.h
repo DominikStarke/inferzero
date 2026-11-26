@@ -304,16 +304,22 @@
   //  identical (PascalSoftwares, issue #5, release .07). On discrete cards since 2026-11-18: a Pro B70's 27B 4K prompt
   //  2,890 -> 2,972 tok/s, h8_act 88.4 -> 60.3 ms and the norm 69.7 -> 60.0, hashes equal (joshdev-de, issue #27,
   //  7368768); the B60's no gain of 11-14 was before the 128-register default. iGPUs off; =0 off, =1 on)
-  bool h8_norm_env() const {
+  // (Xe-LPG with H8 (h8_dp4a_, zero/xe2/engine_xe2.h), 2026-11-26: on for rotation blocks of up to 512 (hb, from the
+  //  norm's row length), the form that does not spill there. The laptop's 4B (2,560-wide rows: HB 512), 4K prompt,
+  //  two alternated rounds: h8_act + the norm 297-305 -> 244-249 ms, tok/s within noise (883-914 -> 887-919), logits
+  //  bit-identical. ocloc 26.40 mtl: HB 512 0 scratch messages, HB 1024 (the 9B's 4,096-wide rows) 42: that form
+  //  is never built by default)
+  bool h8_norm_env(int hb = 0) const {
     static const char* e = getenv("ARC_H8_NORM");
-    return e ? atoi(e) != 0 : p140_ || (!zrt::integrated() && !xehpc_on());  // (a Max: off, see xehpc_on)
+    if (e) return atoi(e) != 0;
+    return p140_ || (!zrt::integrated() && !xehpc_on()) || (h8_dp4a_ && hb > 0 && hb <= 512);  // (a Max: off, see xehpc_on)
   }
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply
   void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
     XwRole xr(this, next.role);  // (the input in the order of the GEMM that reads it)
     const int hb = h8_block(K);
-    if (!h8_norm_env() || h8_q2() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
+    if (!h8_norm_env(hb) || h8_q2() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
         next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024) {  // (the row in local memory)
       rmsnorm_quant(x, row_off, w, K, Mp, T, act32);
       return;

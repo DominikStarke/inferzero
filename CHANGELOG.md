@@ -2,8 +2,11 @@
 
 ## 2026-11-26: H8 prompt GEMMs on iGPUs without XMX for the Qwen3.5 4B / 9B (4K prompt +3-5 %, the 4B's KL 7x lower)
 
-- **iGPUs without XMX** (such as the Core Ultra 5 125H) now use H8 for every prompt chunk of the Qwen dense models whose
-  decoded weights stay on the GPU, or are decoded per chunk from a Q4_K / Q5_K file (the Qwen3.5 4B and 9B UD-Q4_K_XL).
+- **Xe-LPG iGPUs** (Meteor Lake such as the Core Ultra 5 125H, and Arrow Lake-S; no XMX) now use H8 for every prompt chunk
+  of the Qwen dense models whose decoded weights stay on the GPU, or are decoded per chunk from a Q4_K / Q5_K file (the
+  Qwen3.5 4B and 9B UD-Q4_K_XL). Xe-LP (Iris Xe, UHD) keeps the old path: H8's rotation spills there, and it is
+  unmeasured. Where the norm's rows take 512-value rotation blocks (the 4B), the norm and the rotation run as one kernel
+  (`ARC_H8_NORM`): 18 % less time in those two steps, the same logits.
   - **Long prompts are faster:** a 4K prompt 841-867 -> 852-896 tok/s (4B) and 455-461 -> 462-476 (9B).
   - **Short prompts are slower:** -6 % for the 4B at 128 tokens, and -16 % to -29 % for the 9B below 1K tokens (about
     0.3 s).
