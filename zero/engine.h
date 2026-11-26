@@ -454,6 +454,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       zlog::eprintf("inferzero: Arc 140T preset off: the decoded weights fit and stay resident (--budget %.0f GB); "
                     "--budget 0 decodes them just in time and turns it on\n", opt.w8_budget_gb);
     h8_auto_ = !p140_ && h8_auto_wanted();  // (H8 by default on discrete cards: zero/xe2/engine_xe2.h)
+    h8_dp4a_ = !p140_ && !h8_auto_ && h8_dp4a_wanted();  // (every prompt chunk on iGPUs without XMX: engine_xe2.h)
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     p140_ = p140_ && h8_;
     if (!opt.dry) build_kernels();

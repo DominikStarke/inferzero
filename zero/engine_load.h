@@ -573,9 +573,12 @@
   // (precise mode, 2026-11-22: prompt chunks' Q2_K / Q4_K / Q5_K matrices decoded with their mins (gemm.cl 102 / 103),
   //  not requantized to signed int8 (~1/16 of a quantization step off): the values the token-by-token GEMVs use, so a
   //  prompt row is computed as a generated one. ARC_W8_MINS=0: requantized, as before)
+  // (ARC_W8_MINS=1, a test, 2026-11-26: the same for every model. The Qwen3.5 4B UD-Q4_K_XL's prompt path, 480 tokens
+  //  of USAGE.md against f32: KL 0.0122 with a max of 5.39 at one position, a markdown table's next row, where the
+  //  token-by-token path gives 0.17 and H8 0.023)
   bool w8_mins_on() const {
-    static const bool off = getenv("ARC_W8_MINS") && atoi(getenv("ARC_W8_MINS")) == 0;
-    return hp.hc && fn_precise() && !off;
+    static const int env = getenv("ARC_W8_MINS") ? atoi(getenv("ARC_W8_MINS")) : -1;
+    return env == 1 || (hp.hc && fn_precise() && env != 0);
   }
   // ARC_FN_KV16=1 (a test, 2026-11-21, the user for manoreken2's stray words, #4): only precise mode's attention part,
   // the K / V cache in f16 and the scores in f32, the default mode otherwise (one pass, the default experts and H8):

@@ -40,6 +40,29 @@
   //  plain XMX path 0.00175 (with attn_fx). There the 4-wide work-groups stay 1 (no gain measured), the decoded weights
   //  just in time (RAM is the GPU's memory), the GEMV rules off (generation 5.81 -> 4.40 tok/s with them). The 125H
   //  (no XMX) and the 140T (8 lanes, its own preset) never take it)
+  // ---- H8 on iGPUs without XMX (DP4a: the Core Ultra 5 125H's Xe-LPG, Arrow Lake-S), every prompt chunk, for the
+  // Qwen dense models (2026-11-26, the user: "keep the H8 only rather than this two way path": one path, so a prompt
+  // gives the same logits fed whole or resumed from the prompt cache). Measured on the 125H (tok/s, three passes,
+  // ARC_H8=0 / 1 alternated):
+  //  - 4K prompt: the 4B (W8 resident) 841-867 -> 852-896, the 9B (just in time) 455-461 -> 462-476;
+  //  - short prompts cost: 128 tokens 4B 789-804 -> 746-749, 9B 151-153 -> 108-109; the 9B at 512 / 1K / 2K
+  //    339-344 / 410-427 / 440-460 -> 287-289 / 382-386 / 434-449 (a just-in-time weight is decoded and rotated again
+  //    at every chunk); the 4B's first long prompt after loading rotates its copy in place once (~0.3 s);
+  //  - KL against f32 (480 tokens of USAGE.md): 4B 0.01221 (max 5.39: one markdown position the requantized weights
+  //    flip) -> 0.00166 (max 0.023); 9B 0.00109 -> 0.00168. Both far inside 0.015.
+  // H8's buffers and its float copy of the activations: ~0.02 GiB more on the 4B, 0.24 GiB on the 9B.
+  // Not the 27B GSQ-RCO IQ3_S (just in time, IQ3_S): 512 tokens 105-109 -> 98-100, 4K 124-127 -> 124-125, +0.33 GiB.
+  // So: decoded weights resident, or just in time with a Q4_K / Q5_K FFN (the types measured, layer 0's gate).
+  // ARC_H8=0: off
+  bool h8_dp4a_ = false;
+  bool h8_dp4a_wanted() const {
+    if (getenv("ARC_H8")) return false;  // (=0 off; =1 H8 as before, which is the same path)
+    if (cl_.xmx || !zrt::integrated() || hp.moe || hp.gemma || hp.hc || hp.qwen3 || hp.ds41 || hp.inkling || !h8_row())
+      return false;
+    if (w8_resident) return true;
+    const GgufTensor* g = f_.find("blk.0.ffn_gate.weight");
+    return g && (g->type == GGML_Q4_K || g->type == GGML_Q5_K);
+  }
   bool h8_auto_wanted() const {
     if (getenv("ARC_H8") && atoi(getenv("ARC_H8")) == 0) return false;
     return cl_.xmx && !cl_.sg8 && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3;
