@@ -49,7 +49,7 @@
   </dl>
   <p class="after">Models are Qwen3.8 27B GSQ-RCO IQ3_S unless named; the others are the files the launcher downloads. Numbers move with each release, so every row says which one. Setups we have not measured are the most useful thing you can add: <a href="https://github.com/rizagp/inferzero/blob/main/CONTRIBUTING.md">how to measure yours</a>. Qwen3.8 Flash Next's numbers are its fast mode's (<code>--fast</code>): since 2026-11-22 its default is the precise mode, closer to the full-precision model on code and tables (KL against f32 0.0415 -> 0.0033 on markdown), whose prompts run at about 60 % of the fast mode's speed (the laptop, 3,584 tokens: 74.8 against 127.7 tok/s).</p>
   <nav class="jump" aria-label="Setups">
-    <a href="#s-125h">Core Ultra 5 125H</a><a href="#s-140t">Arc 140T</a><a href="#s-b390">Arc B390</a><a href="#s-a770">Arc A770</a><a href="#s-a750">Arc A750</a><a href="#s-b580">Arc B580</a><a href="#s-b60">Arc Pro B60</a><a href="#s-b65">Arc Pro B65</a><a href="#s-b70">Arc Pro B70</a><a href="#s-max1550">Data Center GPU Max</a><a href="#s-multi-b60">2-4 × Pro B60</a><a href="#s-multi-other">Other multi-GPU</a>
+    <a href="#s-125h">Core Ultra 5 125H</a><a href="#s-140t">Arc 140T</a><a href="#s-b390">Arc B390</a><a href="#s-a770">Arc A770</a><a href="#s-a750">Arc A750</a><a href="#s-a380">Arc A380</a><a href="#s-b580">Arc B580</a><a href="#s-b60">Arc Pro B60</a><a href="#s-b65">Arc Pro B65</a><a href="#s-b70">Arc Pro B70</a><a href="#s-max1550">Data Center GPU Max</a><a href="#s-multi-b60">2-4 × Pro B60</a><a href="#s-multi-other">Other multi-GPU</a>
   </nav>
 </div>
 
@@ -171,6 +171,20 @@
     </table></div>
     <p class="note">The sweep's best switches: <code>ARC_BATCH=128 ARC_GEMV_GU=1 ARC_GEMV_DB=1</code> (batching is the Linux default since 2026.11.21.05), the same logits as the defaults. On 2026.11.21.02 the defaults gave generation 46.0 and a 4K / 512 prompt of 5,353 / 2,465 tok/s; the switches 70.8 and 5,553 / 2,821. Drafting is MTP, the same tokens as plain decoding: 75 % of the drafts accepted on the defaults; 88.7 with no switches on .21.06.</p>
     <p class="note">Generation at 128 tokens; drafting on a 26-token list prompt, the same 128 tokens as plain decoding. The card's own measured peaks (<code>gpu_bench</code>): 202 int8 XMX TOPS, 407 GB/s. The i915 driver: sending kernels in recorded lists (<code>ARC_BATCH</code>, the default on Alchemist under Windows) gives generation +45 % here; whether it becomes the Linux default too waits on an A770 with the xe driver.</p>
+  </div>
+</section>
+
+<section id="s-a380">
+  <div class="wrap">
+    <h2>Arc A380 6 GB</h2>
+    <p class="setup">Alchemist (Xe-HPG), 5.6 GiB usable · Debian 13 (kernel 7.2.11), Ryzen 7 7745HX, 14.3 GiB of RAM · LukaszBrzyszkiewicz, <a href="https://github.com/rizagp/inferzero/issues/99">issue #99</a></p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th class="n">Prompt 2K</th><th class="n">8K</th><th class="n">32K</th><th class="n">Generation</th><th class="n">With drafting</th><th>Release</th></tr></thead>
+      <tbody>
+        <tr><td>Qwen3.5 4B</td><td class="n">1,220</td><td class="n">1,244</td><td class="n">852</td><td class="n">28.0</td><td class="n">36.2-36.6</td><td>2026.11.25.01, defaults</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">The first release that loads the 4B on this card: before it, the launcher turned on a second, decoded copy of the weights (7.3 GiB) that does not fit 5.6 GiB, and the model was refused. Now the weights are decoded just in time (3.95 GiB with the server's 24K context next to the image encoder). Generation reads 81 GB/s, 70 % of the card's measured 116; its int8 XMX peak measured 40.4 TOPS. Drafting is MTP with 2-3 drafts, the same text as plain decoding. A 131K-token context did not run: the GPU was reset during generation (under investigation).</p>
   </div>
 </section>
 
