@@ -1431,6 +1431,13 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   int gemv1_rows(const GpuWeight& w, bool& vk) const {
     static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
     vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S && !w.iq3t);  // (tiled IQ3_S: gemv only, IQ3T)
+    // (ARC_GV_K4=1, 2026-11-26, a test: Q4_K / Q5_K through gemv_v, the weights straight into registers, bit-identical
+    //  (gemv_bench GB_CMP; the 4B's logits over 128 steps). One token only: gemv_mt keeps them. Not on the 125H by
+    //  default: in the 4B 2-5 % slower than gemv for Q4_K (gate 430 -> 442 ms over 64 steps), Q5_K no gain. Models in
+    //  two-pass mode (q2mm_: Qwen3 dense, Gemma 4) stay on gemv: Q5_K's -DQ2F form spills on Meteor Lake with the
+    //  users' ocloc 26.40. For iGPUs where decoding, not memory, limits the GEMV (a 64-EU Arrow Lake-S, #97))
+    static const bool gv_k4 = getenv("ARC_GV_K4") && atoi(getenv("ARC_GV_K4")) != 0;
+    if (gv_k4 && !q2mm_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K)) vk = true;
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
     // (Alchemist, a discrete card with 8-lane sub-groups: gemv_v's types one row a sub-group, as ARC_GVROWS=1. An A770,
     //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
@@ -1572,7 +1579,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       // (gemv_v stages its tables with the first 64 items of a work-group: it keeps 256)
       const size_t sgs = (size_t)(N + grows - 1) / grows * split, l1 = vk || split > 1 ? 256 : xe2_gemv_wg(sgs);  // (S sub-groups of a row group in one work-group)
       size_t g1 = (sgs * 16 + l1 - 1) / l1 * l1;
-      run(name, k, 1, &g1, &l1);
+      // (ARC_PROF_GVTYPE=1, profiling: each one-token GEMV's row of --prof-gen split by weight type, "gemm_gate Q4_K")
+      static const bool by_type = getenv("ARC_PROF_GVTYPE") && atoi(getenv("ARC_PROF_GVTYPE")) != 0;
+      if (by_type && profile) {
+        const std::string nm = std::string(name) + " " + ggml_type_name(w.type);
+        run(nm.c_str(), k, 1, &g1, &l1);
+      } else {
+        run(name, k, 1, &g1, &l1);
+      }
       return;
     }
     if (cur_T_ > 1 && cur_T_ <= 8) {

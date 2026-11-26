@@ -1409,7 +1409,10 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 #endif
 }
 
-#if VB_TYPE || defined(GRID_OFF)
+#if VB_TYPE || defined(GRID_OFF) || QT == Q4_K || QT == Q5_K
+// (Q4_K / Q5_K here for the one-token gemv_v only, ARC_GV_K4, 2026-11-26: not in VB_TYPE, so the experts' MOE_VB
+//  kernels and decode_w8_vb keep their forms for them; see vblock's Q4_K branch. gemv_mt_v builds for them too but
+//  has no mins term: the engine never takes it for these types, gemv_mt does their 2-8 tokens)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
 // for output heads. As gemv / gemv_mt, lane l handles 32-element block (l % 8) of superblock (sp + l / 8), the 16
 // lanes two contiguous superblocks; but each lane vector-loads its own bytes from global memory instead of the
@@ -1519,6 +1522,34 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
   const int lsh = quarter >= 2 ? 4 : 0, hsh = 2 * quarter;
 #pragma unroll
   for (int k = 0; k < 8; ++k) w[k] = sub32_bytes(((L[k] >> lsh) & 0x0F0F0F0Fu) | (((H[k] >> hsh) & 0x03030303u) << 4));
+#elif QT == Q4_K || QT == Q5_K
+  // (2026-11-26, ARC_GV_K4=1, a test: gemv_v for Q4_K / Q5_K. On the 125H gemv reads a Qwen3.5-4B's Q4_K gate at 66
+  //  GB/s (Q6_K 67-68) and barely faster with the decode taken out (ARC_GV_PROBE=1): its reads, not the 6-bit scale
+  //  unpack, set its speed, and this form was 2-5 % slower there, so not the default.
+  //  decode32's values from the same bytes: d / dmin and the 12 scale bytes in one 16-byte load, get_scale_min_k4's
+  //  sc / mn from bytes j % 4 of the three scale words, the nibbles from qs (and Q5_K's fifth bit from qh), so the
+  //  same w, sc, mn, d, dmin and with gemv_v's mins term the same sums as gemv bit for bit)
+  const uint4 h = vload4(0, pu);
+  *d = f16(h.x & 0xFFFFu);
+  *dmin = f16(h.x >> 16);
+  {
+    const int sh8 = 8 * (ib & 3);
+    const uint b0 = (h.y >> sh8) & 0xFFu, b1 = (h.z >> sh8) & 0xFFu, b2 = (h.w >> sh8) & 0xFFu;
+    *sc0 = *sc1 = ib < 4 ? (int)(b0 & 63u) : (int)((b2 & 0xFu) | ((b0 >> 6) << 4));
+    *mn0 = *mn1 = ib < 4 ? (int)(b1 & 63u) : (int)((b2 >> 4) | ((b1 >> 6) << 4));
+  }
+  const uint8 q = vload8(0, (__global const uint*)(p + (QT == Q5_K ? 48 : 16) + 32 * (ib / 2)));
+  const int sh = 4 * (ib % 2);
+#if QT == Q5_K
+  const uint8 qh = vload8(0, pu + 4);
+#endif
+#pragma unroll
+  for (int k = 0; k < 8; ++k) {
+    w[k] = (q[k] >> sh) & 0x0F0F0F0Fu;
+#if QT == Q5_K
+    w[k] |= ((qh[k] >> ib) & 0x01010101u) << 4;
+#endif
+  }
 #elif QT == Q8_0
   const uint8 q = vload8(0, pu + 4 + 8 * ib);
   *d = f16(((__global const ushort*)p)[ib]);
@@ -1803,9 +1834,16 @@ __kernel void gemv_v(__global const uchar* raw, int N, int K, __global const uin
     const int s = has ? sp + hs : sp;
     const uint8 a8 = has ? vload8(0, (__global const uint*)(aq + 32 * b)) : (uint8)0;
     const float sa = has ? asc[(size_t)b * M] : 0.0f;
+#if QT == Q4_K || QT == Q5_K  // (the mins' activation sums per 16, as gemv reads them)
+    const int bs0 = has ? (short)absum[(size_t)(2 * b) * M] : 0, bs1 = has ? (short)absum[(size_t)(2 * b + 1) * M] : 0;
+#endif
 #ifdef Q2F
     const uint8 r8 = has ? vload8(0, (__global const uint*)(aq + Q2_AQ + 32 * b)) : (uint8)0;
     const float sr = has ? asc[Q2_SC + (size_t)b * M] : 0.0f;
+#if QT == Q4_K || QT == Q5_K
+    const int rs0 = has ? (short)absum[Q2_AB + (size_t)(2 * b) * M] : 0;
+    const int rs1 = has ? (short)absum[Q2_AB + (size_t)(2 * b + 1) * M] : 0;
+#endif
 #endif
 #pragma unroll
     for (int r = 0; r < GROWS; ++r) {
@@ -1822,7 +1860,11 @@ __kernel void gemv_v(__global const uchar* raw, int N, int K, __global const uin
       hi += dot_4x8packed_ss_int(a8.s5, w[5]);
       hi += dot_4x8packed_ss_int(a8.s6, w[6]);
       hi += dot_4x8packed_ss_int(a8.s7, w[7]);
+#if QT == Q4_K || QT == Q5_K
+      acc[r] += sa * (d * (float)(sc0 * lo + sc1 * hi) - dmin * (float)(mn0 * bs0 + mn1 * bs1));
+#else
       acc[r] += sa * d * (float)(sc0 * lo + sc1 * hi);
+#endif
 #ifdef Q2F
       int lo2 = dot_4x8packed_ss_int(r8.s0, w[0]);
       lo2 += dot_4x8packed_ss_int(r8.s1, w[1]);
@@ -1832,7 +1874,11 @@ __kernel void gemv_v(__global const uchar* raw, int N, int K, __global const uin
       hi2 += dot_4x8packed_ss_int(r8.s5, w[5]);
       hi2 += dot_4x8packed_ss_int(r8.s6, w[6]);
       hi2 += dot_4x8packed_ss_int(r8.s7, w[7]);
+#if QT == Q4_K || QT == Q5_K
+      acc2[r] += sr * (d * (float)(sc0 * lo2 + sc1 * hi2) - dmin * (float)(mn0 * rs0 + mn1 * rs1));
+#else
       acc2[r] += sr * d * (float)(sc0 * lo2 + sc1 * hi2);
+#endif
 #endif
     }
   }

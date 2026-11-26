@@ -28,7 +28,9 @@ if [ -z "$bin" ]; then
   exit 1
 fi
 ( cd "$out" && "$oc" disasm -file "$bin" -device "$dev" -dump dis >/dev/null 2>&1 )
-asm=$(find "$out" -name "*$kern*.asm" | head -1)  # (named .text.<kernel>.asm: a dot file, so not a plain glob)
+# (named .text.<kernel>.asm: a dot file, so not a plain glob. The exact name: "*$kern*" took the first of every kernel
+#  whose name holds this one, gemv's count from gemv_v's or gemv_mt's file; 2026-11-26)
+asm=$(find "$out" -name ".text.$kern.asm" | head -1)
 [ -n "$asm" ] || { echo "== $label: no assembly for $kern"; exit 1; }
 sc=$(grep -ci "scratch" "$asm")  # (grep -c prints 0 and fails on no match: no '|| echo' here)
 ins=$(grep -cE "^\s+\(?[A-Za-z0-9~&|.]*\)?\s*[a-z][a-z0-9_.]* \(" "$asm")
