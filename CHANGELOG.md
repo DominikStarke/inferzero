@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-26: tall Q5_K GEMVs 7-13 % faster on iGPUs without XMX; Q4_K / Q5_K GEMVs measured per type
+
+- **Tall Q5_K matrices read their weights straight into registers** (`gemv_v` at 2 rows a sub-group) in one-token
+  generation, on iGPUs without XMX (such as the Core Ultra 5 125H). Tall means N >= 8,192 and N >= 2K: the Qwen3.5 4B's
+  and 9B's Q5_K gate / up and q. Those matrices are 7-9 % faster on the 4B and 8-14 % on the 9B, with the same output
+  bit for bit. Generation as a whole moves under 1 %, within noise. The other matrices keep the usual kernel, as do
+  two-pass models, discrete cards and the iGPUs with XMX. `ARC_GV_K4=0` turns it off.
+- **`ARC_GV_K4=1` (a test)**: every one-token Q4_K and Q5_K GEMV through `gemv_v`, with its own row counts. The
+  output is the same bit for bit (the 4B and the 9B). On the 125H it is not faster as a whole: the 4B's Q4_K gate
+  goes 430 -> 442 ms over 64 steps, and the 9B's Q4_K down and qkv are 2-4 % slower. It is there to measure on smaller
+  iGPUs, where decoding limits the GEMV (#97). Models in two-pass mode (Qwen3 dense, Gemma 4) keep the usual kernel.
+- **`ARC_PROF_GVTYPE=1`**: `--prof-gen` splits each one-token GEMV's row by weight type (`gemm_gate Q4_K`,
+  `gemm_gate Q5_K`), so a row that mixes types no longer averages them. On the 4B, Q4_K reads at 66 GB/s and Q6_K at
+  67-68; Q5_K is the slow one, at 59-61.
+- **`tools/kernel_isa.sh` counts the kernel it is given**: it took the first assembly file whose name contains the
+  kernel's name, so `gemv` was reported with `gemv_v`'s or `gemv_mt`'s numbers. It now uses the exact name, as
+  `tools/kernel_isa.ps1` did.
+
 ## 2026-11-26: a split model's experts in RAM sized from the machine (DeepSeek-V4.1 over 4 B60s: an 8K prompt 2.2x)
 
 - **The RAM tier of a model split over several GPUs is sized from its parts** (manoreken2, PR #100): each GPU keeps up to its own share of the experts in RAM, and on Windows up to the budget divided by the GPUs, less what is mapped already and 8 GiB, divided by the GPUs again. Each GPU counts the shared pinned memory against Windows' budget in full: on 4 Pro B60s with 1 TB of RAM every failure came at 205.45 GiB mapped against an ~818 GiB budget, 818 / 4. The fixed caps of 32 GiB a GPU and 128 GiB in all are gone on Windows. DeepSeek-V4.1-Flash Q8_K_XL, `--gpus 4`: the automatic size goes from 32 to ~46 GiB a GPU, where `ARC_XRAM_GB=47` took an 8K prompt from 63.5 to 142.3 tok/s. A layer split (`--split layer`) shares the same room by its stages' layers. Linux, which has no such budget, keeps half the free RAM beyond 16 GiB over the GPUs and the 32 / 128 GiB caps (until a Linux run measures the limit), now also at most each GPU's share. One start line names the parts: the GPU's share, the budget, what is in use and the size chosen. `ARC_XRAM_GB` / `--expert-ram-gb` still set it by hand, with a warning past the same limit. One GPU and integrated GPUs: unchanged.
