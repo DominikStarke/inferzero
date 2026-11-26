@@ -80,6 +80,21 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-26, drafting verification off H8 for just-in-time weights on Xe-LPG** (`zero/engine_h8.h`
+  h8_igpu_rows_ok: `h8_dp4a_ && !h8_env() && spec_` -> false; the Researcher's audit of 2026.11.26.03). A verification
+  pass of more than 8 rows (h8_takes' cur_T_ > 8: a DFlash2 block of 16) took H8 under h8_dp4a_, so a weight decoded
+  just in time was decoded and rotated again at every pass. Now it takes the plain path, as before .03. Resident
+  weights keep H8 (rotated in place once, the A1 rule), and the plain path decodes a staged weight again when the
+  stage holds the rotated form (engine.h stage_h8_), so it never reads it. Reached only by a just-in-time Q4_K / Q5_K
+  dense model with more than 8 verification rows: a Qwen3.8 27B UD-Q4_K_XL with DFlash2. Not measurable on the
+  laptop: MTP verifies at most 8 rows (kMaxDrafts 7), and `--bench-batch 2 --mtp` caps the drafts at the batch's 8
+  rows (2 x 4). Checks: the 4B's and 9B's logits equal main's (c987ada) bit for bit (57967119..., BD727501...); the 9B
+  `--bench-batch 2 --mtp`, two alternated rounds, main 231.0 / 231.2 ms per batched draft step against the branch's
+  231.2 / 231.3, batched logits bit-identical to each slot alone on both.
+  The `--ctx auto` cost by context size (the Researcher's question): the 4B, 4K prompt + 64 tokens, two rounds, 16K /
+  32K / 64K / 128K 913-952 tok/s and 48.3-48.5 ms a token, 262K 879-900 and 49.2-49.4: flat to 128K, a step at 262K.
+  The KV is per layer (~0.5 GiB a full-attention layer at 262K), so not one buffer over 4 GiB. For the plan, not fixed.
+
 - **2026-11-26, H8 by default for the Qwen3.5 4B / 9B-type prompts on iGPUs without XMX** (`zero/xe2/engine_xe2.h`
   h8_dp4a_). Qwen dense models whose decoded weights are resident, or decoded just in time with a Q4_K / Q5_K FFN, take
   H8 on every prompt chunk: one path, so a prompt gives the same logits fed whole or resumed from the cache. Not the

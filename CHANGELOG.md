@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-26 (unreleased: in the next release): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
+
+- **Verification passes of more than 8 rows** (a DFlash2 block of 16) no longer take H8 for weights decoded per chunk on
+  Xe-LPG iGPUs: they take the path they had before 2026.11.26.03. Only a model like a Qwen3.8 27B UD-Q4_K_XL with a
+  DFlash2 drafter reaches this; H8 would decode and rotate its weights again at every pass. Not measured: no model on our
+  laptop reaches it (MTP verifies at most 8 rows), and the 4B / 9B give the same logits as before. Prompts, and weights
+  kept on the GPU, are unchanged.
+
 ## 2026-11-26: H8 prompt GEMMs on iGPUs without XMX for the Qwen3.5 4B / 9B (4K prompt +3-5 %, the 4B's KL 7x lower)
 
 - **Xe-LPG iGPUs** (Meteor Lake such as the Core Ultra 5 125H, and Arrow Lake-S; no XMX) now use H8 for every prompt chunk
