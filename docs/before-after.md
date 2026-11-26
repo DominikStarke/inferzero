@@ -112,7 +112,14 @@ That property is what every speed change is held to:
     stay on `gemv`.
   - **Not affected:** the iGPU's and the B-series' defaults (`gemv` as before), the MoE experts, and 2-8 tokens
     (`gemv_mt`).
-  - **No second model:** no other Q4_K / Q5_K model is on the laptop. The 35B's dense matrices are Q8_0.
+  - **Qwen3.5 9B UD-Q4_K_XL (the second model):** logits bit-identical over a prompt and 128 generated steps, SHA-256
+    A83466B4... for main, the branch and the branch with the switch. `--prof-gen`, ms over 64 steps:
+    - At gemv_v's default rows (4 for these matrices) the Q4_K gate / up gain (849 / 848 -> 816 / 793), but the Q4_K
+      down (K = 12,288) loses (335 -> 461).
+    - With `ARC_GVROWS=2` (two alternated pairs; the laptop sped up between them, so only the pairs compare): step
+      88.7 -> 87.3 and 85.7 -> 85.2 ms. The Q5_K gate / up gain 16-18 % (gate 205 -> 167, 185 -> 155). The Q4_K
+      gate / up stay equal. The Q4_K down / qkv and the Q5_K z lose 2-4 %.
+    - About 1 % in all, within run-to-run spread: not made the default.
 
 - **2026-11-18, `ARC_TP_EVSUM=1` (opt-in): generation's split sums on GPU events:** the laptop, Qwen3.5 4B over 2
   shards (`ARC_TP_SIM`, on 2 queues), logits of every generated token against the host sums: a 48-token answer 6 / 6
