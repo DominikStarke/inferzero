@@ -1431,13 +1431,20 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   int gemv1_rows(const GpuWeight& w, bool& vk) const {
     static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
     vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S && !w.iq3t);  // (tiled IQ3_S: gemv only, IQ3T)
-    // (ARC_GV_K4=1, 2026-11-26, a test: Q4_K / Q5_K through gemv_v, the weights straight into registers, bit-identical
-    //  (gemv_bench GB_CMP; the 4B's logits over 128 steps). One token only: gemv_mt keeps them. Not on the 125H by
-    //  default: in the 4B 2-5 % slower than gemv for Q4_K (gate 430 -> 442 ms over 64 steps), Q5_K no gain. Models in
-    //  two-pass mode (q2mm_: Qwen3 dense, Gemma 4) stay on gemv: Q5_K's -DQ2F form spills on Meteor Lake with the
-    //  users' ocloc 26.40. For iGPUs where decoding, not memory, limits the GEMV (a 64-EU Arrow Lake-S, #97))
-    static const bool gv_k4 = getenv("ARC_GV_K4") && atoi(getenv("ARC_GV_K4")) != 0;
-    if (gv_k4 && !q2mm_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K)) vk = true;
+    // (Q4_K / Q5_K through gemv_v, the weights straight into registers, 2026-11-26; bit-identical to gemv: gemv_bench
+    //  GB_CMP, the 4B's and 9B's logits over 128 steps. One token only: gemv_mt keeps them. Models in two-pass mode
+    //  (q2mm_: Qwen3 dense, Gemma 4) stay on gemv: Q5_K's -DQ2F form spills on Meteor Lake with ocloc 26.40.
+    //  By default only where it measured faster: tall Q5_K matrices (N >= 8,192 and N >= 2K: the 4B's / 9B's gate / up,
+    //  the 9B's q) at 2 rows a sub-group, on an iGPU without XMX (the 125H, Xe-LPG). The 9B's Q5_K gate / up 16-18 %
+    //  faster; Q4_K (gate / up equal or 2-5 % slower, down / qkv 2-4 % slower) and Q5_K z / down stay on gemv.
+    //  ARC_GV_K4=0: off; =1, a test: every Q4_K / Q5_K matrix, gemv_v's own rows (every GPU))
+    static const int gv_k4 = getenv("ARC_GV_K4") ? atoi(getenv("ARC_GV_K4")) : -1;
+    bool k4_rule = false;
+    if (!q2mm_ && &w != &lm_head_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K)) {
+      if (gv_k4 == 1) vk = true;
+      else if (gv_k4 < 0 && w.type == GGML_Q5_K && w.N >= 8192 && w.N >= 2 * w.K && zrt::integrated() && !cl_.xmx)
+        vk = k4_rule = true;
+    }
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
     // (Alchemist, a discrete card with 8-lane sub-groups: gemv_v's types one row a sub-group, as ARC_GVROWS=1. An A770,
     //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
@@ -1452,6 +1459,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  above and below off for them; bit-identical, a row's sums do not depend on its sub-group)
     static const int force_rows = getenv("ARC_GEMV_ROWS") ? atoi(getenv("ARC_GEMV_ROWS")) : 0;
     if (force_rows > 0 && !vk && w.N <= 65536) return force_rows;
+    if (k4_rule && !gvrows_env) return 2;  // (the tall Q5_K rule above: 2 rows, as measured; ARC_GVROWS sets it)
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and

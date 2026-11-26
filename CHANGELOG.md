@@ -1,12 +1,16 @@
 # Changelog
 
-## 2026-11-26: Q4_K / Q5_K GEMVs measured per type; a switch to test them in registers
+## 2026-11-26: tall Q5_K GEMVs 7-13 % faster on iGPUs without XMX; Q4_K / Q5_K GEMVs measured per type
 
-- **`ARC_GV_K4=1` (a test, off by default)**: one-token Q4_K and Q5_K GEMVs read their weights straight into registers
-  (`gemv_v`). The output is the same bit for bit (the 4B and the 9B). On the 125H it is not faster: the 4B's Q4_K gate
-  goes 430 -> 442 ms over 64 steps, and the 9B gains about 1 % with `ARC_GVROWS=2` (its Q5_K gate / up 16-18 %, its
-  Q4_K down and qkv 2-4 % slower), within noise. It is there to measure on smaller iGPUs, where decoding
-  limits the GEMV (#97). Models in two-pass mode (Qwen3 dense, Gemma 4) keep the usual kernel.
+- **Tall Q5_K matrices read their weights straight into registers** (`gemv_v` at 2 rows a sub-group) in one-token
+  generation, on iGPUs without XMX (such as the Core Ultra 5 125H). Tall means N >= 8,192 and N >= 2K: the Qwen3.5 4B's
+  and 9B's Q5_K gate / up and q. Those matrices are 7-9 % faster on the 4B and 8-14 % on the 9B, with the same output
+  bit for bit. Generation as a whole moves under 1 %, within noise. The other matrices keep the usual kernel, as do
+  two-pass models, discrete cards and the iGPUs with XMX. `ARC_GV_K4=0` turns it off.
+- **`ARC_GV_K4=1` (a test)**: every one-token Q4_K and Q5_K GEMV through `gemv_v`, with its own row counts. The
+  output is the same bit for bit (the 4B and the 9B). On the 125H it is not faster as a whole: the 4B's Q4_K gate
+  goes 430 -> 442 ms over 64 steps, and the 9B's Q4_K down and qkv are 2-4 % slower. It is there to measure on smaller
+  iGPUs, where decoding limits the GEMV (#97). Models in two-pass mode (Qwen3 dense, Gemma 4) keep the usual kernel.
 - **`ARC_PROF_GVTYPE=1`**: `--prof-gen` splits each one-token GEMV's row by weight type (`gemm_gate Q4_K`,
   `gemm_gate Q5_K`), so a row that mixes types no longer averages them. On the 4B, Q4_K reads at 66 GB/s and Q6_K at
   67-68; Q5_K is the slow one, at 59-61.

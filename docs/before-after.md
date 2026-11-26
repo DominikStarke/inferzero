@@ -80,6 +80,26 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-26, tall Q5_K one-token GEMVs through `gemv_v` at 2 rows, by default on iGPUs without XMX:** the rule
+  below's measurements kept only where `gemv_v` was faster (the user: "keep the faster for that specific ones"). The
+  test is on the matrix, not its role: Q5_K, N >= 8,192 and N >= 2K. That takes in the 4B's and 9B's Q5_K gate / up and
+  q. Q4_K, Q5_K z / down and the output head stay on `gemv`; so do two-pass models, 2-8 tokens, the MoE experts and
+  GPUs with XMX. `ARC_GV_K4=0`: off; `=1`: every Q4_K / Q5_K matrix, the test below.
+  - **Output:** bit-identical. `--dump-logits` over a prompt and 128 generated steps gives the same SHA-256 for main,
+    the branch and the branch with `ARC_GV_K4=1`: 4B BBE66846..., 9B A83466B4....
+  - **Speed:** the laptop, `--bench-pp 512 --n 64`, `ARC_GV_K4=0` and the default alternated, two pairs a model.
+    `--prof-gen` with `ARC_PROF_GVTYPE=1`, ms over 64 steps:
+    - 4B: Q5_K gate 85.2 / 85.7 -> 78.9 / 78.2 (-8 %), up 83.9 / 84.4 -> 78.5 / 77.9 (-7 %), q 30.5 / 30.9 -> 28.1 /
+      27.8 (-9 %).
+    - 9B: Q5_K gate 169.1 / 175.0 -> 153.3 / 151.5 (-10 to -13 %), up 167.0 / 173.2 -> 152.9 / 150.7, q 46.5 / 48.0
+      -> 43.2 / 41.4.
+    - Matrices outside the rule: unchanged within 1-3 % both ways (Q5_K z 194.6 / 189.9 -> 190.7 / 189.4 on the 4B).
+  - **Generation unprofiled:** 4B tg64 19.74 / 20.56 -> 20.45 / 20.80 tok/s; 9B 12.27 / 12.15 -> 12.13 / 11.94. The
+    kernel time saved is ~0.3 ms a token on the 4B and ~0.6 ms on the 9B, under 1 % of a step: within run-to-run
+    noise here. The gain is the matrices' own.
+  - **Spills:** none for the forms the rule builds (`gemv_v`, Q5_K, 2 rows, no `-DQ2F`), with ocloc 26.40 on mtl and
+    arl-h.
+
 - **2026-11-26, `ARC_GV_K4=1` (opt-in, a test): Q4_K / Q5_K one-token GEMVs through `gemv_v`, no change by
   default:** the laptop, Qwen3.5 4B UD-Q4_K_XL, `--bench-pp 512 --n 64 --prof-gen`, two alternated runs each. The
   question was why Q4_K / Q5_K read slower than Q6_K. Per type (`ARC_PROF_GVTYPE=1`, new), ms over 64 steps, then
@@ -897,10 +917,10 @@ That property is what every speed change is held to:
 
 ### What did not pay off (kept out on purpose)
 
-- Q4_K / Q5_K one-token GEMVs through `gemv_v` by default (2026-11-26): bit-identical, but 2-5 % slower than `gemv`
-  for the 4B's Q4_K gate / up on the 125H, and Q5_K no faster in the model. `gemv`'s reads, not its decode, set its
-  speed, so neither more register loads nor scales unpacked at load help there. Left as `ARC_GV_K4=1` to measure on
-  smaller iGPUs.
+- Every Q4_K / Q5_K one-token GEMV through `gemv_v` by default (2026-11-26): bit-identical, but 2-5 % slower than
+  `gemv` for the 4B's Q4_K gate / up and the 9B's Q4_K down / qkv on the 125H. `gemv`'s reads, not its decode, set its
+  speed, so scales unpacked at load would not help either. Only the tall Q5_K matrices took it (the row above); the
+  rest is `ARC_GV_K4=1`, to measure on smaller iGPUs.
 - Line breaks free of Qwen's reasoning presence penalty (2026-11-09): it kept the model's stray "ctlsc" at its own
   4.4 % instead of ~17 %, but the 35B then looped in short indented lines without closing its reasoning.
 - Larger expert staging by default (`ARC_XSTAGE=256`): prompts +5-11 % but generation -2-3 % (host RAM taken from

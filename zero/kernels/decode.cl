@@ -1410,7 +1410,7 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 }
 
 #if VB_TYPE || defined(GRID_OFF) || QT == Q4_K || QT == Q5_K
-// (Q4_K / Q5_K here for the one-token gemv_v only, ARC_GV_K4, 2026-11-26: not in VB_TYPE, so the experts' MOE_VB
+// (Q4_K / Q5_K here for the one-token gemv_v only (tall Q5_K by default, ARC_GV_K4), 2026-11-26: not in VB_TYPE, so the experts' MOE_VB
 //  kernels and decode_w8_vb keep their forms for them; see vblock's Q4_K branch. gemv_mt_v builds for them too but
 //  has no mins term: the engine never takes it for these types, gemv_mt does their 2-8 tokens)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
@@ -1523,9 +1523,10 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
 #pragma unroll
   for (int k = 0; k < 8; ++k) w[k] = sub32_bytes(((L[k] >> lsh) & 0x0F0F0F0Fu) | (((H[k] >> hsh) & 0x03030303u) << 4));
 #elif QT == Q4_K || QT == Q5_K
-  // (2026-11-26, ARC_GV_K4=1, a test: gemv_v for Q4_K / Q5_K. On the 125H gemv reads a Qwen3.5-4B's Q4_K gate at 66
-  //  GB/s (Q6_K 67-68) and barely faster with the decode taken out (ARC_GV_PROBE=1): its reads, not the 6-bit scale
-  //  unpack, set its speed, and this form was 2-5 % slower there, so not the default.
+  // (2026-11-26: gemv_v for Q4_K / Q5_K; by default only tall Q5_K matrices on iGPUs without XMX, 7-13 % faster
+  //  there, engine.h gemv1_rows; ARC_GV_K4=1 every one. On the 125H gemv reads a Qwen3.5-4B's Q4_K gate at 66 GB/s
+  //  (Q6_K 67-68) and barely faster with the decode taken out (ARC_GV_PROBE=1): its reads, not the 6-bit scale unpack,
+  //  set its speed, and this form was 2-5 % slower for Q4_K.
   //  decode32's values from the same bytes: d / dmin and the 12 scale bytes in one 16-byte load, get_scale_min_k4's
   //  sc / mn from bytes j % 4 of the three scale words, the nibbles from qs (and Q5_K's fifth bit from qh), so the
   //  same w, sc, mn, d, dmin and with gemv_v's mins term the same sums as gemv bit for bit)
