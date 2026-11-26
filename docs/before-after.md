@@ -98,6 +98,16 @@ That property is what every speed change is held to:
   unfused). A 128-token prompt on the 4B: h8_act 6.8 ms of ~170 ms.
   Release-fix checks (the 256-register rmsnorm_quant and the Xe-LPG limit): the 4B's and 9B's logits equal 573f929's,
   H8 on (PCI 0x7D55); 4K prompt against 573f929 887-925 -> 883-914 tok/s, rmsnorm_quant 125-127 -> 123-129 ms.
+  Generation, where rmsnorm_quant now runs at 256 registers too (the Researcher's review): the 4B, `--bench-pp 512 --n
+  128` unprofiled, three alternated rounds, tg128 21.14 / 21.04 / 21.05 -> 21.04 / 20.95 / 21.05 tok/s, median step
+  47.2-47.4 -> 47.4-47.6 ms: no change.
+  Seen while checking a user's serverz session (prompt 540-613 tok/s, generation 11-12.6, contexts 4.6-12K): not
+  reproduced. runz at 577 / 5,047 / 11,380 tokens 588 (the first prompt: H8's one-time rotation) / 881 / 836 tok/s,
+  generation 20.7 / 20.6 / 19.9; serverz by curl 842 / 19.3 (H8 off 833 / 19.8); through the web UI in a browser 779 /
+  18.0-18.2. A real cost found on the way: `--ctx auto`'s 262K context against `--ctx 16384` at the same 5K used,
+  serverz 843 -> 899-903 tok/s prompt, 19.4-19.7 -> 20.4-20.5 generation (two alternated pairs); every weight-reading
+  kernel 2-6 % slower and gdn_recur +11 %, not one kernel: the 4.13 GiB context reservation. Not fixed (a context
+  grown with the conversation is a design change).
   Memory plan: H8's buffers and float copy are allocated in alloc_buffers (h8_reserve, aq_ with h8f_off_), which
   `--ctx auto`'s dry run goes through, so the context it picks leaves room for them.
   Measured on the laptop (125H), tok/s over three passes, `ARC_H8=0` and the default alternated, two pairs:
