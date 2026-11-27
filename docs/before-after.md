@@ -80,6 +80,24 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, decode_w8_sb's Q5_K requantization unrolled** (`zero/kernels/decode.cl`, W8RQ_UNROLL; #101). A Pro B70
+  (hb12za45b-collab, 2026.11.26.03, the 27B, `--prof` at 4K) showed decode_w8 at 0.71 ms a launch on a Q4_K_M file and
+  7.26 / 6.81 ms on Q5_K_M / UD-Q4_K_XL (Q5_K-heavy). Fitting 4K against 16K, the fixed cost per pass was decode_w8
+  (1.17 s vs 1.31 s on the UD file).
+  - **Not a spill:** decode_w8_sb is spill-free for Q4_K and Q5_K on bmg-g31 / bmg-g21 / mtl / dg2-g10 / tgllp (ocloc
+    26.40), and Q5_K and Q4_K take the same kernel. The difference is in the compiled loops. Q5_K: 17 branches against
+    Q4_K's 7, and 124 indirect register accesses against 83 on bmg-g31 (59 / 27 on mtl). Its loops stayed rolled, so wv /
+    fs / fm / am were indexed at run time.
+  - **The fix:** every loop of the requantization unrolled for Q5_K only. bmg-g31: 0 indirect accesses; no spill on any
+    of the five devices. Unrolled, Q2_K / Q4_K spilled (8-16 registers on bmg, mtl, dg2, tgllp), so they keep their
+    code and their builds are unchanged.
+  - **Checks:** logits bit for bit against main (2c86eb4) over 480 tokens + 32 generated: the 9B (Q5_K decoded just in
+    time) with H8 BD727501... and with `ARC_H8=0` 2F892F5C...; the 4B 57967119....
+  - **Speed** on the laptop, the 9B UD-Q4_K_XL, `--bench-pp 4096 --n 0 --prof`, `ARC_PROF_W8TYPE=1`, two alternated
+    rounds: decode_w8_Q5_K 149.3 / 149.1 -> 42.6 / 39.3 ms (43 launches), Q4_K 383 / 363 -> 383 / 361 (unchanged); the
+    prompt in round 2 478.8-483.1 -> 482.5-488.9 tok/s (round 1's first branch pass compiled the kernel). The B70's
+    gain to be measured there.
+
 - **2026-11-26, drafting verification off H8 for just-in-time weights on Xe-LPG** (`zero/engine_h8.h`
   h8_igpu_rows_ok: `h8_dp4a_ && !h8_env() && spec_` -> false; the Researcher's audit of 2026.11.26.03). A verification
   pass of more than 8 rows (h8_takes' cur_T_ > 8: a DFlash2 block of 16) took H8 under h8_dp4a_, so a weight decoded
