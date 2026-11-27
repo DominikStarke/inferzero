@@ -80,6 +80,32 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, serverz warms up split models too** (`tools/server_load.h`, `zero/engine.h`; the user: "maybe we need
+  to add warm up for all gpus", zchef2k's first request ~15 s on 2 x A770 with `--split layer`, #102).
+  - **The change:**
+    - The warm-up (`warm_up_once`) runs for `--gpus N`, both splits. Its `forward` / `reset` calls are mirrored on
+      every shard (at once) or stage (in turn), each building its own GPU's kernels.
+    - A split's marker adds its shape: `|tpN|` + the hash of tp.cl, or `|ppN|` + every stage's layers and GPU kind.
+      It is empty on one GPU, so the one-GPU marker is unchanged.
+    - The line ends ", on N GPUs" for a split.
+  - **Checks on the laptop**, serverz with the 4B under `ARC_TP_SIM=1`, `--ctx 4096`, fresh starts, one greedy chat
+    request (48 tokens, logprobs top 5). main (a901620, no warm-up on splits) against the branch, then the branch again
+    (its marker set):
+
+    | Split | First request: main / branch / branch again | Second request | Warm-up line | Logprobs (all three) |
+    |---|---|---|---|---|
+    | `--gpus 2` | 3.82 / 3.06 / 3.08 s (an earlier pair: 5.17 / 3.11) | 2.91-2.96 s | 1.7 s, on 2 GPUs | 432875BD1502D91C |
+    | `--gpus 3` | 3.65 / 3.32 / 3.52 s | 3.15-3.27 s | 1.8 s, on 3 GPUs | B9893D799EFDF8F1 |
+    | `--gpus 2 --split layer` | 3.07 / 2.67 / 2.68 s | 2.57-2.61 s | 1.5 s, on 2 GPUs | 6EA7250170685100 |
+    | one GPU | 2.91 / 2.51 / 2.51 s | 2.40-2.42 s | main's run warmed; the branch found its marker | 6EA7250170685100 |
+
+  - **What the laptop's numbers show:** the first request's answer is the same with the warm-up, and its time comes near
+    the second's. The laptop's kernels were already compiled in its cache, so its gain is only the first use in a
+    process. The compile case after an update (zchef2k's ~15 s) is for 2 x A770 to confirm.
+  - Load time: +0.5-1.5 s for the warm-up's full pass, once after an update; later starts run its short pass, as on one
+    GPU.
+  - Memory: unchanged.
+
 - **2026-11-27, fixes from the Researcher's review of the day's changes** (`zero/engine.h`, `engine_load*.h`,
   `engine_stream.h`, `engine_drafters.h`, `engine_inkling.h`, `scripts/pc-kinds.ps1`).
   - **The changes:**

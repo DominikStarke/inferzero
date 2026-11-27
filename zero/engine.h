@@ -1002,16 +1002,21 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
 
   const GgufFile& gguf() const { return f_; }
+  const std::string& gpu_id() const { return cl_.device_id; }  // (this engine's GPU kind: name and driver)
   // Runs the generation kernels once so that a first request does not wait for their just-in-time compilation: a
   // short prompt and a token, then with MTP / DFlash2 drafts and a verification pass of every row count (DFlash2 and
   // the MTP block each); leaves the engine reset. Only when this model, these options and these kernel sources have
   // not been warmed before (a marker in the kernel cache, "w3": since the MTP block runs over every row count of its pending drafts too): after an update the first requests took seconds per new
   // kernel (27B with DFlash2: a 27-token prompt 37 s, then 1-3 tok/s), later starts skip it. Returns true when it ran.
-  bool warm_up_once(int tok, bool prompt = true) {
+  // A split model (serverz --gpus, 2026-11-27): called on shard 0 / the last stage, its forward and reset calls are
+  // mirrored on every GPU (zero/mgpu/tp_mirror.h), so each shard or stage builds its own kernels; split_key names the
+  // split (its shape, every stage's GPU, the sums' kernels) so a one-GPU run's marker does not stand for it. Empty
+  // on one GPU: the marker as before
+  bool warm_up_once(int tok, bool prompt = true, const std::string& split_key = std::string()) {
     const std::string& dir = cl_.cache_dir;
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx",
-             (unsigned long long)ClRt::fnv1a(gemm_src_ + "\x01" + ops_.all() + "\x01" + dec_.all() + "\x01" + moe_src_ + "\x01" + f_.path + warm_key_extra() +
+             (unsigned long long)ClRt::fnv1a(gemm_src_ + "\x01" + ops_.all() + "\x01" + dec_.all() + "\x01" + moe_src_ + "\x01" + f_.path + warm_key_extra() + split_key +
                                              "|" + std::to_string(opt.mtp) + "|" + opt.dflash + (opt.mtp_block ? "" : "|nomtp") +
                                              "|" + std::to_string(opt.mtp_drafts) +
                                              "|" + std::to_string(max_chunk) + "|" + cl_.device_id + "|w3"));
