@@ -340,8 +340,27 @@ A B B A rounds.
 cards from the kit. **Proof:** the dry count against the real allocation after load, on the same run. Any gap is an
 uncounted buffer the layer must add (first suspects: the JIT decode areas, H8's areas, the resident W8 partial share).
 
-| Model | Card / cap | Context chosen | Memory line | Dry count vs real | Gap |
+**The laptop, no cap** (the Developer, 2026-11-28; 125H with 20.42 GiB of shared memory, driver 32.0.101.9175, main
+6fb85d7 + fix/plan-memory). The real allocation is zrt's own sum of every `zeMemAllocDevice`, printed with
+`ARC_GEMM_PLAN=1`'s summary ("gemm-plan memory"): serverz after its warm-up, runz at its end. GiB throughout.
+
+| Model | `--ctx auto` plan (weights + buffers + context) | Context chosen | serverz loaded | After the warm-up: counted / allocated | runz (ctx 1,040) at its end: counted / allocated |
 |---|---|---|---|---|---|
+| Qwen3.5 4B | 6.61 + 0.09 + 4.13 = 10.83 | 262,144 | 10.84 | 10.849 / 10.849 | 6.771 / 6.771 |
+| Qwen3.5 9B | 12.54 + 0.14 + 4.13 = 16.81 | 262,144 | 16.80 | 16.810 / 16.810 | 5.616 / 5.616 |
+| Qwen3.8 27B GSQ IQ3_S | 10.94 + 1.69 + 5.53 = 18.16 | 163,840 | 18.16 | 18.159 / 18.159 | 11.728 / 11.728 |
+| Qwen3.6 35B-A3B | 14.80 + 0.72 + 2.76 = 18.28 | 262,144 | 18.19 | 18.189 / 18.190 | 16.867 / 16.868 |
+| Inkling 2 Mini | 13.39 + 0.29 + 6.16 = 19.84 | 188,416 | 19.14 | 19.138 / 19.139 | 15.264 / 15.265 |
+
+- **No uncounted buffer on any of the five:** counted equals allocated within 0.001 GiB, after the warm-up's prompt too.
+  H8's areas, the staging and the buffers made at the first prompt are all in `gpu_bytes`.
+- **The plan against the load:** equal on the 4B, 9B and 27B. Two models plan high, which is safe but costs context:
+  the 35B by 0.09 GiB, Inkling by 0.70 GiB. So Inkling's `--ctx auto` picks less context than fits.
+- **The 27B's plan line says "left -0.59":** its parts (kept free 1.17 + snapshots 0.29 + encoders 1.39 + weights
+  10.94 + buffers 1.69 + context 5.53 = 21.01) exceed the 20.42 GiB device, yet the load fits (18.16 real). The
+  printed line and the fit check count the encoders or the kept-free room differently. To look at after Phase 0.
+- **Still to do:** the same under `ARC_GPU_MEM_GB` = 6 / 8 / 12 / 16 on the laptop, and the discrete cards from the
+  kit.
 
 ## G. Launches and start-up
 
