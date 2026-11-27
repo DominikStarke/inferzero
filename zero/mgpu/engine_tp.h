@@ -1025,12 +1025,13 @@ class TpEngine {
   // them can write together; writing them one after the other left the others waiting at a sum's barrier until the
   // 120 s timeout (2026-11-25). A TpMirror call cannot be used: it runs the shards' jobs and shard 0's own one after
   // the other, which is the same problem, and every shard writing one stream crashed the first time.
+  // (the parts and the sink hold the state once between them, not twice: each part goes out and is let go as soon as
+  //  it is there, shard 0's before the others are waited for. At a 256K conversation the state is 9 GiB, and holding
+  //  it twice was 18 GiB of RAM -- the save then failed with std::bad_alloc, 2026-11-27)
   template <class Out_>
   bool save_parts_run_all(const Out_& out, int keep_from, bool host_snapshot) {
     std::vector<std::shared_ptr<std::vector<uint8_t>>> part((size_t)n_);
     std::vector<std::exception_ptr> errs((size_t)n_);
-    std::vector<int> rest;
-    for (int r = 1; r < n_; ++r) rest.push_back(r);
     auto one = [&, this](int r) {
       Engine& s = *shards_[r];
       part[(size_t)r] = std::make_shared<std::vector<uint8_t>>();
@@ -1039,6 +1040,9 @@ class TpEngine {
       s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
       errs[(size_t)r] = nullptr;
       try {
+        // (its exact length up front: a vector that grows by doubling holds the old and the new buffer at once, which
+        //  at a 256K conversation is 8 GiB more than the part itself)
+        mine->reserve(s.saved_size(keep_from));
         if (!s.save_state([mine](const void* p, size_t k) {
               mine->insert(mine->end(), (const uint8_t*)p, (const uint8_t*)p + k);
               return true;
@@ -1048,6 +1052,11 @@ class TpEngine {
         errs[(size_t)r] = std::current_exception();
       }
       s.tp_engine_ = saved;
+    };
+    // (each part with its length in front: load_parts_run_all needs to know where one ends and the next starts)
+    auto put = [&out](const std::vector<uint8_t>& pc) {
+      const int64_t len = (int64_t)pc.size();
+      return out(&len, 8) && (len == 0 || out(pc.data(), (size_t)len));
     };
     // (shard 0 runs here (this thread IS its engine), the others on their own threads: run_on would wait for shard 0
     //  in wait_done, which this thread never leaves -- "GPU 1 still has a job running")
@@ -1063,22 +1072,20 @@ class TpEngine {
     }
     if (n_ > 1) start_others([&](int r) { one(r); });
     one(0);
+    bool ok = !errs[0] && part[0] && put(*part[0]);
+    part[0].reset();
     if (n_ > 1)
       for (const auto& e : wait_others())
-        if (e) return false;
-    for (const auto& e : errs)
-      if (e) return false;
-    for (size_t r = 0; r < part.size(); ++r) {
-      if (!part[r]) return false;
+        if (e) ok = false;
+    for (int r = 1; r < n_ && ok; ++r) {
+      if (errs[(size_t)r] || !part[(size_t)r]) {
+        ok = false;
+        break;
+      }
+      ok = put(*part[(size_t)r]);
+      part[(size_t)r].reset();
     }
-    // (each part with its length in front: load_parts_run_all needs to know where one ends and the next starts)
-    for (const auto& pc : part) {
-      if (!pc) return false;
-      const int64_t len = (int64_t)pc->size();
-      if (!out(&len, 8)) return false;
-      if (len && !out(pc->data(), (size_t)len)) return false;
-    }
-    return true;
+    return ok;
   }
 
   void reset() {  // (the bound slot)
@@ -1946,6 +1953,19 @@ inline void TpMirror::finish() {
 // A split model's state is every shard's (its KV cache rows, its DeltaNet states): written one shard after the other in
 // rank order, so a load gives each of them its own part back. Not a TpMirror call: the shards would all write the same
 // stream at once (that crashed a 2-GPU server on 2026-11-25).
+inline size_t Engine::saved_size_split(int keep_from) {
+  // (the shards' parts as save_parts_run_all writes them: each with its length in front. Read-only, so it runs on this
+  //  thread for every shard -- no job, no barrier, and the shards stay where they are)
+  size_t n = 0;
+  for (int r = 0; r < tp_engine_->gpus(); ++r) {
+    Engine& s = tp_engine_->shard(r);
+    TpEngine* const saved = s.tp_engine_;
+    s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
+    n += 8 + s.saved_size(keep_from);
+    s.tp_engine_ = saved;
+  }
+  return n;
+}
 template <class Out_>
 inline bool Engine::save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot) {
   // (every shard at the same time, each into a buffer of its own: the shards are between two jobs then, not at a

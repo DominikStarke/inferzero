@@ -19,11 +19,16 @@
   template <class Out_>
   bool save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot);
   bool load_state_mirrored(FILE* f);
+  // (a split model: every shard's part, summed; defined in zero/mgpu/engine_tp.h where TpEngine is complete)
+  size_t saved_size_split(int keep_from);
   // host_snapshot = false: without the host snapshot (a state saved exactly where it was taken holds it already)
   bool save_state(FILE* f, int keep_from, bool host_snapshot = true) {
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
   }
   size_t saved_size(int keep_from) {
+    // (a split model: the shards' parts together, each with its length in front -- the server reserves its buffer with
+    //  this before a save, and shard 0's own part alone would be a fraction of it)
+    if (tp_engine_) return saved_size_split(keep_from);  // (zero/mgpu/engine_tp.h)
     if (hp.inkling) return 0;  // (Inkling 2: its 48 cache slots and conv states are not saved yet, zero/engine_inkling.h)
     if (hp.ds41) return ds_saved_size();  // (DeepSeek-V4.1: a layout of its own, zero/engine_ds41.h)
     if (!opt.attn_int8) return 0;
