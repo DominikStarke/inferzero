@@ -1,0 +1,47 @@
+The fixed prompt of tests/gemm_golden.ps1. Do not edit it: every hash recorded with it changes when it does.
+
+A river town keeps its records in three places. The first is the ledger at the mill, where every sack of grain that
+comes in by cart or by boat is written down with its weight, the farm it came from and the day it arrived. The miller
+checks the scale each morning against a set of iron weights that the town bought forty years ago and keeps in a locked
+box. When the scale and the weights disagree, nothing is ground until the scale is mended, because a wrong scale would
+make every line of the ledger wrong at once, and nobody could tell afterwards which lines to trust.
+
+The second place is the school, where the children copy the ledger's totals into their own books at the end of each
+week. They add the columns by hand, then add them again in the other direction, top to bottom and bottom to top, and
+the teacher only accepts a page when both sums agree. The children grumble that the second sum is a waste of time. The
+teacher answers that a sum done twice the same way repeats its mistakes, while a sum done two ways catches them, and
+that the town has more than once found a careless line in the mill's ledger this way.
+
+The third place is the bridge keeper's house. Every boat that passes under the bridge pays a small toll, and the keeper
+writes down its name, its cargo and the hour. On a busy day the keeper cannot write as fast as the boats arrive, so he
+ties a knot in a cord for each boat and writes the entries in the evening, counting the knots to be sure that none was
+forgotten. Once a storm soaked his book and the ink ran. He rebuilt the day from the cord, the mill's ledger and the
+memories of the boatmen, and the three sources agreed on every boat but one, which turned out to have passed twice.
+
+In spring the river rises. The mill stops when the water reaches the third step of the stairs by the wheel, because
+above that mark the current is too strong and the gears would strip their teeth. The stop is written in the ledger
+with the height of the water, so that the farmers know why their grain waits. The town has tried, over the years, to
+let the mill run a little longer each spring, and it learned to change one thing at a time: a new gear one year, a
+stronger axle the next, and each change was watched through a whole flood before the next one was made.
+
+A traveller once asked the miller why the town did not simply buy a larger wheel and grind twice as much. The miller
+took him to the wheel and showed him the marks on the stone where the old wheels had stood, each one a little wider
+than the one before. A larger wheel, he said, needs a faster race, a faster race wears the banks, and worn banks flood
+the lower fields. Every part of the mill is tied to the river and to the fields, so a change that helps the wheel can
+hurt the farms. The town decides such changes together, after measuring what the river does with the old wheel and
+what it would do with the new one, and it writes the measurements down so that the next generation can check them.
+
+The children like the bridge best. In summer they count the boats from the railing and compare their count with the
+keeper's book. Most days the counts agree. On the days they do not, the keeper and the children go through the cord
+knot by knot until they find the boat that one of them missed, and the keeper writes the reason next to the entry: a
+boat that passed at dusk, a raft tied behind a barge, a fisherman who rowed under the arch without stopping. Over the
+years these notes became a little book of their own, and the teacher reads from it when a child asks why a careful
+count can still be wrong.
+
+At the end of every year the three records are laid side by side on the long table in the town hall. The mill's
+grain, the school's totals and the bridge's boats must tell the same story: grain that came by boat must have passed
+the bridge, and every total in the children's books must match the ledger's. Where they agree, the year is closed.
+Where they disagree, the town does not guess. It goes back to the scale, the sums and the cord, finds the one place
+where the story split in two, and writes down what happened there, so that the mistake is not made again.
+
+The next spring the river rose earlier than anyone remembered, and on the first morning of the flood the miller

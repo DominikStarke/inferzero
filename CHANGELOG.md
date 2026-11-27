@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-27 (unreleased): the golden test set of the shared GEMM layer
+
+- **`tests/gemm_golden.ps1`** records, per model, the hash of `runz --dump-logits` for each kind of path:
+  - the fixed prompt (`tests/gemm_golden_prompt.txt`) in chunks of 512, then 16 generated tokens;
+  - a 4-token prompt;
+  - drafting with the MTP block;
+  - two batched conversations (`--slots-check`);
+  - weights in host memory;
+  - the splits over 2 and 3 GPUs and the layer split, simulated on one GPU;
+  - each fused form switched off or on (`ARC_H8_NORM`, `ARC_H8_REUSE`, `ARC_H8_SWI`, `ARC_GEMV_GU`, `ARC_GDN_FUSE2`,
+    `ARC_BATCH`);
+  - the options page's `ARC_H8=0`.
+
+  The paths that must give the same numbers as the base run are checked against it in the same run. With `-Baseline`
+  every hash is compared with an earlier run's. The commit and the GPU driver are recorded with the hashes, since a
+  baseline holds for one build and driver. Every run goes through `bench\gpu_guard.ps1`; the results go to a temporary
+  folder, not the repository.
+- **`ARC_GEMM_PLAN=1`** now gives the model file's line for the norm, quantization and rotation steps launched by
+  helpers too (`rmsnorm_quant`, `add_norm_quant`, `add_rmsnorm`, `rmsnorm_h8`).
+
 ## 2026-11-27 (unreleased): `ARC_GEMM_PLAN=1`, a log of which kernel each step takes
 
 - **`ARC_GEMM_PLAN=1`** logs one line the first time each distinct case launches:

@@ -323,7 +323,9 @@
   }
   // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
   // before where the fused form does not apply
-  void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
+  void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next,
+                  const std::source_location plan_loc = std::source_location::current()) {
+    const PlanFrom plan_from(this, plan_loc);  // (ARC_GEMM_PLAN=1: the model file's line, zero/gemm_plan.h)
     XwRole xr(this, next.role);  // (the input in the order of the GEMM that reads it)
     const int hb = h8_block(K);
     if (!h8_norm_env(hb) || h8_q2() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||

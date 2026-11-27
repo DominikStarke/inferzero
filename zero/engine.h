@@ -1765,7 +1765,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   // Activation layout for a GEMM input: per-32 scales for sensitive inputs, the single-token GEMV, or on request.
   int act32_for(bool sensitive) const { return (cur_T_ <= 8 || sensitive || opt.act32_all) ? 1 : 0; }
 
-  void rmsnorm_quant(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32) {
+  void rmsnorm_quant(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32,
+                     const std::source_location plan_loc = std::source_location::current()) {
+    const PlanFrom plan_from(this, plan_loc);  // (ARC_GEMM_PLAN=1: the model file's line, zero/gemm_plan.h)
     h8_pre_live_ = false;  // (aq_ gets new rows: rmsnorm_h8's rotation is no longer theirs; audit 2026-11-14 I3)
     float eps = hp.eps;
     int wh = 0;
@@ -1908,7 +1910,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
 
   // x_ = (x_ + rmsnorm(big_) * w) * s over the first T rows, then the next GEMV input from the new x_ (rmsnorm * w2,
   // or plain with norm2 = false) into aq_ / asc_ / absum_
-  void add_norm_quant(cl_mem w, int T, int Mp, float s, cl_mem w2, bool norm2, int act32) {
+  void add_norm_quant(cl_mem w, int T, int Mp, float s, cl_mem w2, bool norm2, int act32,
+                      const std::source_location plan_loc = std::source_location::current()) {
+    const PlanFrom plan_from(this, plan_loc);  // (ARC_GEMM_PLAN=1: the model file's line)
     // (registers for the row's superblocks of each sub-group only: ANQ_MAX 4 spilled 3.7 KB per thread)
     if (!k_add_nq_) k_add_nq_ = kernel("ops", "-DANQ_MAX=" + std::to_string((hp.n_embd / 256 + 15) / 16), "add_norm_quant");
     int E = hp.n_embd, nrm = norm2 ? 1 : 0, MM = Mp, a32 = act32;
@@ -1981,7 +1985,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
 
   // x_ = (x_ + rmsnorm(big_) * w) * s over the first T rows (Gemma sandwich norm + residual + layer scale)
-  void add_rmsnorm(cl_mem w, int T, float s) {
+  void add_rmsnorm(cl_mem w, int T, float s, const std::source_location plan_loc = std::source_location::current()) {
+    const PlanFrom plan_from(this, plan_loc);  // (ARC_GEMM_PLAN=1: the model file's line)
     if (!k_add_norm_) k_add_norm_ = kernel("ops", "", "add_rmsnorm");
     int E = hp.n_embd;
     float eps = hp.eps, sc = s;

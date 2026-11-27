@@ -26,13 +26,25 @@ struct PlanScope {
   PlanScope(Engine* en, const GpuWeight* w, const std::source_location& from)
       : e(en), prev(en->plan_w_), prev_from(en->plan_from_) {
     e->plan_w_ = w;
-    if (!prev) e->plan_from_ = &from;  // (the outermost product's caller: the model file's line)
+    if (!prev_from) e->plan_from_ = &from;  // (the outermost caller's line, a helper's PlanFrom's too: the model file's)
   }
   ~PlanScope() { e->plan_w_ = prev, e->plan_from_ = prev_from; }
   PlanScope(const PlanScope&) = delete;
   PlanScope& operator=(const PlanScope&) = delete;
 };
-std::set<std::string> plan_seen_;      // (the cases logged, this engine's: a split model's shards each log their own)
+// (a step with no weight, launched by a helper (rmsnorm_quant, add_norm_quant, add_rmsnorm, rmsnorm_h8): the model
+//  file's line that called the helper, when no outer scope has set one; table K's chain per model)
+struct PlanFrom {
+  Engine* e;
+  const std::source_location* prev;
+  PlanFrom(Engine* en, const std::source_location& from) : e(en), prev(en->plan_from_) {
+    if (!prev) e->plan_from_ = &from;
+  }
+  ~PlanFrom() { e->plan_from_ = prev; }
+  PlanFrom(const PlanFrom&) = delete;
+  PlanFrom& operator=(const PlanFrom&) = delete;
+};
+std::set<std::string> plan_seen_;     // (the cases logged, this engine's: a split model's shards each log their own)
 std::set<std::string> plan_fused_;     // (the fused forms it took)
 std::set<std::string> plan_kernels_;   // (the kernels it launched)
 // the -D options and the large register file, the rest (-cl-std, -cl-mad-enable) being the same for every kernel
