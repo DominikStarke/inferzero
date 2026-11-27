@@ -43,8 +43,9 @@ struct ServeOpts {
   // for clips of more than 4 minutes: the 14-minute file 129 -> 80 s with 4; 1 by default since 2026-10-30)
   int asr_slots = 1;
   // --gpus N: the model split over N GPUs (zero/mgpu): the server drives shard 0, its calls mirrored on the others.
-  // Qwen3.5 / 3.6 / 3.8 text only for now: no MTP / DFlash2, images, saved prompts or sessions (the kernels' warm-up
-  // runs on every GPU since 2026-11-27, #102)
+  // Text only for now: the tensor split takes Qwen3.5 / 3.6 / 3.8, Flash Next and DeepSeek-V4.1, the layer split
+  // Qwen's dense and standard MoE models; no MTP / DFlash2, images, saved prompts or sessions on either (the GPU and
+  // host snapshots do run; the kernels' warm-up runs on every GPU since 2026-11-27, #102)
   int gpus = 1;
   // --split layer (zero/mgpu/engine_pp.h): the GPUs as stages over ranges of the layers instead (--split tensor, the
   // default: each layer's matrices split); --tensor-split a,b,...: GPU g's share of the layers (GPU 0: the last ones)
@@ -145,7 +146,11 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   //  Gemma drafters alike) and, for another model after a switch, says so and loads that one as without it)
   eo.mtp_model_soft = true;
   bool dfl_auto = false;
-  if (eo.mtp && eo.dflash.empty() && so.dflash_auto) {  // (before --ctx auto: the drafter takes GPU memory)
+  // (not for the models whose engine refuses DFlash2: Gemma 4 (its own drafter), DeepSeek-V4.1, Inkling 2. A drafter
+  //  of matching sizes found for one would fail its load; 2026-11-27)
+  const std::string arch = gguf_arch_peek(model);
+  const bool dfl_none = arch == "gemma4" || arch == "deepseek41" || arch == "inkling2" || arch == "inkling2_loop";
+  if (eo.mtp && eo.dflash.empty() && so.dflash_auto && !dfl_none) {  // (before --ctx auto: the drafter takes GPU memory)
     eo.dflash = find_dflash(model);
     dfl_auto = !eo.dflash.empty();
     if (!eo.dflash.empty()) zlog::eprintf("DFlash2 drafter found: %s (--no-dflash: MTP block only)\n", eo.dflash.c_str());

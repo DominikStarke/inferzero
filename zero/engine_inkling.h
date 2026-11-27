@@ -6,7 +6,10 @@
 //  - the experts on their raw GGUF rows by ink_expert_mv (NVFP4 per 16 exactly; BF16), not yet the MoE kernels;
 //  - attention in f32 over an f16 K / V cache per cache slot (llama's slots: the 24 physical layers, then the loop's
 //    later passes, 48 for Inkling 2 Mini), with each slot's short-convolution state;
-//  - one sequence: no slots, drafters, snapshots or multi-GPU yet (refused at load).
+//  - one sequence: --slots N runs one slot (with a line, engine.h); the MTP / DFlash2 drafters and the tensor split
+//    are refused at load (load_hparams_inkling), the layer split too (engine_load.h). DSpark drafts (--dspark FILE,
+//    engine_dspark.h), and the GPU and host snapshots work (ink_snapshot / ink_snapshot_host); the disk copy of the
+//    prompt cache and saved sessions do not (saved_size 0, engine_sessions.h).
 // Hooks outside this file, each under hp.inkling: load_hparams (engine_setup.h), build_kernels / load_weights
 // (engine_load.h), alloc_buffers (engine_alloc.h), forward / run_layer / head_rows / reset / snapshot / restore /
 // max_chunk (engine.h), ctx_bytes (engine_slots.h), and ops_inkling.cl in KernelParts::kOps (clrt.h).

@@ -730,11 +730,21 @@
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
     // (a layer split's stage, opt.pp_begin / pp_end: its layers only, in layers_ from 0 with each layer's own il; the
     //  head and the MTP block on the last stage only; Qwen's dense and standard MoE models (2026-11-22: each stage its
-    //  own expert cache for its layers, open_experts), not Gemma, DeepSeek or Flash Next yet)
+    //  own expert cache for its layers, open_experts), not Gemma, DeepSeek, Flash Next or Inkling 2 yet. Inkling was
+    //  let through before 2026-11-27 (its experts are standard MoE, moe_std): load_weights_inkling loads every layer
+    //  whatever the stage's range and ink_forward runs the whole looped graph, so each stage ran the full model on the
+    //  previous stage's output; refused now, as the tensor split refuses it in engine_inkling.h)
     const int lb = std::max(0, opt.pp_begin), le = opt.pp_end < 0 ? hp.n_layer : std::min(opt.pp_end, hp.n_layer);
-    if ((lb > 0 || le < hp.n_layer) && (hp.gemma || hp.ds41 || hp.hc || (hp.moe && !hp.moe_std) || hp.ple_layer >= 0 || lb >= le))
-      throw std::runtime_error("--split layer: Qwen's dense and standard MoE models only for now (not Gemma, DeepSeek or "
-                               "Flash Next) and a non-empty range of layers");
+    if ((lb > 0 || le < hp.n_layer) &&
+        (hp.gemma || hp.ds41 || hp.hc || hp.inkling || (hp.moe && !hp.moe_std) || hp.ple_layer >= 0 || lb >= le))
+      throw std::runtime_error("--split layer: Qwen's dense and standard MoE models only for now (not Gemma, DeepSeek, "
+                               "Flash Next or Inkling 2) and a non-empty range of layers");
+    // (Gemma 4 drafts with its own drafter (--mtp-model), never DFlash2: --dflash returned unread before 2026-11-27,
+    //  since load_weights_gemma4 returns before load_dflash. Refused, as DeepSeek-V4.1 and Inkling 2 refuse it. The
+    //  server's automatic search skips Gemma, so only a drafter given by hand reaches here)
+    if (hp.gemma && !opt.dflash.empty())
+      throw std::runtime_error("--dflash: Gemma 4 does not take a DFlash2 drafter (its own drafter: --mtp with "
+                               "--mtp-model, or the drafter next to the model)");
     if (pp_last()) load_head();
     if (hp.gemma) return load_weights_gemma4();
     if (hp.ds41) return load_weights_ds41();
