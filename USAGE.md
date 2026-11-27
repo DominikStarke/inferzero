@@ -88,7 +88,7 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
 | open a new session (`zero-pi`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
 | open the first session in a new project folder | its system prompt once (~40 s); it is then kept for that folder (`%USERPROFILE%\.inferzero\zero\prefix`, its 2 latest versions, all models together at most 8 GB: `--prefix-cache-gb`) |
 | continue a session (`zero-pi -c`, `zero-pi -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
-| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB for all models together: the launcher's "Session cache" field or `-SessionCacheGb N`; `zero-pi --session-cache 0` turns it off) loads it from disk in seconds |
+| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB for all models together: the launcher's "Session cache" field or `-SessionCacheGb N`; `zero-pi --session-cache 0` turns it off) loads it from disk in seconds. A conversation costs 34.5 KiB a token (8K 867 MB, 256K 9.22 GiB), so the setting is how many long ones are kept at once |
 | ... after `zero-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk (lost only if the server process is killed) |
 | press Esc | nothing more: the server stops within ~1 s while reading the prompt, before the next token while writing; your next message only processes what is new |
 
