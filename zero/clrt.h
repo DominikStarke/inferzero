@@ -107,7 +107,9 @@ struct Dev {
   int q_ord = 0, q_idx = 0;  // (cl's queue group and queue: ARC_TP_SIM spreads its shards over the GPU's queues)
   std::unordered_set<ZMem*> mems;
   uint64_t global_mem = 0;
-  uint64_t device_bytes = 0;  // device USM allocated by the engine
+  // device USM allocated by the engine (atomic: the expert prefetch thread and a split model's shards allocate and free
+  // on a Dev while another thread counts or prints it, the gemm-plan memory line among them; audit 2026-11-28)
+  std::atomic<uint64_t> device_bytes{0};
   char* stage = nullptr;      // host USM bounce buffer for reads / writes
   size_t stage_n = 0;
   ze_command_list_handle_t cl_copy = nullptr;  // (see copy_list)

@@ -48,7 +48,9 @@ for p in "${progs[@]}"; do
   [ -x "bin/$p" ] || { echo "bin/$p is missing: build it (or run without --no-build)" >&2; exit 1; }
   cp -p "bin/$p" "$stage/bin/"
 done
-chmod +x "$stage/build.sh" "$stage/zero-launcher.sh" "$stage/scripts/make-package-linux.sh"
+# (every shell script runnable, bench/gpu_guard.sh and bench/contrib_kit.sh among them: a checkout on /mnt/c has no
+#  git file modes for cp -p to keep, 2026-11-28)
+find "$stage" -name '*.sh' -type f -exec chmod +x {} +
 printf 'inferzero %s (built %s, commit %s, %s)\nThe programs in this folder are built: ./zero-launcher.sh runs them (./build.sh builds them from the sources instead).\n' \
   "$version" "$(date '+%Y-%m-%d %H:%M')" "$commit" "$("${CXX:-g++}" --version | head -1)" > "$stage/bin/PREBUILT.txt"
 # (owned by root in the archive, not the builder's uid: unpacked by root into /opt, the files must not belong to

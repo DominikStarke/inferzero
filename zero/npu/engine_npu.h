@@ -1,7 +1,8 @@
 // Included inside class Engine (zero/engine.h): the NPU next to the GPU (zero/npu/), opt-in with --npu on
 // (EngineOptions::npu; or ARC_NPU=1), off by default (every function here returns at once then). Qwen3.5 / 3.6 / 3.8
-// dense and MoE, Flash Next and Gemma 4 (npu_setup; MoE and resident W8 only with --npu force; never on a split): in prompt chunks of at
-// least ARC_NPU_MIN rows (default 2048) the NPU computes the last share of the FFN's gate and up columns
+// dense and MoE, Flash Next and Gemma 4 (npu_setup; MoE and resident W8 only with --npu force; never on a split): in
+// prompt chunks of at least ARC_NPU_MIN rows (default 2048) the NPU computes the last share of the FFN's gate and up
+// columns
 // (ARC_NPU_SHARE, default 1/3) while the GPU computes the rest:
 //   - the FFN norm writes its f32 rows once more (rmsnorm_quant with its f32 output on), a small kernel quantizes them
 //     per row into memory both Level Zero contexts map (external memmap, zero/npu/npu_rt.h);

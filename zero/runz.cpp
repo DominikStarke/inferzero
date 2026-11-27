@@ -262,6 +262,8 @@ static int run_pp(const std::string& model, const EngineOptions& eo, int gpus, c
     printf("greedy:");
     for (int id : gen) printf(" %d", id);
     printf("\n");
+    // (the one-GPU path's line, the same count: tests/gemm_golden.ps1 reads it for every path, 2026-11-28)
+    printf("generation: %zu tokens in %.1f ms (%.2f t/s)\n", gen.size(), gms, gen.size() / gms * 1000.0);
   }
   if (!step_ms.empty()) {
     std::vector<double> st = step_ms;
@@ -478,6 +480,8 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     printf("greedy:");
     for (int id : gen) printf(" %d", id);
     printf("\n");
+    // (the one-GPU path's line, the same count: tests/gemm_golden.ps1 reads it for every path, 2026-11-28)
+    printf("generation: %zu tokens in %.1f ms (%.2f t/s)\n", gen.size(), gms, gen.size() / gms * 1000.0);
   }
   if (!step_ms.empty()) {
     std::vector<double> st = step_ms;

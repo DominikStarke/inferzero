@@ -8,6 +8,9 @@
 //  comes from; "-" for a step with no weight) and one summary line with the model, its routes and its fused forms
 // when the engine is freed (runz's end, a server's model switch) or after serverz's warm-up. Logging only (LOG_INF):
 // nothing it records changes a launch, so the results are bit-identical with it on and off. Off by default.
+// (Its host time inside the XMX start check's timed window (xmx_check, zero/xe2/engine_xe2.h) is negligible: a
+//  string key looked up per launch, and a line printed only on a case's first launch, while the check times GEMMs of
+//  milliseconds; the check's verdict is the same with it on and off.)
 // The role is the name the launch is profiled under (--prof: gemm_gate, rmsnorm_quant, ...). The weight's type,
 // host / resident / just in time come from matmul's scope (PlanScope); a kernel built -DQT=n says its type itself.
 // The fused labels below are a table of today's fused kernels and options (table K); a kernel not in it says "-".

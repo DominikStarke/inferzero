@@ -2,3 +2,6 @@
 *.sh text eol=lf
 # the chat goldens are compared byte for byte (tests/test_chat_golden.ps1): never convert their line endings
 tests/chat_golden/** -text
+# the GEMM golden set's fixed prompt and its token files: their bytes are every hash's input (tests/gemm_golden.ps1)
+tests/gemm_golden_prompt.txt -text
+tests/gemm_golden_*.ids -text
