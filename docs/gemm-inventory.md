@@ -10,7 +10,7 @@ user on 2026-11-27. The direction:
 
 **The rule:** every row has its source and its proof, or says **"unproven"** and why. Nothing is left blank.
 
-## A. Every GEMM / GEMV form in use
+## A. Every GEMM / GEMV form in use (fused launches included: a fused form names what it fuses, see K)
 
 Generated from the engine's own launch log (`ARC_GEMM_PLAN=1`): one line per distinct (weight role, weight type, row
 class: one token / 2-8 rows / prompt chunk, host or resident) giving the kernel, its `-D` options, grid, local size and
@@ -142,9 +142,46 @@ It's deleted **during** migration, when its route reaches "old path deleted", wi
 for whichever of E's models the contributor has. The first ask goes to skipzx-lab (A770, B60), hibagus (B70),
 manoreken2 (4 x B60) and LukaszBrzyszkiewicz (B70, A380) once it's merged.
 
+## K. Fusions: what is fused today, and where fused GEMMs go
+
+Today's fused forms are where most of the per-GPU tuning lives, so the shared layer must carry each one as a fusion
+rule, not as a separate kernel next to it. One row per fused form in use:
+- **fused GEMMs:**
+  - gate + up in one launch: `gemv_gu` / `-DGU2`, `ARC_GEMM_XW_GU`;
+  - stacked projections (qkv + z, Inkling's q / rel / gate / k / v, the MoE router + shared gate / up);
+  - SwiGLU in the up GEMM's epilogue (`ARC_H8_SWI`);
+  - the MoE experts' gate / up with situ;
+  - `ink_ctrl_fused`;
+- **fused prologues:** the norm and H8 rotation in one kernel (`rmsnorm_h8r`, `ARC_H8_NORM`); one H8 activation
+  shared by several GEMMs (`ARC_H8_REUSE`); `attn_gate_h8r`; the quantization kernels that write H8's float copy
+  (`-DH8F`);
+- **fused epilogues and other steps:** the DeltaNet conv / gates fused into the recurrence (`-DCONV_UPD`,
+  `-DFUSE_GATES`); the outputs rotated for H8 by the kernels that make them (`ARC_H8_OUT`); the KV store and norms in
+  attention's preparation; the multi-GPU sums' fused forms (`tp.cl`).
+
+| Fused form | What it replaces (the unfused chain) | GPU kinds where it's on | Where it's chosen | Bit-identical to the chain? (proof) | Spill status per family |
+|---|---|---|---|---|---|
+
+**Where fused GEMMs go in the shared layer** (design section 3.12):
+- A fused GEMM is **not a kernel of its own**. It's the shared GEMM stage plus a prologue (`Norm`, `Quant`, the H8
+  rotation) and an epilogue (`Act`, `Add`, `Combine`, `Softcap`, quantization for the next GEMM), generated from the
+  layer's chain.
+- **Which neighbouring steps join is a fusion rule** in each GPU kind's catalog, with its measurement, not code spread
+  through `engine_h8.h` and `xe2/`.
+- **Every fused form must equal its unfused chain bit for bit**, checked by `gemm_check` per rule. So a fusion choice
+  changes only speed, never output.
+- **New kernels are only fusion kernels** (the user, 2026-11-26, #92): a model or a change adds a fusion rule, or a
+  step no kernel covers, never another GEMM.
+- **Grouped products** (one launch over weights side by side, the design's "way 1") and **horizontal fusion**
+  (independent small steps in one launch, "way 6") are fusion rules too.
+
+Phase 0 records each of today's fused forms in this table with its proof. Phase 1 carries each one as a rule over the
+same kernels, bit-identical. The new fusions (the design's ways 1-8: fewer launches toward each model's floor) come
+after a model is on the layer, Inkling first.
+
 ## Exit rule for Phase 0
 
-1. every row of A-J has a source and a proof, or says "unproven";
+1. every row of A-K has a source and a proof, or says "unproven";
 2. the silent refusals are fixed (Inkling on `--split layer`, Gemma 4's `--dflash`), with the five stale comments;
 3. C runs green twice in a row on the same build and driver, and E's baseline is taken on that build;
 4. F shows no uncounted buffer, or lists the ones the layer must count;
