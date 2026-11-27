@@ -109,9 +109,27 @@ saves a round trip; most items take a minute on a small change.
   - messages go through the log (`LOG_ERR` / `LOG_WRN` / `LOG_INF`, [docs/logging.md](docs/logging.md)), not
     `fprintf(stderr)`.
 
-**Pull requests.** Small and focused, with the numbers before and after from your hardware in the description. We
-merge after checking the results on the hardware we have, and rewrite the CHANGELOG and docs text in the project's own
-format, so don't spend time polishing those; the credit stays yours in the CHANGELOG and the commit.
+**Pull requests.** [docs/pull-requests.md](docs/pull-requests.md) says how a change gets in:
+- an issue first for anything beyond a small fix;
+- one topic per pull request, rebased on `main`;
+- what the description must hold (the template asks for it): accuracy, speed measured A B B A, the start lines, spills, what wasn't tested;
+- how it's reviewed, and what doesn't merge.
+
+We merge after checking the results on the hardware we have, and rewrite the CHANGELOG and docs text in the project's
+own format, so don't spend time polishing those; the credit stays yours in the CHANGELOG and the commit.
+
+## 3. A new model
+
+A new model starts with an issue, not a pull request, and is listed only when it runs everywhere the models here run:
+- every weight type the engine reads;
+- every GPU kind, from Iris Xe to the B70;
+- tensor parallel over 2-4 GPUs and the layer split, unlike cards included;
+- the memory plans and `--ctx auto`;
+- several conversations at once, snapshots and saved sessions, drafting, the encoders, the launchers;
+- every switch that applies to its layers.
+
+[docs/new-model.md](docs/new-model.md) says what that means in detail, where the code goes (Inkling 2 Mini is the
+example), what not to do, and how each part is tested.
 
 ## Talk
 
