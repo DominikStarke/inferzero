@@ -72,19 +72,36 @@ function Get-Names([string]$user, [string[]]$computers) {
   foreach ($p in @($l | Sort-Object { $_[0].Length } -Descending)) { [void]$sorted.Add($p) }
   return , $sorted
 }
+# An absolute path's end cannot be found once folder names may hold spaces ("My Models", "OneDrive - Contoso"), so
+# from its start (a drive letter or \\) to the end of the line, or to a <...> the folder pass wrote, becomes <path>;
+# its trailing spaces before such a <...> are kept. One exception: a given model's file name in that span gives
+# <path>\<model file>, and what follows it is hidden the same way (the Researcher's review, 2026-11-28).
+function Hide-Paths([string]$s, [string[]]$modelFiles) {
+  $m = [regex]::Match($s, '(?<![\w<~>])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n<]*')
+  if (-not $m.Success) { return $s }
+  $span = $m.Value
+  $pre = $s.Substring(0, $m.Index)
+  $post = $s.Substring($m.Index + $m.Length)
+  $best = $null
+  foreach ($f in $modelFiles) {
+    if (-not $f) { continue }
+    $mm = [regex]::Match($span, '[\\/](' + [regex]::Escape($f) + ')(?![\w.-])', "IgnoreCase, RightToLeft")
+    if ($mm.Success -and (-not $best -or $mm.Index -gt $best.Index)) { $best = $mm }
+  }
+  if ($best) {
+    $g = $best.Groups[1]
+    return $pre + "<path>\" + $g.Value + (Hide-Paths ($span.Substring($g.Index + $g.Length) + $post) $modelFiles)
+  }
+  $ws = $(if ($post) { [regex]::Match($span, '\s*$').Value } else { "" })
+  return $pre + "<path>" + $ws + (Hide-Paths $post $modelFiles)
+}
 function Hide-Names([string]$s, $hideList, $nameList, [string[]]$modelFiles) {
   foreach ($h in $hideList) {  # (any casing and either slash: "c:\users\name", "C:/Users/Name")
     $s = [regex]::Replace($s, (Get-NamePattern $h[0]), $h[1].Replace('$', '$$'), "IgnoreCase")
   }
-  # (then any absolute path left, a drive's or a share's: <path>\<name> for a given model's file, else <file>; e.g. the
-  #  expert store naming another model's files, a build's .tmp. Before the names: a name inside such a path would
-  #  otherwise end the path's match at its "<user>", leaving "<file><user>\x")
-  $s = [regex]::Replace($s, '(?<![\w<~>])(?:[A-Za-z]:[\\/]|\\\\)[^\s"''|,;()<>]*', {
-    param($mt)
-    $leaf = ($mt.Value -split '[\\/]')[-1]
-    if ($modelFiles -contains $leaf) { return "<path>\" + $leaf }
-    return "<file>"
-  })
+  # (then any absolute path left, a drive's or a share's, e.g. the expert store naming another model's files or a
+  #  build's .tmp: Hide-Paths. Before the names: a name inside such a path would otherwise split it)
+  $s = Hide-Paths $s $modelFiles
   foreach ($n in $nameList) {
     $s = [regex]::Replace($s, "(?<![A-Za-z0-9])" + (Get-NamePattern $n[0]) + "(?![A-Za-z0-9])", $n[1], "IgnoreCase")
   }
@@ -107,11 +124,16 @@ if ($SelfTest) {
     @("cache at C:\Users\Jos?\.inferzero\kernels", "cache at ~\.inferzero\kernels"),
     @("built in C:\Users\JOS~1\AppData\Local\Temp\b1.tmp", "built in <temp>\b1.tmp"),
     @(("runz at C:\Users\Jos" + [char]0xE9 + "\OneDrive - Contoso\inferzero\bin\runz.exe"), "runz at <inferzero>\bin\runz.exe"),
-    @("expert file E:\other\Flash-Next-IQ3_S.gguf.experts, model D:\llm\qwen\Qwen3.5-4B-UD-Q4_K_XL.gguf", "expert file <file>, model <model dir>\Qwen3.5-4B-UD-Q4_K_XL.gguf"),
+    @("expert file E:\other\Flash-Next-IQ3_S.gguf.experts, model D:\llm\qwen\Qwen3.5-4B-UD-Q4_K_XL.gguf", "expert file <path> <model dir>\Qwen3.5-4B-UD-Q4_K_XL.gguf"),
     @("a copy F:\backup\Qwen3.5-4B-UD-Q4_K_XL.gguf", "a copy <path>\Qwen3.5-4B-UD-Q4_K_XL.gguf"),
-    @(("Jos" + [char]0xE9 + " on DESKTOP-AB1 (desktop-ab1.corp.example), \\fileserver\share\x"), "<user> on <host> (<host>), <file>"),
+    @(("Jos" + [char]0xE9 + " on DESKTOP-AB1 (desktop-ab1.corp.example), \\fileserver\share\x"), "<user> on <host> (<host>), <path>"),
     @("Driver D on desktop-ab1", "Driver D on <host>"),
-    @(("also D:\data\Jos" + [char]0xE9 + "\x and E:\DESKTOP-AB1\y"), "also <file> and <file>"))
+    @(("also D:\data\Jos" + [char]0xE9 + "\x and E:\DESKTOP-AB1\y"), "also <path>"),
+    @("removed E:\My Models\private run.gguf.tmp (3.1 GB)", "removed <path>"),
+    @("memory (--ctx auto): device 20.42 GiB = encoders / speech 1.05 + MTP / drafter 0.00, 2 / 3 runs, 1024.0 tokens/s",
+      "memory (--ctx auto): device 20.42 GiB = encoders / speech 1.05 + MTP / drafter 0.00, 2 / 3 runs, 1024.0 tokens/s"),
+    @("a copy F:\back up\Qwen3.5-4B-UD-Q4_K_XL.gguf, done", "a copy <path>\Qwen3.5-4B-UD-Q4_K_XL.gguf, done"),
+    @("from \\nas\My Share\x.gguf.experts to G:\a b\c", "from <path>"))
   $bad = 0
   foreach ($c in $cases) {
     $o2 = Hide-Names $c[0] $hl $nl $mf

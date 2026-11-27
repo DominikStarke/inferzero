@@ -67,11 +67,17 @@ build_hide() {  # SED_FILE MODEL_DIRS(;) ROOT TEMPS(;) HOME USER HOSTS(;) MODEL_
     while IFS=$'\t' read -r d r; do
       printf 's#%s%s#\\1%s#gI\n' "$PATH_START" "$(name_pat "$d")" "$r" >> "$f"
     done
-  # (then any absolute path left: <path>/<name> for a given model's file, else <file>. Before the names: a name inside
-  #  such a path would otherwise end the path's match at its "<user>", leaving "<file><user>/x")
+  # (then any absolute path left. Its end cannot be found once folder names may hold spaces ("My Models"), so from its
+  #  start to the end of the line, or to a <...> the folder pass wrote, it becomes <path>, its spaces before such a
+  #  <...> kept; a given model's file name in that span gives <path>/<model file> and keeps what follows it (the
+  #  Researcher's review, 2026-11-28). Before the names: a name inside such a path would otherwise split it)
+  #  A path starts with a name's character after its "/": " / " between words (the memory line's "encoders / speech")
+  #  is not one.
+  local P0='/[A-Za-z0-9._~$-]'
   for n in $mfiles; do [ -n "$n" ] &&
-      printf 's#%s/[^[:space:]"'"'"'|,;()<>]*/(%s)([^A-Za-z0-9_.-]|$)#\\1<path>/\\2\\3#g\n' "$PATH_START" "$(sed_esc "$n")" >> "$f"; done
-  printf 's#%s/[^[:space:]"'"'"'|,;()<>]+#\\1<file>#g\n' "$PATH_START" >> "$f"
+      printf 's#%s%s[^<]*/(%s)([^A-Za-z0-9_.-]|$)#\\1<path>/\\2\\3#gI\n' "$PATH_START" "$P0" "$(sed_esc "$n")" >> "$f"; done
+  printf 's#%s%s[^<]*[^<[:space:]]([[:space:]]+)<#\\1<path>\\2<#g\n' "$PATH_START" "$P0" >> "$f"
+  printf 's#%s%s[^<]*#\\1<path>#g\n' "$PATH_START" "$P0" >> "$f"
   # (the user and host names as words, the longest first; under 3 characters left; twice, since a match takes the
   #  character before the next one, as in "name.name")
   { printf '%s\t<user>\n' "$user"; for n in $hosts; do printf '%s\t<host>\n' "$n"; done; } |
@@ -102,11 +108,16 @@ if [ $SELFTEST = 1 ]; then
   check "built in /home/jos$E/.cache/tmp/b1.tmp" "built in <temp>/b1.tmp"
   check "runz at /home/jos$E/Work - Contoso/inferzero/bin/runz" "runz at <inferzero>/bin/runz"
   check "expert file /data/other/Flash-Next-IQ3_S.gguf.experts, model /data/llm/qwen/Qwen3.5-4B-UD-Q4_K_XL.gguf" \
-        "expert file <file>, model <model dir>/Qwen3.5-4B-UD-Q4_K_XL.gguf"
+        "expert file <path> <model dir>/Qwen3.5-4B-UD-Q4_K_XL.gguf"
   check "a copy /mnt/backup/Qwen3.5-4B-UD-Q4_K_XL.gguf" "a copy <path>/Qwen3.5-4B-UD-Q4_K_XL.gguf"
   check "jos$E on desktop-ab1 (desktop-ab1.corp.example)" "<user> on <host> (<host>)"
   check "Driver D on DESKTOP-AB1" "Driver D on <host>"
-  check "also /data/jos$E/x and /mnt/DESKTOP-AB1/y" "also <file> and <file>"
+  check "also /data/jos$E/x and /mnt/DESKTOP-AB1/y" "also <path>"
+  check "removed /srv/x/My Models/private run.gguf.tmp (3.1 GB)" "removed <path>"
+  M="memory (--ctx auto): device 20.42 GiB = kept free 0.50 + encoders / speech 1.05 + weights 6.61, 16.5 MiB per 1K tokens"
+  check "$M" "$M"
+  check "pp512: 1024.0 tokens/s, 2 / 3 runs, MTP / drafter 0.00" "pp512: 1024.0 tokens/s, 2 / 3 runs, MTP / drafter 0.00"
+  check "a copy /mnt/back up/Qwen3.5-4B-UD-Q4_K_XL.gguf, done" "a copy <path>/Qwen3.5-4B-UD-Q4_K_XL.gguf, done"
   # (the caller's word splitting is untouched by the hiding's lists)
   w="a b"; set -- $w; if [ $# = 2 ]; then echo "ok    IFS kept"; else bad=$((bad + 1)); echo "WRONG IFS changed"; fi
   if dropped "tg128: 5 msgpu_guard: /x/runz ... (timeout 1800 s, log /tmp/g.log)"; then echo "ok    a gpu_guard line, glued to output, is left out"

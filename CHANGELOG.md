@@ -18,8 +18,9 @@
 - **The contributor kit** (`bench\contrib_kit.ps1`, `bench/contrib_kit.sh`):
   - it starts only when no other GPU job runs (a server of yours included), and stops only the server it started;
   - the file also hides this folder (`<inferzero>`), the temporary folder (`<temp>`, its short 8.3 form too), the
-    computer's full DNS name, and any other absolute path (`<path>` plus the file name for a given model, else
-    `<file>`); gpu_guard's own lines are left out;
+    computer's full DNS name, and any other absolute path: from its start to the end of the line becomes `<path>`
+    (folder names may hold spaces), or `<path>` plus the file name when it names a given model; gpu_guard's own lines
+    are left out;
   - a warning names any driver variables set (`ZE_*`, `IGC_*`, `NEO*`), which the runs keep;
   - the memory step's lines appear once (they were doubled on Windows);
   - on Linux the watchdog is called as `bash bench/gpu_guard.sh`, and every shell script is executable in git and in
