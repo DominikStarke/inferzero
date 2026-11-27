@@ -561,8 +561,27 @@ uncounted buffer the layer must add (first suspects: the JIT decode areas, H8's 
 - **The 27B's plan line says "left -0.59":** its parts (kept free 1.17 + snapshots 0.29 + encoders 1.39 + weights
   10.94 + buffers 1.69 + context 5.53 = 21.01) exceed the 20.42 GiB device, yet the load fits (18.16 real). The
   printed line and the fit check count the encoders or the kept-free room differently. To look at after Phase 0.
-- **Still to do:** the same under `ARC_GPU_MEM_GB` = 6 / 8 / 12 / 16 on the laptop, and the discrete cards from the
-  kit.
+- **Still to do:** the discrete cards, from the kit.
+
+**The laptop under a cap** (`ARC_GPU_MEM_GB`, serverz `--ctx auto`, main 089a927): context chosen, GiB loaded, the W8
+form. Counted equals allocated within 0.001 GiB in all 18 runs that loaded.
+
+| Model | 6 GB | 8 GB | 12 GB | 16 GB |
+|---|---|---|---|---|
+| Qwen3.5 4B | 20,480; 4.35; W8 just in time | 147,456; 9.04; resident | 229,376; 10.33; resident | 262,144; 10.84; resident |
+| Qwen3.5 9B | 8,192; 3.97; just in time | **refused** | 204,800; 10.00; just in time | 262,144; 10.91; just in time |
+| Qwen3.8 27B GSQ IQ3_S | refused (4.2 GiB + 1.4 for the encoders) | 8,192; 5.79; just in time | **61,440**; 9.80; just in time | **20,480**; 13.70; just in time |
+| Qwen3.6 35B-A3B | 32,768; 3.76; resident | 69,632; 5.76 | 131,072; 9.76 | 131,072; 13.76 |
+| Inkling 2 Mini | 32,768; 4.71; resident | 32,768; 6.71 | 65,536; 10.72 | 98,304; 14.71 |
+
+Two findings for after Phase 0 (not changed):
+- **The 9B loads at 6 GB but is refused at 8 GB.** At 8 the fit takes the heavier form (6.5 GiB without context) plus
+  1.4 GiB kept for the encoders, and refuses instead of falling back to the lighter form that loads at 6 (W8 just in
+  time, 3.97 GiB at 8K context). A refusal should never appear at a larger cap than one that loads.
+- **The 27B gets less context with more memory:** 61,440 at 12 GB, 20,480 at 16 GB. At 12, `plan_tight` puts ~4.25
+  GiB of the weights in host memory, so 2.28 GiB are left for context. At 16 all weights go on the GPU and 1.07 GiB is
+  left. That's by design (`plan_tight` only when the model nearly fills the share), but it's a policy choice for the
+  user: context or GPU-resident weights at that size.
 
 ## G. Launches and start-up
 
