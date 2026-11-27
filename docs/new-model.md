@@ -80,10 +80,42 @@ don't have it (section 4):
 - **Prompt cache and saved sessions:** a snapshot restored gives the same next tokens (`runz --snap-test`).
 - **Drafting** where the model has a drafter or MTP head: MTP, DFlash2, DSpark, copy drafting. The greedy text with
   drafting equals the text without it.
-- **Vision and audio** where the model has encoders (`mmproj`): on one GPU and split.
+- **Vision and audio** where the model has encoders: the next section.
 - **The chat template, tool calls and thinking** (`--think-budget`), through the OpenAI API and the web UI.
 - **The launchers and the model catalog** (`tools/server_catalog.h`, `scripts/model-catalog.ps1`, `zero-launcher.sh`):
   the model is listed, downloads, and starts with the right defaults.
+
+### Encoders: vision, audio, speech
+
+A model that reads images, audio or speech brings an encoder: a projector file next to the model (`mmproj-*.gguf`),
+or a speech model of its own. The ones here are:
+- **vision:** Qwen3-VL's ViT (`zero/vision_qwen3vl.h`) and Gemma 4's (`zero/vision_gemma4v.h`);
+- **audio:** Gemma 4's conformer (`zero/audio_gemma4a.h`) and Qwen3's (`zero/audio_qwen3a.h`);
+- **speech:** Qwen3-ASR (`zero/asr_qwen3.h`) and Whisper (`zero/whisper_engine.h`).
+
+Their kernels are `ops_vit.cl`, `asr.cl` and `whisper.cl`. A new encoder, or a new model using an existing one, must
+support:
+- **Every GPU kind** of the table above, and every type the projector files come in (F16, BF16, Q8_0, F32).
+- **Several GPUs:** the projector loads and runs on a split model, `--gpus N` and `--split layer` (a gap today, #103,
+  that a new model doesn't add to).
+- **The input side,** on Windows and Linux alike:
+  - images: decoding (Windows' imaging component, `ffmpeg` on Linux: `src/image.h`), the resize to the encoder's
+    grid (`resize_bicubic`, which matches Pillow), the token budget per image (`fit_size`'s minimum / maximum
+    pixels), several images per message, and PDFs as pages;
+  - audio: decoding (Media Foundation on Windows, `ffmpeg` on Linux: `src/audio.h`), resampling to the encoder's rate,
+    the log-mel features, clips longer than the encoder's window.
+- **The context:** an image's or a clip's tokens are counted in `--ctx auto`'s plan and in the per-request limits, so
+  a message with images never runs out of context halfway.
+- **The server:** OpenAI's `image_url` (data URLs and files) and `input_audio`, the web UI's attachments, and the
+  prompt cache and sessions with images in them.
+- **Accuracy against an f32 reference of the encoder** (`tools/gemma4v_ref.cpp`, `gemma4a_ref.cpp`, `ref_qwen3a.cpp`,
+  `ref_whisper.cpp`, from the model's own modeling code):
+  - the encoder's output per token: the relative error, its worst token, the lowest cosine;
+  - then the text model's KL over the answer with the image or clip in the prompt, within the limits of
+    CONTRIBUTING.md section 2;
+  - **speech models below KL 0.01** (AGENTS.md), and silence and noise transcribed as empty text.
+- **Speed:** the encoder's time per image or per second of audio, against llama.cpp's `mtmd` on the same file, in
+  `docs/<model>.md`.
 
 ### Switches
 
@@ -125,6 +157,12 @@ Inkling 2 Mini is the most recent model added, and the example to follow (`zero/
     own files, as every such kernel does.
 - **The f32 reference:** `tools/ref_forward.cpp` runs the model (a `tools/ref_<model>.h`, as `ref_inkling2.h`).
   Every accuracy check is measured against it, so a model without one doesn't merge.
+- **An encoder:**
+  - a new one gets its own file next to the existing ones (`zero/vision_<name>.h`, `zero/audio_<name>.h`), built on
+    the Engine's matrix calls as they are;
+  - its kernels go in `ops_vit.cl` (vision) or a part of its own;
+  - its f32 reference goes in `tools/<name>_ref.cpp`;
+  - a model that reuses an existing encoder only adds its projector's type to that encoder's loader.
 - **The server:** the chat template and special tokens if they are new; the catalog entry and its model words.
 - **`docs/<model>.md`:** the graph's source, what runs, the numbers per GPU kind, and any agreed exception.
 
@@ -149,12 +187,17 @@ Inkling 2 Mini is the most recent model added, and the example to follow (`zero/
    positions outside the reference's near-ties), over a prompt and a generated answer of a few hundred tokens each.
 2. **Every weight type** of section 2, file by file: load, KL, `--dump-logits` stable from run to run.
 3. **The server features:** slots (`--bench-batch`), snapshots (`--snap-test`), drafting (greedy text equal), the
-   encoders, the template and tool calls.
-4. **Several GPUs:** `ARC_TP_SIM=1` with `--gpus 2 / 3 / 4` and `--split layer`, against one GPU. Then on real cards
+   template and tool calls.
+4. **The encoders,** where the model has them:
+   - the encoder against its f32 reference;
+   - then the answer's KL with an image or a clip in the prompt;
+   - several images per message, a long clip, a PDF;
+   - on Windows and Linux, on one GPU and split.
+5. **Several GPUs:** `ARC_TP_SIM=1` with `--gpus 2 / 3 / 4` and `--split layer`, against one GPU. Then on real cards
    (a contributor's, if needed).
-5. **Every GPU kind** of section 2: the KL and a `--bench-pp 4096 --n 128` line per kind, from contributors' cards
+6. **Every GPU kind** of section 2: the KL and a `--bench-pp 4096 --n 128` line per kind, from contributors' cards
    for the kinds we don't have. Ask on the issue; GPU runs go through `bench/gpu_guard.ps1`.
-6. **Speed:** after all of the above, in later pull requests: fusing the model's steps, its own tuning per GPU kind.
+7. **Speed:** after all of the above, in later pull requests: fusing the model's steps, its own tuning per GPU kind.
 
 Large work lands as a series of pull requests on the model's branch, each reviewed. The model is listed in the
 launchers and the README only when section 2 holds.
