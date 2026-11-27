@@ -18,6 +18,13 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 
 ## Rules
 
+- **Testing and new models:** [CONTRIBUTING.md](CONTRIBUTING.md) holds the checks:
+  - section 2's audit list, run on every change before it is committed: correctness, the logits bit for bit or the KL,
+    failsafes, switches and defaults, kernels, both OSes and both PowerShell versions;
+  - section 3, for adding a model: what it must support (every weight type, GPU kind, multi-GPU split, memory plan and
+    server feature), where its code goes, what not to do, and the order of tests.
+
+  How a change is reviewed and merged: [docs/pull-requests.md](docs/pull-requests.md).
 - **Accuracy:** every model's next-token KL against an f32 reference stays at or below **0.015**, with two
   exceptions:
   - speech models stay below 0.01;
