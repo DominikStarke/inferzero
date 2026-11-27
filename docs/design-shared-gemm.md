@@ -260,7 +260,7 @@ Measured costs per launch:
 
 | GPU | Cost per launch | Effect |
 |---|---|---|
-| The 125H | 1.5 µs | Inkling's 1,356 launches a token cost ~2 ms of a 115 ms token, so the laptop gains little from fewer launches in generation |
+| The 125H | ~1.5-2 µs for tiny kernels (replay_probe); ~7 µs idle between dependent kernels in the real models | Inkling's ~970 launches above its floor cost ~7 ms of a ~115 ms token, so fewer launches help the laptop too (3.7a) |
 | B60 under Windows | 2.7 µs | at 30-60 tok/s, launches are a real share of a token |
 
 **The floor: one launch per global dependency.** A launch can't be avoided only where every work-group's output must be complete before any work-group of the next step starts. That happens where the next step reads a whole result: a reduction over a whole row, over all the keys, or over all the experts. Everything else joins a neighbouring launch. Per decode step:
@@ -293,7 +293,7 @@ Three of these points aren't obvious:
 | Whisper's decoder | [LN → qkv, KV store] · [self-attention] · [out + residual] · [LN → cross q] · [cross-attention, combine by way 7] · [cross out + residual] · [LN → fc1, GELU] · [fc2 + residual] | 8 | 16 | |
 | Encoders (Whisper, ViT, Gemma's audio), per layer per window or image | [LN → qkv] · [attention] · [out + residual] · [LN → fc1 / up, activation] · [down + residual] | 5 | ~10 | (once per input, not per token) |
 
-The gap is largest where today's chain has the most norm, quantization and elementwise launches: DeepSeek (~4.6x its floor), Inkling (3.5x), Flash Next (2.2x), the 27B (2.2x), Gemma (2.8x). On the 125H a launch costs ~1.5 µs, so Inkling's gap of ~970 launches is ~1.5 ms of a ~115 ms token. On the laptop the floor is about fewer passes over memory (each fused norm, quantization and elementwise step reads and writes its row once less), more than about launch cost. On the B60 (2.7 µs under Windows) the same gap is ~2.6 ms of a ~35 ms token. q / k norm in the q / k / v epilogue needs a work-group's N tile to cover whole heads (head size 128 / 256). The planner either picks such a tile or moves the norm into the attention's prologue. A split decode attention (split over the keys) stays one launch only with way 7 below.
+The gap is largest where today's chain has the most norm, quantization and elementwise launches: DeepSeek (~4.6x its floor), Inkling (3.5x), Flash Next (2.2x), the 27B (2.2x), Gemma (2.8x). On the 125H, replay_probe's tiny kernels cost ~1.5-2 µs a launch, but in the real models the GPU idles ~7 µs between dependent kernels (xe2-tuning.md: the 35B 5.2 ms of a 51.8 ms token over 692 launches), so Inkling's gap of ~970 launches is ~7 ms of a ~115 ms token. On the laptop the floor is about fewer passes over memory (each fused norm, quantization and elementwise step reads and writes its row once less), more than about launch cost. On the B60 (2.7 µs under Windows) the same gap is ~2.6 ms of a ~35 ms token. q / k norm in the q / k / v epilogue needs a work-group's N tile to cover whole heads (head size 128 / 256). The planner either picks such a tile or moves the norm into the attention's prologue. A split decode attention (split over the keys) stays one launch only with way 7 below.
 
 `ARC_GEMM_PLAN=1` prints three numbers per model, so each fusion shows how much is left:
 - today's launches a token;
@@ -318,66 +318,116 @@ Not proposed:
 - A persistent kernel per layer ("megakernel"): it needs barriers across work-groups, and a hung barrier froze the laptop on 2026-11-23. Way 7 gets the cross-work-group reductions without one.
 - Command-list replay: it lowers the cost per launch, not the count. It measured as a gain on B-series only (replay_probe), so it stays a B-series option outside this layer (3.9).
 
-#### 3.7a The lowest number of launches (the user, 2026-11-27)
+#### 3.7a The lowest number of launches (the user, 2026-11-27; checked against the code by the Developer the same day)
+
+**Why it matters on the laptop too:** in the real models, the GPU idles ~7 µs between dependent kernels on the
+125H. The 35B spends 5.2 ms of a 51.8 ms token on that over 692 launches, the 27B 6.8 of 208.7 over 933
+(xe2-tuning.md). replay_probe's 1.5-2 µs is for tiny kernels, not a model's. So Inkling's ~970 launches above its
+floor cost ~7 ms of a ~115 ms token, and the lowest count below would save ~7 ms against today.
 
 The floor above is what ways 1-8 reach. The lowest count possible without a persistent kernel is set by the true
-all-to-all dependencies alone: a step that needs **every** value of the step before it, which only a barrier across
-work-groups could join inside one launch. Four more ways remove the boundaries that aren't of that kind:
+all-to-all dependencies alone: a step that needs **every** value of the step before it. Four more ways remove the
+boundaries that aren't of that kind. Each is exact **only under the conditions given**, proven per GPU kind by
+`gemm_check`, which repeats every fused form many times at random sizes.
 
-9. **A work-group owns its heads, from the projection to the mixer** (one token, and drafting's few rows). It computes
-   its own heads' rows of q / k / v (DeltaNet: q / k / v / z / beta / the gates) as GEMV slices, then runs attention or
-   the recurrence for those heads, in one launch. No work-group needs another's heads, so the projection -> mixer
-   boundary goes. Each output row's dot product is the same sum in the same order, so it's exact.
-   - The catch: there are few KV heads (GQA), so a K / V row group may be too little work for one work-group. It's
-     then split over K across work-groups and joined by way 7, in index order.
-10. **The next norm's statistics from the producer's last work-group** (way 7). The output projection + residual, and
-    the down projection + residual, write their rows. The last work-group of each row block computes that block's RMS
-    for the next layer's prologue, in the norm kernel's reduction order. The next launch reads the statistics instead
-    of reducing again.
-11. **Top-k in the router's last work-group** (way 7). The router's scores, then the top-k per row by the work-group
-    that finishes a row, so the experts' gate / up launch reads ready routes.
-12. **The head and sampling in one launch** (way 7 over the vocabulary, already listed as a use).
+9. **A work-group owns its heads, from the projections to the mixer** (one token, and drafting's few rows).
+   - **DeltaNet:** one work-group owns a k-head group: its v-heads x 128 state columns, within the 1,024-item limit
+     (e.g. 3 x 128 = 384). It computes that group's q / k / v / z / beta / gate rows as GEMV slices, then the
+     recurrence. A smaller group would recompute q / k per v-head (1.3 MB of int8 weights a group at E = 5,120), far
+     more than a launch costs. The 384-item group is the first form to build and check by ISA for spills.
+   - **Attention at short contexts** (one work-group per head is enough): the same, with the new token's KV store
+     head-local in the owning group.
+   - **Attention past short contexts:** the decode attention splits over the keys, and every key-split work-group
+     needs the head's whole q. That's an all-to-all, so it stays a launch of its own there.
+   - **Exact only if** each output row is summed exactly as today's GEMV form for that type and GPU kind sums it
+     (`gemv` vs `gemv_v`, rows per work-group, the K split across lanes, the sub-group size 8 or 16), and its prologue
+     norm meets 10's conditions. Each fused variant is restricted to the GEMV forms its kind uses.
+   - **GQA's few KV heads:** a K / V group split over K across work-groups and joined by way 7, in index order. The
+     mixer then runs in the last work-group of each KV group, which is serial. That's fine for DeltaNet's fixed cost a
+     head; for attention it holds only at short contexts.
+10. **The next norm's statistics from the producer's last work-group** (way 7). Exact only if the last work-group
+    reproduces `rmsnorm_quant`'s order:
+    - the same 256 items;
+    - the same strided loop;
+    - `work_group_reduce_add`;
+    - the same SIMD width, forced on both kernels with `intel_reqd_sub_group_size`. Forcing it may itself change
+      `rmsnorm_quant`'s current width, which is a check of its own.
 
-**What can't go, and why:** each remaining boundary is a step that reads every value of the previous one.
-- **Attention / DeltaNet output -> the output projection:** it needs every head's output.
-- **The output projection + residual -> gate / up:** they need the whole residual row (its norm is ready by way 10,
-  but its values are needed too).
-- **SwiGLU -> down:** it needs the whole intermediate row.
-- **The router -> the experts:** the experts need their routes (way 11 puts top-k in the router's launch, but the
-  experts still wait for it).
+    The wide-rows path (a work-group per 16 superblocks) has a different order, and way 10 matches whichever path
+    that T takes.
+11. **Top-k in the router's last work-group** (way 7), for one token and drafting's few rows. Exact if it keeps
+    today's softmax / sigmoid order, the index-order tie-break and the weights' normalization. Prompt chunks still
+    need the scan / scatter of rows to experts: the counts per expert depend on every row.
+12. **The head and argmax in one launch:** a fast path for unconstrained greedy and plain sampling, and drafting's
+    argmax. With a tool-call constraint, a JSON prefix, logit bias, penalties, top-p, logprobs or `--dump-logits`, the
+    logits still come back to the host as today.
 
-Joining those inside one launch needs a barrier across work-groups, the persistent-kernel form rejected above because
-a hung barrier froze the laptop.
+**What can't go**, each a step that reads every value of the one before:
+- attention / DeltaNet output -> the output projection (its K is every head);
+- the output projection + residual -> gate / up (the whole row);
+- SwiGLU -> down (the whole intermediate row);
+- the router -> the experts (the routes);
+- the experts' gate / up -> the experts' down (each expert's whole intermediate row);
+- q -> the key-split attention, past short contexts;
+- Inkling's controllers: the down (K = 2E -> 64) and the gain / forget feeding qkv's prologue, 2 a controller.
+  Redoing gain / forget per work-group would cost E x 64 int8 weights each, times every work-group;
+- Flash Next's `hc_down` / `hc_up`: each reads all 4 streams or the whole block;
+- DeepSeek's mix products (K = 20,480);
+- drafting's chain: each MTP draft needs the previous draft's argmax over the vocabulary;
+- between tokens: the sampled token -> the next token's embedding.
 
-**So the lowest count per layer, one generated token:**
+**Not boundaries** (head- or channel-local, so prologue or epilogue): q / k norm, the short convs and their states,
+the KV store at short contexts, Inkling's mixes and post-convs.
 
-| Layer | Launches | What they are |
-|---|---|---|
-| dense attention or DeltaNet + dense FFN | **4** | [norm + projections + mixer, per head] · [output projection + residual + next stats] · [gate / up + SwiGLU] · [down + residual + next stats] |
-| the same with a MoE FFN | **5** | the mixer's 2, then [router + shared gate / up + top-k] · [experts' gate / up] · [experts' down + shared down, the combine in the next prologue] |
+Joining any of the "can't go" steps inside one launch needs a barrier across work-groups, the persistent-kernel form
+rejected above because a hung barrier froze the laptop.
 
-Plus about 2 a token (the embedding with the first norm, the head with sampling). Estimates per model, to be checked
-against each one's chain (some layers add steps of their own: Flash Next's hc mixers, DeepSeek's compressor and
-indexer, Inkling's controllers and convs):
+**The lowest count, one generated token:**
+- **4** a DeltaNet layer with a dense FFN, and an attention layer at short contexts;
+- **5** an attention layer past short contexts, and a layer with a MoE FFN;
+- **~2** a token (the embedding with the first norm, the head).
 
-| Model | Today | Floor (ways 1-8) | Lowest (ways 1-12) |
-|---|---|---|---|
-| Qwen3.5 4B (32 layers) | ~426 | ~160 | ~130 |
-| Qwen3.8 27B (64 layers) | ~710 | 321 | ~258 |
-| Qwen3.6 35B-A3B (40 layers, MoE) | ~620 | 241 | ~202 |
-| Inkling 2 Mini (48 visits) | 1,356 | 385 | to work out (its controllers and convs add steps) |
+| Model | Today | Floor (ways 1-8) | Lowest (ways 1-12) | Past short contexts |
+|---|---|---|---|---|
+| Qwen3.5 4B (32 layers) | ~426 | ~160 | 130 | 138 |
+| Qwen3.8 27B (64) | ~710 | 321 | 258 | 274 |
+| Qwen3.6 35B-A3B (40, MoE) | ~620 | 241 | 202 | 212 |
+| Flash Next (48, hc) | ~1,050 | ~483 | 434 (9 a layer + 2) | ~446, ~448 with the PLE at layer 1 |
+| Inkling 2 Mini (48 visits) | 1,356 | 385 | **338** (24 first-pass x 5 + 24 later-pass x 9 + 2) | +1 per global-attention visit (their number: to read from the chain) |
 
-**Three multipliers on top, which cut the cost per generated token rather than the count per pass:**
-- **Drafting:** a verification pass of k + 1 rows costs about one pass's launches and yields its accepted tokens, so
-  launches per generated token divide by the tokens a pass accepts (Inkling with DSpark: ~1.8-2.2 today).
-- **Batched slots:** several conversations' tokens in one pass share its launches.
-- **Replayed command lists:** the count stays, but each launch costs about half on the B-series (replay_probe: B70
-  1.19 -> 0.57-0.63 µs, B60 -49 %; on the A770 only the barrier-after form gains, -4 %). Recording a token's launches
-  once and replaying them belongs in the layer's submission (3.9), per GPU kind.
+Flash Next's count follows 3.7's description of `hc_down` / `hc_up` as two global steps a block, not yet re-read in
+`ops_flashnext.cl`.
 
-**The rules are the same as ways 1-8:** every form exact against the unfused chain (`gemm_check`), no work-group ever
-waiting for another, no spill on any family. Ways 9-12 are proposed for after Inkling is on the layer and ways 1-8 have
-brought it to its floor, not before.
+**What cuts the cost per generated token further:**
+- **Drafting:** per generated token it's (the main pass + the draft chain) / the accepted tokens.
+  - MTP: k serial drafts, each about one MTP layer (~5) + the head (1). 7 drafts add ~42 to the 27B's 258.
+  - DFlash2: one drafter pass for all its drafts. DSpark: its own chain.
+- **Batched slots:** today they share only the GEMMs. `forward_batch` runs the mixer per slot, on its rows and state,
+  so attention / recurrence launches multiply by the slot count. They'd be shared only once the mixer kernels take
+  every slot's rows with per-slot state pointers in one launch, a kernel change of its own.
+- **Lists of launches:** a step can't be recorded once and replayed as it is, because its arguments (positions,
+  lengths) and the experts' grids change every token. What exists is `ARC_BATCH`: each step recorded again in lists of
+  up to n. A true replay needs the per-token arguments read from a device buffer, and the expert grids at their
+  maximum with an early exit. It's a per-GPU-kind choice:
+  - B-series: replay_probe halved the cost a launch (B70 1.19 -> 0.57-0.63 µs, B60 -49 %);
+  - A770: only the barrier-after form gained (-4 %);
+  - the laptop: tiny kernels 1.36 -> 1.07 ms, large ones 1.95 -> 2.01 ms (+3 %), so it stays off on the iGPU.
+
+**Safety:**
+- **No hang:** way 7 never waits, so there's no barrier to hang. It needs release fences in the writers and a
+  device-scope acquire in the last work-group. Intel's per-subslice L1 isn't coherent, so a missing acquire gives rare
+  stale reads, not a hang. That's why `gemm_check` repeats each fused form many times at random sizes, since one hash
+  can't prove it.
+- **Device-scope atomics** (`__opencl_c_atomic_scope_device`) are checked per family at build, with the unfused chain
+  as the fallback where they're missing (Xe-LP, older drivers): unknown per family until checked.
+- **Counters** are reset at load and after a device-lost error. A cancelled pass stops between launches, so a fused
+  launch always completes and its counters stay consistent.
+- **The real per-kernel limit is Windows' TDR, ~2 s.** Ways 9-12 at T <= 8 are tiny, but any fused prompt-chunk launch
+  must stay well under 2 s on the slowest family (Xe-LP, the A380, weights in host memory over PCIe). #99's hang was
+  one long launch.
+- **Cancel points:** fewer launches within a token is fine. The cancel check stays between layers in prompt chunks.
+
+Ways 9-12 come after Inkling is on the layer and ways 1-8 have brought it to its floor, not before.
 
 `ARC_GEMM_PLAN=1` also prints the launches a token by kind (GEMM, prologue, other), so each step's gain is visible. The goal is each model's floor in the table above, not a fixed number. `tests/launch_budget.txt` gets one row per model in that table: today's count, the floor, and the rule (1-8) that closes each part of the gap. The 2026-11-24 target (Inkling under 600 launches a token, against 1,356 today) is a first stop on the way.
 
@@ -571,7 +621,7 @@ The kernels are what we can take everywhere; the launch gaps only matter on disc
 | A later-pass visit (controllers on) | ~38 | 10 | the above, plus the controllers 12 → 4 and the message mix into the controllers' prologue |
 | A token | 1,356 | 385 | |
 
-As elsewhere, the gain on the 125H is mostly fewer passes over the rows, not launch cost (~1.5 ms of the gap at 1.5 µs a launch). The biggest items for the laptop are the kernels themselves:
+As elsewhere, the gain on the 125H is mostly fewer passes over the rows, though launch cost counts too (~7 ms of the gap at ~7 µs a launch). The biggest items for the laptop are the kernels themselves:
 - `moe_down` through the shared expert GEMM;
 - the controllers as real GEMMs in prompts;
 - the query-block attention (3.6), with `ARC_INK_ATTN_QB` still to measure.
