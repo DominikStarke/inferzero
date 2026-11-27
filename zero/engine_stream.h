@@ -45,7 +45,13 @@
     uint64_t ram = 0;
     std::string ram_note;
     bool tp_sized = false;  // (a split model's automatic size, from its parts below: Windows' cap already applied)
-    if (ram_gb > 0) {
+    if (ram_gb > 0 && zrt::integrated()) {
+      // (an iGPU never takes the tier, a hand-set size included, 2026-11-27: its GPU memory is that RAM, so pinned
+      //  copies of experts it already holds only take RAM from it. A test build that let the laptop's 125H take
+      //  ARC_XRAM_GB=64 (14.7 GiB pinned beside 17.4 GiB of GPU buffers on 32 GB) hung the GPU in moe_quant)
+      if (!tp_on() || opt.tp_rank == 0)  // (a split model: GPU 0 says it for all)
+        zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB ignored: an integrated GPU's memory is the RAM already\n");
+    } else if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
     } else if (ram_gb < 0 && !zrt::integrated() && tp_on()) {
       // (a split model, sized from its parts since 2026-11-26 (manoreken2's PR #100; the user: "ARC_XRAM_GB= needs to
@@ -111,7 +117,10 @@
     //  memory, #100), so a hand-set size past it warns at the size that failed there, 48 GiB a GPU; one GPU: once)
     if (!zrt::integrated() && ram > 0 && !tp_sized) {
       uint64_t nb = 0, nu = 0;
-      if (zrt::video_budget(nb, nu, true)) {
+      // (a budget read as 0: not known, no cap from it)
+      const bool say = !tp_on() || opt.tp_rank == 0;  // (a split model: GPU 0 says the hand-set cap for all)
+      const double asked = ram_gb > 0 ? ram_gb : ram / 1073741824.0;  // (the size given, before the file's size clipped it)
+      if (zrt::video_budget(nb, nu, true) && nb > 0) {
         // (one GPU: the budget less the use and 4 GiB, as before; a split: budget / N less the use and 8 GiB, / N)
         const uint64_t N = (uint64_t)std::max(1, opt.tp_size), margin = tp_on() ? 8ull << 30 : 4ull << 30,
                        top = tp_on() ? nb / N : nb, room = (top > nu + margin ? top - nu - margin : 0) / (tp_on() ? N : 1);
@@ -126,9 +135,27 @@
                    nu / 1073741824.0);
           ram_note = b;
         } else if (ram > room) {
-          zlog::eprintf("inferzero: warning: --expert-ram-gb / ARC_XRAM_GB %.1f GiB is more than Windows lets the GPU map of "
-                        "RAM now (%.1f GiB left of %.1f): its copies may fail (issue #82)\n", ram / 1073741824.0,
-                        room / 1073741824.0, nb / 1073741824.0);
+          // (a hand-set size past the room is capped to it since 2026-11-27, not only warned about: manoreken2's serverz
+          //  with ARC_XBUF and a hand-set ARC_XRAM_GB hung the GPUs or ran out of memory; his own sweep found 47 GiB a
+          //  GPU runs and 48 hangs, the room's edge. The user: the tier as big as possible, safely. Below the room the
+          //  hand-set size is used as before)
+          if (say)
+            zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB %.1f GiB a GPU asked, %.1f GiB used: Windows lets the "
+                          "GPUs map no more (%.1f GiB, %.1f in use; #82)\n", asked, room / 1073741824.0,
+                          nb / 1073741824.0, nu / 1073741824.0);
+          ram = room;
+        }
+      } else if (tp_on() && ram_gb > 0 && !opt.expert_ram_auto) {
+        // (Linux, a split model: no budget is known, so a hand-set size keeps the automatic size's caps, 32 GiB a GPU
+        //  and 128 in all, until a Linux run measures the limit; the only measured big-tier failure, on Windows, hung
+        //  the machine)
+        const int N = std::max(1, opt.tp_size);
+        const uint64_t cap = std::min<uint64_t>(32ull << 30, (128ull << 30) / N);
+        if (ram > cap) {
+          if (say)
+            zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB %.1f GiB a GPU asked, %.1f GiB used: the cap while the "
+                          "GPUs' map budget is unknown (32 GiB a GPU, 128 in all)\n", asked, cap / 1073741824.0);
+          ram = cap;
         }
       }
     }

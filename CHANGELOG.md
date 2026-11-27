@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-27 (unreleased): a hand-set expert RAM tier is capped to what is safe
+
+- **`--expert-ram-gb` / `ARC_XRAM_GB` set by hand above what Windows lets the GPUs map is capped to it**, not only
+  warned about. A tier past it hung the GPUs or ran out of memory (manoreken2: 47 GiB a GPU ran, 48 hung). One start
+  line names the size asked for and the size used. Below that limit the size you set is used as before. On Linux a
+  split model's hand-set tier keeps the automatic size's caps (32 GiB a GPU, 128 in all) until a Linux run measures the
+  limit. The automatic size was already the largest safe one, with `ARC_XBUF` or without.
+- **An integrated GPU ignores a hand-set tier**: its GPU memory is the RAM already, and pinned copies only took RAM
+  from it.
+
 ## 2026-11-27 (2026.11.27.02): the launchers tell Iris Xe / UHD from Meteor Lake; options for H8 and the expert file cache
 
 - **The launchers tell the iGPUs apart by their PCI device ID**, as the engine does. Iris Xe and UHD Graphics (Tiger /
