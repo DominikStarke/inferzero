@@ -80,6 +80,21 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, one-token GEMVs over host-memory weights in row pieces on discrete cards** (`zero/engine.h` matmul1,
+  GpuWeight::host set in load_weight; #99).
+  - **The report:** LukaszBrzyszkiewicz's Arc A380, the 4B at `--bench-pp 131072 --must-fit`, 0.43 GiB of the weights in
+    host memory. dmesg showed "GPU HANG ... context reset" at the first generated token (also with `--n 1`), and our
+    marker named gemv_v.
+  - **The change:** for a matrix that plan_tight put in host memory, the GEMV runs in pieces of whole row groups, each
+    reading at most `ARC_HOST_GEMV_MB` (default 4 on discrete cards, 0 = off on iGPUs). Each piece is the same kernel on a
+    view of its rows (c_off moved), so each row's sum is unchanged.
+  - **A caveat:** the A380 runs `ARC_BATCH=64`, so the marker's last kernel is the last one recorded in a list of up to
+    64, not necessarily the one that hung. If the hang stays, another kernel of that token is next.
+  - **Checks on the laptop:** `ARC_HOST_WEIGHTS_GB=1.2` forces layer matrices into host memory. With
+    `ARC_HOST_GEMV_MB` default (forced on, a test build), 0 and 1, the 4B's logits equal main's (57967119...), and the
+    launches split (gemm_down 1,024 -> 2,144 over 32 tokens). The cost here: 53.1 -> 56.7 ms a token. An iGPU's host
+    memory is its own DRAM, so the default leaves iGPUs at one launch.
+
 - **2026-11-26, drafting verification off H8 for just-in-time weights on Xe-LPG** (`zero/engine_h8.h`
   h8_igpu_rows_ok: `h8_dp4a_ && !h8_env() && spec_` -> false; the Researcher's audit of 2026.11.26.03). A verification
   pass of more than 8 rows (h8_takes' cur_T_ > 8: a DFlash2 block of 16) took H8 under h8_dp4a_, so a weight decoded

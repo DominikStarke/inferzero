@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-27 (unreleased): generation reads weights in host memory in short pieces on discrete cards
+
+- **A matrix kept in host memory is read in pieces of at most 4 MB per GEMV launch** on discrete cards (#99). On an Arc
+  A380 the Qwen3.5 4B at a 131K context keeps 0.43 GiB of its weights in host memory. Its first generated token hung the
+  GPU, and the driver reset it; the last kernel recorded was this GEMV, reading over PCIe. The pieces give the same
+  results bit for bit. `ARC_HOST_GEMV_MB=N` sets the size, `0` keeps one launch. Integrated GPUs are unchanged.
+
 ## 2026-11-26 (unreleased: in the next release): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
 
 - **Verification passes of more than 8 rows** (a DFlash2 block of 16) no longer take H8 for weights decoded per chunk on

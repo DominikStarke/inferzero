@@ -38,6 +38,7 @@ struct GpuWeight {
   cl_mem raw = nullptr;               // raw GGUF rows
   bool iq3t = false;                  // (IQ3_S rows in pairs of planes, ARC_IQ3S_TILE: its kernels built -DIQ3T)
   bool w8_mins = false;               // (Q2_K / Q4_K / Q5_K decoded with their mins, not requantized: Flash Next's precise mode)
+  bool host = false;                  // (raw rows in host memory, plan_tight: matmul1's one-token GEMV in row pieces, #99)
   cl_mem wq = nullptr, wh = nullptr;  // resident GEMM form (W8, or repacked Q8_0); null = decode just in time
   int gemm_qtype = 0;                 // zero/kernels/gemm.cl QTYPE
   int role = 0;                       // just-in-time W8 staging slot (one per matrix role within a layer)
@@ -1584,6 +1585,28 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
       cl_kernel k = w.g1k[fz];
       q2_fused_ = q2_fuse_;
+      // (a matrix in host memory, plan_tight: the GEMV in pieces of whole rows, each reading at most ARC_HOST_GEMV_MB
+      //  (default 4) of host memory, so no launch reads over PCIe for long. #99, an Arc A380's 4B at a 131K context,
+      //  0.43 GiB of the weights in host memory: a GPU hang at the first generated token, the last launch gemv_v. Each
+      //  piece is the same kernel on a view of its rows, so every row's sum is the one of the whole launch, bit for bit.
+      //  Not the fused two-pass GEMV (its stores) or a split-K launch; ARC_HOST_GEMV_MB=0: one launch as before.
+      //  Discrete cards only: an iGPU's host memory is its own DRAM, no PCIe, and the pieces cost launches there (the
+      //  laptop's 4B with 1.2 GiB forced into host memory, ARC_HOST_WEIGHTS_GB: 53.1 -> 56.7 ms a token, logits equal)
+      static const double host_mb = getenv("ARC_HOST_GEMV_MB") ? std::max(0.0, atof(getenv("ARC_HOST_GEMV_MB")))
+                                    : zrt::integrated() ? 0.0 : 4.0;
+      const size_t row_bytes = (size_t)(K / 256) * raw_padded_sb_bytes(w.type);
+      if (w.host && !fz && split == 1 && host_mb > 0 && row_bytes > 0 && (double)row_bytes * N > host_mb * 1048576.0) {
+        int rp = (int)std::max(1.0, host_mb * 1048576.0 / (double)row_bytes);
+        rp = std::max(grows, rp / grows * grows);  // (whole row groups: each piece starts a sub-group's rows)
+        for (int r0 = 0; r0 < N; r0 += rp) {
+          int n = std::min(rp, N - r0), co = c_off + r0;
+          set_args(k, 0, from(w.raw, (size_t)r0 * row_bytes), n, K, tabs_, aq_, asc_, absum_, M, C, co, a);
+          const size_t sgp = (size_t)(n + grows - 1) / grows, lp = vk ? 256 : xe2_gemv_wg(sgp);
+          size_t gp = (sgp * 16 + lp - 1) / lp * lp;
+          run(name, k, 1, &gp, &lp);
+        }
+        return;
+      }
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);
       // (gemv_v stages its tables with the first 64 items of a work-group: it keeps 256)
       const size_t sgs = (size_t)(N + grows - 1) / grows * split, l1 = vk || split > 1 ? 256 : xe2_gemv_wg(sgs);  // (S sub-groups of a row group in one work-group)

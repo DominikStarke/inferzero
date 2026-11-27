@@ -270,7 +270,11 @@
     w.type = type;
     w.N = N;
     w.K = K;
-    w.raw = view ? *view : upload_padded(type, data, nbytes, K % 512 == 0, &w.iq3t);  // (a view: its stack's flag, set there)
+    {
+      const size_t hb0 = host_bytes_;  // (upload_padded puts the first matrices in host memory, plan_tight: which this was)
+      w.raw = view ? *view : upload_padded(type, data, nbytes, K % 512 == 0, &w.iq3t);  // (a view: its stack's flag, set there)
+      w.host = !view && host_bytes_ != hb0;
+    }
     // Q8_0 (per-32 float scales) is fastest in its own repacked kernel; everything else goes through W8. The
     // repacked copy is kept only with resident weights of a dense model; otherwise (MoE: ~1.5 GB of Q8_0 matrices
     // stored twice, or just-in-time models) prompt chunks decode the raw rows into the same form (decode_w8, PER32).
