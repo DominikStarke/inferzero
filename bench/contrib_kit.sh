@@ -32,14 +32,26 @@ for m in "${MODEL_LIST[@]}"; do [ -f "$m" ] || { echo "model not found: $m" >&2;
 TMP=$(mktemp -d)
 : > "$OUT"
 
-# (no user name in the file: the home folder becomes ~ and each model's folder <model dir>)
-HIDE_DIRS=()
-for m in "${MODEL_LIST[@]}"; do HIDE_DIRS+=("$(cd "$(dirname "$m")" && pwd)"); done
-add() {  # LINE: into the file and to the console, the folders hidden
-  local s="$1" d
-  for d in "${HIDE_DIRS[@]}"; do s="${s//"$d"/<model dir>}"; done
-  [ -n "${HOME:-}" ] && s="${s//"$HOME"/\~}"
-  printf '%s\n' "$s" | tee -a "$OUT"
+# (no user name in the file: each model's folder becomes <model dir> and the home folder ~, in any casing; then the
+#  user and host names wherever they stand as a word, names under 3 characters left alone. One sed script, built here)
+HIDE_SED="$TMP/hide.sed"
+: > "$HIDE_SED"
+sed_esc() { printf '%s' "$1" | sed 's/[][\/.^$*+?(){}|]/\\&/g'; }
+for m in "${MODEL_LIST[@]}"; do
+  printf 's/%s/<model dir>/gI\n' "$(sed_esc "$(cd "$(dirname "$m")" && pwd)")" >> "$HIDE_SED"
+done
+# (the home folder only where a path starts: a short one, /root, would match inside /data/root/x too)
+PATH_START='(^|[[:space:]"'"'"'(=:])'
+[ -n "${HOME:-}" ] && printf 's/%s%s/\\1~/gI\n' "$PATH_START" "$(sed_esc "$HOME")" >> "$HIDE_SED"
+for nm in "${USER:-$(id -un 2>/dev/null)}:<user>" "$(hostname 2>/dev/null || uname -n):<host>"; do
+  n="${nm%:*}" r="${nm##*:}"
+  [ ${#n} -ge 3 ] || continue
+  # (twice: a match takes the character before the next one, as in "/name/name")
+  printf 's/(^|[^A-Za-z0-9])%s([^A-Za-z0-9]|$)/\\1%s\\2/gI\n' "$(sed_esc "$n")" "$r" >> "$HIDE_SED"
+  printf 's/(^|[^A-Za-z0-9])%s([^A-Za-z0-9]|$)/\\1%s\\2/gI\n' "$(sed_esc "$n")" "$r" >> "$HIDE_SED"
+done
+add() {  # LINE: into the file and to the console, the names hidden
+  printf '%s\n' "$1" | sed -E -f "$HIDE_SED" | tee -a "$OUT"
 }
 
 # the defaults: the shell's switches cleared for the runs (this script's own environment only)
@@ -72,6 +84,7 @@ step() {  # TITLE KEEP_REGEX ENV(k=v, or -) ARGS...: one runz run through gpu_gu
   fi
 }
 
+echo "Close any serverz you run before starting: the kit starts one for its memory step and stops it."
 REL="(not a package)"
 [ -f "$ROOT/bin/PREBUILT.txt" ] && REL=$(head -1 "$ROOT/bin/PREBUILT.txt")
 COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)
@@ -80,6 +93,12 @@ add "release: $REL${COMMIT:+, commit $COMMIT}"
 add "OS: $(uname -sr)"
 add "CPU: $(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -1); RAM: $(awk '/MemTotal/ {printf "%.0f", $2 / 1048576}' /proc/meminfo 2>/dev/null) GB"
 while IFS= read -r g; do add "GPU: $g"; done < <(lspci -nn 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel | sed 's/^[0-9a-f:.]* //')
+# (the driver on Linux is the compute runtime: its packages' versions, whichever package manager the system has; the
+#  engine's own "kernels compiled by ... driver" line is in section A too)
+RT=$( { dpkg-query -W -f='${Package} ${Version}\n' intel-opencl-icd libze-intel-gpu1 intel-level-zero-gpu libze1 libigc2 libigc1 2>/dev/null \
+        || rpm -q intel-opencl intel-level-zero-gpu level-zero intel-igc-core 2>/dev/null \
+        || pacman -Q intel-compute-runtime level-zero-loader intel-graphics-compiler 2>/dev/null; } | grep -v "not installed\|no packages found\|was not found")
+if [ -n "$RT" ]; then while IFS= read -r l; do add "runtime: $l"; done <<< "$RT"; else add "runtime: (no package versions found)"; fi
 if [ -n "$DEVICE" ]; then add "device: ZE_AFFINITY_MASK=$DEVICE"; else add "device: the default"; fi
 add "switches cleared for the runs: ${CLEARED:--}"
 RUNS=2; [ $QUICK = 1 ] && RUNS=1

@@ -15,7 +15,8 @@ param(
   [string[]]$Model = @(),
   [string]$Device = "",
   [string]$Out = "",
-  [switch]$Quick
+  [switch]$Quick,
+  [switch]$SelfTest  # (the name hiding over sample lines, with no GPU run: prints each line before and after)
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -23,6 +24,7 @@ $runz = Join-Path $root "bin\runz.exe"
 $serverz = Join-Path $root "bin\serverz.exe"
 $guard = Join-Path $root "bench\gpu_guard.ps1"
 $Model = @($Model | ForEach-Object { $_ -split "," } | Where-Object { $_ })
+if ($SelfTest -and $Model.Count -eq 0) { $Model = @($PSCommandPath) }  # (a file that exists, for its folder)
 if ($Model.Count -eq 0) { throw "give -Model <a.gguf>[,<b.gguf>]: the models you run (the 27B, the 35B-A3B, Inkling 2 ...)" }
 foreach ($m in $Model) { if (-not (Test-Path $m)) { throw "model not found: $m" } }
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found: run setup, or build it (.\build.ps1 zero\runz.cpp zero\serverz.cpp)" }
@@ -35,9 +37,34 @@ $sb = New-Object System.Text.StringBuilder
 $hide = @(@($Model | ForEach-Object { Split-Path (Resolve-Path $_).Path -Parent } | Sort-Object Length -Descending) |
           ForEach-Object { , @($_, "<model dir>") })  # (the comma: each pair stays one item of the list)
 $hide += , @($env:USERPROFILE, "~")
+# (then the user and computer names wherever they stand as a word, a folder of a drive or OneDrive's included; names
+#  under 3 characters are left, or "a" would eat the file)
+$names = @(@($env:USERNAME, "<user>"), @($env:COMPUTERNAME, "<host>")) | Where-Object { $_[0] -and $_[0].Length -ge 3 }
+function Hide-Names([string]$s) {
+  foreach ($h in $hide) {  # (any casing and either slash: "c:\users\name", "C:/Users/Name")
+    if (-not $h[0]) { continue }
+    foreach ($p in @($h[0], $h[0].Replace("\", "/"))) {
+      $s = [regex]::Replace($s, [regex]::Escape($p), $h[1].Replace('$', '$$'), "IgnoreCase")
+    }
+  }
+  foreach ($n in $names) {
+    $s = [regex]::Replace($s, "(?<![A-Za-z0-9])" + [regex]::Escape($n[0]) + "(?![A-Za-z0-9])", $n[1], "IgnoreCase")
+  }
+  return $s
+}
 function Add-Line([string]$s) {
-  foreach ($h in $hide) { if ($h[0]) { $s = $s.Replace($h[0], $h[1]).Replace($h[0].Replace("\", "/"), $h[1]) } }
+  $s = Hide-Names $s
   [void]$sb.AppendLine($s); Write-Host $s
+}
+if ($SelfTest) {
+  $md = Split-Path (Resolve-Path $Model[0]).Path -Parent
+  foreach ($t in @("cache at $env:USERPROFILE\.inferzero\kernels", "cache at $($env:USERPROFILE.ToLower())\x",
+                   "cache at $($env:USERPROFILE.ToUpper().Replace('\', '/'))/x", "model at $($md.ToUpper())\m.gguf",
+                   "D:\$($env:USERNAME.ToUpper())\models and E:\data\$env:USERNAME-x\y", "on $env:COMPUTERNAME ($($env:COMPUTERNAME.ToLower()))")) {
+    Write-Host "in:  $t"
+    Write-Host "out: $(Hide-Names $t)"
+  }
+  return
 }
 
 # the defaults: the shell's switches cleared for the runs, put back at the end
@@ -55,14 +82,20 @@ function Invoke-Step([string]$title, [string]$m, [string[]]$a, [hashtable]$envs,
   Add-Line ""
   Add-Line "## $title"
   foreach ($e in $envs.Keys) { Set-Item "Env:$e" $envs[$e] }
+  # (Windows PowerShell 5.1 with "Stop" ends the script at a child's first stderr line: "Continue" here, so a failed
+  #  run is written as its exit code and last lines)
+  $eap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
   $o = & powershell -NoProfile -File $guard -TimeoutS $t -- $runz $m @a 2>&1 | Out-String
   $code = $LASTEXITCODE
+  $ErrorActionPreference = $eap
   foreach ($e in $envs.Keys) { Remove-Item "Env:$e" -ErrorAction SilentlyContinue }
   Add-Line ("runz <model> " + ($a -join " ") + $(if ($envs.Count) { "  (" + (($envs.Keys | ForEach-Object { "$_=$($envs[$_])" }) -join " ") + ")" } else { "" }))
   foreach ($l in ($o -split "`r?`n")) { if ($l -match $keep) { Add-Line $l.TrimEnd() } }
   if ($code -ne 0) { Add-Line "(exit code $code)"; foreach ($l in (($o -split "`r?`n") | Select-Object -Last 12)) { Add-Line $l.TrimEnd() } }
 }
 
+Write-Host "Close any serverz you run before starting: the kit starts one for its memory step and stops it."
 try {
   $rel = "(not a package)"
   $pb = Join-Path $root "bin\PREBUILT.txt"

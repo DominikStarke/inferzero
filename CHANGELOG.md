@@ -11,8 +11,11 @@
 
   Usage: `powershell -File bench\contrib_kit.ps1 -Model <model.gguf>` or `bash bench/contrib_kit.sh --model <model.gguf>`
   (`-Device N` for another GPU, `-Quick` for one run each). The runs use the default settings: switches set in your
-  shell are left out for them. The file has no user or host name, and no paths but the model's file name. Every run
-  goes through the GPU watchdog (`bench/gpu_guard`).
+  shell are left out for them. The file has no user or host name, in any casing, and no paths but the model's file
+  name: the models' folders become `<model dir>`, the home folder `~`, and the user and computer names `<user>` /
+  `<host>` wherever they stand as a word (`-SelfTest` shows the hiding on sample lines). On Linux the header also
+  lists the compute runtime's package versions. Close any server you run before starting: the kit starts one for its
+  memory step and stops it. Every run goes through the GPU watchdog (`bench/gpu_guard`).
 
 ## 2026-11-27 (unreleased): the golden test set of the shared GEMM layer
 
