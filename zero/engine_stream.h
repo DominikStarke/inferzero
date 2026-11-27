@@ -152,9 +152,8 @@
         const uint64_t cap = std::min<uint64_t>(32ull << 30, (128ull << 30) / N);
         if (ram > cap) {
           if (say)
-            zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB %.1f GiB a GPU asked, %.1f GiB used: the Linux cap for a "
-                          "split model (32 GiB a GPU, 128 in all) until a Linux run measures the limit\n",
-                          asked, cap / 1073741824.0);
+            zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB %.1f GiB a GPU asked, %.1f GiB used: the cap while the "
+                          "GPUs' map budget is unknown (32 GiB a GPU, 128 in all)\n", asked, cap / 1073741824.0);
           ram = cap;
         }
       }

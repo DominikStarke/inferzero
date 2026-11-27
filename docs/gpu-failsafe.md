@@ -153,6 +153,14 @@ The R3 hang was a case no sweep reached first: 20 tokens, shorter than one span.
 - A kernel loop whose end depends on data (`while`, spin waits) gets an iteration cap, and the result is checked at start, as the bit-for-bit checks are now.
 - A static check before any run: every barrier is reached by every work-item on every path. That means counting barriers per path, and no `return` or `continue` that skips one in some sub-groups but not others. It goes into the review checklist.
 
+**Known hang causes so far:**
+
+- **R3 (2026-11-23):** a barrier kernel on a case no sweep reached first, 20 tokens, shorter than one span (above).
+- **A pinned expert tier on an iGPU beside its buffers (2026-11-27):** a test build let the laptop's 125H take
+  `ARC_XRAM_GB=64`, so 14.7 GiB of pinned host memory sat beside 17.4 GiB of GPU buffers on 32 GB. With `ARC_XBUF=1` the
+  35B hung in `moe_quant`. Since then an integrated GPU ignores a hand-set tier (`zero/engine_stream.h`). Memory pressure
+  can hang an iGPU, so test builds that bypass an iGPU guard don't run on the laptop.
+
 ## 7. Testing the failsafe without a real hang
 
 - `ARC_GPU_FAULT_TEST=hang`: `wait_for` acts as if the limit passed on the first wait of the first prompt. Expected: the message, the marker, exit code 3, and the next start refused.
