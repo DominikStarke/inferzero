@@ -18,6 +18,20 @@ caller. The source is one short run per model: a prompt of more than one chunk, 
 passes. The laptop shows only Xe-LPG. Other GPU kinds' rows come from the contributor kit (J), and stay "unproven:
 plan not seen on this kind" until then.
 
+How to read the log:
+- **Memory column:** a GEMV line says "raw" or "host raw", the rows it reads. A GEMM line says where its W8 comes from:
+  "w8 resident", "w8 jit" or "host". "-" is a step with no weight.
+- **One summary per model:** the "gemm-plan summary (freed)" line that runz prints at its end. C's harness runs runz, so
+  that's the line it collects.
+- **serverz:** prints "gemm-plan summary (after the warm-up)" after start-up. That holds only the routes the warm-up
+  took, so it's partial. A stopped server prints no final summary: it ends without its destructors. A model switch
+  prints the old model's "(freed)" summary.
+- **A split model:** each shard logs its own lines and summary ("shard r"). serverz's warm-up summary is shard 0's or
+  the last stage's.
+- **Not in the log yet:** Whisper's own launcher, the NPU and `engine_tp.h`'s one direct launch. They bypass
+  `Engine::run`, so they're listed by hand until their migration turns.
+- **Steps that aren't GEMMs** (norm, quant, swiglu, rot) give no model-file line ("from") until the C-harness commit.
+
 | Role | Type | Rows | Host / resident | GPU kind | Kernel and `-D` | Grid / local | Chosen at | Fastest measured form (source) | Correctness proof |
 |---|---|---|---|---|---|---|---|---|---|
 
