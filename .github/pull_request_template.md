@@ -1,4 +1,4 @@
-<!-- Please read docs/pull-requests.md first. A new model: docs/new-model.md. Delete what doesn't apply. -->
+<!-- Please read docs/pull-requests.md first. A new model: CONTRIBUTING.md section 3. Delete what doesn't apply. -->
 
 ## What and why
 

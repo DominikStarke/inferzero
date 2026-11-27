@@ -2,7 +2,7 @@
 
 How a change gets into inferzero: what to do before opening a pull request, what it must contain, how it is
 reviewed, and how it is merged. [CONTRIBUTING.md](../CONTRIBUTING.md) section 2 holds the rules every change is held
-to and the audit list. A new model follows [docs/new-model.md](new-model.md) as well.
+to and the audit list. A new model follows CONTRIBUTING.md section 3 as well.
 
 ## 1. Before you start
 
