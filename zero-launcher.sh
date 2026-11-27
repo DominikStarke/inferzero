@@ -566,8 +566,9 @@ sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci)
     elif [[ "$l" =~ DG2|Alchemist|A[0-9]{3}[^0-9] ]]; then k+=" alchemist"; discrete=$((discrete + 1))
       [[ "$l" =~ A770 ]] && k+=" alchemist-a770"  # (best-setups.tsv's need a770: the only Alchemist with 16 GB, #99)
     elif [[ "$l" =~ Battlemage|BMG|B[0-9]{2,3}[^0-9] ]]; then k+=" b-series"; discrete=$((discrete + 1))
-    elif [[ "$id" == 7d* ]]; then k+=" igpu-xe-lpg"
-    else k+=" igpu-xe-lp"; fi
+    elif [[ "$l" =~ ^00:02\.0 ]]; then  # (an Intel iGPU is always 00:02.0: a Max / Flex card or another device unmatched
+      [[ "$id" == 7d* ]] && k+=" igpu-xe-lpg" || k+=" igpu-xe-lp"  #  above gets no kind, as before; the Researcher's review)
+    fi
   done <<< "$names"
   [ $discrete -gt 1 ] && k+=" multi-gpu"
   # (multi-same: those cards all of one PCI device ID, the only ones tensor parallel takes together)
