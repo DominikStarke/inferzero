@@ -453,12 +453,29 @@ struct ExpertStore {
     for (int i = 0; i < 2 * kQD; ++i) slots_[i].id = i;  // (before the open: no path reads with ids unset)
     // ARC_XBUF=1: reads through the OS file cache (a machine with hundreds of GB of RAM keeps the whole expert file
     // there, and a RAM tier miss costs a cache hit, not an SSD read; the cache is pageable, so unlike the tier it
-    // takes nothing from what Windows lets the GPU pin). Default: unbuffered, reads in flight: src/platform.h AsyncFile
-    static const bool xbuf = getenv("ARC_XBUF") && atoi(getenv("ARC_XBUF")) != 0;
-    const int op = af_.open(path.c_str(), 2 * kQD, xbuf);
+    // takes nothing from what Windows lets the GPU pin). ARC_XBUF=0, or not set: unbuffered, reads in flight
+    // (src/platform.h AsyncFile); not set, the engine may reopen it buffered once its cache and tier are sized
+    // (Engine::xbuf_auto, zero/engine_stream.h)
+    const int op = af_.open(path.c_str(), 2 * kQD, xbuf_forced() == 1);
     if (op == 1) throw std::runtime_error("cannot open " + path);
     if (op == 2) throw std::runtime_error("cannot create the read events");
-    if (xbuf) zlog::eprintf("inferzero: expert file reads go through the OS file cache (ARC_XBUF)\n");
+    buffered_ = xbuf_forced() == 1;
+  }
+  // ARC_XBUF: 1 / 0 force the OS file cache on / off; -1, not set: the engine's rule decides (xbuf_auto)
+  static int xbuf_forced() {
+    static const int v = getenv("ARC_XBUF") ? (atoi(getenv("ARC_XBUF")) != 0 ? 1 : 0) : -1;
+    return v;
+  }
+  bool buffered() const { return buffered_; }
+  uint64_t ram_cap() const { return ram_cap_; }
+  // the expert file opened again through the OS file cache, during the engine's setup (no read in flight: the cache's
+  // warm-up and every prompt come after it)
+  void reopen_buffered() {
+    if (buffered_) return;
+    const int op = af_.open(path.c_str(), 2 * kQD, true);
+    if (op == 1) throw std::runtime_error("cannot open " + path);
+    if (op == 2) throw std::runtime_error("cannot create the read events");
+    buffered_ = true;
   }
 
   // ---- RAM tier (a GPU with memory of its own and a large system RAM: Arc B60 + hundreds of GB): the unbuffered
@@ -646,6 +663,7 @@ struct ExpertStore {
   static constexpr int kQD = 16;
   Slot slots_[2 * kQD] = {};
   plat::AsyncFile af_;  // (the expert file, unbuffered; slots_[i] reads on its slot i)
+  bool buffered_ = false;  // (af_ opened through the OS file cache: ARC_XBUF, or the engine's rule)
 
   struct Header {
     uint32_t magic, version;
