@@ -523,6 +523,26 @@ read from the SSD now goes into pinned host memory and stays there, up to the fr
 read: the GPU copies it from RAM (PCIe DMA), no CPU copy in between (a memcpy into the staging memory ran at only
 3-4 GB/s on the laptop). The tiers are then GPU cache -> RAM -> SSD.
 
+The tier's size has been computed from the machine since release 2026.11.26.01 (PR #100's first part,
+`zero/engine_stream.h`). On Windows, the budget the GPUs may map is divided by the GPUs, because each counts the shared
+pinned memory in full. Then it's less what is mapped already and 8 GiB, and divided by the GPUs again. The fixed caps
+above (32 GiB a GPU, 128 GiB in all) are gone there. Linux keeps them until a run there measures the limit. One start
+line names the parts.
+
+**`ARC_XBUF=1`** (opt-in, manoreken2's PR #100, release 2026.11.27.01) reads the expert file through the OS file cache
+instead of unbuffered. Unlike the tier, the cache is pageable, so it takes nothing from what Windows lets the GPUs pin,
+and it outlives the process. It helps where the GPU caches and the RAM tier don't hold every expert but free RAM holds
+a large part of the file:
+- **manoreken2** (4 x B60, DeepSeek-V4.1-Flash Q8_K_XL): an 8K prompt 64 -> 96 tok/s, generation about 3 % slower
+  (16.4 -> 15.9 tok/s);
+- **hansong80** (2 x A770, 96 GB, the 35B, whose experts fit in the caches and tier): no gain once warm. Their first
+  run was slower only because it was cold.
+
+The output is the same with and without it: the laptop's 35B logits are equal. Where the file is far larger than free
+RAM, the cache only churns: the misses still reach the SSD, and every read costs an extra copy. A rule that turns it on
+only where the caches and tier can't hold every expert, and free RAM can hold a useful part of the file, is planned
+(the user, 2026-11-27).
+
 On the laptop (forced on, iGPU, 4 GiB cache: not a case it is meant for) the logits are bit-identical with and
 without it; generation the same (13.1 vs 13.3 tok/s), the prompt slower (275 vs 372 tok/s: the RAM is the iGPU's
 memory too). The numbers that count are a B60 machine's: `serverz --expert-ram-gb 0` against the default.
