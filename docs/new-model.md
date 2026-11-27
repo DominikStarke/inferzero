@@ -96,8 +96,11 @@ or a speech model of its own. The ones here are:
 Their kernels are `ops_vit.cl`, `asr.cl` and `whisper.cl`. A new encoder, or a new model using an existing one, must
 support:
 - **Every GPU kind** of the table above, and every type the projector files come in (F16, BF16, Q8_0, F32).
-- **Several GPUs:** the projector loads and runs on a split model, `--gpus N` and `--split layer` (a gap today, #103,
-  that a new model doesn't add to).
+- **Several GPUs: not yet, for any model.** Today a split model (`--gpus N`, `--split layer`) runs no encoder:
+  images and audio are off there (USAGE.md, #103), and adding that is planned for the engine as a whole. Until then, a
+  new model does the same as the others: its encoder on one GPU, and a clear refusal of images and audio on a split
+  model. When the engine supports encoders on split models, every model with an encoder must pass the same checks
+  there.
 - **The input side,** on Windows and Linux alike:
   - images: decoding (Windows' imaging component, `ffmpeg` on Linux: `src/image.h`), the resize to the encoder's
     grid (`resize_bicubic`, which matches Pillow), the token budget per image (`fit_size`'s minimum / maximum
@@ -192,7 +195,7 @@ Inkling 2 Mini is the most recent model added, and the example to follow (`zero/
    - the encoder against its f32 reference;
    - then the answer's KL with an image or a clip in the prompt;
    - several images per message, a long clip, a PDF;
-   - on Windows and Linux, on one GPU and split.
+   - on Windows and Linux, on one GPU, and refused with a clear message on a split model, as for every model today.
 5. **Several GPUs:** `ARC_TP_SIM=1` with `--gpus 2 / 3 / 4` and `--split layer`, against one GPU. Then on real cards
    (a contributor's, if needed).
 6. **Every GPU kind** of section 2: the KL and a `--bench-pp 4096 --n 128` line per kind, from contributors' cards
