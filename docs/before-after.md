@@ -99,7 +99,9 @@ That property is what every speed change is held to:
     (GPU 0's, also on two shards), and the logits equal main's on one GPU (3C82741014675164, also with `ARC_XBUF=1`) and
     on two shards under `ARC_TP_SIM=1 --gpus 2` (BC64319553885402, also with `ARC_XBUF=1`). No hang; the old marker
     cleared itself.
-  - **Not run yet:** a discrete card's real room (manoreken2).
+  - **Not run yet:** the cap itself, a hand-set size above the room on a discrete card. It is compiled but has not run
+    on a discrete GPU, since the laptop's iGPU now ignores a hand-set tier. manoreken2's runs, asked on PR #100, are the
+    check for it.
 
 - **2026-11-27, `ARC_XBUF` decided at load when not set** (`zero/engine_stream.h` xbuf_auto, `zero/expert_store.h`
   reopen_buffered; the user: "only when needed then, like in manoreken2's DeepSeek").
