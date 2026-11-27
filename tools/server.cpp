@@ -1032,6 +1032,8 @@ static int server_main(int argc, char** argv) {
   int port = 8090;  // (the port zero-server, both launchers and Docker use; 8080 before 2026-11-19, launcher review)
   bool help_all = false;  // (--help all: every option; --help alone: the short page)
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false, fast = false;
+  // (--no-webui / INFERZERO_NO_WEBUI=1: API only, src/http.h api_only; for use behind a reverse proxy)
+  bool no_webui = getenv("INFERZERO_NO_WEBUI") && atoi(getenv("INFERZERO_NO_WEBUI")) != 0;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   bool whisper_given = false;  // (--whisper on the command line; without it the cache's model is offered, not loaded)
   double whisper_max_min = 180;
@@ -1070,7 +1072,7 @@ static int server_main(int argc, char** argv) {
       {"--no-swap", ""}, {"--no-web-tools", ""},
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
       {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
-      {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
+      {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""}, {"--no-webui", ""},
       {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""}, {"--help-all", ""},
       {"--log-verbosity", "0 errors, 1 warnings, 2 info, 3 debug (or error / warn / info / debug)"},
       {"--log-timestamps", "on or off"}, {"--log-colors", "auto, on or off"}, {"--log-file", "a file"}, {"--log-dir", "a folder"}, {"--log-disable", ""}};
@@ -1218,6 +1220,7 @@ static int server_main(int argc, char** argv) {
     }
     else if (a == "--whisper-max-minutes") whisper_max_min = std::clamp(to_double(a, next()), 1.0, 600.0);
     else if (a == "--no-terminal") terminal = false;
+    else if (a == "--no-webui") no_webui = true;
     else if (a == "--no-prefix-cache") so.prefix_cache = false;
     else if (a == "--prefix-cache-gb") so.prefix_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
     else if (a == "--help" || a == "-h") {
@@ -1503,6 +1506,10 @@ static int server_main(int argc, char** argv) {
             "  --no-terminal         no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell, on Linux\n"
             "                        bash, in the chat's folder after the user allows it; default: on, this computer\n"
             "                        only)\n"
+            "  --no-webui            API only: /v1/* (the OpenAI-compatible API), /health and /props; everything else\n"
+            "                        answers 404 (the web UI, projects, memory, MCP, the tools, sessions, slots, remote\n"
+            "                        access), and requests may not name saved files. For use from other machines behind\n"
+            "                        a reverse proxy (TLS, a key); see USAGE.md. Also INFERZERO_NO_WEBUI=1\n"
             "  -h, --help [all]      the short page; with all, this text\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
@@ -1691,6 +1698,7 @@ static int server_main(int argc, char** argv) {
   // remote access through a tunnel, with a password (tools/server_remote.h, docs/remote-access.md)
   remote::access().load();
   http.gate = [](HttpRequest& rq, HttpResponse& rs) { return remote::access().gate(rq, rs); };
+  http.api_only = no_webui;
   http.head_gate = [](const HttpRequest& rq) { return remote::access().head_gate(rq); };
   // the log's access line for every request the handler answered (docs/logging.md) and /metrics' HTTP counts:
   // polling (GETs that succeed: the web UI's and the launcher's /props, /health, /v1/models) only at -lv 3; an error
@@ -2732,7 +2740,8 @@ static int server_main(int argc, char** argv) {
     LOG_ERR("cannot listen on %s:%d: another program (often a server started earlier) may use the port; stop it, or start this one with --port N\n", host.c_str(), port);
     return 1;
   }
-  zlog::eprintf("listening on http://%s:%d  (OpenAI API at /v1, web UI at /)\n", host.c_str(), port);
+  zlog::eprintf("listening on http://%s:%d  (OpenAI API at /v1%s)\n", host.c_str(), port, no_webui ? "" : ", web UI at /");
+  if (no_webui) zlog::eprintf("API only: /v1/*, /health, /props (--no-webui)\n");
   if (host != "127.0.0.1" && host != "localhost" && host != "::1")  // (review 6.2: there is no authentication)
     zlog::eprintf("warning: listening on %s: anyone who can reach this address can use the model (no API key)\n",
             host.c_str());

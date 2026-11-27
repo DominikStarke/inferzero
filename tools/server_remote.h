@@ -448,7 +448,8 @@ f.addEventListener("submit", async (e) => {
       //  and the forwarding headers other proxies add)
       if (proxied(rq)) {
         deny(rs, 403, "this request came through a tunnel or proxy for a host name that is not in the remote access "
-                      "settings (the tunnel must not rewrite the Host header; only Cloudflare Tunnel is supported)");
+                      "settings (the tunnel must not rewrite the Host header; only Cloudflare Tunnel is supported)"
+                      HTTP_PROXY_HINT);
         return 1;
       }
       return 0;

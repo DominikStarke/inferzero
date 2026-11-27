@@ -1,6 +1,11 @@
 // Minimal HTTP/1.1 server: one thread per connection, keep-alive, CORS, and server-sent events. The sockets go through
 // src/platform_net.h (Winsock2 on Windows, as before; BSD sockets on Linux), the media files through plat::SeqFile.
 #pragma once
+// (the end of the 403s a reverse proxy meets when it forwards a name or forwarding headers: how to set one up; the
+//  rules stay as they are. Also tools/server_remote.h's refusal of a proxied request)
+#define HTTP_PROXY_HINT                                                                                               \
+  "; behind a reverse proxy, forward to 127.0.0.1 with Host: 127.0.0.1 and no X-Forwarded-For / X-Real-IP; see "    \
+  "USAGE.md, 'Using it from other machines'"
 #include "platform_net.h"  // (first: winsock2.h before windows.h)
 #include "platform.h"
 #include <algorithm>
@@ -238,6 +243,18 @@ class HttpServer {
   std::function<std::string(const HttpRequest&)> head_gate;
   // (after each request the handler answered: the log's access line, the metrics; ms from the handler's start)
   std::function<void(const HttpRequest&, const HttpResponse&, double ms)> on_done;
+  // API only (serverz --no-webui, INFERZERO_NO_WEBUI=1; the user, 2026-11-27): the OpenAI-compatible model API under
+  // /v1, /health and /props; every other path answers 404 (the web UI, its files, projects, memory, MCP, the tools,
+  // sessions, slots, remote access), and the rest run as a foreign page's requests (no saved files, chats or projects)
+  bool api_only = false;
+  static bool api_path(const std::string& p) {
+    static const char* const ok[] = {"/health", "/props", "/v1/models", "/v1/chat/completions", "/v1/completions",
+                                     "/v1/embeddings", "/v1/messages", "/v1/messages/count_tokens", "/v1/responses",
+                                     "/v1/audio/transcriptions", "/v1/audio/translations"};
+    for (const char* k : ok)
+      if (p == k) return true;
+    return false;
+  }
 
   // host may be an IPv4 / IPv6 literal or a name (localhost). An unknown host is an error: it must never silently
   // become INADDR_ANY (that exposed the server on every interface when --host was mistyped).
@@ -626,6 +643,19 @@ class HttpServer {
         }
         rs.close_after = tok_close || (version == "HTTP/1.0" && !tok_keep);
       }
+      // (API only, serverz --no-webui: any other path is not there, for every client, this computer's too (a reverse
+      //  proxy on the same machine connects from 127.0.0.1 and would pass as this computer); before the remote gate,
+      //  so its sign-in pages are gone too. The rest is a foreign request's: no saved files, chats or projects)
+      if (api_only) {
+        if (!api_path(rq.path)) {
+          rs.send(404, "application/json", "{\"error\":{\"message\":\"not found: this server runs API only (/v1/*, "
+                                           "/health, /props; --no-webui)\"}}");
+          done_hook(rq, rs, 0);
+          if (rs.streaming() || !rs.alive() || rs.close_after) break;
+          continue;
+        }
+        rq.foreign = true;
+      }
       // A browser page from another site must not drive this no-authentication server (CORS alone would still let a
       // simple POST through). Local pages and the server's own web UI keep working; command-line clients send no Origin.
       const std::string origin = rq.header("origin");
@@ -652,9 +682,9 @@ class HttpServer {
       // (DNS rebinding: a page of another site whose name resolves to 127.0.0.1 sends its own name as Host and as
       //  Origin; a server bound to this machine only answers requests that name this machine)
       if (loopback_ && !rq.header("host").empty() && !local_host(rq.header("host")))
-        return reply_close(c, 403, "this server answers requests for localhost / 127.0.0.1 only");
+        return reply_close(c, 403, "this server answers requests for localhost / 127.0.0.1 only" HTTP_PROXY_HINT);
       if (!loopback_ && !rq.header("host").empty() && !address_host(rq.header("host")))
-        return reply_close(c, 403, "open this server by its address (http://<IP>:<port>/), not by a name (DNS rebinding)");
+        return reply_close(c, 403, "open this server by its address (http://<IP>:<port>/), not by a name (DNS rebinding)" HTTP_PROXY_HINT);
       // (a page of another local server, http://localhost:<other port>: the model API only, see foreign_ok; before,
       //  any local page could post to run_command, the slots, the chats and files)
       if (!origin.empty() && !same_origin(origin, rq.header("host"))) {

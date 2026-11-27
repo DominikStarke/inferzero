@@ -13,7 +13,8 @@
 # Options: --port N (8090), --host H (127.0.0.1), --ctx N (a context of N tokens; default auto, the largest that fits),
 # --gpus N, --mtp (with --model FILE), --think-budget N (8192; -1 no limit), --session-cache-gb N (8; 0 off),
 # --chunk N (default: the server's), --no-auto (not scripts/best-setups.tsv's best measured settings for this PC),
-# --no-browser, --yes (no questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
+# --no-browser, --no-webui (API only, no web UI: /v1/*, /health, /props; for use from other machines behind a reverse
+# proxy (TLS, a key), see USAGE.md; the browser is not opened), --yes (no questions), --log-dir D (the server's log folder, default ~/.inferzero/logs; also ARC_LOG_DIR), --logs (the log's
 # last lines), --model-dirs / --add-model-dir D / --remove-model-dir D (folders searched for .gguf models),
 # --service-name NAME (inferzero), --replace-service, --opt ID[=VALUE] / --no-opt ID / --default-opt ID
 # (comma lists too; ~/.inferzero/options.json, the same as zero-server's on Windows; --no-saved-options: only the
@@ -968,6 +969,7 @@ server_cmd() {  # PATH MTP: fills CMD (the menu's Drafting and Images: SEL_DRAFT
   esac
   [ "${SEL_IMG:-1}" = 0 ] && CMD+=(--no-mmproj)
   [ -n "$HOST" ] && CMD+=(--host "$HOST")
+  [ "${API_ONLY:-0}" = 1 ] && ! extra_has --no-webui && CMD+=(--no-webui)
   [ "${GPUS:-0}" -gt 1 ] && CMD+=(--gpus "$GPUS")
   opt_effect
   CMD+=("${OPT_FLAGS[@]}")
@@ -993,8 +995,12 @@ run_server() {
   while kill -0 "$pid" 2>/dev/null; do
     if [ $opened -eq 0 ] && curl -s --noproxy '*' --max-time 2 -o /dev/null -w '%{http_code}' "${url}health" 2>/dev/null | grep -q '^200$'; then
       opened=1
-      say ""; say "ready: $url  (Ctrl+C stops the server)"
-      if [ "$NO_BROWSER" != 1 ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v xdg-open >/dev/null; then
+      # (API only, --no-webui here or after --: no web UI to open; the API's address said instead)
+      local api=0
+      { [ "${API_ONLY:-0}" = 1 ] || extra_has --no-webui; } && api=1
+      say ""
+      if [ $api = 1 ]; then say "ready: API only at ${url}v1  (Ctrl+C stops the server)"; else say "ready: $url  (Ctrl+C stops the server)"; fi
+      if [ "$NO_BROWSER" != 1 ] && [ $api = 0 ] && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v xdg-open >/dev/null; then
         # (a session of its own: Ctrl+C or a closed terminal must not take the browser with it)
         setsid xdg-open "$url" >/dev/null 2>&1 < /dev/null &
       fi
@@ -1207,7 +1213,7 @@ usage() { sed -n '2,22p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local mode="" arg_model="" arg_dl="" md_add="" md_rm=""
-  PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
+  PORT=8090; HOST=""; GPUS=0; NO_BROWSER=0; API_ONLY=0; YES=0; MTP=0; INSTALL_SERVICE=0; SERVICE_NAME=inferzero
   THINK=8192; SESS_GB=8; CHUNK=""; CTX=""; NO_AUTO=0  # (as zero-server's defaults on Windows: the launcher spec A2 / A3, 2026-11-22)
   REPLACE_SERVICE=0; EXTRA=()
   local opt_args=() a no_saved=0
@@ -1238,6 +1244,7 @@ main() {
       --logs) mode=logs;;
       --no-auto) NO_AUTO=1;;
       --no-browser) NO_BROWSER=1;;
+      --no-webui) API_ONLY=1;;
       --yes) YES=1;;
       --install-service) INSTALL_SERVICE=1;;
       --service-name) SERVICE_NAME=${2:-}; shift;;
