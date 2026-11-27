@@ -49,7 +49,8 @@
       // (an iGPU never takes the tier, a hand-set size included, 2026-11-27: its GPU memory is that RAM, so pinned
       //  copies of experts it already holds only take RAM from it. A test build that let the laptop's 125H take
       //  ARC_XRAM_GB=64 (14.7 GiB pinned beside 17.4 GiB of GPU buffers on 32 GB) hung the GPU in moe_quant)
-      zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB ignored: an integrated GPU's memory is the RAM already\n");
+      if (!tp_on() || opt.tp_rank == 0)  // (a split model: GPU 0 says it for all)
+        zlog::eprintf("inferzero: --expert-ram-gb / ARC_XRAM_GB ignored: an integrated GPU's memory is the RAM already\n");
     } else if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
     } else if (ram_gb < 0 && !zrt::integrated() && tp_on()) {

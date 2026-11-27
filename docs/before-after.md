@@ -95,7 +95,11 @@ That property is what every speed change is held to:
   - **A GPU hang in testing:** a second test build, with a 0 budget taken as unknown, gave the iGPU a 14.7 GiB pinned
     tier beside 17.4 GiB of GPU buffers on 32 GB, and the run with ARC_XBUF=1 hung the GPU (moe_quant, 07:08 UTC; the
     marker set, no GPU runs until a restart). From it: an iGPU now ignores a hand-set tier, which main still takes.
-  - **Not run yet:** this build on the GPU (after the restart), and a discrete card's real room (manoreken2).
+  - **After the restart, this build** (no iGPU bypass), the 35B with `ARC_XRAM_GB=64`: the iGPU ignores it with one line
+    (GPU 0's, also on two shards), and the logits equal main's on one GPU (3C82741014675164, also with `ARC_XBUF=1`) and
+    on two shards under `ARC_TP_SIM=1 --gpus 2` (BC64319553885402, also with `ARC_XBUF=1`). No hang; the old marker
+    cleared itself.
+  - **Not run yet:** a discrete card's real room (manoreken2).
 
 - **2026-11-27, `ARC_XBUF` decided at load when not set** (`zero/engine_stream.h` xbuf_auto, `zero/expert_store.h`
   reopen_buffered; the user: "only when needed then, like in manoreken2's DeepSeek").
