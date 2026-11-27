@@ -85,6 +85,32 @@ bit. Each set is recorded with its build and driver version, since the f32 parts
 The DPAS emulations (`ARC_MOE_RG_XEMU`, `ARC_GDN_XEMU`, the attention one) cover moe_rg, DeltaNet and attention on
 the laptop. `gemm_x8`, `gemm_xw` and `gemm_x16` stay contributor-only.
 
+**The harness:** `tests/gemm_golden.ps1` (merged 2026-11-28, 5d63cc2) runs these kinds through `bench\gpu_guard.ps1`
+and writes `results.tsv` to a temp folder. A row is one of:
+- ok;
+- rec (its own hash, recorded);
+- DIFFERS (a path that must equal base doesn't);
+- CHANGED (unlike `-Baseline`);
+- SHORT (fewer than 16 tokens generated);
+- FAIL / ERROR.
+
+The shell's `ARC_*` / `INFERZERO_*` / `ZE_*` variables are cleared for the runs, except `ARC_DATA_DIR` and
+`ZE_AFFINITY_MASK`. Until the shared layer exists, it compares fusion off / on and the paths that must equal base.
+Phase 1 adds `ARC_GEMM_SHARED` on / off.
+
+**The laptop's baseline** (125H Xe-LPG, driver 32.0.101.9175, main 204a3e6 + the harness; 54 runs, green twice in a
+row, every hash equal between the two):
+
+| Model | Base hash | Kinds run | Notes |
+|---|---|---|---|
+| Qwen3.5 4B UD-Q4_K_XL | 70906E39A9EE61BB | all | host, layer and the six fusion switches equal base; slots OK |
+| Qwen3.5 9B UD-Q4_K_XL | 5E65E3BD605C2168 | all | the same |
+| Qwen3.8 27B GSQ IQ3_S (MTP) | 5C199FD26C0DEF20 | all | the same. `ARC_H8=0` also gives the base hash: the 27B takes no H8 on the iGPU, so `ARC_H8_NORM` / `H8_REUSE` / `H8_SWI` check nothing there; `GEMV_GU`, `GDN_FUSE2` and `BATCH` still do |
+| Qwen3.6 35B-A3B UD-IQ4_XS | EF37993715CC7D39 | no host / fusion / option (MoE) | layer equals base; slots OK |
+| Inkling 2 Mini UD-IQ4_XS | 8C9B0CF29F635EFC | base, short | it refuses the splits and MTP, batches no slots, and is MoE |
+
+A baseline holds only for its build and driver. After a driver update, record a new one before comparing.
+
 ## D. Routes
 
 One row per model x feature x setup: **works** (its proof), **refused** (the refusal's file:line), or **unknown**.
