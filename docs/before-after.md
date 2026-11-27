@@ -103,6 +103,10 @@ That property is what every speed change is held to:
       unchanged. Before this fix the head escaped the split, as one long launch over host memory: the case #99 guards
       against.
     - Token step: 67.1 → 74.4 ms (two runs: 74.4, 74.5), from those launches.
+    - The DeltaNet qz stack (the 4B's UD file mixes types and has none; the 27B GSQ IQ3_S has it), 3 GiB forced
+      into host memory, `ARC_HOST_GEMV_MB=1`, 16 tokens: `gemm_qkvz` 208 → 2,560 launches (135.0 → 187.3 ms),
+      `lm_head` 16 → 10,928; token step 299.4 → 321.6 ms. Logits after 480 tokens + 8 equal main's
+      (E809E8C622634FD7).
     - Not a cost on iGPUs, where the default is one launch. A discrete card's default (4 MB) gives about a quarter as
       many pieces; its speed is measured on users' cards.
   - Memory: unchanged.
