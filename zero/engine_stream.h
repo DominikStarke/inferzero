@@ -162,8 +162,9 @@
     const double free_ram = (double)plat::ram_available(), after = free_ram - (double)st.ram_cap() * N - 8.0 * GiB;
     const bool on = forced >= 0 ? forced == 1 : all > held && after >= 16.0 * GiB;
     if (on) st.reopen_buffered();
-    static std::atomic<bool> said{false};  // (once a process: a split model's GPUs each decide)
-    if (said.exchange(true)) return;
+    // (one line a load: the engine of GPU 0 of a split model and the first stage of a layer split says it, so a second
+    //  model loaded in the same process (serverz's model menu) says its own; the Researcher's review of 697b21c)
+    if ((tp_on() && opt.tp_rank != 0) || (opt.pp_size > 1 && opt.pp_begin > 0)) return;
     const char* how = on ? "reads through the OS file cache" : "reads unbuffered";
     if (forced >= 0)
       zlog::eprintf("inferzero: expert file %s (ARC_XBUF=%d)\n", how, forced);
