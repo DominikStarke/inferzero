@@ -77,11 +77,29 @@ function Get-Runs([hashtable]$mk, [string]$kind) {
     "tp3" { if (-not $mk.inkling) { return , @(@{ id = "tp3"; args = $long + @("--gpus", "3"); env = @{ ARC_TP_SIM = "1" }; expect = "-" }) } }
     "layer" { if (-not $mk.inkling) { return , @(@{ id = "layer"; args = $long + @("--gpus", "2", "--split", "layer"); env = @{ ARC_TP_SIM = "1" }; expect = "base" }) } }
     "fusion" {
-      if ($mk.moe) { return , @() }
       $r = @()
-      foreach ($s in @(@("ARC_H8_NORM", "0"), @("ARC_H8_REUSE", "0"), @("ARC_H8_SWI", "0"), @("ARC_GEMV_GU", "1"),
-                       @("ARC_GDN_FUSE2", "1"), @("ARC_BATCH", "64"))) {
-        $r += @{ id = "fusion " + $s[0] + "=" + $s[1]; args = $long; env = @{ $s[0] = $s[1] }; expect = "base" }
+      # (one switch each; env: the switches that turn the fused form off, or the opt-in one on)
+      $sw = @()
+      if (-not $mk.moe) {
+        $sw += @(@(@{ ARC_H8_NORM = "0" }), @(@{ ARC_H8_REUSE = "0" }), @(@{ ARC_H8_SWI = "0" }), @(@{ ARC_GEMV_GU = "1" }),
+                 @(@{ ARC_GDN_FUSE2 = "1" }), @(@{ ARC_BATCH = "64" }))
+      }
+      # (the DeltaNet conv + state update and the gates in the recurrence: every Qwen model, the 35B's too)
+      if (-not $mk.inkling) { $sw += , @(@{ ARC_GDN_FUSE = "0" }) }
+      # (Inkling's controller gain + forget + apply in one launch)
+      if ($mk.inkling) { $sw += , @(@{ ARC_INK_FUSE = "0" }) }
+      # (the experts without moe_rg: on the 35B every chunk then takes decode + GEMM (moe_gemm), which moe_rg says it
+      #  equals bit for bit (engine_moe.h); Inkling's NVFP4 / IQ4_NL down layers take the per-tile kernels instead, so
+      #  its row compares moe_rg with per tile, not with decode + GEMM; checked with ARC_GEMM_PLAN=1, 2026-11-28)
+      if ($mk.moe) { $sw += , @(@{ ARC_MOE_RG_MIN = "1000000"; ARC_MOE_GEMM_MIN = "1" }) }
+      foreach ($s in $sw) {
+        $e = $s[0]
+        $id = "fusion " + (($e.Keys | Sort-Object | ForEach-Object { "$_=$($e[$_])" }) -join " ")
+        $x = "base"
+        # (Inkling without moe_rg: per tile, another kernel and other numbers than moe_rg (2026-11-28: DE5E8415DE35CD96
+        #  against base 8C9B0CF29F635EFC), so its own hash, recorded, not a must-equal row; its KL is still to measure)
+        if ($mk.inkling -and $e.ContainsKey("ARC_MOE_RG_MIN")) { $id += " (per tile)"; $x = "-" }
+        $r += @{ id = $id; args = $long; env = $e; expect = $x }
       }
       return , $r
     }
