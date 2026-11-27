@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-27 (unreleased): the launchers tell Iris Xe / UHD from Meteor Lake; options for H8 and the expert file cache
+## 2026-11-27 (2026.11.27.02): the launchers tell Iris Xe / UHD from Meteor Lake; options for H8 and the expert file cache
 
 - **The launchers tell the iGPUs apart by their PCI device ID**, as the engine does. Iris Xe and UHD Graphics (Tiger /
   Alder / Raptor Lake) were taken for Meteor Lake on Windows, with its options and its NPU setting on PCs that have no
@@ -10,7 +10,7 @@
   as the 9B) and **"Expert file through the OS file cache"** (`ARC_XBUF=1`). More precise prompt reading now lists
   Meteor Lake / Arrow Lake-S, where H8 runs since 2026.11.26.03.
 
-## 2026-11-27 (unreleased): the expert file through the OS file cache when it is needed
+## 2026-11-27 (2026.11.27.02): the expert file through the OS file cache when it is needed
 
 - **`ARC_XBUF` is decided at load when it is not set.** The OS file cache is used when the GPU's expert cache and the
   RAM tier together cannot hold every expert, and at least 16 GiB of RAM stays free after the tier and an 8 GiB
