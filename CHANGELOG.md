@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-28 (unreleased): more fused forms in the golden test set
+
+- **`tests/gemm_golden.ps1`'s fusion rows** now also switch off the DeltaNet fusions (`ARC_GDN_FUSE=0`, every Qwen
+  model, the 35B-A3B's too) and Inkling 2's fused controller (`ARC_INK_FUSE=0`). For the MoE models, a row runs the
+  experts without `moe_rg` (`ARC_MOE_RG_MIN=1000000 ARC_MOE_GEMM_MIN=1`). On the 35B-A3B every chunk then takes decode
+  + GEMM, and the logits equal `moe_rg`'s bit for bit, as the code says. On Inkling 2 the down layers take the per-tile
+  kernels instead, which give other numbers: that row records its own hash.
+
 ## 2026-11-28 (unreleased): a contributor kit for the shared GEMM layer's measurements
 
 - **`bench\contrib_kit.ps1`** (Windows) and **`bench/contrib_kit.sh`** (Linux): one command on your card writes one file
