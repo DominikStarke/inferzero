@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-28 (unreleased): `gemm_check`, today's matrix kernels against CPU references
+
+- **`bin\gemm_check`** (new, `tools/gemm_check.cpp` with `zero/gemm_check.h`): checks the engine's matrix products
+  on random weights of every GGUF type it takes, at the shapes that break kernels (N not a multiple of 16, K = 640,
+  F = 1,152 and 512, the head's 200,058 and 248,320 rows) and random ones. It uses 1, 2, 8, 9, 127, 128, 129 and a
+  chunk's rows, with the weights resident and just in time. The weights go through the same load step as a model's, so
+  they take the same kernels. Each result is compared with a CPU sum, in double, of what that kernel itself read:
+  - the raw rows for the one-token and 2-8-token GEMVs;
+  - the W8 form for the prompt GEMM, so Q2_K / Q4_K / Q5_K against their requantized values;
+  - the rotated int8 forms for H8;
+  - decode32's int8 codes for Q4_1, Q5_1 and NVFP4.
+
+  It also runs each case twice and compares the bits, compares the resident and just-in-time results, and lists each
+  case's kernels with their build options, private and spill bytes. A shape past the given model's buffers is listed
+  as skipped, with the reason.
+
+  Usage: `gemm_check --model <model.gguf> --out <file.tsv> [--quick]`, through `bench\gpu_guard`. It needs a model
+  for the engine's buffers only (its own weights are not checked). On the laptop (the 4B, with H8, and the 27B, W8
+  GEMMs) all 1,222 cases of `--quick` pass, the largest error 7.9e-7 of the output's range; every case repeats bit
+  for bit, and every resident / just-in-time pair is equal. It found NVFP4's one-token GEMV spilling 512-2,912 bytes
+  on Meteor Lake (no model takes that path: Inkling 2's NVFP4 tensors are its experts).
+
 ## 2026-11-28 (unreleased): fixes from the audit of the GEMM inventory's tools
 
 - **`ARC_GEMM_PLAN=1`'s summary** has a memory line: the GPU memory the engine counts (what `--ctx auto` plans with)

@@ -1256,6 +1256,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     CL_CHECK(clEnqueueNDRangeKernel(cl_.queue, k, dims, nullptr, gws, lws, 0, nullptr, profile ? &e : nullptr));
     if (profile) events_.push_back({prof_group_ >= 0 ? std::string(name) + "@" + std::to_string(prof_group_) : std::string(name), e});
     if (plan_on()) plan_note(name, k, dims, gws, lws, loc);  // (after the launch: the group size clrt chose is set)
+    if (gc_log_) gc_note(k);  // (tools/gemm_check.cpp: the kernels a check launched, zero/gemm_check.h)
   }
 #include "gemm_plan.h"  // (ARC_GEMM_PLAN=1: the log of each launch's kernel and options)
   void collect_profile() {
@@ -2171,6 +2172,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void head(int T) { head_rows(T - 1, 1, out_norm_, has_mtp ? hlast_ : nullptr); }
 
 #include "engine_drafters.h"  // (Speculative decoding)
+#include "gemm_check.h"  // (tools/gemm_check.cpp: today's GEMM forms against CPU references at random sizes)
 
  private:
 };
