@@ -43,7 +43,8 @@ struct ServeOpts {
   // for clips of more than 4 minutes: the 14-minute file 129 -> 80 s with 4; 1 by default since 2026-10-30)
   int asr_slots = 1;
   // --gpus N: the model split over N GPUs (zero/mgpu): the server drives shard 0, its calls mirrored on the others.
-  // Qwen3.5 / 3.6 / 3.8 text only for now: no MTP / DFlash2, images, saved prompts or sessions, warm-up
+  // Qwen3.5 / 3.6 / 3.8 text only for now: no MTP / DFlash2, images, saved prompts or sessions (the kernels' warm-up
+  // runs on every GPU since 2026-11-27, #102)
   int gpus = 1;
   // --split layer (zero/mgpu/engine_pp.h): the GPUs as stages over ranges of the layers instead (--split tensor, the
   // default: each layer's matrices split); --tensor-split a,b,...: GPU g's share of the layers (GPU 0: the last ones)
@@ -379,16 +380,33 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     LOG_WRN("model information incomplete: %s\n", e.what());
   }
   bool warmed = false;  // (the kernels compiled now, first start after an update: the audio encoder's too, below)
-  if (so.gpus == 1) {  // compile kernels before serving (all of the generation's after an update; --gpus: not yet)
+  {  // compile kernels before serving (all of the generation's after an update)
+    // (a split model too since 2026-11-27: the calls below are mirrored on every shard / stage, each building its own
+    //  GPU's kernels (the shards at once, the stages in turn). Before, only one GPU warmed up: zchef2k's first request
+    //  on 2 x A770, --split layer, took ~15 s, its kernels compiling; #102. The split's own marker: its shape, every
+    //  stage's layers and GPU, and the sums' kernels (tp.cl), so a one-GPU run's marker does not stand for it)
+    std::string split_key;
+    if (L->tp) {
+      std::ifstream f(eng.opt.kernel_dir + "/tp.cl", std::ios::binary);
+      const std::string tp_src((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      split_key = "|tp" + std::to_string(so.gpus) + "|" + std::to_string(ClRt::fnv1a(tp_src));
+    } else if (L->pp) {
+      split_key = "|pp" + std::to_string(L->pp->stages());
+      for (int r = 0; r < L->pp->stages(); ++r) {
+        const Engine& se = L->pp->stage(r);
+        split_key += "|" + std::to_string(se.opt.pp_begin) + "-" + std::to_string(se.opt.pp_end) + "@" + se.gpu_id();
+      }
+    }
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
     // (a tokenizer that gives no token for "Hi": no warm-up, the kernels compile on the first request. #102, a tiny
     //  test model whose vocabulary encoded it to nothing, and [0] read past the end)
     const std::vector<int> hi = L->tok->encode("Hi", false);
     if (hi.empty()) LOG_WRN("warm-up skipped: the tokenizer gives no token for \"Hi\"\n");
-    if (!hi.empty() && (warmed = eng.warm_up_once(hi[0], so.warm_prompt)))
-      zlog::eprintf("kernels warmed up for this model in %.1f s (once after an update)\n",
-              std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
+    if (!hi.empty() && (warmed = eng.warm_up_once(hi[0], so.warm_prompt, split_key)))
+      zlog::eprintf("kernels warmed up for this model in %.1f s (once after an update)%s\n",
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count(),
+              L->tp || L->pp ? (", on " + std::to_string(so.gpus) + " GPUs").c_str() : "");
     // (Inkling 2's DSpark drafter: its first draft in a process costs ~150-200 ms, every start, the kernel cache
     //  warm or not (zero/engine_dspark.h, docs/inkling2.md): paid here, not by the first answer. runz keeps it)
     if (eng.dsp_on() && eng.ctx > 16 && !hi.empty()) {

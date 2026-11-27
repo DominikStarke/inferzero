@@ -1,6 +1,16 @@
 # Changelog
 
-## 2026-11-27 (unreleased): fixes from the review of the day's changes
+## 2026-11-27 (unreleased): the server warms up a split model's kernels too
+
+- **`serverz --gpus N` (both `--split tensor` and `--split layer`) warms up the kernels before it serves**, as on one
+  GPU. Before, a split model skipped the warm-up, and its first request waited while every GPU built its kernels:
+  ~15 s on two Arc A770s with `--split layer` (zchef2k, #102). The warm-up runs on every GPU: the tensor split's
+  shards at once, the layer split's stages in turn, each building its own GPU's kernels. It leaves nothing behind: the
+  first request's answer is the same as without it. The "kernels warmed up ... in N s" line says how many GPUs.
+  Each split (its GPU count, its stages' layers and GPUs) is warmed once after an update, apart from a one-GPU run of
+  the same model.
+
+## 2026-11-27 (2026.11.27.03): fixes from the review of the day's changes
 
 - **Weights kept in host memory have their one-token GEMVs split into pieces on every model kind**, not only on
   some. Since 2026.11.27.01 a discrete card that holds part of a dense model in host memory reads it in pieces of at
@@ -16,7 +26,7 @@
   "Intel(R) Arc(TM) Graphics", as the Linux launcher already did.
 - **`ARC_GV_SMALL=2` leaves Q4_K / Q5_K alone when `ARC_GV_K4=0` is set.**
 
-## 2026-11-27 (unreleased): a hand-set expert RAM tier is capped to what is safe
+## 2026-11-27 (2026.11.27.03): a hand-set expert RAM tier is capped to what is safe
 
 - **`--expert-ram-gb` / `ARC_XRAM_GB` set by hand above what Windows lets the GPUs map is capped to it**, not only
   warned about. A tier past it hung the GPUs or ran out of memory (manoreken2: 47 GiB a GPU ran, 48 hung). One start
