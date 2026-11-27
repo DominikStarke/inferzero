@@ -123,6 +123,7 @@
           }
         }
       }
+    gc_fused(o, types, rows, tm, kmax, mmax);
     // (each prompt form's end-to-end error against the plain int8 form's, the one-token GEMV of the same type and shape:
     //  a rotation that does not match its weights', or a decode wrong on both sides, shows here and not in err)
     for (GcRow& r : rows) {
@@ -617,4 +618,344 @@
     gc_keep(resident, got);
   }
   void gc_keep(bool resident, const std::vector<float>& got) { gc_last_[resident ? 1 : 0] = got; }
+
+  // ---- stage 2: today's fused forms against their unfused chains, bit for bit, at random sizes (the design's rule:
+  // "every fused form must equal its unfused chain bit for bit"). Each runs the engine's own calls in the order the
+  // model files make them (engine_qwen.h layer_ffn for the FFN's); a form whose switch is off on this GPU, or that the
+  // engine did not take, is a row "not taken" (proves nothing), and a difference is a row "differs" (recorded: a
+  // finding, the exit code unchanged). Forms that need a layer's own state (the DeltaNet conv / gates, attn_prep, the
+  // H8 output rotations of ARC_H8_OUT) are not here: the golden set's fusion rows prove them on the models
+  // a weight made for a fused check (resident: no stage buffers), freed with its H8 records when the check ends
+  struct GcW {
+    Engine* e;
+    GpuWeight w;
+    std::vector<uint8_t> raw;
+    GcW(Engine* en, uint32_t type, int N, int K, int role, const std::vector<uint8_t>* rows = nullptr) : e(en) {
+      raw = rows ? *rows : e->gc_rows(type, N, K);
+      const bool r0 = e->w8_resident;
+      e->w8_resident = true;
+      struct Back { Engine* e; bool r; ~Back() { e->w8_resident = r; } } back{e, r0};
+      w = e->make_weight(type, raw.data(), raw.size(), N, K, role);
+    }
+    ~GcW() {
+      for (int i = 0; i < kRoles; ++i) e->stage_owner_[i] = nullptr, e->stage_h8_[i] = false, e->stage_packed_[i] = 0;
+      auto it = e->h8_col_.find(&w);
+      if (it != e->h8_col_.end()) { e->free_buf(it->second); e->h8_col_.erase(it); }
+      auto ir = e->h8_res_.find(&w);
+      if (ir != e->h8_res_.end()) { e->free_buf(ir->second); e->h8_res_.erase(ir); }
+      e->h8_res_rot_.erase(&w);
+      e->free_buf(w.raw), e->free_buf(w.wq), e->free_buf(w.wh);
+    }
+    GcW(const GcW&) = delete;
+    GcW& operator=(const GcW&) = delete;
+  };
+  struct GcBuf {  // (a buffer freed with the check)
+    Engine* e;
+    cl_mem m = nullptr;
+    GcBuf(Engine* en, size_t bytes, const void* host = nullptr) : e(en) { m = e->buf(bytes, host); }
+    ~GcBuf() { e->free_buf(m); }
+    GcBuf(const GcBuf&) = delete;
+    GcBuf& operator=(const GcBuf&) = delete;
+  };
+  std::vector<float> gc_randf(size_t n, float lo, float hi) {
+    std::vector<float> v(n);
+    for (auto& x : v) x = lo + (hi - lo) * gc_uniform();
+    return v;
+  }
+  // the activations' quantized form as the next GEMV / GEMM reads it: aq_ rows [0, T) of K, asc_ and absum_ of those
+  // rows, and the f32 copy at aq_ + H8F when the engine keeps one
+  std::vector<uint8_t> gc_act_bytes(int K, int Mp, int T, int a32) {
+    const int B = a32 ? 32 : 256;
+    const std::vector<int8_t> q = gc_read<int8_t>(aq_, (size_t)Mp * K);
+    const std::vector<float> s = gc_read<float>(asc_, (size_t)(K / B) * Mp);
+    const std::vector<uint16_t> b = gc_read<uint16_t>(absum_, (size_t)(K / 16) * Mp);
+    std::vector<uint8_t> o;
+    auto add = [&](const void* p, size_t n) { o.insert(o.end(), (const uint8_t*)p, (const uint8_t*)p + n); };
+    for (int m = 0; m < T; ++m) {
+      add(&q[(size_t)m * K], K);
+      for (int j = 0; j < K / B; ++j) add(&s[(size_t)j * Mp + m], 4);
+      for (int j = 0; j < K / 16; ++j) add(&b[(size_t)j * Mp + m], 2);
+    }
+    if (h8f_off_) {  // (the f32 copy H8R rotates from: rows of K floats after the int8 rows)
+      std::vector<float> f((size_t)T * K);
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, aq_, CL_TRUE, h8f_off_, f.size() * 4, f.data(), 0, nullptr, nullptr));
+      add(f.data(), f.size() * 4);
+    }
+    return o;
+  }
+  // H8R's rotated input of the next GEMM: h8_aq_ rows [0, T) and their token scales
+  std::vector<uint8_t> gc_h8_bytes(int K, int Mp, int T) {
+    const std::vector<int8_t> q = gc_read<int8_t>(h8_aq_, (size_t)Mp * K);
+    const std::vector<float> s = gc_read<float>(h8_asc_, (size_t)Mp);
+    std::vector<uint8_t> o((const uint8_t*)q.data(), (const uint8_t*)q.data() + (size_t)T * K);
+    o.insert(o.end(), (const uint8_t*)s.data(), (const uint8_t*)(s.data() + T));
+    return o;
+  }
+  static void gc_cmp(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, GcRow& r) {
+    if (a.size() != b.size()) { r.status = "ERROR"; r.note = "the two outputs differ in size"; return; }
+    size_t nd = 0;
+    for (size_t i = 0; i < a.size(); ++i) nd += a[i] != b[i];
+    r.status = nd ? "differs" : "ok";
+    r.err = a.empty() ? 0 : (double)nd / a.size();  // (the share of bytes that differ)
+    if (nd) r.note = std::to_string(nd) + " of " + std::to_string(a.size()) + " bytes differ";
+  }
+  static void gc_cmpf(const std::vector<float>& a, const std::vector<float>& b, GcRow& r) {
+    std::vector<uint8_t> x((const uint8_t*)a.data(), (const uint8_t*)(a.data() + a.size())),
+        y((const uint8_t*)b.data(), (const uint8_t*)(b.data() + b.size()));
+    gc_cmp(x, y, r);
+    if (r.status != "differs") return;
+    double dm = 0, vm = 0;
+    for (size_t i = 0; i < a.size(); ++i) dm = std::max(dm, (double)std::fabs(a[i] - b[i])), vm = std::max(vm, (double)std::fabs(b[i]));
+    r.err = vm > 0 ? dm / vm : dm;  // (floats: the largest difference over the range)
+    r.note = "largest difference " + std::to_string(r.err).substr(0, 8) + " of the range; " + r.note;
+  }
+  void gc_fused(const GcOptions& o, const std::vector<uint32_t>& types, std::vector<GcRow>& rows, int tm, int kmax, int mmax) {
+    const int T0 = cur_T_;
+    struct Back { Engine* e; int t; ~Back() { e->cur_T_ = t; e->h8_pre_live_ = false; e->h8_last_K_ = -1; } } back{this, T0};
+    const int reps = o.quick ? 2 : 6;  // (random sizes a form)
+    const float eps = hp.eps;
+    (void)eps;
+    auto row = [&](const std::string& form, uint32_t type, int N, int K, int T) {
+      GcRow r;
+      r.type = type ? ggml_type_name(type) : "-";
+      r.shape = "random";
+      r.form = form;
+      r.ref = "unfused chain";
+      r.N = N, r.K = K, r.T = T;
+      return r;
+    };
+    auto mp_of = [&](int T) { return (T + tm - 1) / tm * tm; };
+    // the quantized types the fused checks take (a few with --quick: one of each kind)
+    std::vector<uint32_t> ft;
+    for (uint32_t t : types)
+      if (t != GGML_BF16 && t != GGML_F16 &&
+          (!o.quick || t == GGML_Q8_0 || t == GGML_Q4_K || t == GGML_Q6_K || t == GGML_IQ3_S || t == GGML_IQ4_XS || t == GGML_Q5_1))
+        ft.push_back(t);
+    auto rand_T = [&](bool prompt) {
+      if (!prompt) return 1 + (int)gc_below(8);
+      const int hi = std::min(mmax, 512);
+      return 9 + (int)gc_below((uint64_t)std::max(1, hi - 8));
+    };
+    std::vector<int> e_sizes;  // (row lengths: multiples of 512 up to the activations' buffers, 8192 at most)
+    for (int k = 512; k <= std::min(kmax, 8192); k += 512) e_sizes.push_back(k);
+    if (e_sizes.empty()) return;
+    // 1. the norm and H8R's rotation in one kernel (rmsnorm_h8r) against rmsnorm_quant + h8_act
+    for (int i = 0; i < reps; ++i) {
+      // (half the rows of an odd number of 512s: rotation blocks of 512, the form Xe-LPG takes by default)
+      int K = e_sizes[gc_below(e_sizes.size())];
+      if (i % 2 == 0) K = std::min(512 * (int)(1 + 2 * gc_below(8)), std::min(kmax, 8192) / 512 * 512 - (std::min(kmax, 8192) / 512 % 2 ? 0 : 512));
+      if (K < 512) K = 512;
+      const int T = rand_T(true), Mp = mp_of(T);
+      GcRow r = row("norm+rot (rmsnorm_h8r)", GGML_Q8_0, 16, K, T);
+      if (Mp > mmax) continue;
+      try {
+        GcW next(this, GGML_Q8_0, 16, K, 7);
+        const std::vector<float> xs = gc_randf((size_t)Mp * K, -2, 2), ws = gc_randf(K, 0.5f, 1.5f);
+        GcBuf x(this, xs.size() * 4, xs.data()), nw(this, ws.size() * 4, ws.data());
+        cur_T_ = T;
+        const int a32 = act32_for(false);
+        std::vector<uint8_t> fused, plain;
+        bool taken = false;
+        {
+          H8Share sh(this);
+          rmsnorm_h8(x.m, 0, nw.m, K, Mp, T, a32, next.w);
+          taken = h8_pre_live_;
+          if (taken) fused = gc_h8_bytes(K, Mp, T);
+        }
+        if (!taken) {
+          r.status = "not taken";
+          r.note = "rmsnorm_h8r not taken here (H8 off, ARC_H8_NORM off, or its row limits)";
+        } else {
+          rmsnorm_quant(x.m, 0, nw.m, K, Mp, T, a32);
+          h8_act(Mp, K, a32 != 0);
+          plain = gc_h8_bytes(K, Mp, T);
+          gc_cmp(fused, plain, r);
+        }
+      } catch (const std::exception& e) {
+        r.status = "ERROR", r.note = e.what();
+      }
+      rows.push_back(r);
+    }
+    for (uint32_t type : ft) {
+      // 2. the FFN's SwiGLU in the up GEMM's epilogue (a = 2), then swiglu_quant's copy (fused = 1), against both GEMMs
+      //    into [gate | up] and swiglu_quant's SwiGLU (fused = 0): the next GEMM's input bit for bit; and 3. with H8R,
+      //    the down GEMM rotating big_ itself (ARC_H8_SWI, H8Src) against swiglu_quant + its own rotation
+      for (int i = 0; i < reps; ++i) {
+        const int E = e_sizes[gc_below(e_sizes.size())], F = 256 * (int)(1 + gc_below(32)), T = rand_T(true), Mp = mp_of(T);
+        if (Mp > mmax || F > kmax) continue;
+        GcRow r = row("SwiGLU in the up GEMM", type, F, E, T);
+        GcRow r3 = row("down GEMM rotating the SwiGLU (H8_SWI)", type, E, F, T);
+        try {
+          GcW g(this, type, F, E, 7), u(this, type, F, E, 8), d(this, type, E, F, 9);
+          const std::vector<float> xs = gc_randf((size_t)Mp * E, -2, 2), ws = gc_randf(E, 0.5f, 1.5f);
+          GcBuf x(this, xs.size() * 4, xs.data()), nw(this, ws.size() * 4, ws.data());
+          GcBuf cf(this, (size_t)Mp * F * 4), cu(this, (size_t)Mp * 2 * F * 4), d1(this, (size_t)Mp * E * 4),
+              d2(this, (size_t)Mp * E * 4);
+          cur_T_ = T;
+          const int a32 = act32_for(false);
+          auto swiglu = [&](cl_mem src, int fused) {
+            int FF = F, MM = Mp, TT = T, a = a32, fu = fused, gelu = 0;
+            set_args(k_swiglu_, 0, src, FF, MM, TT, aq_, asc_, absum_, a, fu, gelu);
+            size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+            run("swiglu_quant", k_swiglu_, 2, gws, lws);
+          };
+          {  // (fused, as layer_ffn's prompt path)
+            H8Share sh(this);
+            rmsnorm_h8(x.m, 0, nw.m, E, Mp, T, a32, g.w);
+            matmul("gemm_gate", g.w, Mp, cf.m, F, 0, 0, a32);
+            matmul("gemm_up", u.w, Mp, cf.m, F, 0, 2, a32);
+          }
+          std::vector<float> cfv = gc_read<float>(cf.m, (size_t)Mp * F);
+          swiglu(cf.m, 1);
+          const std::vector<uint8_t> fused = gc_act_bytes(F, Mp, T, a32);
+          {  // (unfused: [gate | up], swiglu_quant computes the SwiGLU)
+            rmsnorm_quant(x.m, 0, nw.m, E, Mp, T, a32);
+            H8Share sh(this);
+            matmul("gemm_gate", g.w, Mp, cu.m, 2 * F, 0, 0, a32);
+            matmul("gemm_up", u.w, Mp, cu.m, 2 * F, F, 0, a32);
+          }
+          swiglu(cu.m, 0);
+          gc_cmp(fused, gc_act_bytes(F, Mp, T, a32), r);
+          // 3: from the fused epilogue's f32 rows (cf), the down GEMM's input both ways
+          if (!h8_swi_ok(d.w, Mp)) {
+            r3.status = "not taken";
+            r3.note = "H8_SWI not taken here (needs H8R with the f32 copy)";
+          } else {
+            {
+              H8Src src(this, cf.m);
+              matmul("gemm_down", d.w, Mp, d1.m, E, 0, 0, a32);
+            }
+            swiglu(cf.m, 1);
+            matmul("gemm_down", d.w, Mp, d2.m, E, 0, 0, a32);
+            const std::vector<float> a = gc_read<float>(d1.m, (size_t)T * E), b = gc_read<float>(d2.m, (size_t)T * E);
+            gc_cmpf(a, b, r3);
+          }
+          (void)cfv;
+        } catch (const std::exception& e) {
+          r.status = "ERROR", r.note = e.what();
+        }
+        rows.push_back(r);
+        if (!r3.status.empty()) rows.push_back(r3);
+      }
+      // 4. stacked weights (qkv + z, the router + the shared expert's gate / up, gate + up stacked) against each matrix
+      //    alone: a row's sum must not depend on the rows around it, at one token, 2-8 and a prompt chunk
+      for (int i = 0; i < reps; ++i) {
+        const int K = e_sizes[gc_below(e_sizes.size())], N1 = 16 * (int)(1 + gc_below(256)), N2 = 16 * (int)(1 + gc_below(256));
+        for (int cls = 0; cls < 3; ++cls) {
+          const int T = cls == 0 ? 1 : cls == 1 ? 2 + (int)gc_below(7) : rand_T(true), Mp = mp_of(T);
+          if (Mp > mmax) continue;
+          GcRow r = row(std::string("stacked rows (") + (cls == 0 ? "one token" : cls == 1 ? "2-8 tokens" : "prompt") + ")",
+                        type, N1 + N2, K, T);
+          try {
+            const std::vector<uint8_t> ra = gc_rows(type, N1, K), rb = gc_rows(type, N2, K);
+            std::vector<uint8_t> rs(ra);
+            rs.insert(rs.end(), rb.begin(), rb.end());
+            GcW a(this, type, N1, K, 0, &ra), b(this, type, N2, K, 1, &rb), s(this, type, N1 + N2, K, 0, &rs);
+            const std::vector<float> xs = gc_randf((size_t)Mp * K, -2, 2), ws = gc_randf(K, 0.5f, 1.5f);
+            GcBuf x(this, xs.size() * 4, xs.data()), nw(this, ws.size() * 4, ws.data());
+            GcBuf ca(this, (size_t)Mp * (N1 + N2) * 4), cs(this, (size_t)Mp * (N1 + N2) * 4);
+            cur_T_ = T;
+            const int a32 = act32_for(false);
+            const int ld = T == 1 ? 0 : N1 + N2;
+            rmsnorm_quant(x.m, 0, nw.m, K, Mp, T, a32);
+            {
+              H8Share sh(this);
+              matmul("gemm_a", a.w, Mp, ca.m, N1 + N2, 0, 0, a32);
+              matmul("gemm_b", b.w, Mp, ca.m, N1 + N2, N1, 0, a32);
+              matmul("gemm_stack", s.w, Mp, cs.m, N1 + N2, 0, 0, a32);
+            }
+            (void)ld;
+            const size_t n = (size_t)(T == 1 ? 1 : T) * (N1 + N2);
+            gc_cmpf(gc_read<float>(cs.m, n), gc_read<float>(ca.m, n), r);
+          } catch (const std::exception& e) {
+            r.status = "ERROR", r.note = e.what();
+          }
+          rows.push_back(r);
+        }
+      }
+      // 6. gate + up in one GEMV launch (gemv_gu, -DGU2; opt-in, ARC_GEMV_GU=1) against the two GEMVs
+      for (int i = 0; i < reps; ++i) {
+        const int K = e_sizes[gc_below(e_sizes.size())], N = 16 * (int)(1 + gc_below(512));
+        GcRow r = row("gate + up in one GEMV (gemv_gu)", type, 2 * N, K, 1);
+        try {
+          GcW g(this, type, N, K, 7), u(this, type, N, K, 8);
+          const std::vector<float> xs = gc_randf((size_t)tm * K, -2, 2), ws = gc_randf(K, 0.5f, 1.5f);
+          GcBuf x(this, xs.size() * 4, xs.data()), nw(this, ws.size() * 4, ws.data());
+          GcBuf c1(this, (size_t)2 * N * 4), c2(this, (size_t)2 * N * 4);
+          cur_T_ = 1;
+          const int a32 = act32_for(false);
+          rmsnorm_quant(x.m, 0, nw.m, K, tm, 1, a32);
+          if (!gemv_gu(g.w, u.w, tm, c1.m)) {
+            r.status = "not taken";
+            r.note = "gemv_gu off (ARC_GEMV_GU=1 turns it on)";
+          } else {
+            matmul("gemm_gate", g.w, tm, c2.m, 2 * N, 0, 0, a32);
+            matmul("gemm_up", u.w, tm, c2.m, 2 * N, N, 0, a32);
+            gc_cmpf(gc_read<float>(c1.m, (size_t)2 * N), gc_read<float>(c2.m, (size_t)2 * N), r);
+          }
+        } catch (const std::exception& e) {
+          r.status = "ERROR", r.note = e.what();
+        }
+        rows.push_back(r);
+        if (r.status == "not taken") break;  // (off for every type then: one row says so)
+      }
+    }
+    // 5. the residual add, its norm and the next input's norm and quantization in one kernel (add_norm_quant, Gemma 4's
+    //    sandwich) against add_rmsnorm + rmsnorm_quant: x_ and the next input, on the model's row length
+    for (int i = 0; i < reps && hp.n_embd % 256 == 0 && hp.n_embd > 0; ++i) {
+      const int E = hp.n_embd, T = 1 + (int)gc_below(8), Mp = mp_of(T);
+      GcRow r = row("add + norm + norm + quant (add_norm_quant)", 0, E, E, T);
+      try {
+        const std::vector<float> xv = gc_randf((size_t)Mp * E, -2, 2), bv = gc_randf((size_t)Mp * E, -2, 2),
+                                 w1 = gc_randf(E, 0.5f, 1.5f), w2 = gc_randf(E, 0.5f, 1.5f);
+        GcBuf nw1(this, w1.size() * 4, w1.data()), nw2(this, w2.size() * 4, w2.data());
+        const float s = 0.5f + gc_uniform();
+        cur_T_ = T;
+        const int a32 = act32_for(false);
+        auto load = [&] {
+          CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, xv.size() * 4, xv.data(), 0, nullptr, nullptr));
+          CL_CHECK(clEnqueueWriteBuffer(cl_.queue, big_, CL_TRUE, 0, bv.size() * 4, bv.data(), 0, nullptr, nullptr));
+        };
+        load();
+        add_norm_quant(nw1.m, T, Mp, s, nw2.m, true, a32);
+        std::vector<uint8_t> fused = gc_act_bytes(E, Mp, T, a32);
+        {
+          const std::vector<float> xf = gc_read<float>(x_, (size_t)T * E);
+          fused.insert(fused.end(), (const uint8_t*)xf.data(), (const uint8_t*)(xf.data() + xf.size()));
+        }
+        load();
+        add_rmsnorm(nw1.m, T, s);
+        rmsnorm_quant(x_, 0, nw2.m, E, Mp, T, a32);
+        std::vector<uint8_t> plain = gc_act_bytes(E, Mp, T, a32);
+        {
+          const std::vector<float> xf = gc_read<float>(x_, (size_t)T * E);
+          plain.insert(plain.end(), (const uint8_t*)xf.data(), (const uint8_t*)(xf.data() + xf.size()));
+        }
+        // (the f32 copy for H8R is not add_norm_quant's: the GEMV path reads only the int8 rows; compared without it)
+        if (h8f_off_) {
+          const size_t f32 = (size_t)T * E * 4;
+          fused.erase(fused.end() - (long long)(f32 + (size_t)T * E * 4), fused.end() - (long long)((size_t)T * E * 4));
+          plain.erase(plain.end() - (long long)(f32 + (size_t)T * E * 4), plain.end() - (long long)((size_t)T * E * 4));
+        }
+        gc_cmp(fused, plain, r);
+        if (r.status == "differs") {  // (which part: the residual x_, or the next input made from it)
+          const size_t xb = (size_t)T * E * 4;
+          const std::vector<uint8_t> fx(fused.end() - (long long)xb, fused.end()), px(plain.end() - (long long)xb, plain.end()),
+              fa(fused.begin(), fused.end() - (long long)xb), pa(plain.begin(), plain.end() - (long long)xb);
+          GcRow rx, ra;
+          gc_cmp(fx, px, rx);
+          gc_cmp(fa, pa, ra);
+          std::vector<float> xf(T * (size_t)E), xp(T * (size_t)E);
+          memcpy(xf.data(), fx.data(), xb), memcpy(xp.data(), px.data(), xb);
+          GcRow rxf;
+          gc_cmpf(xf, xp, rxf);
+          r.note = "x_: " + (rx.status == "ok" ? std::string("equal") : rxf.note) + "; the next input: " +
+                   (ra.status == "ok" ? std::string("equal") : ra.note);
+        }
+      } catch (const std::exception& e) {
+        r.status = "ERROR", r.note = e.what();
+      }
+      rows.push_back(r);
+    }
+  }
  public:

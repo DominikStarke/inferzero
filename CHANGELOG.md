@@ -23,6 +23,16 @@
   Q4_K, Q5_K, Q2_0) a second time with block means far from zero (the `end_to_end_offsets` column). H8's error then
   rises to 12-30x, the W8 GEMM's stays under 3x: H8's one scale a row after the rotation must cover the row's mean.
 
+  It also checks today's fused forms against their unfused chains, bit for bit, at random sizes:
+  - **equal on the laptop:** the norm and H8's rotation in one kernel (`rmsnorm_h8r`); the SwiGLU in the up GEMM's
+    epilogue; the down GEMM rotating that SwiGLU itself (`ARC_H8_SWI`); stacked matrices against each one alone (one
+    token, 2-8 tokens, a prompt chunk); gate + up in one GEMV (`gemv_gu`, with `ARC_GEMV_GU=1`);
+  - **not equal:** Gemma 4's `add_norm_quant` against `add_rmsnorm` + `rmsnorm_quant`. The residual differs in its last
+    bits (2-4 % of its bytes, under 1e-6 of the range), which flips 0.4-0.7 % of the next input's int8 bytes. No
+    golden row covers it on the laptop (no Gemma 4 file);
+  - a form this GPU does not take is listed as "not taken". The DeltaNet's fused forms, attention's preparation and
+    `ARC_H8_OUT` need a layer's own state: the golden set's fusion rows still prove them on the models.
+
   `gemm_check --weights <model.gguf>` (no GPU) shows where a model's own rows sit: the 4B's, the 27B's and the 35B-A3B's
   are at the centred level. Their largest rotation-block means are in the DeltaNet output projections, about 3x it
   (docs/gemm-inventory.md K).

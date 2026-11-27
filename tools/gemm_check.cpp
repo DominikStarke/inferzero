@@ -152,7 +152,7 @@ static int run(int argc, char** argv) {
              "after the rotation): end_to_end_offsets, the types with a min drawn with random mins, shows it\n");
   fprintf(f, "type\tshape\tN\tK\tT\tform\treference\tstatus\terr\tend_to_end\te2e_vs_gemv\tend_to_end_offsets\t"
              "e2e_offsets_vs_gemv\tw8_vs_raw\tdeterministic\tpair\tprivate\tspill\tkernels\tnote\n");
-  int ok = 0, bad = 0, skipped = 0, nondet = 0, differs = 0, spills = 0, n_far = 0;  // (not "far": a macro of the Windows headers)
+  int ok = 0, bad = 0, skipped = 0, nondet = 0, differs = 0, spills = 0, n_far = 0, fdiff = 0, ntaken = 0;  // (not "far": a macro of the Windows headers)
   auto num = [](double v) {  // (-1: none)
     if (v < 0) return std::string("-");
     char b[32];
@@ -167,6 +167,8 @@ static int run(int argc, char** argv) {
     if (r.e2e_ratio > 8) ++n_far;
     if (r.status == "ok") ++ok;
     else if (r.status == "skipped") ++skipped;
+    else if (r.status == "differs") ++fdiff;  // (a fused form unlike its unfused chain: a finding, recorded)
+    else if (r.status == "not taken") ++ntaken;
     else if (r.status != "ran") ++bad;
     if (r.det == "DIFFERS") ++nondet;
     if (r.pair == "DIFFERS") ++differs;
@@ -174,8 +176,8 @@ static int run(int argc, char** argv) {
   }
   if (f != stdout) fclose(f);
   printf("gemm_check: %zu cases in %.0f s: %d ok, %d not ok, %d skipped; %d not deterministic, %d pairs differ, %d with spills, "
-         "%d prompt forms end to end over 8x their GEMV's%s%s\n",
-         rows.size(), sec, ok, bad, skipped, nondet, differs, spills, n_far, out.empty() ? "" : "; ", out.c_str());
+         "%d prompt forms end to end over 8x their GEMV's; fused forms: %d unlike their unfused chain, %d not taken here%s%s\n",
+         rows.size(), sec, ok, bad, skipped, nondet, differs, spills, n_far, fdiff, ntaken, out.empty() ? "" : "; ", out.c_str());
   return bad ? 1 : 0;
 }
 
