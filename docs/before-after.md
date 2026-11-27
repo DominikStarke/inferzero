@@ -80,6 +80,17 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, `ARC_GV_SMALL=1` / `2` (opt-in, a test): small Xe-LPG iGPUs' GEMV choices** (`zero/engine.h`
+  gemv1_rows). Only on an iGPU without XMX that is Xe-LPG with at most 640 hardware threads (`ARC_GV_SMALL_ANY=1`: any
+  iGPU, for testing).
+  - **The modes:** `1` runs gemv's matrices of up to 65,536 rows at 4 rows a sub-group; `2` also takes every Q4_K / Q5_K
+    matrix through gemv_v.
+  - **The evidence:** jac2424's 64-EU Arrow Lake-S (#97, Linux 26.40), where `ARC_GEMV_ROWS=4` gave tg64 10.10 -> 11.47
+    (+13.6 %) and the tall Q5_K through gemv_v read 38-41 GB/s against Q4_K's 25-28 through gemv.
+  - **On the laptop** (112 EUs, forced with `_ANY`), the 9B tg64: off 12.15 / 12.45 tok/s, `1` 11.76, `2` 11.52, so not
+    for GPUs this size. The logits are bit for bit the same in all four (BD727501...).
+  - To be measured on the 64-EU part before any default.
+
 - **2026-11-26, drafting verification off H8 for just-in-time weights on Xe-LPG** (`zero/engine_h8.h`
   h8_igpu_rows_ok: `h8_dp4a_ && !h8_env() && spec_` -> false; the Researcher's audit of 2026.11.26.03). A verification
   pass of more than 8 rows (h8_takes' cur_T_ > 8: a DFlash2 block of 16) took H8 under h8_dp4a_, so a weight decoded

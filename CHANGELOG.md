@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-27 (unreleased): `ARC_GV_SMALL`, a generation test for small Xe-LPG iGPUs
+
+- **`ARC_GV_SMALL=1` / `2`** (off by default), for Xe-LPG iGPUs with at most 640 hardware threads, such as a 64-EU
+  Core Ultra 200S desktop (#97). `1` runs generation's GEMVs at 4 rows a sub-group, which gave such an iGPU +13.6 %.
+  `2` also reads every Q4_K / Q5_K matrix straight into registers. The output is the same bit for bit. Both are slower
+  on our 112-EU Core Ultra 5 125H, so they apply only to the smaller GPUs, once measured there.
+
 ## 2026-11-27 (unreleased): the Docker image includes ffmpeg
 
 - **`docker/Dockerfile` installs ffmpeg** (#104). On Linux the server decodes every image, and audio and video files,

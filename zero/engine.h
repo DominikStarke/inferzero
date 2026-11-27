@@ -1446,6 +1446,18 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       else if (gv_k4 < 0 && w.type == GGML_Q5_K && w.N >= 8192 && w.N >= 2 * w.K && zrt::integrated() && !cl_.xmx)
         vk = k4_rule = true;
     }
+    // (ARC_GV_SMALL, a test for small Xe-LPG iGPUs, 2026-11-27: jac2424's 64-EU Arrow Lake-S, #97, Linux 26.40. There
+    //  ARC_GEMV_ROWS=4 gave tg64 10.10 -> 11.47 (+13.6 %; =1 -13 %), and the tall Q5_K through gemv_v read 38-41 GB/s
+    //  against 25-28 for Q4_K through gemv at the same shape. On the laptop's 112 EUs both lost, so: only on Xe-LPG
+    //  without XMX with at most 640 hardware threads (zrt::hw_threads; ARC_GV_SMALL_ANY=1, a test: any iGPU).
+    //  =1: gemv's matrices of up to 65,536 rows at 4 rows a sub-group; =2: that, and every Q4_K / Q5_K matrix through
+    //  gemv_v (not in two-pass mode or the head). A row / kernel choice: bit-identical. Off by default until measured)
+    static const int gv_small_env = getenv("ARC_GV_SMALL") ? atoi(getenv("ARC_GV_SMALL")) : 0;
+    static const bool gv_small_any = getenv("ARC_GV_SMALL_ANY") && atoi(getenv("ARC_GV_SMALL_ANY")) != 0;
+    const int gv_small = gv_small_env > 0 && zrt::integrated() && !cl_.xmx &&
+                                 (gv_small_any || (zrt::xe_lpg() && zrt::hw_threads() > 0 && zrt::hw_threads() <= 640))
+                             ? gv_small_env : 0;
+    if (gv_small >= 2 && !q2mm_ && &w != &lm_head_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K)) vk = true, k4_rule = false;
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
     // (Alchemist, a discrete card with 8-lane sub-groups: gemv_v's types one row a sub-group, as ARC_GVROWS=1. An A770,
     //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
@@ -1460,6 +1472,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     //  above and below off for them; bit-identical, a row's sums do not depend on its sub-group)
     static const int force_rows = getenv("ARC_GEMV_ROWS") ? atoi(getenv("ARC_GEMV_ROWS")) : 0;
     if (force_rows > 0 && !vk && w.N <= 65536) return force_rows;
+    if (gv_small >= 1 && !vk && w.N <= 65536) return 4;  // (ARC_GV_SMALL above: gemv at 4 rows a sub-group)
     if (k4_rule && !gvrows_env) return 2;  // (the tall Q5_K rule above: 2 rows, as measured; ARC_GVROWS sets it)
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
