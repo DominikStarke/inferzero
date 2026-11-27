@@ -403,8 +403,49 @@ rule, not as a separate kernel next to it. One row per fused form in use:
   `-DFUSE_GATES`); the outputs rotated for H8 by the kernels that make them (`ARC_H8_OUT`); the KV store and norms in
   attention's preparation; the multi-GPU sums' fused forms (`tp.cl`).
 
-| Fused form | What it replaces (the unfused chain) | GPU kinds where it's on | Where it's chosen | Bit-identical to the chain? (proof) | Spill status per family |
+### The code side (the Developer, 2026-11-28, read at main 6fb85d7)
+
+Each fused form in use: the unfused chain it replaces, its switch and default, where it's chosen, whether the laptop's plan logs saw it (A), and its proof from the golden set's fusion rows (C: each must equal the model's base hash). "Taken on the laptop" is the Xe-LPG kind only. Other kinds follow the code's defaults and stay unproven until the kit. Spill status per family comes from the kit's start lines (A).
+
+#### Fused GEMMs
+
+| fused form | replaces | switch (default) | chosen at | taken on the laptop | proof |
 |---|---|---|---|---|---|
+| gate+up GEMV (`gemv` -DGU2) | the gate and the up GEMVs, two launches | `ARC_GEMV_GU=1` (off: opt-in) | engine.h:1517 (gemv_gu's rules: B 1) | no (opt-in) | golden fusion ARC_GEMV_GU=1 = base on the 4B, 9B, 27B |
+| gate+up+SwiGLU GEMM (`gemm_xw` -DXW_GU, role gemm_gateup) | the gate GEMM, the up GEMM and swiglu_quant | `ARC_GEMM_XW_GU` (the default per kind: discrete XMX) | engine_qwen.h:499; xe2/engine_xw.h:231 | no (no XMX) | unproven on the laptop: xw_check at start (B 3), the kit on XMX cards |
+| qkv+z stacked GEMV / GEMM (`gemm_qkvz`) | the qkv and the z products, two launches | none: taken when attn_qkv and attn_gate share a type and the shapes fit | engine_load.h:405-455 (the stack), engine_qwen.h:22 | yes: 27B, 35B (the 4B / 9B UD files mix types: two products) | no off switch, so no A/B hash; exact by construction (the same rows and kernel over one buffer) |
+| router+shared gate/up GEMV (`gemm_router_sh`, Layer::rgu) | the router, the shared expert's gate and up: three GEMVs | none: taken when the shared gate / up are Q8_0, E % 256, not w8_resident on a dense model | engine_stream.h:560-595, engine_moe.h:65 | yes: 35B | no off switch, no A/B hash; exact by construction |
+| both int8 passes in one weight read (`gemv` -DQ2F) | the two-pass GEMV run twice | none: two-pass models (q2mm_: Gemma, Qwen3) at T <= 4 | engine.h:1415-1416, 1454, 1623 | no (no two-pass model on the laptop) | unproven here: needs a Gemma 4 / Qwen3 file; run_tests 4c covers Gemma's KL |
+| expert decode + GEMM in registers (`moe_rg`) | decode_w8 of the experts, then the expert GEMM | none to turn off; ARC_MOE_RG_MIN / _MAX move its row range (320 / 1280) | engine_moe.h:188-197 (rg_ok), 212-219, 584 | yes: 35B, Inkling | no A/B in golden (another kernel path: exactness to be shown) |
+| Inkling's controller gain + forget + apply (`ink_ctrl_fused`) | three steps, separate launches | `ARC_INK_FUSE=0` turns it off (on by default) | engine_inkling.h:727, 818-824 | yes: Inkling | **not in golden**: add ARC_INK_FUSE=0 to its fusion rows (Inkling has none today) |
+
+#### Fused prologues (norm, quantization, rotation)
+
+| fused form | replaces | switch (default) | chosen at | taken on the laptop | proof |
+|---|---|---|---|---|---|
+| norm+rot (`rmsnorm_h8r`) | rmsnorm_quant (with its f32 copy) then h8r_act's rotation | `ARC_H8_NORM` (p140_, discrete non-Xe-HPC, or h8_dp4a_ with hb <= 512) | engine_h8.h:319-332 | yes: 4B (9B no: hb 1024) | golden ARC_H8_NORM=0 = base on the 4B (taken); the 9B and 27B rows pass without taking it |
+| one rotation shared by the GEMMs of one input | a rotation before each GEMM | `ARC_H8_REUSE` (on) | engine_h8.h:238-255, 467-470 | yes: 4B, 9B | golden ARC_H8_REUSE=0 = base on the 4B, 9B |
+| swiglu+rot (the down GEMM's rotation reads gate / up) | swiglu_quant, then the rotation of its output | `ARC_H8_SWI` (on where H8R has its f32 copy) | engine_h8.h:290-293, engine_qwen.h:511 | yes: 4B, 9B | golden ARC_H8_SWI=0 = base on the 4B, 9B |
+| attn gate+rot / gated norm+rot (`attn_gate_h8r`, `gated_norm_h8r`) | the gate / gated norm quant, then the rotation for o / ssm_out | `ARC_H8_OUT` (default: discrete 8-lane, Alchemist) | engine_h8.h:347-375, engine_qwen.h:105, 470 | no | unproven on the laptop (not taken by default; ARC_H8_OUT=1 not in golden) |
+| quant+f32 copy (`-DH8F`) | a separate f32 copy of the rows H8R rotates from | none: on whenever H8R takes its f32 source (h8_float: not ARC_H8_INT, not hc / gemma) | engine.h:562, engine_h8.h:77, 87, 475 | yes: 4B, 9B | inside every H8 run: golden base of the 4B / 9B; no A/B of its own |
+| norm+quant (`rmsnorm_quant`), swiglu+quant, gated norm+quant, attn gate+quant | the norm / activation, then a quantization kernel | none: the only form there is | engine.h:1768-1780; engine_qwen.h:114, 480, 520 | yes: every model | no unfused form exists to compare; they are the reference chain |
+| add+norm(+quant) (`add_norm_quant`, `add_rmsnorm`) | the residual add, then the norm (and its quantization) | none | engine.h:1911-1992, engine_gemma.h:169 | no (Gemma 4's sandwich norms; the drafter's add_rmsnorm) | unproven on the laptop (no Gemma file) |
+| q/k norm + RoPE + KV store (`attn_prep`, `attn_prep_g`) | the per-head norms, RoPE, the cache writes (and the int8 copies for attn_q8) | none | engine.h:1959; engine_gemma.h:39 | yes: the Qwen models | no unfused form; the reference |
+
+#### Fused epilogues and other steps
+
+| fused form | replaces | switch (default) | chosen at | taken on the laptop | proof |
+|---|---|---|---|---|---|
+| conv + state update (`gdn_conv` -DCONV_UPD) | the short conv, then the conv history update | `ARC_GDN_FUSE` (on) | engine_load.h:36; engine_qwen.h:39, 51-52 (one token, not in verification passes) | yes: the Qwen models | **not in golden**: add ARC_GDN_FUSE=0 |
+| recurrence + gates (`gdn_recur` / `gdn_chunk` -DFUSE_GATES) | gdn_gates, then the recurrence | `ARC_GDN_FUSE` (on; not in verification passes: `!spec_`) | engine_load.h:56; engine_qwen.h:39, 77, 89 | yes: the Qwen models | **not in golden**: as above |
+| two recurrence steps in one sweep (`gdn_recur` -DGDN_FUSE2) | the second pass of token t and the first of t + 1 | `ARC_GDN_FUSE2=1` (off: opt-in; not with ARC_GDN_PF) | engine_load.h:50-54 | no (opt-in) | golden ARC_GDN_FUSE2=1 = base on the 4B, 9B, 27B |
+| the multi-GPU sums' fused forms (tp.cl) | a sum, then the residual add / norm | per split (choose_sums, ARC_TP_*) | zero/mgpu/engine_tp.h | yes under ARC_TP_SIM (tp2 / tp3) | golden tp2 / tp3: their own hashes, stable over two runs; not against one GPU (not bit-identical by design) |
+
+**Gaps in the proof** (to close in Phase 0):
+- **Off switches the golden set doesn't test yet:** `ARC_GDN_FUSE=0` (conv + state update, recurrence + gates; every Qwen model) and `ARC_INK_FUSE=0` (Inkling's controller). Both are being added as fusion rows.
+- **`moe_rg` has no off switch.** Its exactness against decode_w8 + the expert GEMM isn't shown anywhere: a golden row that moves its row range out of reach (`ARC_MOE_RG_MIN`) is to be added for the 35B and Inkling.
+- **Not taken on the laptop:** `XW_GU` and `H8_OUT` (XMX / Alchemist: from the kit); `Q2F` and `add_norm_quant` (they need a Gemma 4 or Qwen3 file).
+- **No switch, exact by construction** (the same rows and kernel over one buffer) or the reference chain itself: qkv+z, router+shared gate / up, `-DH8F`, the norm+quant family, `attn_prep`.
 
 **Where fused GEMMs go in the shared layer** (design section 3.12):
 - A fused GEMM is **not a kernel of its own**. It's the shared GEMM stage plus a prologue (`Norm`, `Quant`, the H8
@@ -427,14 +468,14 @@ rule, not as a separate kernel next to it. One row per fused form in use:
 
 | Model | Fused forms today (from A) | Launches a token now | Floor (ways 1-8; the lowest, ways 1-12: design 3.7a) | Planned chain, per layer |
 |---|---|---|---|---|
-| Qwen3.5 4B / 9B (dense, 3 DeltaNet : 1 attention) | to fill | 4B ~426 (125H `--prof-gen`, 2026-11-26) | ~5 a layer: 4B ~160 | DeltaNet: [norm -> qkvz + ab, conv / state / gates in the epilogue] · [recurrence] · [gated norm -> ssm_out + residual] · [norm -> gate / up, SwiGLU] · [down + residual]; attention: [norm -> q / k / v, q / k norm, RoPE, KV store] · [attention] · [sigmoid gate -> o + residual] · the FFN's 2 |
-| Qwen3.8 27B | to fill | ~710 | **321** | as the 4B, 48 DeltaNet + 16 attention layers |
-| Qwen3.6 35B-A3B (MoE) | to fill | ~620 | **241** | the mixer's 3, then [norm -> router + shared gate / up] · [top-k -> experts' gate / up, the shared down grouped in] · [experts' down]; the combine in the next layer's prologue |
+| Qwen3.5 4B / 9B (dense, 3 DeltaNet : 1 attention) | Xe-LPG: 4B attn gate+quant; conv+state update; gated norm+quant; norm+quant; norm+rot; q/k norm+rope+kv store; quant+f32 copy; recurrence+gates; swiglu+quant; swiglu+rot; 9B the same but no norm+rot (its rows get a rotation block of 1,024, above the default's 512) | 4B ~426 (125H `--prof-gen`, 2026-11-26) | ~5 a layer: 4B ~160 | DeltaNet: [norm -> qkvz + ab, conv / state / gates in the epilogue] · [recurrence] · [gated norm -> ssm_out + residual] · [norm -> gate / up, SwiGLU] · [down + residual]; attention: [norm -> q / k / v, q / k norm, RoPE, KV store] · [attention] · [sigmoid gate -> o + residual] · the FFN's 2 |
+| Qwen3.8 27B | Xe-LPG: no H8 forms (no H8 on the iGPU); attn gate+quant; conv+state update; gated norm+quant; norm+quant; q/k norm+rope+kv store; recurrence+gates; swiglu+quant; qkv+z | ~710 | **321** | as the 4B, 48 DeltaNet + 16 attention layers |
+| Qwen3.6 35B-A3B (MoE) | Xe-LPG: as the 27B, plus decode+expert gemm (moe_rg) and router+shared gate/up | ~620 | **241** | the mixer's 3, then [norm -> router + shared gate / up] · [top-k -> experts' gate / up, the shared down grouped in] · [experts' down]; the combine in the next layer's prologue |
 | Flash Next | to fill | ~1,050 | **~483** | the hc mixer's 2 global steps per block, then the mixer's or the MoE's 3; `hc_combine` in the block's last epilogue |
 | DeepSeek-V4.1 | to fill | ~1,900 | **~415** | the design's 10-13 steps a layer (mix, Sinkhorn + norm -> q_a / kv grouped, attention, out_a in one launch, out_b + expand, the MoE's 3) |
 | Gemma 4 dense (31B) | to fill | ~840 | **301** | as Qwen3 dense; the post-attention norm + residual + FFN norm in gate / up's prologue |
 | Gemma 4 26B MoE | to fill | to measure | 6 a layer | qkv · attention · o · [dense FFN gate / up + router] · [experts' gate / up + dense down] · [experts' down] |
-| Inkling 2 Mini | to fill | **1,356** | **385** | every visit: [mix + norm -> q / gate / rel / k / v / sink / kcp / vcp grouped, K / V convs in the epilogue] · [attention] · [o + post-conv + residual] · [FFN mix + norm -> router] · [top-k -> experts' gate / up, situ] · [experts' down]; later passes add the controllers' 4 |
+| Inkling 2 Mini | Xe-LPG: controller; decode+expert gemm; norm+quant; swiglu+quant (the fewest) | **1,356** | **385** | every visit: [mix + norm -> q / gate / rel / k / v / sink / kcp / vcp grouped, K / V convs in the epilogue] · [attention] · [o + post-conv + residual] · [FFN mix + norm -> router] · [top-k -> experts' gate / up, situ] · [experts' down]; later passes add the controllers' 4 |
 | the encoders (vision, audio, speech) | to fill | to measure | to work out | per encoder, once their GEMMs move to the layer |
 
 The gap between "now" and the floor is each model's fusion work. Inkling's is the largest (3.5x), which is one reason it
