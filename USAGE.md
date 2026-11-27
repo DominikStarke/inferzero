@@ -632,6 +632,104 @@ r = client.chat.completions.create(model="qwen3.8-27b", messages=[{"role": "user
 print(r.choices[0].message.content)
 ```
 
+### Using it from other machines
+
+(`--no-webui` and the 403 texts below are in `main` and come with the release after 2026.11.27.03.)
+
+inferzero is a local app: by default `serverz` answers only this computer (127.0.0.1). To use it from other machines,
+pick one of these setups. inferzero itself has no API key and no HTTPS. Where those are needed, a reverse proxy in
+front does them, and its own updates keep them secure.
+
+| Setup | How | Use it for |
+|---|---|---|
+| **This computer only** (the default) | nothing to set | one user, the web UI, Pi |
+| **Your own network, by IP address** | `zero-server start -Host 0.0.0.0` (or `serverz --host 0.0.0.0`); open `http://<this PC's IP>:8090/` | a home or office network you trust. Anyone on it can use the model, and nothing is encrypted |
+| **Behind a reverse proxy** (nginx, Caddy) | `serverz` on 127.0.0.1 with `--no-webui`; the proxy does HTTPS, the key and the host names | other machines by name, over a network you don't fully trust, or the internet |
+| **A load balancer** over several inferzero machines | each machine `serverz --host 0.0.0.0 --no-webui`; the proxy spreads the requests | more users than one GPU serves |
+| **The web UI over the internet** | Cloudflare Tunnel with a password ([docs/remote-access.md](docs/remote-access.md)) | your own web UI from your phone or another place |
+
+**`--no-webui`** (`INFERZERO_NO_WEBUI=1`; the launchers' option "API only (no web UI)", `zero-server -NoWebui`,
+`zero-launcher.sh --no-webui`) serves only the model API:
+`/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/messages` (and `/count_tokens`), `/v1/embeddings`,
+`/v1/models`, `/v1/audio/transcriptions` / `translations`, `/health` and `/props`. Everything else answers 404, from this
+computer too: the web UI, its files, projects, memory, MCP servers, the tools, saved sessions, slots, remote access,
+`/metrics`, `/tokenize` and Ollama's `/api/*`. Requests can't refer to files saved on the server. Tool calls go back to
+the client, as always. The start line says "API only: /v1/*, /health, /props (--no-webui)". Use it whenever a proxy
+is in front.
+
+**Why `--no-webui` matters behind a proxy on the same machine:** the proxy connects from 127.0.0.1, so `serverz` sees
+its requests as "this computer". Without `--no-webui`, a proxy that forwards more than `/v1` would give the network
+what only this computer may use: the terminal tool, your projects' files, memory. With `--no-webui` those don't exist.
+
+**What `serverz` accepts from a proxy** (it refuses everything else with 403, and the message says why):
+- `Host: 127.0.0.1`, or the IP address it was started on with `--host`, not a DNS name. A name could be another
+  site's that points at this machine (DNS rebinding), so it's refused;
+- no forwarding headers: `X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Host` / `-Proto` and Cloudflare's.
+  They mark a request that came from elsewhere, which only the password-protected Cloudflare Tunnel may send.
+
+**nginx in front of one `serverz`** on the same machine, with HTTPS and a key:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name ai.example.lan;
+    ssl_certificate     /etc/ssl/ai.crt;
+    ssl_certificate_key /etc/ssl/ai.key;
+    location = /health { proxy_pass http://127.0.0.1:8090; proxy_set_header Host 127.0.0.1; }
+    location /v1/ {
+        if ($http_authorization != "Bearer <your key>") { return 401; }
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host 127.0.0.1;
+        proxy_buffering off;          # answers stream
+        proxy_read_timeout 600s;      # long prompts
+    }
+}
+```
+
+**Caddy, the same:**
+
+```
+ai.example.lan {
+    @nokey not header Authorization "Bearer <your key>"
+    respond @nokey 401
+    reverse_proxy /v1/* 127.0.0.1:8090 {
+        header_up Host 127.0.0.1
+        header_up -X-Forwarded-For
+        header_up -X-Forwarded-Proto
+        header_up -X-Forwarded-Host
+        flush_interval -1
+    }
+}
+```
+
+Caddy adds forwarding headers by default, so the `header_up -...` lines remove them.
+
+**A load balancer over several machines** (nginx; each machine runs `serverz --host 0.0.0.0 --no-webui`):
+
+```nginx
+upstream inferzero {
+    hash $http_x_conversation_id consistent;   # or ip_hash: one conversation stays on one machine
+    server 192.168.1.20:8090;
+    server 192.168.1.21:8090;
+}
+server {
+    listen 443 ssl;
+    # ... certificates as above ...
+    location /v1/ {
+        if ($http_authorization != "Bearer <your key>") { return 401; }
+        proxy_pass http://inferzero;
+        proxy_set_header Host $upstream_addr;  # the machine's IP: what serverz --host accepts
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+    }
+}
+```
+
+- **Keep a conversation on one machine** (`hash` on a conversation id your client sends, or `ip_hash`). Each machine
+  keeps its own prompt cache, so a conversation that moves re-reads its whole prompt, which is slow on long chats.
+- **Don't add `X-Forwarded-For` or `X-Real-IP`.** Many load-balancer examples do, and `serverz` refuses them.
+- **Run the same model** on every machine, under the same name, so any of them can answer any request.
+
 ## 5. Context size, and when a conversation gets long
 
 Each model uses the largest context that fits the GPU memory currently available (set in Intel Graphics Software,
