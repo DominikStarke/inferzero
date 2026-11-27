@@ -637,8 +637,8 @@ Each fused form in use: the unfused chain it replaces, its switch and default, w
 | qkv+z stacked GEMV / GEMM (`gemm_qkvz`) | the qkv and the z products, two launches | none: taken when attn_qkv and attn_gate share a type and the shapes fit | engine_load.h:405-455 (the stack), engine_qwen.h:22 | yes: 27B, 35B (the 4B / 9B UD files mix types: two products) | no off switch, so no A/B hash; exact by construction (the same rows and kernel over one buffer) |
 | router+shared gate/up GEMV (`gemm_router_sh`, Layer::rgu) | the router, the shared expert's gate and up: three GEMVs | none: taken when the shared gate / up are Q8_0, E % 256, not w8_resident on a dense model | engine_stream.h:560-595, engine_moe.h:65 | yes: 35B | no off switch, no A/B hash; exact by construction |
 | both int8 passes in one weight read (`gemv` -DQ2F) | the two-pass GEMV run twice | none: two-pass models (q2mm_: Gemma, Qwen3) at T <= 4 | engine.h:1415-1416, 1454, 1623 | no (no two-pass model on the laptop) | unproven here: needs a Gemma 4 / Qwen3 file; run_tests 4c covers Gemma's KL |
-| expert decode + GEMM in registers (`moe_rg`) | decode_w8 of the experts, then the expert GEMM | none to turn off; ARC_MOE_RG_MIN / _MAX move its row range (320 / 1280) | engine_moe.h:188-197 (rg_ok), 212-219, 584 | yes: 35B, Inkling | no A/B in golden (another kernel path: exactness to be shown) |
-| Inkling's controller gain + forget + apply (`ink_ctrl_fused`) | three steps, separate launches | `ARC_INK_FUSE=0` turns it off (on by default) | engine_inkling.h:727, 818-824 | yes: Inkling | **not in golden**: add ARC_INK_FUSE=0 to its fusion rows (Inkling has none today) |
+| expert decode + GEMM in registers (`moe_rg`) | decode_w8 of the experts, then the expert GEMM | none to turn off; ARC_MOE_RG_MIN / _MAX move its row range (320 / 1280) | engine_moe.h:188-197 (rg_ok), 212-219, 584 | yes: 35B, Inkling | golden 35B `ARC_MOE_RG_MIN=1000000 ARC_MOE_GEMM_MIN=1` = base: every expert chunk then takes decode_w8_sl + gemm `-DMOE_TILES` (plan log), so moe_rg equals decode + GEMM bit for bit. Inkling's same row takes the per-tile kernels (its NVFP4 / IQ4_NL down layers), a different path with its own hash (DE5E8415DE35CD96): not counted as proof, its KL to measure with the Inkling work |
+| Inkling's controller gain + forget + apply (`ink_ctrl_fused`) | three steps, separate launches | `ARC_INK_FUSE=0` turns it off (on by default) | engine_inkling.h:727, 818-824 | yes: Inkling | golden `ARC_INK_FUSE=0` = base on Inkling |
 
 #### Fused prologues (norm, quantization, rotation)
 
@@ -657,14 +657,13 @@ Each fused form in use: the unfused chain it replaces, its switch and default, w
 
 | fused form | replaces | switch (default) | chosen at | taken on the laptop | proof |
 |---|---|---|---|---|---|
-| conv + state update (`gdn_conv` -DCONV_UPD) | the short conv, then the conv history update | `ARC_GDN_FUSE` (on) | engine_load.h:36; engine_qwen.h:39, 51-52 (one token, not in verification passes) | yes: the Qwen models | **not in golden**: add ARC_GDN_FUSE=0 |
-| recurrence + gates (`gdn_recur` / `gdn_chunk` -DFUSE_GATES) | gdn_gates, then the recurrence | `ARC_GDN_FUSE` (on; not in verification passes: `!spec_`) | engine_load.h:56; engine_qwen.h:39, 77, 89 | yes: the Qwen models | **not in golden**: as above |
+| conv + state update (`gdn_conv` -DCONV_UPD) | the short conv, then the conv history update | `ARC_GDN_FUSE` (on) | engine_load.h:36; engine_qwen.h:39, 51-52 (one token, not in verification passes) | yes: the Qwen models | golden `ARC_GDN_FUSE=0` = base on the 4B, 9B, 27B, 35B |
+| recurrence + gates (`gdn_recur` / `gdn_chunk` -DFUSE_GATES) | gdn_gates, then the recurrence | `ARC_GDN_FUSE` (on; not in verification passes: `!spec_`) | engine_load.h:56; engine_qwen.h:39, 77, 89 | yes: the Qwen models | golden `ARC_GDN_FUSE=0` = base on the 4B, 9B, 27B, 35B |
 | two recurrence steps in one sweep (`gdn_recur` -DGDN_FUSE2) | the second pass of token t and the first of t + 1 | `ARC_GDN_FUSE2=1` (off: opt-in; not with ARC_GDN_PF) | engine_load.h:50-54 | no (opt-in) | golden ARC_GDN_FUSE2=1 = base on the 4B, 9B, 27B |
 | the multi-GPU sums' fused forms (tp.cl) | a sum, then the residual add / norm | per split (choose_sums, ARC_TP_*) | zero/mgpu/engine_tp.h | yes under ARC_TP_SIM (tp2 / tp3) | golden tp2 / tp3: their own hashes, stable over two runs; not against one GPU (not bit-identical by design) |
 
-**Gaps in the proof** (to close in Phase 0):
-- **Off switches the golden set doesn't test yet:** `ARC_GDN_FUSE=0` (conv + state update, recurrence + gates; every Qwen model) and `ARC_INK_FUSE=0` (Inkling's controller). Both are being added as fusion rows.
-- **`moe_rg` has no off switch.** Its exactness against decode_w8 + the expert GEMM isn't shown anywhere: a golden row that moves its row range out of reach (`ARC_MOE_RG_MIN`) is to be added for the 35B and Inkling.
+**Gaps in the proof:**
+- **Closed 2026-11-28** (d96c538): `ARC_GDN_FUSE=0` and `ARC_INK_FUSE=0` equal base, and `moe_rg` equals decode + GEMM on the 35B. Inkling's experts without moe_rg take the per-tile kernels, a different path with its own hash; its KL waits for the Inkling work (an f32 reference of the Mini has never been run).
 - **Not taken on the laptop:** `XW_GU` and `H8_OUT` (XMX / Alchemist: from the kit); `Q2F` and `add_norm_quant` (they need a Gemma 4 or Qwen3 file).
 - **No switch, exact by construction** (the same rows and kernel over one buffer) or the reference chain itself: qkv+z, router+shared gate / up, `-DH8F`, the norm+quant family, `attn_prep`.
 
