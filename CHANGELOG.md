@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-27 (unreleased): the expert file through the OS file cache when it is needed
+
+- **`ARC_XBUF` is decided at load when it is not set.** The OS file cache is used when the GPU's expert cache and the
+  RAM tier together cannot hold every expert, and at least 16 GiB of RAM stays free after the tier and an 8 GiB
+  margin: a DeepSeek-V4.1-Flash on four B60s, where it took an 8K prompt from 64 to 96 tok/s (manoreken2, PR #100).
+  Where they hold every expert it stays off: there it gains nothing and keeps the records twice. A start line names
+  the sizes and the choice. `ARC_XBUF=1` / `0` still force it on / off.
+
 ## 2026-11-27 (2026.11.27.01): `ARC_XBUF=1` reads the expert file through the OS file cache (manoreken2, PR #100)
 
 - **`ARC_XBUF=1`** (opt-in): a mixture-of-experts model's expert file is read through the operating system's file cache

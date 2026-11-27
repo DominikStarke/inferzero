@@ -145,6 +145,32 @@
                     ram_note.c_str());
     }
   }
+  // ARC_XBUF not set (2026-11-27, the user: "only when needed then, like in manoreken2's DeepSeek"): the expert file is
+  // read through the OS file cache when the GPU's expert cache and the RAM tier cannot hold every expert, and the RAM
+  // free after the tier and an 8 GiB margin is at least 16 GiB (room for a useful part of the rest). There a miss of
+  // both costs a file-cache hit, not an SSD read: DeepSeek-V4.1-Flash on 4 Pro B60s (manoreken2, PR #100), an 8K
+  // prompt 64 -> 96 tok/s, generation -3 %. Where they hold every expert it gains nothing and holds the records twice
+  // (hansong80's 2 x A770 with the 35B, A B B A: the same speed once warm), so it stays off. A split model: each GPU
+  // decides for its own experts against its own cache and tier (the same shares: the decision of the sums), the free
+  // RAM less every GPU's tier; one line for all. ARC_XBUF=1 / 0: on / off whatever the rule says
+  void xbuf_auto() {
+    const double GiB = 1073741824.0;
+    ExpertStore& st = xc_->st;
+    const int forced = ExpertStore::xbuf_forced();
+    const int N = tp_on() ? std::max(1, opt.tp_size) : 1;
+    const uint64_t all = xc_->all_bytes(), held = xc_->cache_bytes + st.ram_cap();
+    const double free_ram = (double)plat::ram_available(), after = free_ram - (double)st.ram_cap() * N - 8.0 * GiB;
+    const bool on = forced >= 0 ? forced == 1 : all > held && after >= 16.0 * GiB;
+    if (on) st.reopen_buffered();
+    static std::atomic<bool> said{false};  // (once a process: a split model's GPUs each decide)
+    if (said.exchange(true)) return;
+    const char* how = on ? "reads through the OS file cache" : "reads unbuffered";
+    if (forced >= 0)
+      zlog::eprintf("inferzero: expert file %s (ARC_XBUF=%d)\n", how, forced);
+    else
+      zlog::eprintf("inferzero: expert file %.1f GiB, GPU cache + RAM tier %.1f GiB, free RAM %.1f GiB: %s (ARC_XBUF=%d: %s)\n",
+                    all * (double)N / GiB, held * (double)N / GiB, free_ram / GiB, how, on ? 0 : 1, on ? "off" : "on");
+  }
   void size_expert_cache() {
     const double GiB = 1073741824.0;
     const uint64_t all = xc_->all_bytes();
@@ -198,6 +224,7 @@
                       (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) +
                       (opt.pp_size > 1 ? ".layers" + std::to_string(std::max(0, opt.pp_begin)) + "-" + std::to_string(opt.pp_end) : std::string()) +
                       ".lru";
+    xbuf_auto();  // (the expert file through the OS file cache where the cache and the tier cannot hold every expert)
     if (!getenv("ARC_XWARM") || atoi(getenv("ARC_XWARM")) != 0) {
       xc_->warm();
       zlog::eprintf("inferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);

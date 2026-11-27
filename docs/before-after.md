@@ -80,6 +80,27 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, `ARC_XBUF` decided at load when not set** (`zero/engine_stream.h` xbuf_auto, `zero/expert_store.h`
+  reopen_buffered; the user: "only when needed then, like in manoreken2's DeepSeek").
+  - **The rule:** on when this GPU's experts (xcache all_bytes) exceed its expert cache plus its RAM tier, and free RAM
+    (GlobalMemoryStatusEx / MemAvailable) less every GPU's tier and 8 GiB is at least 16 GiB. The file is opened
+    unbuffered as before and, when the rule says so, opened again through the cache before the cache's warm-up, while no
+    read is in flight. One start line: the file, cache + tier and free RAM in GiB (a split model: summed over its GPUs,
+    each deciding for its own share), and the choice. `ARC_XBUF=1` / `0`: forced as before.
+  - **What it turns on:** manoreken2's DeepSeek-V4.1-Flash Q8_K_XL on 4 x B60 (268.95 GiB of experts against ~46 GiB of
+    tier a GPU): pp8192 64.0 / 63.2 -> 95.8 / 96.2 tok/s, TG4096 16.3 / 16.5 -> 15.8 / 15.9 (PR #100, ARC_XBUF=1).
+  - **What it leaves off:** hansong80's 2 x A770 / 96 GB / the 35B (its caches and tier hold every expert; A B B A the
+    same speed once warm). The laptop's 35B: "expert file 14.7 GiB, GPU cache + RAM tier 14.7 GiB, free RAM 17.0 GiB:
+    reads unbuffered", logits unchanged (F354268F...). Inkling 2 Mini UD-Q8_K_XL: 15.3 / 15.3 GiB, off.
+  - **The reopen path:** no model on the laptop (32 GB) reaches the rule's on side, every one's experts fitting its
+    cache. A test build with the condition at `>=` and no RAM floor took it on the 35B ("reads through the OS file
+    cache"): the logits equal `ARC_XBUF=0`'s (F354268F...).
+  - **The laptop's 35B with `ARC_XBUF=1` forced** (32 GB RAM, `--bench-pp 4096 --n 128`, cold = after ~32 GB of other
+    files read through the cache), for the RAM it takes: on / off alternated, pp4096 771-800 / 779-800 tok/s, tg128
+    19.08-21.38 / 19.27-20.99, experts 100 % hit in every run. Commit charge 14.7-14.9 of 46 GiB throughout. Pages input
+    up to ~530,000-625,000 a second with it (the 15.8 GB file read through the cache at load) against 2,400-90,000
+    without. Lowest available RAM 2.4-3.7 against 3.4-3.8 GiB. No paging, no speed lost.
+
 - **2026-11-27, `ARC_XBUF=1` (opt-in): the expert file through the OS file cache** (`src/platform.h` AsyncFile::open's
   `buffered`: no FILE_FLAG_NO_BUFFERING / O_DIRECT, no O_DIRECT probe; `zero/expert_store.h` reads it once at open, one
   start line). manoreken2's PR #100, merged with our own text.
