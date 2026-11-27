@@ -672,13 +672,16 @@
   }
 
   // ---- launches
-  void ink_run1(const char* name, cl_kernel kk, size_t n) {  // (element-wise kernels: any size, bounds-checked)
+  // (loc: the caller's line for ARC_GEMM_PLAN=1, zero/gemm_plan.h)
+  void ink_run1(const char* name, cl_kernel kk, size_t n,  // (element-wise kernels: any size, bounds-checked)
+                const std::source_location loc = std::source_location::current()) {
     size_t gws[1] = {(n + 63) / 64 * 64}, lws[1] = {64};
-    run(name, kk, 1, gws, lws);
+    run(name, kk, 1, gws, lws, loc);
   }
-  void ink_rung(const char* name, cl_kernel kk, size_t groups, size_t ls) {  // (one work-group per row / token)
+  void ink_rung(const char* name, cl_kernel kk, size_t groups, size_t ls,  // (one work-group per row / token)
+                const std::source_location loc = std::source_location::current()) {
     size_t gws[1] = {groups * ls}, lws[1] = {ls};
-    run(name, kk, 1, gws, lws);
+    run(name, kk, 1, gws, lws, loc);
   }
   cl_kernel ink_k(const char* name) {
     return kernel("ops", "-DINK_LS=256 -DINK_D=" + std::to_string(hp.head_dim) + " -DINK_EXT=1024", name);

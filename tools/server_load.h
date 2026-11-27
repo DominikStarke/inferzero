@@ -425,6 +425,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       eng.reset();
     }
   }
+  // (ARC_GEMM_PLAN=1: the routes the warm-up took, since a stopped server runs no destructor; zero/gemm_plan.h. A split
+  //  model: shard 0's / the last stage's)
+  eng.plan_summary("after the warm-up");
   if (const char* f = getenv("ARC_FAIL_PASS")) eng.fail_after = atol(f);  // (tests: a pass that throws, see Engine)
   L->srv = std::make_unique<Server>(eng, *L->tok, alias, so.webui);
   Server& srv = *L->srv;

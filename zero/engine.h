@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <source_location>  // (Engine::run's caller for ARC_GEMM_PLAN=1, zero/gemm_plan.h)
 #include <cstdlib>
 #include <cstring>
 #ifndef _WIN32
@@ -327,10 +328,14 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       }
       throw;
     }
+    plan_fwd_ = true;  // (ARC_GEMM_PLAN=1: the launches from here on are passes', the ones before the load's)
   }
 
   // Frees everything on the GPU (the server switches models in one process).
-  ~Engine() { release_all(); }
+  ~Engine() {
+    plan_summary();  // (ARC_GEMM_PLAN=1: the model's routes and fused forms, zero/gemm_plan.h)
+    release_all();
+  }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
@@ -1243,11 +1248,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     return seen.insert(std::string(tag) + "|" + cl_.device_id).second;
   }
   // ---------------------------------------------------------------- dispatch helpers
-  void run(const char* name, cl_kernel k, int dims, const size_t* gws, const size_t* lws) {
+  // (loc: the launch's own line, for ARC_GEMM_PLAN=1's log, zero/gemm_plan.h; nothing a launch does depends on it)
+  void run(const char* name, cl_kernel k, int dims, const size_t* gws, const size_t* lws,
+           const std::source_location loc = std::source_location::current()) {
     cl_event e = nullptr;
     CL_CHECK(clEnqueueNDRangeKernel(cl_.queue, k, dims, nullptr, gws, lws, 0, nullptr, profile ? &e : nullptr));
     if (profile) events_.push_back({prof_group_ >= 0 ? std::string(name) + "@" + std::to_string(prof_group_) : std::string(name), e});
+    if (plan_on()) plan_note(name, k, dims, gws, lws, loc);  // (after the launch: the group size clrt chose is set)
   }
+#include "gemm_plan.h"  // (ARC_GEMM_PLAN=1: the log of each launch's kernel and options)
   void collect_profile() {
     if (!profile) return;
     clFinish(cl_.queue);
@@ -1396,7 +1405,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   int aq_max_k() const {
     return std::max({hp.n_embd, 2 * hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad, hp.n_ff_shexp});
   }
-  void matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int acc, bool act32) {
+  void matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int acc, bool act32,
+              const std::source_location plan_loc = std::source_location::current()) {
+    const PlanScope plan_scope(this, &w, plan_loc);  // (ARC_GEMM_PLAN=1: this weight's type and memory, and its caller)
     // (the output head with a logit softcap: the cap applies to the sum of both passes, not to each; the head GEMVs
     //  cap in their epilogue, so both run without it and softcap_rows caps the sum)
     const bool cap = q2mm_ && !q2_off_ && &w == &lm_head_ && hp.softcap > 0.0f;
@@ -1500,7 +1511,9 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
   // one launch of 2F rows instead of two of F (a B60's 27B: 4,096 FFN launches of ~135 us per 32 steps). Off by
   // default until measured: ARC_GEMV_GU=1. false: not taken (two launches as before)
-  bool gemv_gu(const GpuWeight& g, const GpuWeight& u, int Mp, cl_mem C) {
+  bool gemv_gu(const GpuWeight& g, const GpuWeight& u, int Mp, cl_mem C,
+               const std::source_location plan_loc = std::source_location::current()) {
+    const PlanScope plan_scope(this, &g, plan_loc);  // (ARC_GEMM_PLAN=1: the gate's weight stands for both)
     static const bool on = getenv("ARC_GEMV_GU") && atoi(getenv("ARC_GEMV_GU")) != 0;
     if (!on || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
         &g == &lm_head_ || &u == &lm_head_)
@@ -1914,9 +1927,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     return on && T <= 8 && cur_T_ <= 8;
   }
   // a row kernel of K columns (arguments set) with one sub-group per superblock of the T valid rows
-  void run_rows_wide(const char* name, cl_kernel k, int K, int T) {
+  void run_rows_wide(const char* name, cl_kernel k, int K, int T,
+                     const std::source_location loc = std::source_location::current()) {
     size_t gws[2] = {(size_t)16 * (K / 256), (size_t)T}, lws[2] = {16, 1};
-    run(name, k, 2, gws, lws);
+    run(name, k, 2, gws, lws, loc);
   }
   // launches k_swiglu_ (arguments set) over K columns: a work-group per padded row for prompt chunks, one sub-group
   // per superblock of the T valid rows for single-token passes (the GEMVs read only those rows)
