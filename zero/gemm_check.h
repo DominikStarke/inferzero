@@ -21,17 +21,26 @@
     bool quick = false;
     std::string types;  // (a comma list of GGUF type names; empty: every type the engine takes)
     int reps = 2;       // (runs of each case on the same input: 2 or more checks it is deterministic)
+    // (the types with a min or an offset (Q4_1, Q5_1, Q2_K, Q4_K, Q5_K): false, blocks centred as a quantizer makes
+    //  them (the min fitted to the scale); true, a random min a block, a mean far from 0: a stress for the forms that
+    //  rotate (H8R's one scale a column then covers the mean))
+    bool offsets = false;
   };
   struct GcRow {
     std::string type, shape, form, ref, kernels, status, note;
     int N = 0, K = 0, T = 0;
     double err = 0, w8_vs_raw = -1;
+    // (end to end: the output against dequant_row's weights times the unquantized activations, the quantization's
+    //  error included: reported, not failed; e2e_ratio: against the same type and shape's one-token GEMV, the plain
+    //  int8 form, for the prompt forms (H8's rotation must not be far worse); -1 where there is none)
+    double e2e = -1, e2e_ratio = -1;
     std::string det = "-", pair = "-";
     uint32_t priv = 0, spill = 0;
   };
   std::vector<GcRow> gemm_check(const GcOptions& o) {
     std::vector<GcRow> rows;
     gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 1;
+    gc_offsets_ = o.offsets;
     const int tm = gemm_tm(), kmax = aq_max_k(), mmax = max_chunk;
     // the types: every one make_weight takes, and the float types load_w turns into Q8_0
     std::vector<uint32_t> types = {GGML_Q8_0, GGML_Q4_0, GGML_Q4_1, GGML_Q5_0, GGML_Q5_1, GGML_Q8_1, GGML_Q2_K, GGML_Q3_K,
@@ -99,12 +108,26 @@
           }
         }
       }
+    // (each prompt form's end-to-end error against the plain int8 form's, the one-token GEMV of the same type and shape:
+    //  a rotation that does not match its weights', or a decode wrong on both sides, shows here and not in err)
+    for (GcRow& r : rows) {
+      if (r.T <= 8 || r.e2e < 0) continue;
+      for (const GcRow& g : rows)
+        if (g.T == 1 && g.type == r.type && g.N == r.N && g.K == r.K && g.shape == r.shape && g.e2e > 0) {
+          r.e2e_ratio = r.e2e / g.e2e;
+          if (r.e2e_ratio > 8)
+            r.note += std::string(r.note.empty() ? "" : "; ") + "END TO END " + std::to_string(r.e2e_ratio).substr(0, 5) +
+                      "x the one-token GEMV's";
+          break;
+        }
+    }
     return rows;
   }
  private:
   std::vector<std::string>* gc_log_ = nullptr;   // (set while a check runs: run() notes each kernel launched)
   std::vector<std::pair<uint32_t, uint32_t>> gc_props_;  // (each noted kernel's private and spill bytes)
   uint64_t gc_rng_ = 1;
+  bool gc_offsets_ = false;
   std::vector<float> gc_last_[2];  // (the last two cases' results, resident and just in time: the pair)
   uint64_t gc_next() {  // (splitmix64)
     uint64_t z = (gc_rng_ += 0x9E3779B97F4A7C15ull);
@@ -143,15 +166,64 @@
     for (size_t b = 0; b < nb; ++b) {
       uint8_t* p = &v[b * bytes];
       switch (type) {
-        case GGML_Q4_0: case GGML_Q5_0: case GGML_Q8_0: case GGML_IQ4_NL: case GGML_Q2_0: case GGML_AR4_128:
+        case GGML_Q2_0:  // (values (q - 1) d, q 0..3: centred, q in 0..2, the mean 0; --offsets: q uniform, mean d / 2)
+          f16(p, true);
+          if (!gc_offsets_)
+            for (int j = 2; j < bytes; ++j) {
+              uint8_t c = 0;
+              for (int f = 0; f < 4; ++f) c |= (uint8_t)(gc_below(3) << (2 * f));
+              p[j] = c;
+            }
+          break;
+        case GGML_Q4_0: case GGML_Q5_0: case GGML_Q8_0: case GGML_IQ4_NL: case GGML_AR4_128:
         case GGML_IQ2_XXS: case GGML_IQ2_XS: case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S:
         case GGML_IQ4_XS:
           f16(p, true);
           break;
-        case GGML_Q4_1: case GGML_Q5_1: case GGML_Q8_1: case GGML_Q4_K: case GGML_Q5_K:
+        case GGML_Q8_1:
           f16(p, false), f16(p + 2, false);
           break;
-        case GGML_Q2_K: f16(p + 80, false), f16(p + 82, false); break;
+        case GGML_Q4_1: case GGML_Q5_1:  // (w = d q + m: centred, m about -d x the codes' middle, as a quantizer's min)
+          f16(p, false);
+          if (gc_offsets_) {
+            f16(p + 2, false);
+          } else {
+            uint16_t hd;
+            memcpy(&hd, p, 2);
+            const float mid = type == GGML_Q4_1 ? 7.5f : 15.5f;
+            const uint16_t hm = f32_to_fp16(-fp16_to_f32(hd) * mid * (0.9f + 0.2f * gc_uniform()));
+            memcpy(p + 2, &hm, 2);
+          }
+          break;
+        case GGML_Q4_K: case GGML_Q5_K: {  // (w = d sc q - dmin m: centred, dmin = d, m = sc x the codes' middle +- 1)
+          f16(p, false), f16(p + 2, false);
+          if (gc_offsets_) break;
+          memcpy(p + 2, p, 2);
+          const bool q5 = type == GGML_Q5_K;
+          const int scmax = q5 ? 4 : 8;
+          const float mid = q5 ? 15.5f : 7.5f;
+          int sc[8], mn[8];
+          for (int j = 0; j < 8; ++j) {
+            sc[j] = 1 + (int)gc_below((uint64_t)scmax);
+            mn[j] = std::clamp((int)std::lrint(mid * sc[j]) + (int)gc_below(3) - 1, 0, 63);
+          }
+          uint8_t* q = p + 4;  // (the 12 bytes of get_scale_min_k4, packed)
+          for (int j = 0; j < 4; ++j) {
+            q[j] = (uint8_t)(sc[j] | ((sc[j + 4] >> 4) << 6));
+            q[j + 4] = (uint8_t)(mn[j] | ((mn[j + 4] >> 4) << 6));
+            q[j + 8] = (uint8_t)((sc[j + 4] & 15) | ((mn[j + 4] & 15) << 4));
+          }
+          break;
+        }
+        case GGML_Q2_K:  // (scales: low nibble sc, high nibble m; centred: dmin = d, m = 1.5 sc +- 1)
+          f16(p + 80, false), f16(p + 82, false);
+          if (gc_offsets_) break;
+          memcpy(p + 82, p + 80, 2);
+          for (int j = 0; j < 16; ++j) {
+            const int sc = 1 + (int)gc_below(10), mn = std::clamp((int)std::lrint(1.5f * sc) + (int)gc_below(3) - 1, 0, 15);
+            p[j] = (uint8_t)(sc | (mn << 4));
+          }
+          break;
         case GGML_Q3_K: f16(p + 108, true); break;
         case GGML_Q6_K: f16(p + 208, true); break;
         case GGML_IQ1_M: {  // (its f16 scale is the top nibbles of its four scale words)
@@ -250,10 +322,11 @@
     if (T > 8 && (N % 16 || Kp % 256)) return skip("the GEMM takes N x 16, K x 256 (a model's matrix of this shape: GEMV only)");
     if (type == GGML_AR4_128 && K % 128) return skip("AR4_128 rows of 128");
     // the weight: float types as load_w makes them (Q8_0 rows)
-    std::vector<uint8_t> raw;
+    std::vector<uint8_t> raw, fl;  // (fl: a float type's own rows, the end-to-end reference's weights)
     uint32_t wt = type;
+    const int K0 = K;  // (the row as the file has it, before padding)
     if (type == GGML_BF16 || type == GGML_F16) {
-      std::vector<uint8_t> fl((size_t)N * K * 2);
+      fl.resize((size_t)N * K * 2);
       for (size_t i = 0; i < (size_t)N * K; ++i) {
         const float f = (gc_uniform() - 0.5f) * 0.1f;
         uint16_t h;
@@ -297,6 +370,16 @@
           if (!std::isfinite(row[k])) return skip("a random row decoded to a value that is not finite");
           deq[ci * K + k] = row[k];
         }
+      }
+    }
+    // (the end-to-end reference's weights: the file's values, the float types' own before their Q8_0 rows; zeros
+    //  past a padded row's end)
+    std::vector<double> wfile = deq;
+    if (!fl.empty()) {
+      std::vector<float> row(K0);
+      for (size_t ci = 0; ci < cols.size(); ++ci) {
+        dequant_row(type, fl.data() + (size_t)cols[ci] * K0 * 2, K0, row.data());
+        for (int k = 0; k < K; ++k) wfile[ci * K + k] = k < K0 ? row[k] : 0.0;
       }
     }
     // the engine's state this case changes, restored after it
@@ -417,12 +500,20 @@
           if (gc_per32_form(wt, raw.data() + (size_t)cols[ci] * rb, K, &wref[ci * K])) r.ref = "decode32's per-32 int8 (CPU) x int8";
         // (those types' int8 codes from the GPU's own decode32, decode_w8's launch, where it takes the rows: the CPU copy
         //  above may round a code the other way at a tie, the GPU's division and fused multiply-add being its own)
-        if (r.ref != "raw rows x int8" && N % 16 == 0) {
-          cl_mem dq = buf(w8_bytes_q(N, K)), dh = buf(w8_bytes_h(N, K) + 64);
-          decode_w8(w, dq, dh);
-          const std::vector<uint32_t> q = gc_read<uint32_t>(dq, w8_bytes_q(N, K) / 4);
-          const std::vector<uint32_t> hh = gc_read<uint32_t>(dh, w8_bytes_h(N, K) / 10 * 8 / 4);
-          free_buf(dq), free_buf(dh);
+        //  (N not a multiple of 16: a copy of the rows padded with zero rows to whole groups, decoded the same way)
+        if (r.ref != "raw rows x int8") {
+          const int Np = (N + 15) / 16 * 16;
+          cl_mem rp = nullptr;
+          if (Np != N) {
+            std::vector<uint8_t> pr(rb * Np, 0);
+            memcpy(pr.data(), raw.data(), rb * N);
+            rp = upload_padded(wt, pr.data(), pr.size());
+          }
+          cl_mem dq = buf(w8_bytes_q(Np, K)), dh = buf(w8_bytes_h(Np, K) + 64);
+          decode_w8(rp ? rp : w.raw, wt, Np, K, dq, dh, rp ? false : w.iq3t, w.w8_mins);  // (the copy: never tiled)
+          const std::vector<uint32_t> q = gc_read<uint32_t>(dq, w8_bytes_q(Np, K) / 4);
+          const std::vector<uint32_t> hh = gc_read<uint32_t>(dh, w8_bytes_h(Np, K) / 10 * 8 / 4);
+          free_buf(dq), free_buf(dh), free_buf(rp);
           gc_w8_rows(q, hh, K, true, false, cols, wref);
           r.ref = "decode32's per-32 int8 (GPU) x int8";
         }
@@ -443,10 +534,22 @@
         r.w8_vs_raw = wm > 0 ? dm / wm : 0;
       }
     }
-    double em = 0, rm = 0;
+    double em = 0, rm = 0, ee = 0, er = 0;
     const int rows_chk = std::min(T, 64);
     for (int mi = 0; mi < rows_chk; ++mi) {
       const int m = T <= 64 ? mi : (int)((int64_t)mi * (T - 1) / (rows_chk - 1));
+      // (the end-to-end reference: the f32 rows as the norm makes them, x / sqrt(mean(x^2) + eps) over the row the
+      //  kernel normed (Kp, the padding's zeros in it), unquantized, times the file's weights; in double)
+      double ss = 0;
+      for (int k = 0; k < Kp; ++k) ss += (double)xs[(size_t)m * Kp + k] * xs[(size_t)m * Kp + k];
+      const double inv_rms = 1.0 / std::sqrt(ss / Kp + (double)hp.eps);
+      for (size_t ci = 0; ci < cols.size(); ++ci) {
+        double s2 = 0;
+        for (int k = 0; k < Kp; ++k) s2 += wfile[ci * Kp + k] * ((double)xs[(size_t)m * Kp + k] * inv_rms);
+        const float g2 = got[(size_t)m * N + cols[ci]];
+        ee = std::max(ee, std::isfinite(g2) ? std::fabs((double)g2 - s2) : INFINITY);
+        er = std::max(er, std::fabs(s2));
+      }
       for (size_t ci = 0; ci < cols.size(); ++ci) {
         double s = 0;
         if (h8) {
@@ -463,6 +566,7 @@
       }
     }
     r.err = rm > 0 ? em / rm : em;
+    r.e2e = er > 0 ? ee / er : ee;
     r.status = r.err <= 1e-3 ? "ok" : "FAIL";
     gc_keep(resident, got);
   }

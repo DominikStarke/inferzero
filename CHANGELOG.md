@@ -16,6 +16,12 @@
   case's kernels with their build options, private and spill bytes. A shape past the given model's buffers is listed
   as skipped, with the reason.
 
+  An `end_to_end` column compares each result with the plain product, the file's weights times the unquantized
+  activations, so it holds the quantization's own error. It is reported, not failed. A prompt form whose end-to-end
+  error is over 8x its type's one-token GEMV is noted. On the laptop the W8 prompt GEMM's median is 1.0x, and H8's
+  is 3.4x: one scale per token over the whole row. `--offsets` draws the types with a min (Q4_1, Q5_1, Q2_K, Q4_K,
+  Q5_K, Q2_0) with block means far from zero; H8's error then rises to 12-38x.
+
   Usage: `gemm_check --model <model.gguf> --out <file.tsv> [--quick]`, through `bench\gpu_guard`. It needs a model
   for the engine's buffers only (its own weights are not checked). On the laptop (the 4B, with H8, and the 27B, W8
   GEMMs) all 1,222 cases of `--quick` pass, the largest error 7.9e-7 of the output's range; every case repeats bit
