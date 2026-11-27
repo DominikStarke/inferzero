@@ -413,65 +413,28 @@
     // (save_state, not the host snapshot: the KV caches ARE the context. Saving only the recurrent states restores a
     //  position whose attention sees nothing, and the model repeats itself -- that was the fault of 2026-11-25. On a
     //  split every shard writes its own part at the same time, TpEngine::save_parts_run_all.)
-    // (its exact length up front: a vector that grows by doubling holds the old and the new buffer at once, which at a
-    //  256K conversation is 8 GiB more than the state itself -- the save then failed with std::bad_alloc, 2026-11-27)
-    std::vector<uint8_t> snap;
-    bool snap_ok = false;
-    try {
-      snap.reserve(eng_.saved_size(last_gen_cut_));
-      snap_ok = eng_.save_state([&snap](const void* p, size_t n) {
-        snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
-        return true;
-      }, last_gen_cut_);
-    } catch (const std::exception& x) {
-      LOG_WRN("session cache: the conversation (%zu tokens) was not saved (no room for its %zu MB state: %s)\n",
-              cached_.size(), eng_.saved_size(last_gen_cut_) >> 20, x.what());
-      return;
-    }
-    if (!snap_ok) {
-      LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read)\n", cached_.size());
-      return;
-    }
-    const uint64_t bytes = head.size() * 4 + snap.size();
-    // (the state is moved into the writer's pieces, not copied: one copy of it in RAM, so the room the background write
-    //  needs is its own size plus the 2 GiB left over -- counting it twice refused saves that would have fit, 2026-11-27)
-    const bool bg = plat::ram_available() > bytes + (2ull << 30);
+    // (the state goes to the disk as it is read off the GPUs, a piece at a time: the save holds one piece in RAM, not
+    //  the whole state. A 256K conversation is 9 GiB, and holding it whole needed that much free RAM -- the save then
+    //  failed with std::bad_alloc, 2026-11-27. The writer thread opens the file, writes the pieces in order and renames
+    //  it when the last one is in; the request goes on meanwhile)
     auto failed = std::make_shared<std::atomic<bool>>(false);
-    std::shared_ptr<std::thread> writer;
-    bool ok;
-    std::error_code ec;
-    if (bg) {
-      auto pieces = std::make_shared<std::vector<std::vector<uint8_t>>>();
-      pieces->emplace_back((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size()));
-      pieces->push_back(std::move(snap));
-      ok = true;
-      if (ok)
-        writer = start_writer([pieces, file, failed] {
-          FILE* f = fopen((file + ".tmp").c_str(), "wb");
-          bool w = f != nullptr;
-          for (const auto& pc : *pieces)
-            if (w) w = fwrite(pc.data(), 1, pc.size(), f) == pc.size();
-          if (f) w = fclose(f) == 0 && w;
-          std::error_code e;
-          if (w) std::filesystem::rename(file + ".tmp", file, e);
-          if (!w || e) {
-            std::filesystem::remove(file + ".tmp", e);
-            *failed = true;
-            LOG_WRN("session cache: could not write %s (disk full or the folder not writable?)\n", file.c_str());
-          }
-        });
-    } else {
-      FILE* f = fopen((file + ".tmp").c_str(), "wb");
-      ok = f && with_file(f, [&] {
-        return fwrite(head.data(), 4, head.size(), f) == head.size() &&
-               (snap.empty() || fwrite(snap.data(), 1, snap.size(), f) == snap.size());
-      }, file + ".tmp");
-      if (f) ok = fclose(f) == 0 && ok;
-      if (ok) std::filesystem::rename(file + ".tmp", file, ec);
-      ok = ok && !ec;
-      if (!ok) std::filesystem::remove(file + ".tmp", ec);
+    PieceWriter writer(file, failed);
+    uint64_t bytes = head.size() * 4;
+    bool ok = writer.push(std::vector<uint8_t>((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size())));
+    if (ok) {
+      try {
+        ok = eng_.save_state([&writer, &bytes](const void* p, size_t n) {
+          bytes += n;
+          return writer.push(std::vector<uint8_t>((const uint8_t*)p, (const uint8_t*)p + n));
+        }, last_gen_cut_);
+      } catch (const std::exception& x) {
+        LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read: %s)\n",
+                cached_.size(), x.what());
+        writer.finish();
+        return;
+      }
     }
-    if (!ok) {
+    if (!ok || !writer.finish()) {
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (see the line before); it is processed again when it comes back\n", cached_.size());
       return;
     }
@@ -479,7 +442,7 @@
     for (size_t i = 0; i < saved_.size();)
       if ((int)common_prefix(saved_[i].tokens, cached_) >= saved_[i].gen_cut) forget(i);
       else ++i;
-    saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, writer, failed});
+    saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, nullptr, failed});
     uint64_t total = 0;
     for (auto& c : saved_) total += c.bytes;
     try {  // the other models' first (a file system error leaves them)
@@ -493,8 +456,8 @@
       forget(lru - saved_.begin());
     }
     cur_saved_ = true;
-    zlog::eprintf("session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s%s\n", cached_.size(),
-            bytes / 1048576.0, ms_since(t0) / 1000, bg ? " (to memory; written to disk in the background)" : "");
+    zlog::eprintf("session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s\n", cached_.size(),
+            bytes / 1048576.0, ms_since(t0) / 1000);
   }
   // Before a request: keep the held conversation if the request does not continue it, and bring back a saved one
   // that shares more with the request.

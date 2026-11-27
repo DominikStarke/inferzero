@@ -164,10 +164,9 @@
   loaded afterwards instead of processed again; only a server that is killed loses it.
   A conversation costs **34.5 KiB a token** on disk (int8 KV, Qwen3.8 27B: 8K 867 MB, 32K 1.66 GiB, 128K 4.90 GiB,
   256K 9.22 GiB) plus 598 MiB of DeltaNet states whatever the length, so `--session-cache-gb` is how many long
-  conversations are kept at once. The save copies the state off the GPUs into host memory first and holds it **once**
-  (each shard's part is reserved at its exact length and let go as soon as it is written), so it needs about the
-  state's own size in free RAM; a save that does not fit is a warning line and the conversation is processed again
-  next time, not a failed request. On a split model the same numbers hold, and the file is the shards' parts together
+  conversations are kept at once. The save streams the state to the disk as it is read off the GPUs, a 256 MB piece
+  at a time, so it needs about 1 GiB of RAM whatever the conversation's length; a save that fails is a warning line
+  and the conversation is processed again next time, not a failed request. On a split model the same numbers hold, and the file is the shards' parts together
   ([multi-gpu.md](multi-gpu.md#the-caches-on-disk-on-a-split-model-2026-11-25)).
 - Qwen turn snapshot (inferzero): the Qwen templates drop the reasoning of earlier turns as soon as the user
   writes again, so the server also snapshots the start of the last assistant turn and a new message only processes

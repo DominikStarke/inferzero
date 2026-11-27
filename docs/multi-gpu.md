@@ -725,17 +725,25 @@ Measured on 2 B60s: an 8K conversation is 871 MB, 1.5 s to save, 0.9 s to load, 
 reusable and the same answer across the restart. Going back to a conversation after another one in between: 3,990 of
 3,995 tokens from the cache, 0.57 s.
 
-**What a save costs in RAM (2026-11-27).** The state is copied off the GPUs into host memory before it goes to disk,
-so the save needs room for it. It is held **once**: each shard's part is reserved at its exact length and let go as
-soon as it is written, and the sink is moved into the writer's pieces rather than copied. Before, the parts and the
-sink were both alive and the sink grew by doubling — at a 256K conversation the 9 GiB state needed 18 GiB and the
-save failed with `std::bad_alloc`.
+**What a save costs in RAM (2026-11-27).** The state goes to the disk **as it is read off the GPUs**, a piece at a
+time: `segs_out` reads 256 MB batches into a buffer of their own, and each goes straight to a writer thread that
+writes it and lets it go. The save therefore holds one piece plus the writer's queue (at most 1 GiB), whatever the
+conversation's length. Before, the whole state was collected in host memory first — and before the fix of the same
+day, twice: at a 256K conversation the 9 GiB state needed 18 GiB and the save failed with `std::bad_alloc`.
 
 | conversation | state on disk | peak RSS of the save |
 |---|---:|---:|
-| 32K tokens | 1.66 GiB | +1.9 GiB |
-| 128K tokens | 4.90 GiB | +6.4 GiB, 12.5 s |
-| 256K tokens | 9.22 GiB | ~+9.5 GiB (the state's own size) |
+| 32K tokens | 1.66 GiB | **+0.7 GiB**, 1.6 s |
+| 128K tokens | 4.90 GiB | **+0.35 GiB**, 3.2 s |
+| 256K tokens | 9.22 GiB | **+0.5 GiB**, 4.5 s |
+
+The peak does not grow with the conversation: it is the 256 MB piece, the queue and the writer's own buffers. The
+saved file is byte-identical to the one the whole-state path wrote (md5 `7ab0d8969f740536c7459f59d0507d1b` at 32K,
+`b30a5983d6effe99da680314cfeabe02` at 128K).
+
+On a split model the sink must see the shards' parts in rank order while every shard reads at the same time: shard 0
+streams straight into the sink, the others write their part to a temp file of its own and it is streamed in
+afterwards, a piece at a time. No shard's part is ever held whole in RAM.
 
 The size is 34.5 KiB a token (int8 KV: 17 layers with a KV cache, 4 kv heads, 256-wide heads, 520 bytes a head and
 position) plus 598 MiB of DeltaNet states, which do not grow with the context. A save that does not fit is a warning

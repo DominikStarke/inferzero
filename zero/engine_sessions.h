@@ -464,10 +464,11 @@
     }
   }
   bool segs_out(const std::vector<Seg>& segs, const Sink& out) {
-    std::vector<uint8_t> hb;
+    // (a buffer of its own per batch, not one reused: the sink may keep the bytes (the session cache hands each piece
+    //  to its writer thread), and a reused buffer would be overwritten under it)
     bool ok = true;
     batches(segs, [&](size_t i, size_t j, size_t n) {
-      hb.resize(n);
+      std::vector<uint8_t> hb(n);
       size_t o = 0;
       for (size_t k = i; k < j; o += segs[k++].n)
         if (segs[k].n)
