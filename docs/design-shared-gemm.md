@@ -318,6 +318,67 @@ Not proposed:
 - A persistent kernel per layer ("megakernel"): it needs barriers across work-groups, and a hung barrier froze the laptop on 2026-11-23. Way 7 gets the cross-work-group reductions without one.
 - Command-list replay: it lowers the cost per launch, not the count. It measured as a gain on B-series only (replay_probe), so it stays a B-series option outside this layer (3.9).
 
+#### 3.7a The lowest number of launches (the user, 2026-11-27)
+
+The floor above is what ways 1-8 reach. The lowest count possible without a persistent kernel is set by the true
+all-to-all dependencies alone: a step that needs **every** value of the step before it, which only a barrier across
+work-groups could join inside one launch. Four more ways remove the boundaries that aren't of that kind:
+
+9. **A work-group owns its heads, from the projection to the mixer** (one token, and drafting's few rows). It computes
+   its own heads' rows of q / k / v (DeltaNet: q / k / v / z / beta / the gates) as GEMV slices, then runs attention or
+   the recurrence for those heads, in one launch. No work-group needs another's heads, so the projection -> mixer
+   boundary goes. Each output row's dot product is the same sum in the same order, so it's exact.
+   - The catch: there are few KV heads (GQA), so a K / V row group may be too little work for one work-group. It's
+     then split over K across work-groups and joined by way 7, in index order.
+10. **The next norm's statistics from the producer's last work-group** (way 7). The output projection + residual, and
+    the down projection + residual, write their rows. The last work-group of each row block computes that block's RMS
+    for the next layer's prologue, in the norm kernel's reduction order. The next launch reads the statistics instead
+    of reducing again.
+11. **Top-k in the router's last work-group** (way 7). The router's scores, then the top-k per row by the work-group
+    that finishes a row, so the experts' gate / up launch reads ready routes.
+12. **The head and sampling in one launch** (way 7 over the vocabulary, already listed as a use).
+
+**What can't go, and why:** each remaining boundary is a step that reads every value of the previous one.
+- **Attention / DeltaNet output -> the output projection:** it needs every head's output.
+- **The output projection + residual -> gate / up:** they need the whole residual row (its norm is ready by way 10,
+  but its values are needed too).
+- **SwiGLU -> down:** it needs the whole intermediate row.
+- **The router -> the experts:** the experts need their routes (way 11 puts top-k in the router's launch, but the
+  experts still wait for it).
+
+Joining those inside one launch needs a barrier across work-groups, the persistent-kernel form rejected above because
+a hung barrier froze the laptop.
+
+**So the lowest count per layer, one generated token:**
+
+| Layer | Launches | What they are |
+|---|---|---|
+| dense attention or DeltaNet + dense FFN | **4** | [norm + projections + mixer, per head] · [output projection + residual + next stats] · [gate / up + SwiGLU] · [down + residual + next stats] |
+| the same with a MoE FFN | **5** | the mixer's 2, then [router + shared gate / up + top-k] · [experts' gate / up] · [experts' down + shared down, the combine in the next prologue] |
+
+Plus about 2 a token (the embedding with the first norm, the head with sampling). Estimates per model, to be checked
+against each one's chain (some layers add steps of their own: Flash Next's hc mixers, DeepSeek's compressor and
+indexer, Inkling's controllers and convs):
+
+| Model | Today | Floor (ways 1-8) | Lowest (ways 1-12) |
+|---|---|---|---|
+| Qwen3.5 4B (32 layers) | ~426 | ~160 | ~130 |
+| Qwen3.8 27B (64 layers) | ~710 | 321 | ~258 |
+| Qwen3.6 35B-A3B (40 layers, MoE) | ~620 | 241 | ~202 |
+| Inkling 2 Mini (48 visits) | 1,356 | 385 | to work out (its controllers and convs add steps) |
+
+**Three multipliers on top, which cut the cost per generated token rather than the count per pass:**
+- **Drafting:** a verification pass of k + 1 rows costs about one pass's launches and yields its accepted tokens, so
+  launches per generated token divide by the tokens a pass accepts (Inkling with DSpark: ~1.8-2.2 today).
+- **Batched slots:** several conversations' tokens in one pass share its launches.
+- **Replayed command lists:** the count stays, but each launch costs about half on the B-series (replay_probe: B70
+  1.19 -> 0.57-0.63 µs, B60 -49 %; on the A770 only the barrier-after form gains, -4 %). Recording a token's launches
+  once and replaying them belongs in the layer's submission (3.9), per GPU kind.
+
+**The rules are the same as ways 1-8:** every form exact against the unfused chain (`gemm_check`), no work-group ever
+waiting for another, no spill on any family. Ways 9-12 are proposed for after Inkling is on the layer and ways 1-8 have
+brought it to its floor, not before.
+
 `ARC_GEMM_PLAN=1` also prints the launches a token by kind (GEMM, prologue, other), so each step's gain is visible. The goal is each model's floor in the table above, not a fixed number. `tests/launch_budget.txt` gets one row per model in that table: today's count, the floor, and the rule (1-8) that closes each part of the gap. The 2026-11-24 target (Inkling under 600 launches a token, against 1,356 today) is a first stop on the way.
 
 ### 3.8 Budgets that stay low

@@ -181,7 +181,7 @@ rule, not as a separate kernel next to it. One row per fused form in use:
 - its floor, the launches left when every legal fusion is taken (design section 3.7);
 - its planned chain. The floors and chains are from design section 3.7, and the "now" counts are to be measured in G.
 
-| Model | Fused forms today (from A) | Launches a token now | Floor | Planned chain, per layer |
+| Model | Fused forms today (from A) | Launches a token now | Floor (ways 1-8; the lowest, ways 1-12: design 3.7a) | Planned chain, per layer |
 |---|---|---|---|---|
 | Qwen3.5 4B / 9B (dense, 3 DeltaNet : 1 attention) | to fill | 4B ~426 (125H `--prof-gen`, 2026-11-26) | ~5 a layer: 4B ~160 | DeltaNet: [norm -> qkvz + ab, conv / state / gates in the epilogue] · [recurrence] · [gated norm -> ssm_out + residual] · [norm -> gate / up, SwiGLU] · [down + residual]; attention: [norm -> q / k / v, q / k norm, RoPE, KV store] · [attention] · [sigmoid gate -> o + residual] · the FFN's 2 |
 | Qwen3.8 27B | to fill | ~710 | **321** | as the 4B, 48 DeltaNet + 16 attention layers |
