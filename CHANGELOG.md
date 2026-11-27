@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-27 (unreleased): serverz stops at once as a container's first process; no crash on an empty warm-up token
+
+- **`podman stop` / `docker stop` stop serverz at once** when it is the container's first process (#102). As PID 1 the
+  kernel gives it no default action for SIGTERM / SIGINT, so a stop waited its 15 s and killed it. serverz now ends at
+  once on either, as any other process does (exit status 128 + the signal; checked under `unshare --pid`: 2 ms, 143,
+  against still running without the handler). Only as PID 1, on Linux. `--init` was the workaround.
+- **A model whose tokenizer gives no token for "Hi" no longer crashes serverz at start** (#102, a tiny test model): the
+  kernels' warm-up is skipped with a warning, and they compile on the first request.
+
 ## 2026-11-27 (unreleased): generation reads weights in host memory in short pieces on discrete cards
 
 - **A matrix kept in host memory is read in pieces of at most 4 MB per GEMV launch** on discrete cards (#99). On an Arc

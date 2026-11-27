@@ -382,13 +382,17 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (so.gpus == 1) {  // compile kernels before serving (all of the generation's after an update; --gpus: not yet)
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
-    if ((warmed = eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt)))
+    // (a tokenizer that gives no token for "Hi": no warm-up, the kernels compile on the first request. #102, a tiny
+    //  test model whose vocabulary encoded it to nothing, and [0] read past the end)
+    const std::vector<int> hi = L->tok->encode("Hi", false);
+    if (hi.empty()) LOG_WRN("warm-up skipped: the tokenizer gives no token for \"Hi\"\n");
+    if (!hi.empty() && (warmed = eng.warm_up_once(hi[0], so.warm_prompt)))
       zlog::eprintf("kernels warmed up for this model in %.1f s (once after an update)\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
     // (Inkling 2's DSpark drafter: its first draft in a process costs ~150-200 ms, every start, the kernel cache
     //  warm or not (zero/engine_dspark.h, docs/inkling2.md): paid here, not by the first answer. runz keeps it)
-    if (eng.dsp_on() && eng.ctx > 16) {
-      const int t = L->tok->encode("Hi", false)[0];
+    if (eng.dsp_on() && eng.ctx > 16 && !hi.empty()) {
+      const int t = hi[0];
       eng.forward(&t, 1);
       const std::vector<int> d = eng.mtp_draft(t, eng.opt.mtp_drafts);
       if (!d.empty()) {

@@ -995,9 +995,23 @@ int main(int argc, char** argv) {
     _Exit(1);
   }
 }
+#ifndef _WIN32
+// (serverz as a container's first process, PID 1, #102: the kernel gives PID 1 no default action for SIGTERM / SIGINT,
+//  so `podman stop` / `docker stop` waited its 15 s and killed it. As PID 1 these signals end it as they end any other
+//  process: at once, exit status 128 + the signal. Not installed otherwise, where the default action already does that)
+extern "C" inline void pid1_on_signal(int sig) { _exit(128 + sig); }
+inline void pid1_signals() {
+  if (getpid() != 1) return;
+  struct sigaction sa{};
+  sa.sa_handler = pid1_on_signal;
+  sigemptyset(&sa.sa_mask);
+  for (int s : {SIGTERM, SIGINT}) sigaction(s, &sa, nullptr);
+}
+#endif
 static int server_main(int argc, char** argv) {
 #ifndef _WIN32
   plat::ignore_sigpipe();  // (first: a log pipe whose reader is gone must give a write error, not end the server)
+  pid1_signals();
 #endif
   crashlog::install();
   crashlog::extra = [] { zrt::print_last_launch(); };  // (a crash inside a launch: which kernel, with what)
