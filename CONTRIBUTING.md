@@ -18,7 +18,7 @@ Measured, not guessed (details in [docs/xe2-tuning.md](docs/xe2-tuning.md) and [
 | Core Ultra iGPUs (Meteor Lake, Lunar Lake, Panther Lake) | tuned on one 125H laptop; the B390 measured by one user | every other laptop |
 
 The open work, in order, is in [QUEUE.md](QUEUE.md) ("Open now" at the top) and
-[docs/arc-plan-2026-11-17.md](docs/arc-plan-2026-11-17.md).
+[docs/plan-2026-11-30.md](docs/plan-2026-11-30.md).
 
 ## 1. Measure on your hardware (no code needed)
 

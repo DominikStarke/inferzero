@@ -13,7 +13,7 @@ Fixed by earlier decisions and kept here: prompt chunks of at most 4,096 tokens 
 DeepSeek less); no extra resident copies of decoded weights (the minimal-cost rule: VRAM only for the placement itself);
 nothing changes for a model that fits one card.
 
-This extends the layer split of [arc-plan-2026-11-17.md](arc-plan-2026-11-17.md) (L1-L5) and uses what exists:
+This extends the layer split of [the 2026-11-17 Arc plan](https://github.com/rizagp/inferzero/blob/6994503/docs/arc-plan-2026-11-17.md) (L1-L5, in git history) and uses what exists:
 `TpEngine` and its shards (`zero/mgpu/`), the expert cache, RAM tier and expert file (`zero/xcache.h`,
 `zero/expert_store.h`), `ARC_XCPU` and `ARC_HOST_CPU` (`zero/xe2/`), the layer-major prompt
 (`forward_layer_major`).

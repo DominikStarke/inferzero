@@ -1,4 +1,4 @@
-// The expert GEMMs of prompt chunks on XMX straight from the raw expert rows (docs/arc-plan-2026-11-17.md, item X1):
+// The expert GEMMs of prompt chunks on XMX straight from the raw expert rows (the 2026-11-17 Arc plan, item X1: docs/arc-plan-2026-11-17.md at commit 6994503):
 // moe_rg (zero/kernels/decode_moe.cl), the int8 GEMM that decodes each expert row in registers instead of a decode_w8
 // pass, with its 64-value chunks' dot products as int8 DPAS (-DRG_XMX) for the types with one scale per 32 values.
 // A part of class Engine (zero/engine.h), included inside the class body like zero/xe2/engine_xe2.h: not a header of

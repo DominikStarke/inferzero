@@ -134,8 +134,8 @@ webui/      index.html (chat, files and documents, terminal, web search tools, T
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
             (speed by date), lessons-intel-arc-igpu.md, xe2-tuning.md (GPUs with XMX), multi-gpu.md, linux-port.md,
             logging.md, install.md, flash-next-spec.md, deepseek41-spec.md, npu-experiment.md (the NPU next to the
-            GPU), qwen3-asr.md + whisper-native.md + whisper-native-status.md (speech to text), plans
-            (arc-plan-2026-11-17.md, night-plan-2026-11-17.md, gemma4-plan.md), archive/ (arcinferzero-log.md,
+            GPU), qwen3-asr.md + whisper-native.md (speech to text), the plan
+            (plan-2026-11-30.md), archive/ (arcinferzero-log.md,
             review_notes.md, f21-q2-speed.md: older logs, notes and finished plans)
 QUEUE.md    open work, measurements and the decisions waiting for the user
 setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools; build.sh and

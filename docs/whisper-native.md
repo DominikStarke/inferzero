@@ -1,7 +1,7 @@
 # Whisper native: speech to text on Level Zero, transcripts and meetings
 
 Status: built and in use (plan of 2026-10-25, W0-W9 done 2026-10-28; numbers and what is left:
-[whisper-native-status.md](whisper-native-status.md)). Since 2026-10-28 Qwen3-ASR is the default speech model next to
+[the status page, in git history](https://github.com/rizagp/inferzero/blob/1b8b777/docs/whisper-native-status.md)). Since 2026-10-28 Qwen3-ASR is the default speech model next to
 it ([qwen3-asr.md](qwen3-asr.md)); Whisper large-v3 (turbo only when large-v3 is not cached) gives words with times
 and the live text. Whisper was written from scratch on inferzero's Level Zero engine, like the LLMs: no OpenVINO,
 no CTranslate2, no Python at run time. The plan below, as written then: two functions in the web UI and one on the
