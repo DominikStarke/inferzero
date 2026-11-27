@@ -530,11 +530,29 @@ Filled from the Developer's check of 2026-11-27 against main 01617e2.
 Same-release pairs only: the release before a migration step and the step itself, on the same card. Old issue
 numbers are context. Models: the 4B, the 27B IQ3_S, the 35B-A3B, Flash Next, Gemma 4 12B and E4B, Inkling 2 Mini.
 Lengths: pp512, pp4096, tg128 after 512; pp16384 for the 35B and Inkling. Three A B B A runs per model and length.
-**A step is blocked** when its median is below the baseline by more than max(2 %, 2 x that model's own spread), on two
-A B B A rounds.
+**How a step is judged** (changed 2026-11-28, after the laptop baseline showed heat dominating the small models):
+- **On pairs, not against the table.** Before / after in one block on the same card: first a 2-3 minute heat soak with
+  the same model, then before / after / after / before back to back. pp takes runz's 3 passes per run; tg takes 3 runs
+  a side.
+- **The step is judged on the pairwise difference,** which cancels the slow thermal drift. It's blocked when its median
+  difference is below zero by more than max(2 %, 2 x the spread of the pairs' differences), on two such blocks.
+- **The table below is the reference level:** what "normal" is on a card, so a large drop shows even without a pair.
 
-| Model | Card | Release / driver | pp512 | pp4096 | tg128 | pp16384 | Spread |
-|---|---|---|---|---|---|---|---|
+**The laptop, Xe-LPG** (the Developer, 2026-11-28; Core Ultra 5 125H, driver 32.0.101.9175, main 089a927). Three
+rounds, the model order reversed each round, 20 s pauses. pp: 9 samples (3 passes x 3 rounds); tg: 3. tok/s, median
+(spread):
+
+| Model | pp512 | pp4096 | tg128 | Bar with the old rule |
+|---|---|---|---|---|
+| Qwen3.5 4B UD-Q4_K_XL | 832.2 (20.9 %) | 786.3 (23.8 %) | 19.7 (5.8 %) | thermal, use pairs |
+| Qwen3.5 9B UD-Q4_K_XL | 267.3 (13.3 %) | 411.3 (3.3 %) | 11.7 (9.4 %) | thermal, use pairs |
+| Qwen3.8 27B GSQ IQ3_S | 103.1 (4.8 %) | 119.9 (3.1 %) | 5.0 (9.6 %) | 6-19 % |
+| Qwen3.6 35B-A3B UD-IQ4_XS | 523.3 (2.3 %) | 779.7 (3.4 %) | 21.3 (1.5 %) | 3-7 % |
+| Inkling 2 Mini UD-IQ4_XS | 68.2 (1.0 %) | 45.7 (2.0 %) | 8.8 (1.1 %) | 2-4 % |
+
+The 4B is bimodal: run first on a cool laptop it gave 968-985 (pp512) and 892-941 (pp4096); every later run gave
+811-833 / 753-800. The 9B's pp512 jumped the same way (~298 against ~265). The old rule's bar would be 42-48 % for
+the 4B, which nothing would fail. Hence the pairs. Other cards' rows come from the kit (J).
 
 ## F. Memory plan baseline
 
