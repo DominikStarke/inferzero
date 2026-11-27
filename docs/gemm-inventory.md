@@ -14,7 +14,7 @@ user on 2026-11-27. The direction:
 
 Generated from the engine's own launch log (`ARC_GEMM_PLAN=1`): one line per distinct (weight role, weight type, row
 class: one token / 2-8 rows / prompt chunk, host or resident) giving the kernel, its `-D` options, grid, local size and
-caller. The source is one short run per model: a prompt of more than one chunk, 8 generated tokens, and the 2-8-row
+caller. The source is one short run per model: a prompt of more than one chunk, 16 generated tokens, and the 2-8-row
 passes. The laptop shows only Xe-LPG. Other GPU kinds' rows come from the contributor kit (J), and stay "unproven:
 plan not seen on this kind" until then.
 
@@ -28,9 +28,11 @@ How to read the log:
   prints the old model's "(freed)" summary.
 - **A split model:** each shard logs its own lines and summary ("shard r"). serverz's warm-up summary is shard 0's or
   the last stage's.
-- **Not in the log yet:** Whisper's own launcher, the NPU and `engine_tp.h`'s one direct launch. They bypass
-  `Engine::run`, so they're listed by hand until their migration turns.
-- **Steps that aren't GEMMs** (norm, quant, swiglu, rot) give no model-file line ("from") until the C-harness commit.
+- **Not in the log, listed by hand** until their migration turns (they bypass `Engine::run`):
+  - Whisper's and Qwen3-ASR's own launchers (`zero/whisper_engine.h`, `zero/asr_qwen3.h`; kernels `whisper.cl` / `asr.cl`);
+  - the NPU path (`zero/npu/engine_npu.h`: the prompt chunks it takes run on the NPU, not as GPU launches);
+  - `engine_tp.h`'s one direct launch (the multi-GPU sums' setup).
+- **Steps that aren't GEMMs** (norm, quant, swiglu, rot) give the model-file line ("from") too, since 43ab012.
 
 ### Xe-LPG (the laptop's 125H), generated
 
@@ -255,8 +257,8 @@ Every row is the Xe-LPG kind only. On every other kind each form is "unproven: p
 | A770 int8 GEMM | ~65 % of peak | oneDNN 72-79 % | QUEUE.md |
 | B60 under Windows | 157.6 TOPS | oneDNN 170-183 | QUEUE.md |
 | B70 16-lane XMX GEMM | xw_peak's best 232 TOPS (`L128` not measured in the model) | oneDNN 233-237 | QUEUE.md; before-after.md |
-| 8-lane XMX expert tiles | 1.9x / 3.2x slower than our own DP4a | | QUEUE.md |
-| Arc 140T prompt GEMM | ~33 % of its XMX int8 peak | | CONTRIBUTING.md |
+| 8-lane XMX expert tiles | 1.9x / 3.2x slower than our own DP4a | none measured yet: the 8-lane XMX tile is slower than DP4a, so DP4a is the bar | QUEUE.md |
+| Arc 140T prompt GEMM | ~33 % of its XMX int8 peak | none measured yet (no oneDNN run on a 140T): the peak is the bar | CONTRIBUTING.md |
 
 ## B. Every guard and invariant
 
@@ -270,7 +272,7 @@ comes from CHANGELOG.md, docs/before-after.md, docs/audit-*.md and BUGS.md. The 
 
 ### The code side (the Developer, 2026-11-28, read at main 6fb85d7)
 
-Read from the code's conditions, not the comments. The findings marked "checked" were re-read by hand, and the Researcher re-read findings 1 and 4. "golden" is tests\gemm_golden.ps1 and its kind; "run_tests" is tests\run_tests.ps1. "(no comment)" means no comment says why. A row whose test is "none" is unproven: Phase 1 must not move it without adding one, or keep it unchanged and prove it by the golden hashes.
+Line numbers are main 6fb85d7's; since 3b102cd, engine.h's lines after 255 are one higher. Read from the code's conditions, not the comments. The findings marked "checked" were re-read by hand, and the Researcher re-read findings 1 and 4. "golden" is tests\gemm_golden.ps1 and its kind; "run_tests" is tests\run_tests.ps1. "(no comment)" means no comment says why. A row whose test is "none" is unproven: Phase 1 must not move it without adding one, or keep it unchanged and prove it by the golden hashes.
 
 #### Findings (not changed: Phase 0 is inventory; each goes to a fix after Phase 0 or with its migration turn)
 
@@ -515,16 +517,16 @@ The shell's `ARC_*` / `INFERZERO_*` / `ZE_*` variables are cleared for the runs,
 `ZE_AFFINITY_MASK`. Until the shared layer exists, it compares fusion off / on and the paths that must equal base.
 Phase 1 adds `ARC_GEMM_SHARED` on / off.
 
-**The laptop's baseline** (125H Xe-LPG, driver 32.0.101.9175, main 204a3e6 + the harness; 54 runs, green twice in a
-row, every hash equal between the two):
+**The laptop's baseline** (125H Xe-LPG, driver 32.0.101.9175, main 204a3e6 + the harness at 43ab012; 54 runs, green
+twice in a row, every hash equal between the two). **Not valid at HEAD** (the 2026-11-28 audits): since bb9458c every split row is an ERROR (only the one-GPU path printed the generation line), and the set is now 61 rows (the GDN_FUSE, INK_FUSE and moe_rg rows). Being fixed; the table is recorded again green twice on one build:
 
 | Model | Base hash | Kinds run | Notes |
 |---|---|---|---|
 | Qwen3.5 4B UD-Q4_K_XL | 70906E39A9EE61BB | all | host, layer and the six fusion switches equal base; slots OK |
 | Qwen3.5 9B UD-Q4_K_XL | 5E65E3BD605C2168 | all | the same |
 | Qwen3.8 27B GSQ IQ3_S (MTP) | 5C199FD26C0DEF20 | all | the same. `ARC_H8=0` also gives the base hash: the 27B takes no H8 on the iGPU, so `ARC_H8_NORM` / `H8_REUSE` / `H8_SWI` check nothing there; `GEMV_GU`, `GDN_FUSE2` and `BATCH` still do |
-| Qwen3.6 35B-A3B UD-IQ4_XS | EF37993715CC7D39 | no host / fusion / option (MoE) | layer equals base; slots OK |
-| Inkling 2 Mini UD-IQ4_XS | 8C9B0CF29F635EFC | base, short | it refuses the splits and MTP, batches no slots, and is MoE |
+| Qwen3.6 35B-A3B UD-IQ4_XS | EF37993715CC7D39 | no host / option (MoE); fusion: GDN_FUSE=0 and the experts without moe_rg (since 70f7ce7) | layer equals base; slots OK; both fusion rows equal base |
+| Inkling 2 Mini UD-IQ4_XS | 8C9B0CF29F635EFC | base, short, fusion (INK_FUSE=0, the experts without moe_rg: per tile, its own hash DE5E8415DE35CD96) | it refuses the splits and MTP and batches no slots |
 
 A baseline holds only for its build and driver. After a driver update, record a new one before comparing.
 
@@ -588,6 +590,11 @@ uncounted buffer the layer must add (first suspects: the JIT decode areas, H8's 
 
 - **No uncounted buffer on any of the five:** counted equals allocated within 0.001 GiB, after the warm-up's prompt too.
   H8's areas, the staging and the buffers made at the first prompt are all in `gpu_bytes`.
+- **What that proves, and what it doesn't** (the 2026-11-28 audits): `buf()` adds to `gpu_bytes` and allocates through
+  `zeMemAllocDevice`, which adds to `device_bytes`, so equality shows that no device buffer bypasses `buf()`. It doesn't see the
+  driver's own memory (kernel binaries, spill scratch, command lists), host or shared USM (pinned host weights, staging),
+  or the allocator's rounding. On an iGPU these share the same physical memory. Comparing against the driver's own
+  usage report too is for after Phase 0.
 - **The plan against the load:** equal on the 4B, 9B and 27B. Two models plan high, which is safe but costs context:
   the 35B by 0.09 GiB, Inkling by 0.70 GiB. So Inkling's `--ctx auto` picks less context than fits.
 - **The 27B's plan line says "left -0.59":** its parts (kept free 1.17 + snapshots 0.29 + encoders 1.39 + weights
@@ -717,7 +724,7 @@ Each fused form in use: the unfused chain it replaces, its switch and default, w
 **Gaps in the proof:**
 - **Closed 2026-11-28** (d96c538): `ARC_GDN_FUSE=0` and `ARC_INK_FUSE=0` equal base, and `moe_rg` equals decode + GEMM on the 35B. Inkling's experts without moe_rg take the per-tile kernels, a different path with its own hash; its KL waits for the Inkling work (an f32 reference of the Mini has never been run).
 - **Not taken on the laptop:** `XW_GU` and `H8_OUT` (XMX / Alchemist: from the kit); `Q2F` and `add_norm_quant` (they need a Gemma 4 or Qwen3 file).
-- **No switch, exact by construction** (the same rows and kernel over one buffer) or the reference chain itself: qkv+z, router+shared gate / up, `-DH8F`, the norm+quant family, `attn_prep`.
+- **No switch, no test:** qkv+z and router+shared gate / up are argued exact by construction (the same rows and kernel over one buffer), and `-DH8F`, the norm+quant family and `attn_prep` are the reference chain itself. None has a test of its own: `gemm_check` (design section 6, step 0) is to give each one.`n- **Fusion rows not yet shown taken** (the 2026-11-28 audits): no plan line has `-DGU2` or `-DGDN_FUSE2`, since A ran without the fusion kinds. Until a plan log of each fusion row shows its form launched, `ARC_GEMV_GU=1` and `ARC_GDN_FUSE2=1` "= base" prove nothing. `ARC_BATCH=64` is command-list batching, not a fusion: it moves to the rows that must equal base.
 
 **Where fused GEMMs go in the shared layer** (design section 3.12):
 - A fused GEMM is **not a kernel of its own**. It's the shared GEMM stage plus a prologue (`Norm`, `Quant`, the H8
