@@ -760,9 +760,20 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
 #else
   const float qmax = 3.0f;
 #endif
+  // (Q5_K: every loop below unrolled, W8RQ_UNROLL, 2026-11-27, #101. The compiler kept its loops rolled (ocloc 26.40
+  //  bmg-g31: 17 branches against Q4_K's 7, 124 indirect register accesses against 83), so wv / fs / fm / am were
+  //  indexed at run time through the address register: a Pro B70's Q5_K decode_w8 7.26 ms a launch against Q4_K's
+  //  0.71. Unrolled: 0 indirect accesses, no spill on bmg / mtl / dg2 / tgllp. Q2_K and Q4_K as before: unrolled they
+  //  spill (8-16 registers) on several of those)
+#if QT == Q5_K
+#define W8RQ_UNROLL _Pragma("unroll")
+#else
+#define W8RQ_UNROLL
+#endif
   uint wv[8][8];
   float fs[16], fm[16], am[16];
   float D = 0.0f;
+  W8RQ_UNROLL
   for (int ib = 0; ib < 8; ++ib) {
     int sc0, sc1, mn0, mn1;
     float d, dmin;
@@ -770,14 +781,17 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
     fs[2 * ib] = d * sc0; fs[2 * ib + 1] = d * sc1;
     fm[2 * ib] = dmin * mn0; fm[2 * ib + 1] = dmin * mn1;
   }
+  W8RQ_UNROLL
   for (int h = 0; h < 16; ++h) {
     am[h] = fmax(fabs(fm[h]), fabs(fs[h] * qmax - fm[h]));
     D = fmax(D, am[h]);
   }
   D /= 127.0f * 127.0f;
   uint scw[4] = {0, 0, 0, 0};
+  W8RQ_UNROLL
   for (int ib = 0; ib < 8; ++ib) {
     float step[2];
+    W8RQ_UNROLL
     for (int hh = 0; hh < 2; ++hh) {
       const int h = 2 * ib + hh;
       const int sq = D > 0.0f ? clamp((int)ceil(am[h] / (127.0f * D) - 1e-4f), 1, 127) : 1;
@@ -785,10 +799,12 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
       step[hh] = D * sq;
     }
     __global uint* dst = wq + (((size_t)g * nsb + s) * 4 + ib / 2) * 16 * GL + (ib % 2) * 8 * GL + lane;
+    W8RQ_UNROLL
     for (int k = 0; k < 8; ++k) {
       const int h = 2 * ib + k / 4;
       const float inv = step[k / 4] > 0.0f ? 1.0f / step[k / 4] : 0.0f;
       uint o = 0;
+      W8RQ_UNROLL
       for (int b = 0; b < 4; ++b) {
         const float v = fs[h] * (float)((wv[ib][k] >> (8 * b)) & 0xFF) - fm[h];
         o |= (uint)(clamp(convert_int_rte(v * inv), -127, 127) & 0xFF) << (8 * b);

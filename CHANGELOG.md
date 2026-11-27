@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-27 (unreleased): Q5_K weights decoded 3.5x faster for prompts (a Pro B70's Q5_K files ~10x)
+
+- **Q5_K matrices decode to the prompt GEMMs' int8 form 3.5-3.8x faster** (#101). The decoder's loops for Q5_K were
+  left rolled by the compiler, so it reached its per-block values through slow indirect register accesses. On a Pro
+  B70 a Q5_K matrix took 10x a Q4_K one's time, and Q5_K_M / UD-Q4_K_XL files paid ~1.2-1.8 s per prompt pass. That
+  made a 4K prompt half as fast as with a Q4_K_M file. On our Core Ultra 5 125H: the 9B UD-Q4_K_XL's Q5_K decode
+  149 -> 39-43 ms per 4K prompt. The decoded weights are the same bit for bit (the 4B / 9B logits with H8 and without).
+  Q2_K / Q4_K are unchanged.
+
 ## 2026-11-27 (unreleased): the Docker image includes ffmpeg
 
 - **`docker/Dockerfile` installs ffmpeg** (#104). On Linux the server decodes every image, and audio and video files,
