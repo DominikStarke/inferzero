@@ -32,8 +32,210 @@ How to read the log:
   `Engine::run`, so they're listed by hand until their migration turns.
 - **Steps that aren't GEMMs** (norm, quant, swiglu, rot) give no model-file line ("from") until the C-harness commit.
 
-| Role | Type | Rows | Host / resident | GPU kind | Kernel and `-D` | Grid / local | Chosen at | Fastest measured form (source) | Correctness proof |
-|---|---|---|---|---|---|---|---|---|---|
+### Xe-LPG (the laptop's 125H), generated
+
+From `ARC_GEMM_PLAN=1` runs (the Developer, 2026-11-28; main 6fb85d7, driver 32.0.101.9175) of the five laptop models in the golden kinds that change routes: base, short, mtp, tp2, tp3 and layer (under `ARC_TP_SIM`), host. Each kind is skipped where the golden set skips it: Inkling runs base and short only, the 35B has no host. One row per kernel, options (numbers dropped; the type is its own column), row class, memory and fused form. Every plan line was parsed (per kind, lines with a kernel = plan lines). Kernels per model: Inkling-2-Mini 36, Qwen3.5-4B 30, Qwen3.5-9B 32, Qwen3.6-35B-A3B 42, Qwen3.8-27B 27. The exact options and local sizes, and each route's call site (`at` / `from`), are in the generated forms and routes files, kept with the run's logs, not in the repository.
+
+Every row is the Xe-LPG kind only. On every other kind each form is "unproven: plan not seen on this kind" until the kit (J). The fastest measured form per row and its correctness proof are in K (fusions), C (hashes) and E (speed).
+
+| Kernel | Options | Rows | Memory | Fused | Types | Roles | Taken by (model: kinds) |
+|---|---|---|---|---|---|---|---|
+| `asc_transpose` | - | 2-8 | - | - | - | moe_gateup | 35B mtp short; Ink short |
+| `asc_transpose` | - | chunk | - | - | - | moe_gateup | 35B mtp tp2 tp3; Ink base |
+| `attn_combine` | - | 1 | - | - | - | attn_combine | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `attn_combine` | - | 2-8 | - | - | - | attn_combine | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short |
+| `attn_decode` | `grf256 -DHD=n -DHPG=n -DHS=n -DTPW=n -DSB=n` | 1 | - | - | - | attention | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3 |
+| `attn_decode` | `grf256 -DHD=n -DHPG=n -DHS=n -DTPW=n -DSB=n` | 2-8 | - | - | - | attention | 4B mtp short; 9B mtp short; 27B mtp short |
+| `attn_dsplit` | `grf256 -DHD=n -DHPG=n -DHS=n -DTPW=n -DSB=n -DHG=n -DNSUB=n -DTR=n -DROWVMT` | 1 | - | - | - | attention | 35B base layer mtp short tp2 tp3 |
+| `attn_dsplit` | `grf256 -DHD=n -DHPG=n -DHS=n -DTPW=n -DSB=n -DHG=n -DNSUB=n -DTR=n -DROWVMT` | 2-8 | - | - | - | attention | 35B mtp short |
+| `attn_gate_quant` | - | 1 | - | attn gate+quant | - | attn_gate_quant | 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `attn_gate_quant` | - | 2-8 | - | attn gate+quant | - | attn_gate_quant | 27B mtp short; 35B mtp short |
+| `attn_gate_quant` | - | chunk | - | attn gate+quant | - | attn_gate_quant | 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `attn_gate_quant` | `-DH8F=n` | 1 | - | quant+f32 copy, attn gate+quant | - | attn_gate_quant | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3 |
+| `attn_gate_quant` | `-DH8F=n` | 2-8 | - | quant+f32 copy, attn gate+quant | - | attn_gate_quant | 4B mtp short; 9B mtp short |
+| `attn_gate_quant` | `-DH8F=n` | chunk | - | quant+f32 copy, attn gate+quant | - | attn_gate_quant | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3 |
+| `attn_prep` | `-DSB=n` | 1 | - | q/k norm+rope+kv store | - | attn_prep | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `attn_prep` | `-DSB=n` | 2-8 | - | q/k norm+rope+kv store | - | attn_prep | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short |
+| `attn_prep` | `-DSB=n` | chunk | - | q/k norm+rope+kv store | - | attn_prep | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `attn_q8` | `grf256 -DHPG=n -DHS=n -DTPW=n -DSB=n` | chunk | - | - | - | attention | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `conv_state_update` | - | 2-8 | - | - | - | conv_state_update | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short |
+| `conv_state_update` | - | chunk | - | - | - | conv_state_update | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `decode_w8_sb` | - | chunk | host | - | IQ2_S IQ2_XS IQ2_XXS IQ3_S IQ3_XXS IQ4_XS Q4_K Q5_K Q6_K Q8_0 | decode_w8 | 9B host; 27B host |
+| `decode_w8_sb` | - | chunk | w8 jit | - | IQ1_M IQ2_S IQ2_XS IQ2_XXS IQ3_S IQ3_XXS IQ4_XS Q2_K Q4_K Q5_K Q6_K Q8_0 | decode_w8 | 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3; Ink base |
+| `decode_w8_sb` | - | load | - | - | Q4_K Q5_K Q6_K | decode_w8 | 4B base host layer mtp short tp2 tp3; Ink base short |
+| `decode_w8_sb` | - | load | host | - | Q6_K | decode_w8 | 9B host |
+| `decode_w8_sb` | - | load | w8 jit | - | Q6_K | decode_w8 | 9B base layer mtp short tp2 tp3 |
+| `decode_w8_sl` | `-DSL_NSB=n` | chunk | w8 jit | - | IQ3_S IQ3_XXS IQ4_XS Q8_0 | decode_w8 | 9B tp3; 27B tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `decode_w8_sl` | `-DSL_NSB=n` | load | - | - | Q6_K | decode_w8 | Ink base short |
+| `decode_w8_vb` | - | chunk | host | - | Q8_0 | decode_w8 | 9B host |
+| `decode_w8_vb` | - | chunk | w8 jit | - | Q8_0 | decode_w8 | 9B base host layer mtp tp2; 35B base layer mtp tp2 tp3; Ink base |
+| `gated_norm_quant` | - | 1 | - | gated norm+quant | - | gated_norm_quant | 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `gated_norm_quant` | - | 2-8 | - | gated norm+quant | - | gated_norm_quant | 27B mtp short; 35B mtp short |
+| `gated_norm_quant` | - | chunk | - | gated norm+quant | - | gated_norm_quant | 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `gated_norm_quant` | `-DH8F=n` | 1 | - | quant+f32 copy, gated norm+quant | - | gated_norm_quant | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3 |
+| `gated_norm_quant` | `-DH8F=n` | 2-8 | - | quant+f32 copy, gated norm+quant | - | gated_norm_quant | 4B mtp short; 9B mtp short |
+| `gated_norm_quant` | `-DH8F=n` | chunk | - | quant+f32 copy, gated norm+quant | - | gated_norm_quant | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3 |
+| `gdn_conv` | `-DCT=n -DCONV_UPD` | 1 | - | conv+state update | - | gdn_conv | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `gdn_conv` | `-DCT=n` | 2-8 | - | - | - | gdn_conv | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short |
+| `gdn_conv` | `-DCT=n` | chunk | - | - | - | gdn_conv | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `gdn_gates` | - | 2-8 | - | - | - | gdn_gates | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `gdn_recur` | `grf256 -DGQ=n -DFUSE_GATES` | 1 | - | recurrence+gates | - | gdn_recur | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `gdn_recur` | `grf256 -DGQ=n -DFUSE_GATES` | 2-8 | - | recurrence+gates | - | gdn_recur | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short |
+| `gdn_recur` | `grf256 -DGQ=n -DFUSE_GATES` | chunk | - | recurrence+gates | - | gdn_recur | 4B base host layer mtp tp2 tp3; 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `gdn_recur` | `grf256 -DGQ=n` | 2-8 | - | - | - | gdn_recur | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `gemm` | `grf256 -DQTYPE=n -DACT32` | chunk | host | - | IQ2_S IQ2_XS IQ2_XXS IQ3_S IQ3_XXS IQ4_XS Q4_K Q8_0 | gemm_ab gemm_down gemm_gate gemm_k gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z | 4B host; 9B host; 27B host |
+| `gemm` | `grf256 -DQTYPE=n -DACT32` | chunk | w8 jit | - | IQ1_M IQ2_S IQ2_XS IQ2_XXS IQ3_S IQ3_XXS IQ4_XS Q2_K Q4_K Q6_K Q8_0 | gemm_ab gemm_down gemm_down_sh gemm_gate gemm_gate_sh gemm_k gemm_o gemm_q gemm_qkv gemm_router gemm_ssm_out gemm_up gemm_up_sh gemm_v gemm_z ink_ctrl_down ink_gate ink_k ink_kcp ink_o ink_q ink_rel ink_v ink_vcp mtp_eh_proj | 9B base host layer mtp tp2 tp3; 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3; Ink base |
+| `gemm` | `grf256 -DQTYPE=n -DACT32` | chunk | w8 resident | - | Q5_K Q6_K Q8_0 | gemm_ab ink_gate ink_k ink_q ink_rel | 4B base host layer mtp tp2 tp3; Ink base |
+| `gemm` | `grf256 -DQTYPE=n -DACT32` | load | - | - | - | self_check | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3; Ink base short |
+| `gemm` | `grf256 -DQTYPE=n` | chunk | host | - | Q4_K Q5_K Q6_K Q8_0 | gemm_down gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z | 4B host; 9B host |
+| `gemm` | `grf256 -DQTYPE=n` | chunk | w8 jit | - | Q4_K Q5_K Q6_K Q8_0 | gemm_down gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z mtp_eh_proj | 9B base host layer mtp tp2 tp3 |
+| `gemm` | `grf256 -DQTYPE=n` | chunk | w8 resident | - | Q4_K Q5_K Q6_K Q8_0 | gemm_down gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z mtp_eh_proj | 4B base host layer mtp tp2 tp3 |
+| `gemm` | `grf256 -DQTYPE=n` | load | host | - | Q6_K | h8_e2e | 4B host; 9B host |
+| `gemm` | `grf256 -DQTYPE=n` | load | w8 jit | - | Q6_K | h8_e2e | 9B base layer mtp short tp2 tp3 |
+| `gemm` | `grf256 -DQTYPE=n` | load | w8 resident | - | Q6_K | h8_e2e | 4B base layer mtp short tp2 tp3 |
+| `gemv` | `-DGROWS=n` | 1 | host raw | - | IQ3_S Q4_K Q5_K Q8_0 | gemm_ab gemm_down gemm_gate gemm_k gemm_o gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z lm_head | 4B host; 9B host; 27B host |
+| `gemv` | `-DGROWS=n` | 1 | raw | - | IQ3_S Q2_K Q4_K Q5_K Q8_0 | gemm_ab gemm_down gemm_down_sh gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z ink_ctrl_down ink_gate ink_k ink_kcp ink_o ink_q ink_qkv_stack ink_rel ink_v ink_vcp lm_head mtp_eh_proj | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3; Ink base short |
+| `gemv` | `-DGROWS=n` | 1 | raw | qkv+z | IQ3_S Q8_0 | gemm_qkvz | 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3 |
+| `gemv` | `-DGROWS=n` | 1 | raw | router+shared gate/up | Q8_0 | gemm_router_sh | 35B base layer mtp short tp2 tp3 |
+| `gemv_mt` | `grf256 -DGROWS=n -DTB=n` | 2-8 | raw | - | Q2_K Q4_K Q5_K Q8_0 | gemm_ab gemm_down gemm_down_sh gemm_gate gemm_gate_sh gemm_k gemm_o gemm_q gemm_qkv gemm_router gemm_ssm_out gemm_up gemm_up_sh gemm_v gemm_z ink_ctrl_down ink_gate ink_k ink_kcp ink_o ink_q ink_rel ink_v ink_vcp lm_head mtp_eh_proj | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp short; Ink short |
+| `gemv_mt_v` | `grf256 -DGROWS=n -DTB=n` | 2-8 | raw | - | IQ1_M IQ2_S IQ2_XS IQ2_XXS IQ3_S IQ3_XXS IQ4_XS Q6_K | gemm_down gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z ink_gate ink_k ink_q ink_rel lm_head mtp_eh_proj | 4B mtp short; 9B mtp short; 27B mtp short; 35B mtp; Ink short |
+| `gemv_v` | `-DGROWS=n -DSOFTCAP=3.000000000e+01f` | 1 | raw | - | Q6_K | lm_head | Ink base short |
+| `gemv_v` | `-DGROWS=n` | 1 | host raw | - | IQ2_S IQ2_XS IQ2_XXS IQ3_XXS IQ4_XS Q5_K Q6_K | gemm_down gemm_gate gemm_k gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z lm_head | 4B host; 9B host; 27B host |
+| `gemv_v` | `-DGROWS=n` | 1 | host raw | qkv+z | IQ4_XS | gemm_qkvz | 27B host |
+| `gemv_v` | `-DGROWS=n` | 1 | raw | - | IQ1_M IQ2_S IQ2_XS IQ2_XXS IQ3_XXS IQ4_XS Q5_K Q6_K | gemm_down gemm_gate gemm_k gemm_o gemm_q gemm_qkv gemm_ssm_out gemm_up gemm_v gemm_z ink_gate ink_k ink_q ink_qkv_stack ink_rel lm_head mtp_eh_proj | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3; 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3; Ink base short |
+| `gemv_v` | `-DGROWS=n` | 1 | raw | qkv+z | IQ3_XXS IQ4_XS | gemm_qkvz | 27B base host layer mtp short tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | host | quant+f32 copy | Q4_K Q6_K Q8_0 | h8_act | 4B host; 9B host |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | host | swiglu+rot, quant+f32 copy | Q6_K | h8_act | 4B host; 9B host |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | w8 jit | quant+f32 copy | Q4_K Q5_K Q6_K Q8_0 | h8_act | 9B base host layer mtp tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | w8 jit | swiglu+rot, quant+f32 copy | Q4_K Q5_K Q6_K | h8_act | 9B base host layer mtp tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | w8 resident | quant+f32 copy | Q4_K Q8_0 | h8_act | 4B base host layer mtp tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | chunk | w8 resident | swiglu+rot, quant+f32 copy | Q4_K Q5_K Q6_K | h8_act | 4B base host layer mtp tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | load | host | quant+f32 copy | Q6_K | h8_act | 4B host; 9B host |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | load | w8 jit | quant+f32 copy | Q6_K | h8_act | 9B base layer mtp short tp2 tp3 |
+| `h8r_act` | `grf256 -DHB=n -DH8F=n` | load | w8 resident | quant+f32 copy | Q6_K | h8_act | 4B base layer mtp short tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | host | - | Q4_K Q5_K Q6_K Q8_0 | h8_colmax | 4B host; 9B host |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | host | swiglu+rot | Q6_K | h8_colmax | 4B host; 9B host |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | w8 jit | - | Q4_K Q5_K Q6_K Q8_0 | h8_colmax | 9B base host layer mtp tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | w8 jit | swiglu+rot | Q4_K Q5_K Q6_K | h8_colmax | 9B base host layer mtp tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | w8 resident | - | Q4_K Q5_K Q6_K Q8_0 | h8_colmax | 4B base host layer mtp tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | chunk | w8 resident | swiglu+rot | Q4_K Q5_K Q6_K | h8_colmax | 4B base host layer mtp tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | load | host | - | Q6_K | h8_colmax | 4B host; 9B host |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | load | w8 jit | - | Q6_K | h8_colmax | 9B base layer mtp short tp2 tp3 |
+| `h8r_colmax` | `grf256 -DHB=n -DSRC=n` | load | w8 resident | - | Q6_K | h8_colmax | 4B base layer mtp short tp2 tp3 |
+| `h8r_decode` | `grf256 -DH8RDEC -DH8DR=n -DHB=n -DSRC=n` | chunk | w8 jit | - | Q6_K Q8_0 | h8_decode | 9B tp2 tp3 |
+| `h8r_decode` | `grf256 -DH8RDEC -DH8DR=n -DHB=n -DSRC=n` | chunk | w8 jit | swiglu+rot | Q6_K | h8_decode | 9B tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | host | - | Q4_K Q5_K Q6_K Q8_0 | h8_weights | 4B host; 9B host |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | host | swiglu+rot | Q6_K | h8_weights | 4B host; 9B host |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | w8 jit | - | Q4_K Q5_K Q6_K Q8_0 | h8_weights | 9B base host layer mtp tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | w8 jit | swiglu+rot | Q4_K Q5_K Q6_K | h8_weights | 9B base host layer mtp tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | w8 resident | - | Q4_K Q5_K Q6_K Q8_0 | h8_weights | 4B base host layer mtp tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | chunk | w8 resident | swiglu+rot | Q4_K Q5_K Q6_K | h8_weights | 4B base host layer mtp tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | load | host | - | Q6_K | h8_weights | 4B host; 9B host |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | load | w8 jit | - | Q6_K | h8_weights | 9B base layer mtp short tp2 tp3 |
+| `h8r_weights` | `grf256 -DHB=n -DSRC=n` | load | w8 resident | - | Q6_K | h8_weights | 4B base layer mtp short tp2 tp3 |
+| `ink_add` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_add | Ink short |
+| `ink_add` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_add | Ink base |
+| `ink_attn` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_attn | Ink base short |
+| `ink_attn` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_attn | Ink short |
+| `ink_attn` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_attn | Ink base |
+| `ink_conv` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_conv | Ink short |
+| `ink_conv` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_conv | Ink base |
+| `ink_conv_state` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_conv_state | Ink short |
+| `ink_conv_state` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_conv_state | Ink base |
+| `ink_conv1` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_conv1 | Ink base short |
+| `ink_ctrl_fused` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | controller | - | ink_ctrl_fused | Ink base short |
+| `ink_ctrl_fused` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | controller | - | ink_ctrl_fused | Ink short |
+| `ink_ctrl_fused` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | controller | - | ink_ctrl_fused | Ink base |
+| `ink_mask_logits` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_mask_logits | Ink base short |
+| `ink_mix` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_mix | Ink base short |
+| `ink_mix` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_mix | Ink short |
+| `ink_mix` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_mix | Ink base |
+| `ink_mm_f32_sg` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_router ink_sink | Ink base short |
+| `ink_mm_f32_sg` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_router ink_sink | Ink short |
+| `ink_mm_f32_sg` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_router ink_sink | Ink base |
+| `ink_moe_out` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_moe_out | Ink base short |
+| `ink_rms2_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_rms2_quant | Ink base short |
+| `ink_rms2_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_rms2_quant | Ink short |
+| `ink_rms2_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_rms2_quant | Ink base |
+| `ink_rmsnorm` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_rmsnorm | Ink base short |
+| `ink_rmsnorm` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_rmsnorm | Ink short |
+| `ink_rmsnorm` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_rmsnorm | Ink base |
+| `ink_rmsnorm_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_rmsnorm_quant | Ink base short |
+| `ink_rmsnorm_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_rmsnorm_quant | Ink short |
+| `ink_rmsnorm_quant` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_rmsnorm_quant | Ink base |
+| `ink_rows_kv` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 1 | - | - | - | ink_rows_kv | Ink base short |
+| `ink_rows_kv` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | 2-8 | - | - | - | ink_rows_kv | Ink short |
+| `ink_rows_kv` | `-DINK_LS=n -DINK_D=n -DINK_EXT=n` | chunk | - | - | - | ink_rows_kv | Ink base |
+| `moe_combine` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 2-8 | - | - | - | moe_combine | Ink short |
+| `moe_combine` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | chunk | - | - | - | moe_combine | Ink base |
+| `moe_combine` | `grf256 -DNE=n -DNU=n -DTM=n` | 1 | - | - | - | moe_combine | 35B base layer mtp short |
+| `moe_combine` | `grf256 -DNE=n -DNU=n -DTM=n` | 2-8 | - | - | - | moe_combine | 35B mtp short |
+| `moe_combine` | `grf256 -DNE=n -DNU=n -DTM=n` | chunk | - | - | - | moe_combine | 35B base layer mtp |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DFV=n` | 1 | - | - | IQ4_NL NVFP4 Q5_0 | moe_down | Ink base short |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DFV=n` | 2-8 | - | - | IQ4_NL NVFP4 Q5_0 | moe_down | Ink short |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DFV=n` | chunk | - | - | IQ4_NL NVFP4 Q5_0 | moe_down | Ink base |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE` | 1 | - | - | IQ4_XS Q4_K Q6_K | moe_down | 35B base layer mtp short tp2 tp3 |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE` | 2-8 | - | - | IQ4_XS Q4_K Q6_K | moe_down | 35B mtp short |
+| `moe_down_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE` | chunk | - | - | IQ4_XS Q4_K Q6_K | moe_down | 35B mtp tp2 tp3 |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DASCT` | 2-8 | - | - | IQ3_S IQ4_XS Q3_K | moe_gateup | 35B mtp short |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DASCT` | chunk | - | - | IQ3_S IQ4_XS Q3_K | moe_gateup | 35B mtp tp2 tp3 |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DHLD=n -DMOE_SITU -DSITU_B=4.0f -DSITU_LB=25.0f -DASCT` | 2-8 | - | - | IQ4_XS NVFP4 Q4_K Q5_K | moe_gateup | Ink short |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DHLD=n -DMOE_SITU -DSITU_B=4.0f -DSITU_LB=25.0f -DASCT` | chunk | - | - | IQ4_XS NVFP4 Q4_K Q5_K | moe_gateup | Ink base |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE -DHLD=n -DMOE_SITU -DSITU_B=4.0f -DSITU_LB=25.0f` | 1 | - | - | IQ4_XS NVFP4 Q4_K Q5_K | moe_gateup | Ink base short |
+| `moe_gateup_q` | `-DMOE_Q -DGROWS=n -DTM=n -DXCACHE` | 1 | - | - | IQ3_S IQ4_XS Q3_K | moe_gateup | 35B base layer mtp short tp2 tp3 |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 1 | - | - | - | moe_quant | Ink base short |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 2-8 | - | - | - | moe_quant | Ink short |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | chunk | - | - | - | moe_quant | Ink base |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n` | 1 | - | - | - | moe_quant | 35B base layer mtp short tp2 tp3 |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n` | 2-8 | - | - | - | moe_quant | 35B mtp short |
+| `moe_quant` | `grf256 -DNE=n -DNU=n -DTM=n` | chunk | - | - | - | moe_quant | 35B base layer mtp tp2 tp3 |
+| `moe_rg` | `grf256 -DMOE_RG -DXCACHE` | chunk | - | decode+expert gemm | IQ3_S IQ4_NL IQ4_XS NVFP4 Q6_K | moe_down moe_gateup | 35B base layer mtp tp2 tp3; Ink base |
+| `moe_route` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 2-8 | - | - | - | moe_route | Ink short |
+| `moe_route` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | chunk | - | - | - | moe_route | Ink base |
+| `moe_route` | `grf256 -DNE=n -DNU=n -DTM=n` | 2-8 | - | - | - | moe_route | 35B mtp short |
+| `moe_route` | `grf256 -DNE=n -DNU=n -DTM=n` | chunk | - | - | - | moe_route | 35B base layer mtp tp2 tp3 |
+| `moe_route1` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 1 | - | - | - | moe_route | Ink base short |
+| `moe_route1` | `grf256 -DNE=n -DNU=n -DTM=n` | 1 | - | - | - | moe_route | 35B base layer mtp short tp2 tp3 |
+| `moe_scan` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 2-8 | - | - | - | moe_scan | Ink short |
+| `moe_scan` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | chunk | - | - | - | moe_scan | Ink base |
+| `moe_scan` | `grf256 -DNE=n -DNU=n -DTM=n` | 2-8 | - | - | - | moe_scan | 35B mtp short |
+| `moe_scan` | `grf256 -DNE=n -DNU=n -DTM=n` | chunk | - | - | - | moe_scan | 35B base layer mtp tp2 tp3 |
+| `moe_scatter` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | 2-8 | - | - | - | moe_scatter | Ink short |
+| `moe_scatter` | `grf256 -DNE=n -DNU=n -DTM=n -DFV=n -DROUTE_SIG -DESCALE -DRSCALE=8.0f` | chunk | - | - | - | moe_scatter | Ink base |
+| `moe_scatter` | `grf256 -DNE=n -DNU=n -DTM=n` | 2-8 | - | - | - | moe_scatter | 35B mtp short |
+| `moe_scatter` | `grf256 -DNE=n -DNU=n -DTM=n` | chunk | - | - | - | moe_scatter | 35B base layer mtp |
+| `mtp_concat` | - | 1 | - | - | - | mtp_concat | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `mtp_concat` | - | 2-8 | - | - | - | mtp_concat | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `mtp_concat` | - | chunk | - | - | - | mtp_concat | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `rd_block` | - | 1 | - | - | - | read_gbs | 4B base host short; 9B base host short; 27B base host short; 35B base short; Ink base short |
+| `rd_block` | - | 2-8 | - | - | - | read_gbs | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `rd_strip` | - | 1 | - | - | - | read_gbs | 4B base host short; 9B base host short; 27B base host short; 35B base short; Ink base short |
+| `rd_strip` | - | 2-8 | - | - | - | read_gbs | 4B mtp; 9B mtp; 27B mtp; 35B mtp |
+| `rmsnorm_h8r` | `grf256 -DH8NORM -DHB=n -DH8N_K=n` | chunk | - | norm+rot | - | rmsnorm_h8r | 4B base host layer mtp tp2 tp3 |
+| `rmsnorm_quant` | - | 1 | - | norm+quant | - | mtp_concat rmsnorm_quant | 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3; Ink base short |
+| `rmsnorm_quant` | - | 2-8 | - | norm+quant | - | mtp_concat rmsnorm_quant | 27B mtp short; 35B mtp short |
+| `rmsnorm_quant` | - | chunk | - | norm+quant | - | mtp_concat rmsnorm_quant | 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3 |
+| `rmsnorm_quant` | `grf256 -DH8F=n` | 1 | - | quant+f32 copy, norm+quant | - | mtp_concat rmsnorm_quant | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3 |
+| `rmsnorm_quant` | `grf256 -DH8F=n` | 2-8 | - | quant+f32 copy, norm+quant | - | mtp_concat rmsnorm_quant | 4B mtp short; 9B mtp short |
+| `rmsnorm_quant` | `grf256 -DH8F=n` | chunk | - | quant+f32 copy, norm+quant | - | mtp_concat rmsnorm_quant | 4B mtp; 9B base host layer mtp tp2 tp3 |
+| `rmsnorm_quant` | `grf256 -DH8F=n` | load | - | quant+f32 copy, norm+quant | - | rmsnorm_quant | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3 |
+| `swiglu_quant` | - | 1 | - | swiglu+quant | - | mtp_concat quant swiglu_quant | 27B base host layer mtp short tp2 tp3; 35B base layer mtp short tp2 tp3; Ink base short |
+| `swiglu_quant` | - | 2-8 | - | swiglu+quant | - | mtp_concat quant swiglu_quant | 27B mtp short; 35B mtp short; Ink short |
+| `swiglu_quant` | - | chunk | - | swiglu+quant | - | mtp_concat quant swiglu_quant | 27B base host layer mtp tp2 tp3; 35B base layer mtp tp2 tp3; Ink base |
+| `swiglu_quant` | `-DH8F=n` | 1 | - | quant+f32 copy, swiglu+quant | - | mtp_concat swiglu_quant | 4B base host layer mtp short tp2 tp3; 9B base host layer mtp short tp2 tp3 |
+| `swiglu_quant` | `-DH8F=n` | 2-8 | - | quant+f32 copy, swiglu+quant | - | mtp_concat swiglu_quant | 4B mtp short; 9B mtp short |
+| `swiglu_quant` | `-DH8F=n` | chunk | - | quant+f32 copy, swiglu+quant | - | mtp_concat | 4B mtp; 9B mtp |
+| `tp_add` | - | 1 | - | - | - | tp_add | 4B tp2 tp3; 9B tp2 tp3; 27B tp2 tp3; 35B tp2 tp3 |
+| `tp_half` | - | chunk | - | - | - | tp_sum | 4B tp2 tp3; 9B tp2 tp3; 27B tp2 tp3; 35B tp2 tp3 |
+| `tp_moe_combine` | - | 1 | - | - | - | moe_combine | 35B tp2 tp3 |
+| `tp_moe_combine` | - | chunk | - | - | - | moe_combine | 35B tp2 tp3 |
+| `tp_moe_mask` | - | chunk | - | - | - | moe_route | 35B tp2 tp3 |
+| `tp_moe_scatter` | - | chunk | - | - | - | moe_scatter | 35B tp2 tp3 |
+| `tp_moe_tiles1` | - | 1 | - | - | - | moe_route | 35B tp2 tp3 |
+| `tp_pack` | - | 1 | - | - | - | tp_pack | 4B tp3; 9B tp3; 27B tp3; 35B tp3 |
+| `tp_pack` | - | chunk | - | - | - | tp_pack | 4B tp3; 9B tp3; 27B tp3; 35B tp3 |
+| `tp_rs_add_r` | - | chunk | - | - | - | tp_sum | 4B tp2 tp3; 9B tp2 tp3; 27B tp2 tp3; 35B tp2 tp3 |
+| `tp_rs_sum` | - | chunk | - | - | - | tp_sum | 4B tp2 tp3; 9B tp2 tp3; 27B tp2 tp3; 35B tp2 tp3 |
 
 **Forms missing, a faster one measured elsewhere** (checked against the code 2026-11-27):
 
