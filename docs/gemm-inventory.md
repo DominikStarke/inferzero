@@ -175,6 +175,27 @@ rule, not as a separate kernel next to it. One row per fused form in use:
 - **Grouped products** (one launch over weights side by side, the design's "way 1") and **horizontal fusion**
   (independent small steps in one launch, "way 6") are fusion rules too.
 
+**Per model** (the user, 2026-11-27: "for each models"). For each model:
+- which of the fused forms above it takes today, per GPU kind, from its plan log (A);
+- its launches a token now (G);
+- its floor, the launches left when every legal fusion is taken (design section 3.7);
+- its planned chain. The floors and chains are from design section 3.7, and the "now" counts are to be measured in G.
+
+| Model | Fused forms today (from A) | Launches a token now | Floor | Planned chain, per layer |
+|---|---|---|---|---|
+| Qwen3.5 4B / 9B (dense, 3 DeltaNet : 1 attention) | to fill | 4B ~426 (125H `--prof-gen`, 2026-11-26) | ~5 a layer: 4B ~160 | DeltaNet: [norm -> qkvz + ab, conv / state / gates in the epilogue] · [recurrence] · [gated norm -> ssm_out + residual] · [norm -> gate / up, SwiGLU] · [down + residual]; attention: [norm -> q / k / v, q / k norm, RoPE, KV store] · [attention] · [sigmoid gate -> o + residual] · the FFN's 2 |
+| Qwen3.8 27B | to fill | ~710 | **321** | as the 4B, 48 DeltaNet + 16 attention layers |
+| Qwen3.6 35B-A3B (MoE) | to fill | ~620 | **241** | the mixer's 3, then [norm -> router + shared gate / up] · [top-k -> experts' gate / up, the shared down grouped in] · [experts' down]; the combine in the next layer's prologue |
+| Flash Next | to fill | ~1,050 | **~483** | the hc mixer's 2 global steps per block, then the mixer's or the MoE's 3; `hc_combine` in the block's last epilogue |
+| DeepSeek-V4.1 | to fill | ~1,900 | **~415** | the design's 10-13 steps a layer (mix, Sinkhorn + norm -> q_a / kv grouped, attention, out_a in one launch, out_b + expand, the MoE's 3) |
+| Gemma 4 dense (31B) | to fill | ~840 | **301** | as Qwen3 dense; the post-attention norm + residual + FFN norm in gate / up's prologue |
+| Gemma 4 26B MoE | to fill | to measure | 6 a layer | qkv · attention · o · [dense FFN gate / up + router] · [experts' gate / up + dense down] · [experts' down] |
+| Inkling 2 Mini | to fill | **1,356** | **385** | every visit: [mix + norm -> q / gate / rel / k / v / sink / kcp / vcp grouped, K / V convs in the epilogue] · [attention] · [o + post-conv + residual] · [FFN mix + norm -> router] · [top-k -> experts' gate / up, situ] · [experts' down]; later passes add the controllers' 4 |
+| the encoders (vision, audio, speech) | to fill | to measure | to work out | per encoder, once their GEMMs move to the layer |
+
+The gap between "now" and the floor is each model's fusion work. Inkling's is the largest (3.5x), which is one reason it
+goes first.
+
 Phase 0 records each of today's fused forms in this table with its proof. Phase 1 carries each one as a rule over the
 same kernels, bit-identical. The new fusions (the design's ways 1-8: fewer launches toward each model's floor) come
 after a model is on the layer, Inkling first.
