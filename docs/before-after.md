@@ -80,6 +80,23 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, a hand-set expert RAM tier capped to the safe room; ignored on iGPUs** (`zero/engine_stream.h`; the
+  user: "ARC_XRAM_GB as big as possible when ARC_XBUF is active").
+  - **The change:**
+    - Windows: a hand-set tier above the room (the automatic size's: budget less use and 4 GiB, a split budget / N less use
+      and 8 GiB, / N) is capped to it, with one line from GPU 0. It was only a warning before (#82), and manoreken2's
+      serverz with ARC_XBUF and a hand-set ARC_XRAM_GB hung or ran out of memory (his sweep: 47 GiB a GPU runs, 48 hangs).
+    - Linux, a split model: the 32 / 128 GiB caps. A budget read as 0 counts as unknown.
+    - The tier is set before xbuf_auto reads ram_cap(), so the rule sees the capped size.
+  - **Checks on the laptop**, a test build letting the iGPU through the cap (its budget reads 0 there, so the room was 0
+    and the tier none). The 35B's logits equal main's (c35a301):
+    - one GPU: 3C82741014675164, with `ARC_XRAM_GB=64`, and with `ARC_XRAM_GB=64 ARC_XBUF=1`;
+    - two shards (`ARC_TP_SIM=1 --gpus 2`): BC64319553885402, with and without ARC_XBUF.
+  - **A GPU hang in testing:** a second test build, with a 0 budget taken as unknown, gave the iGPU a 14.7 GiB pinned
+    tier beside 17.4 GiB of GPU buffers on 32 GB, and the run with ARC_XBUF=1 hung the GPU (moe_quant, 07:08 UTC; the
+    marker set, no GPU runs until a restart). From it: an iGPU now ignores a hand-set tier, which main still takes.
+  - **Not run yet:** this build on the GPU (after the restart), and a discrete card's real room (manoreken2).
+
 - **2026-11-27, `ARC_XBUF` decided at load when not set** (`zero/engine_stream.h` xbuf_auto, `zero/expert_store.h`
   reopen_buffered; the user: "only when needed then, like in manoreken2's DeepSeek").
   - **The rule:** on when this GPU's experts (xcache all_bytes) exceed its expert cache plus its RAM tier, and free RAM
