@@ -74,6 +74,7 @@
       matmul("gemm_gate_sh", L.gate_sh, Mp, big_, 2 * Fs, 0, 0, true);
       matmul("gemm_up_sh", L.up_sh, Mp, big_, 2 * Fs, Fs, 0, true);
     }
+    if (gc_rl_) gc_route_set(rl, T, ldl);  // (tools/gemm_check.cpp: routings of its own, zero/gemm_check.h; null otherwise)
     // routing, then the slots grouped by expert and their tiles
     static const int tm_std = getenv("ARC_MOE_TM") ? std::max(1, atoi(getenv("ARC_MOE_TM"))) : 16;  // (standard experts: slots per decoded weight; 2048-token prompt: TM 8 416, 16 473, 32 423, 64 187 tok/s)
     // (Gemma 4, two passes: prompt chunks through the T > 1 routing and moe_rg, whose two passes it runs; generation

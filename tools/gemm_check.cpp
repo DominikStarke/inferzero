@@ -142,7 +142,11 @@ static int run(int argc, char** argv) {
   eo.ctx = 4096;  // (the checks need no context: the smallest a model takes leaves the most room for their weights)
   Engine eng(model, eo);
   const auto t0 = std::chrono::steady_clock::now();
-  const std::vector<Engine::GcRow> rows = eng.gemm_check(o);
+  std::vector<Engine::GcRow> rows = eng.gemm_check(o);
+  {  // (a standard MoE model (the 35B-A3B): its experts' paths too, stage 3)
+    const std::vector<Engine::GcRow> mr = eng.gemm_check_moe(o);
+    rows.insert(rows.end(), mr.begin(), mr.end());
+  }
   const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   FILE* f = out.empty() ? stdout : plat::fopen_path(std::filesystem::path(out), "wb");
   if (!f) throw std::runtime_error("cannot write " + out);

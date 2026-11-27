@@ -38,8 +38,17 @@
     std::string det = "-", pair = "-";
     uint32_t priv = 0, spill = 0;
   };
-  std::vector<GcRow> gemm_check(const GcOptions& o) {
+  std::vector<GcRow> gemm_check(const GcOptions& o0) {
     std::vector<GcRow> rows;
+    // (a model with an expert cache (the 35B-A3B on the laptop: 17.5 of 19.9 GiB) runs the dense and fused checks at
+    //  --quick's sizes: the full set went out of device memory part way through, at a different case each run (the same
+    //  cases pass on the 27B). Its experts' checks (gemm_check_moe) run in full; the dense ones belong to a dense model)
+    GcOptions o = o0;
+    if (xc_ && !o.quick) {
+      o.quick = true;
+      zlog::eprintf("gemm_check: an expert cache fills this GPU: the dense and fused checks at --quick's sizes (the full "
+                    "ones: a dense model); the experts' in full\n");
+    }
     gc_gen_.gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 1;
     gc_gen_.gc_offsets_ = o.offsets;
     const int tm = gemm_tm(), kmax = aq_max_k(), mmax = max_chunk;
@@ -351,14 +360,24 @@
     }
     return true;
   }
+  // (in pieces of 8 MiB: a read stages through a host buffer of its size (zrt::staging), which stays allocated, and with
+  //  the 35B-A3B's expert cache a 98 MB read of a chunk's output went out of memory on the laptop's iGPU, where host
+  //  memory the driver pins counts against the same budget)
   template <typename T> std::vector<T> gc_read(cl_mem m, size_t n) {
     std::vector<T> v(n);
-    if (n) CL_CHECK(clEnqueueReadBuffer(cl_.queue, m, CL_TRUE, 0, n * sizeof(T), v.data(), 0, nullptr, nullptr));
+    const size_t bytes = n * sizeof(T), piece = (size_t)8 << 20;
+    for (size_t o = 0; o < bytes; o += piece)
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, m, CL_TRUE, o, std::min(piece, bytes - o), (char*)v.data() + o, 0, nullptr, nullptr));
     return v;
   }
   // one case: type, N x K, T token rows, the weight resident or just in time
   void gc_case(uint32_t type, int N, int K, int T, bool resident, int reps, GcRow& r, int tm, int kmax, int mmax) {
     const int Mp = (T + tm - 1) / tm * tm;
+    static const bool trace = getenv("ARC_GC_TRACE") && atoi(getenv("ARC_GC_TRACE")) != 0;  // (each case on stderr first)
+    if (trace)
+      zlog::eprintf("gemm_check: %s %d x %d, T %d, %s; the engine has %.2f GiB\n", ggml_type_name(type), N, K, T,
+                    resident ? "resident" : "just in time",
+                    (plan_dev_ ? plan_dev_->device_bytes.load() : zrt::D().device_bytes.load()) / 1073741824.0);
     auto skip = [&](const std::string& why) { r.status = "skipped"; r.note = why; };
     int blk = 0, bytes = 0;
     ggml_block_info(type, blk, bytes);
@@ -368,6 +387,20 @@
     if (Mp > mmax) return skip("rows over this model's chunk (" + std::to_string(mmax) + ")");
     if (T > 8 && (N % 16 || Kp % 256)) return skip("the GEMM takes N x 16, K x 256 (a model's matrix of this shape: GEMV only)");
     if (type == GGML_AR4_128 && K % 128) return skip("AR4_128 rows of 128");
+    {  // (the case's buffers must fit in what the engine left of the GPU's memory: a MoE model's expert cache takes most)
+      // (+ a margin of 1.5 GiB: with the 35B-A3B's expert cache (17.5 of 19.9 GiB) a head-sized case of 1.4 GiB went
+      //  out of device memory at its upload with ~1 GiB left)
+      const double need = (double)N * Kp * 3.5 + (double)Mp * N * 4 + (double)Mp * Kp * 4 * 2 + 1536.0 * 1048576;
+      const uint64_t share = device_mem(), slack = (uint64_t)driver_slack(), lim = share > slack ? share - slack : 0;
+      const uint64_t have = plan_dev_ ? plan_dev_->device_bytes.load() : zrt::D().device_bytes.load();
+      // (an expert cache fills the GPU to its plan: on the laptop the 35B-A3B's (17.5 of 19.9 GiB) left a 98 MB output
+      //  of a 4,096-row case out of memory, the same case fine on the 27B. Those shapes: a dense model's run)
+      if (xc_ && (double)Mp * N * 4 > 64.0 * 1048576)
+        return skip("the expert cache leaves no room for a case this size (run the dense checks with a dense model)");
+      if ((double)have + need > (double)lim)
+        return skip("no room on the GPU: the case needs ~" + std::to_string((int)(need / 1048576)) + " MiB, " +
+                    std::to_string((int)(((double)lim - (double)have) / 1048576)) + " MiB left beside the model");
+    }
     // the weight: float types as load_w makes them (Q8_0 rows)
     std::vector<uint8_t> raw, fl;  // (fl: a float type's own rows, the end-to-end reference's weights)
     uint32_t wt = type;
@@ -709,6 +742,124 @@
     r.err = vm > 0 ? dm / vm : dm;  // (floats: the largest difference over the range)
     r.note = "largest difference " + std::to_string(r.err).substr(0, 8) + " of the range; " + r.note;
   }
+  // ---- stage 3: the experts (layer_moe, a standard-type MoE model loaded: the 35B-A3B). Its own layers' experts; the
+  // check's routings written over the router's logits (gc_rl_, the hook before layer_moe's routing; the shared
+  // expert's gate column kept); the same input rows at the chunk sizes that pick each path (ARC_MOE_RG_MIN / _MAX /
+  // ARC_MOE_GEMM_MIN's defaults 320 / 1280 / 1152): decode + GEMM (moe_gemm), moe_rg, per tile at 16 slots a tile
+  // (moe_gateup_q / moe_down_q), per tile at 8 / 4 / 2 slots, one token (moe_route1). A row's result depends on its own
+  // routing only, so a path's rows equal another's where both are exact the same way.
+  const std::vector<float>* gc_rl_ = nullptr;  // (the routing logits: rows of n_expert, set while a check runs)
+  void gc_route_set(cl_mem rl, int T, int ldl) {
+    const int NE = hp.n_expert;
+    std::vector<float> v((size_t)T * ldl);
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, rl, CL_TRUE, 0, v.size() * 4, v.data(), 0, nullptr, nullptr));
+    for (int t = 0; t < T; ++t)
+      for (int e = 0; e < NE; ++e) v[(size_t)t * ldl + e] = (*gc_rl_)[(size_t)t * NE + e];
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, rl, CL_TRUE, 0, v.size() * 4, v.data(), 0, nullptr, nullptr));
+  }
+ public:
+  std::vector<GcRow> gemm_check_moe(const GcOptions& o) {
+    std::vector<GcRow> rows;
+    if (!hp.moe || !hp.moe_std || hp.gemma || hp.hc || hp.ds41 || hp.inkling || layers_.empty()) return rows;
+    gc_gen_.gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 7;
+    const int E = hp.n_embd, NE = hp.n_expert, NU = hp.n_expert_used, tm = 16;
+    const int Tbig = std::min(max_chunk, 1408) / tm * tm;  // (decode + GEMM: past ARC_MOE_RG_MAX's 1280)
+    const int T0 = cur_T_;
+    struct Back { Engine* e; int t; ~Back() { e->cur_T_ = t; e->gc_rl_ = nullptr; e->gc_log_ = nullptr; } } back{this, T0};
+    std::vector<int> moe_layers;
+    for (size_t i = 0; i < layers_.size(); ++i)
+      if (layers_[i].ex_type[0]) moe_layers.push_back((int)i);
+    if (moe_layers.empty()) return rows;
+    std::vector<int> pick = {moe_layers.front(), moe_layers[moe_layers.size() / 2], moe_layers.back()};
+    if (o.quick) pick = {moe_layers[moe_layers.size() / 2]};
+    // the routings: random; every expert hit (token t's experts a window moving by NU, all NE covered); one expert in
+    // every row's choice and half the experts never chosen
+    const char* rnames[3] = {"random", "every expert hit", "one expert in every row, half empty"};
+    for (int il : pick)
+      for (int rt = 0; rt < 3; ++rt) {
+        std::vector<float> lg((size_t)Tbig * NE);
+        for (int t = 0; t < Tbig; ++t)
+          for (int e = 0; e < NE; ++e) {
+            float v = (gc_uniform() - 0.5f) * 4.0f;
+            if (rt == 1) v = ((e - t * NU) % NE + NE) % NE < NU ? 4.0f + gc_uniform() : v - 4.0f;
+            if (rt == 2) v = e == 0 ? 8.0f : e % 2 ? v - 8.0f : v;
+            lg[(size_t)t * NE + e] = v;
+          }
+        const std::vector<float> xs = gc_randf((size_t)Tbig * E, -1, 1);
+        // a pass: x_ = the first T rows, the logits over the router's, layer_moe, x_'s T rows back (twice: bit-equal?)
+        struct Pass { std::vector<float> out; std::string kernels, det, err; };
+        auto pass = [&](int T) {
+          static const bool trace = getenv("ARC_GC_TRACE") && atoi(getenv("ARC_GC_TRACE")) != 0;
+          if (trace) zlog::eprintf("gemm_check: experts, layer %d, routing %d, T %d\n", il, rt, T);
+          Pass p;
+          const int Mp = (T + tm - 1) / tm * tm;
+          for (int rep = 0; rep < 2; ++rep) {
+            CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)T * E * 4, xs.data(), 0, nullptr, nullptr));
+            cur_T_ = T;
+            std::vector<std::string> log;
+            gc_rl_ = &lg;
+            gc_log_ = &log;
+            gc_props_.clear();
+            try {
+              layer_moe(layers_[il], T, Mp);
+            } catch (const std::exception& e) {
+              p.err = e.what();
+            }
+            clFinish(cl_.queue);
+            gc_rl_ = nullptr;
+            gc_log_ = nullptr;
+            std::vector<float> out = gc_read<float>(x_, (size_t)T * E);
+            if (rep == 0) {
+              p.out = out;
+              for (const std::string& s : log)
+                if (s.find("moe") != std::string::npos || s.find("decode_w8") != std::string::npos) p.kernels += (p.kernels.empty() ? "" : "; ") + s;
+            } else {
+              p.det = memcmp(out.data(), p.out.data(), out.size() * 4) ? "DIFFERS" : "equal";
+            }
+          }
+          return p;
+        };
+        struct Run { int T; const char* path; Pass p; };
+        std::vector<Run> runs;
+        for (int T : {Tbig, 640, 256, 9, 8, 4, 2, 1}) {
+          if (T > max_chunk) continue;
+          const char* path = T >= 1280 ? "decode + GEMM" : T >= 320 ? "moe_rg" : T > 8 ? "per tile, 16 slots" :
+                             T > 1 ? "per tile, 2-8 slots" : "one token";
+          runs.push_back({T, path, pass(T)});
+        }
+        // each path against the next larger one, on the smaller one's rows
+        for (size_t i = 0; i + 1 < runs.size(); ++i) {
+          const Run& a = runs[i];
+          const Run& b = runs[i + 1];
+          GcRow r;
+          r.type = ggml_type_name(layers_[il].ex_type[0]);
+          r.shape = std::string("layer ") + std::to_string(il) + ", " + rnames[rt];
+          r.N = NE, r.K = E, r.T = b.T;
+          r.form = std::string(b.path) + " (T " + std::to_string(b.T) + ")";
+          r.ref = std::string(a.path) + " (T " + std::to_string(a.T) + "), the same rows";
+          r.det = b.p.det;
+          r.kernels = b.p.kernels;
+          if (i == 0) r.kernels += " | the reference's: " + a.p.kernels + (a.p.det == "equal" ? "" : " (NOT DETERMINISTIC)");
+          if (!a.p.err.empty() || !b.p.err.empty()) {
+            r.status = "ERROR";
+            r.note = a.p.err.empty() ? b.p.err : a.p.err;
+          } else {
+            const std::vector<float> x(a.p.out.begin(), a.p.out.begin() + (size_t)b.T * E);
+            gc_cmpf(b.p.out, x, r);
+            if (r.status == "differs") {  // (paths that round otherwise: their difference, against the rows' change)
+              double dm = 0, vm = 0;
+              for (size_t k = 0; k < x.size(); ++k)
+                dm = std::max(dm, (double)std::fabs(b.p.out[k] - x[k])), vm = std::max(vm, (double)std::fabs(x[k] - xs[k]));
+              r.err = vm > 0 ? dm / vm : dm;
+              r.note = "largest difference " + std::to_string(r.err).substr(0, 8) + " of the experts' output range";
+            }
+          }
+          rows.push_back(r);
+        }
+      }
+    return rows;
+  }
+ private:
   void gc_fused(const GcOptions& o, const std::vector<uint32_t>& types, std::vector<GcRow>& rows, int tm, int kmax, int mmax) {
     const int T0 = cur_T_;
     struct Back { Engine* e; int t; ~Back() { e->cur_T_ = t; e->h8_pre_live_ = false; e->h8_last_K_ = -1; } } back{this, T0};
@@ -716,6 +867,8 @@
     const float eps = hp.eps;
     (void)eps;
     auto row = [&](const std::string& form, uint32_t type, int N, int K, int T) {
+      static const bool trace = getenv("ARC_GC_TRACE") && atoi(getenv("ARC_GC_TRACE")) != 0;
+      if (trace) zlog::eprintf("gemm_check: fused %s, %s %d x %d, T %d\n", form.c_str(), type ? ggml_type_name(type) : "-", N, K, T);
       GcRow r;
       r.type = type ? ggml_type_name(type) : "-";
       r.shape = "random";
