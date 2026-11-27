@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-27 (unreleased): the Docker image includes ffmpeg
+
+- **`docker/Dockerfile` installs ffmpeg** (#104). On Linux the server decodes every image, and audio and video files,
+  with ffmpeg, and the image had none: a request with an image (an opencode client and the 27B on a B60) failed with
+  "ffmpeg missing" until it was installed in the container by hand.
+
 ## 2026-11-26 (unreleased: in the next release): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
 
 - **Verification passes of more than 8 rows** (a DFlash2 block of 16) no longer take H8 for weights decoded per chunk on
