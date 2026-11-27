@@ -149,8 +149,13 @@ foreach ($m in $Models) {
       if ($r.id -ne "slots") { $a += @("--dump-logits", $dump) }
       foreach ($e in $r.env.Keys) { Set-Item "Env:$e" $r.env[$e] }
       $t0 = Get-Date
+      # (Windows PowerShell 5.1 with "Stop" ends the script at a child's first stderr line: "Continue" for the run, so
+      #  a failed run is an ERROR row, not the end of the test)
+      $eap = $ErrorActionPreference
+      $ErrorActionPreference = "Continue"
       $o = & powershell -NoProfile -File $guard -TimeoutS $TimeoutS -- $runz @a 2>&1 | Out-String
       $code = $LASTEXITCODE
+      $ErrorActionPreference = $eap
       foreach ($e in $r.env.Keys) { Remove-Item "Env:$e" -ErrorAction SilentlyContinue }
       $sec = [math]::Round(((Get-Date) - $t0).TotalSeconds)
       [IO.File]::WriteAllText($log, $o, (New-Object Text.UTF8Encoding $false))
