@@ -34,13 +34,14 @@
     //  error included: reported, not failed; e2e_ratio: against the same type and shape's one-token GEMV, the plain
     //  int8 form, for the prompt forms (H8's rotation must not be far worse); -1 where there is none)
     double e2e = -1, e2e_ratio = -1;
+    double e2e_off = -1, e2e_off_ratio = -1;  // (the types with a min, drawn again with random mins: the offsets columns)
     std::string det = "-", pair = "-";
     uint32_t priv = 0, spill = 0;
   };
   std::vector<GcRow> gemm_check(const GcOptions& o) {
     std::vector<GcRow> rows;
-    gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 1;
-    gc_offsets_ = o.offsets;
+    gc_gen_.gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 1;
+    gc_gen_.gc_offsets_ = o.offsets;
     const int tm = gemm_tm(), kmax = aq_max_k(), mmax = max_chunk;
     // the types: every one make_weight takes, and the float types load_w turns into Q8_0
     std::vector<uint32_t> types = {GGML_Q8_0, GGML_Q4_0, GGML_Q4_1, GGML_Q5_0, GGML_Q5_1, GGML_Q8_1, GGML_Q2_K, GGML_Q3_K,
@@ -84,9 +85,9 @@
         const bool head = s.N > 100000;
         for (int T : Ts) {
           if (head && T != 1) continue;
-          const uint64_t st = gc_rng_;  // (the pair: the same random weights, activations and columns for both forms)
+          const uint64_t st = gc_gen_.gc_rng_;  // (the pair: the same random weights, activations and columns for both forms)
           for (int res = 0; res < 2; ++res) {
-            gc_rng_ = st;
+            gc_gen_.gc_rng_ = st;
             GcRow r;
             r.type = ggml_type_name(type);
             r.shape = s.name;
@@ -106,6 +107,20 @@
               }
             }
           }
+          // (the types with a min: the same case again with random mins, the blocks' means far from 0, its end-to-end
+          //  error in the rows' offsets columns, every run: H8R's error grows with a row's mean over K, one scale a row
+          //  after the rotation, and the baseline keeps that visible. Not with --offsets, whose main run is that already)
+          const bool has_min = type == GGML_Q4_1 || type == GGML_Q5_1 || type == GGML_Q2_K || type == GGML_Q4_K ||
+                               type == GGML_Q5_K || type == GGML_Q2_0;
+          if (has_min && !o.offsets && !rows.empty() && rows.back().status == "ok") {
+            GcRow ro;
+            gc_gen_.gc_offsets_ = true;
+            gc_case(type, s.N, s.K, T, false, 1, ro, tm, kmax, mmax);
+            gc_gen_.gc_offsets_ = false;
+            if (ro.status == "ok")
+              for (size_t i = rows.size(); i-- > 0 && rows[i].T == T && rows[i].shape == s.name && rows[i].type == ggml_type_name(type);)
+                rows[i].e2e_off = ro.e2e;
+          }
         }
       }
     // (each prompt form's end-to-end error against the plain int8 form's, the one-token GEMV of the same type and shape:
@@ -118,6 +133,7 @@
           if (r.e2e_ratio > 8)
             r.note += std::string(r.note.empty() ? "" : "; ") + "END TO END " + std::to_string(r.e2e_ratio).substr(0, 5) +
                       "x the one-token GEMV's";
+          if (r.e2e_off > 0 && g.e2e_off > 0) r.e2e_off_ratio = r.e2e_off / g.e2e_off;  // (reported, not noted)
           break;
         }
     }
@@ -126,17 +142,7 @@
  private:
   std::vector<std::string>* gc_log_ = nullptr;   // (set while a check runs: run() notes each kernel launched)
   std::vector<std::pair<uint32_t, uint32_t>> gc_props_;  // (each noted kernel's private and spill bytes)
-  uint64_t gc_rng_ = 1;
-  bool gc_offsets_ = false;
   std::vector<float> gc_last_[2];  // (the last two cases' results, resident and just in time: the pair)
-  uint64_t gc_next() {  // (splitmix64)
-    uint64_t z = (gc_rng_ += 0x9E3779B97F4A7C15ull);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    return z ^ (z >> 31);
-  }
-  uint64_t gc_below(uint64_t n) { return n ? gc_next() % n : 0; }
-  float gc_uniform() { return (float)((gc_next() >> 40) * (1.0 / 16777216.0)); }  // [0, 1)
   void gc_note(cl_kernel k) {
     const std::string s = k->name + " [" + plan_opts(k->opts) + "]";
     if (std::find(gc_log_->begin(), gc_log_->end(), s) != gc_log_->end()) return;
@@ -146,6 +152,20 @@
     if (zeKernelGetProperties(k->k, &kp) == ZE_RESULT_SUCCESS) gc_props_.push_back({kp.privateMemSize, kp.spillMemSize});
     else gc_props_.push_back({0, 0});
   }
+ public:
+  // the random rows' generator: no GPU, so tools/gemm_check.cpp --weights uses it too (the synthetic rows' statistics
+  // next to a model file's)
+  struct GcGen {
+  uint64_t gc_rng_ = 1;
+  bool gc_offsets_ = false;  // (GcOptions::offsets: the types with a min drawn with random mins, block means far from 0)
+  uint64_t gc_next() {  // (splitmix64)
+    uint64_t z = (gc_rng_ += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+  }
+  uint64_t gc_below(uint64_t n) { return n ? gc_next() % n : 0; }
+  float gc_uniform() { return (float)((gc_next() >> 40) * (1.0 / 16777216.0)); }  // [0, 1)
   // random rows of a type: random code bytes, the scales set to sane values (an f16 scale from random bytes may be
   // huge, Inf or NaN), every value checked finite by dequant_row
   std::vector<uint8_t> gc_rows(uint32_t type, int N, int K) {
@@ -239,6 +259,32 @@
     }
     return v;
   }
+  };  // (GcGen)
+  // the statistics H8R's error depends on, of one row of K values (a weight row is an H8R column): the row's mean over
+  // its standard deviation, and its largest rotation block's mean over that block's deviation x sqrt(the block): after
+  // the rotation the block's mean is one coefficient of that size, which the row's one scale must cover
+  static void gc_row_stats(const float* w, int K, double& row_ratio, double& dc_ratio) {
+    int hb = 256;
+    while (hb * 2 <= 1024 && K % (hb * 2) == 0) hb *= 2;  // (as h8_block)
+    if (K % 256) hb = K;
+    double s = 0, s2 = 0;
+    for (int k = 0; k < K; ++k) s += w[k], s2 += (double)w[k] * w[k];
+    const double mean = s / K, sd = std::sqrt(std::max(0.0, s2 / K - mean * mean));
+    row_ratio = sd > 0 ? std::fabs(mean) / sd : 0;
+    dc_ratio = 0;
+    for (int b0 = 0; b0 + hb <= K; b0 += hb) {
+      double bs = 0, bs2 = 0;
+      for (int k = b0; k < b0 + hb; ++k) bs += w[k], bs2 += (double)w[k] * w[k];
+      const double bm = bs / hb, bsd = std::sqrt(std::max(0.0, bs2 / hb - bm * bm));
+      if (bsd > 0) dc_ratio = std::max(dc_ratio, std::fabs(bm) * std::sqrt((double)hb) / bsd);
+    }
+  }
+ private:
+  GcGen gc_gen_;
+  uint64_t gc_next() { return gc_gen_.gc_next(); }
+  uint64_t gc_below(uint64_t n) { return gc_gen_.gc_below(n); }
+  float gc_uniform() { return gc_gen_.gc_uniform(); }
+  std::vector<uint8_t> gc_rows(uint32_t type, int N, int K) { return gc_gen_.gc_rows(type, N, K); }
   // a W8-form weight (zero/kernels/decode.cl decode_w8_*: [g][s][j][w][lane] words, [g][s][HSTR][lane] headers, groups
   // of 16 rows) decoded to floats, rows `cols` only. per32: the Q8_0 form, one f32 scale a 32-block; h8r: the rotated
   // int8 values alone (their scale is the column's, applied by the caller)

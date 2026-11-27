@@ -19,8 +19,13 @@
   An `end_to_end` column compares each result with the plain product, the file's weights times the unquantized
   activations, so it holds the quantization's own error. It is reported, not failed. A prompt form whose end-to-end
   error is over 8x its type's one-token GEMV is noted. On the laptop the W8 prompt GEMM's median is 1.0x, and H8's
-  is 3.4x: one scale per token over the whole row. `--offsets` draws the types with a min (Q4_1, Q5_1, Q2_K, Q4_K,
-  Q5_K, Q2_0) with block means far from zero; H8's error then rises to 12-38x.
+  is 3.4x: one scale per token over the whole row. Every run also draws the types with a min (Q4_1, Q5_1, Q2_K,
+  Q4_K, Q5_K, Q2_0) a second time with block means far from zero (the `end_to_end_offsets` column). H8's error then
+  rises to 12-30x, the W8 GEMM's stays under 3x: H8's one scale a row after the rotation must cover the row's mean.
+
+  `gemm_check --weights <model.gguf>` (no GPU) shows where a model's own rows sit: the 4B's, the 27B's and the 35B-A3B's
+  are at the centred level. Their largest rotation-block means are in the DeltaNet output projections, about 3x it
+  (docs/gemm-inventory.md K).
 
   Usage: `gemm_check --model <model.gguf> --out <file.tsv> [--quick]`, through `bench\gpu_guard`. It needs a model
   for the engine's buffers only (its own weights are not checked). On the laptop (the 4B, with H8, and the 27B, W8
