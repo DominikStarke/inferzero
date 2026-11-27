@@ -3,14 +3,17 @@
 ## 2026-11-27 (unreleased): `ARC_GEMM_PLAN=1`, a log of which kernel each step takes
 
 - **`ARC_GEMM_PLAN=1`** logs one line the first time each distinct case launches:
-  - the role (`gemm_gate`, `rmsnorm_quant`, ...), the weight type, the rows (load, 1, 2-8 or a prompt chunk) and where
-    the weight's rows are (host memory, a resident W8 copy, or decoded just in time);
+  - the role (`gemm_gate`, `rmsnorm_quant`, ...), the weight type and the rows (load, 1, 2-8 or a prompt chunk);
+  - what the kernel reads: a GEMV the raw rows ("raw", "host raw"), a GEMM its W8 form ("w8 resident", "w8 jit", or
+    "host" for rows in host memory);
   - the kernel with its `-D` options, its grid and work-group size;
   - what a fused launch fuses (gate+up, norm+rot, swiglu+quant, ...);
   - the launch's line in the source and the model-file line that asked for the product;
   - the GPU, and a split model's shard or stage.
 
-  When the model is freed, a summary line gives its routes, kernels and fused forms. It records what ran, after the
+  A summary line gives the model's routes, kernels and fused forms: runz prints it at the end, serverz after its
+  start-up warm-up (what the warm-up took) and again for the old model when it switches models. A stopped server
+  prints no final summary, since it is ended without its destructors. It records what ran, after the
   start checks, the memory plan and the row counts have decided, so it is the source for the inventory of every GEMM
   path (docs/gemm-inventory.md). Logging only: the logits are the same with it on and off. Off by default.
 

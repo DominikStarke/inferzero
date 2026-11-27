@@ -2,9 +2,11 @@
 // each matrix product and every other step takes (docs/gemm-inventory.md tables A and K; the user, 2026-11-27).
 // Recorded at the launch (Engine::run), so it shows what ran, not what the code reads as: the start checks, the memory
 // plan and the row counts have all decided by then. One line the first time each distinct case launches:
-//   gemm-plan: <role> | <weight type> | M <1 | 2-8 | chunk> | <host | resident | jit | -> -> <kernel> [-D options]
-//              grid G local L | fused: <what it fuses, or -> | at <file:line> | gpu <rank or stage>
-// and, when the engine is freed, one summary line with the model, its routes and its fused forms. Logging only (zlog):
+//   gemm-plan: <role> | <weight type> | M <load | 1 | 2-8 | chunk> | <memory> -> <kernel> [-D options]
+//              grid G local L | fused: <what it fuses, or -> | at <file:line> from <model file:line> | gpu <device>
+// (memory: a GEMV's "raw" / "host raw", the rows it reads; a GEMM's "w8 resident" / "w8 jit" / "host", where its W8
+//  comes from; "-" for a step with no weight) and one summary line with the model, its routes and its fused forms
+// when the engine is freed (runz's end, a server's model switch) or after serverz's warm-up. Logging only (LOG_INF):
 // nothing it records changes a launch, so the results are bit-identical with it on and off. Off by default.
 // The role is the name the launch is profiled under (--prof: gemm_gate, rmsnorm_quant, ...). The weight's type,
 // host / resident / just in time come from matmul's scope (PlanScope); a kernel built -DQT=n says its type itself.
@@ -107,7 +109,11 @@ void plan_note(const char* name, cl_kernel k, int dims, const size_t* gws, const
   const char* mcls = !plan_fwd_ ? "load" : T <= 1 ? "1" : T <= 8 ? "2-8" : "chunk";
   // (the weight's rows: in host memory (plan_tight), or on the GPU with a resident W8 copy for the prompt GEMM, or
   //  decoded to W8 just in time for each chunk; a GEMV reads the raw rows in every case)
-  const char* mem = !plan_w_ ? "-" : plan_w_->host ? "host" : plan_w_->wq ? "w8 resident" : "w8 jit";
+  // (a GEMV reads the raw rows whatever W8 form the prompt GEMM has: "raw", "host raw")
+  const bool gemv = kn.rfind("gemv", 0) == 0;
+  const char* mem = !plan_w_ ? "-"
+                    : gemv   ? (plan_w_->host ? "host raw" : "raw")
+                    : plan_w_->host ? "host" : plan_w_->wq ? "w8 resident" : "w8 jit";
   const std::string fused = plan_fused(kn, ko, name);
   const std::string from = plan_from_ ? plan_at(*plan_from_) : "";
   const std::string key = std::string(name) + "|" + type + "|" + mcls + "|" + mem + "|" + kn + "|" + ko + "|" +
@@ -130,17 +136,22 @@ void plan_note(const char* name, cl_kernel k, int dims, const size_t* gws, const
   std::string gpu = cl_.device_id.substr(0, 40);
   if (tp_on()) gpu += " shard " + std::to_string(opt.tp_rank);
   if (opt.pp_size > 1) gpu += " stage " + std::to_string(opt.pp_begin) + "-" + std::to_string(opt.pp_end);
-  zlog::eprintf("gemm-plan: %s | %s | M %s | %s -> %s [%s] grid %s local %s | fused: %s | at %s%s%s | gpu %s\n", name,
-                type.c_str(), mcls, mem, kn.c_str(), ko.c_str(), dim(gws).c_str(), loc_s.c_str(),
-                fused.empty() ? "-" : fused.c_str(), plan_at(loc).c_str(), from.empty() ? "" : " from ", from.c_str(),
-                gpu.c_str());
+  LOG_INF("gemm-plan: %s | %s | M %s | %s -> %s [%s] grid %s local %s | fused: %s | at %s%s%s | gpu %s\n", name,
+          type.c_str(), mcls, mem, kn.c_str(), ko.c_str(), dim(gws).c_str(), loc_s.c_str(),
+          fused.empty() ? "-" : fused.c_str(), plan_at(loc).c_str(), from.empty() ? "" : " from ", from.c_str(),
+          gpu.c_str());
 }
-void plan_summary() const {
+// when: "freed" (the engine's destructor: runz's end, the server's model switch) or "after the warm-up" (serverz's
+// start: the server is stopped by a kill, Ctrl+C or _exit, so no destructor runs; that summary holds the routes the
+// warm-up took, and a model switch prints the full one)
+ public:  // (the server calls it after its warm-up, tools/server_load.h; the rest of this part stays private)
+void plan_summary(const char* when = "freed") const {
   if (!plan_on() || plan_seen_.empty()) return;
   std::string fused;
   for (const auto& s : plan_fused_) fused += (fused.empty() ? "" : "; ") + s;
-  zlog::eprintf("gemm-plan summary: %s (%s)%s: %zu routes, %zu kernels; fused: %s\n", hp.arch.c_str(),
-                std::filesystem::path(f_.path).filename().string().c_str(),
-                tp_on() ? (" shard " + std::to_string(opt.tp_rank)).c_str() : "", plan_seen_.size(), plan_kernels_.size(),
-                fused.empty() ? "-" : fused.c_str());
+  LOG_INF("gemm-plan summary (%s): %s (%s)%s: %zu routes, %zu kernels; fused: %s\n", when, hp.arch.c_str(),
+          std::filesystem::path(f_.path).filename().string().c_str(),
+          tp_on() ? (" shard " + std::to_string(opt.tp_rank)).c_str() : "", plan_seen_.size(), plan_kernels_.size(),
+          fused.empty() ? "-" : fused.c_str());
 }
+ private:  // (as the class body around this part's include, zero/engine.h)
