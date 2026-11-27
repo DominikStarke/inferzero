@@ -977,7 +977,7 @@ switch ($Action) {
     $kinds = PC-Kinds
     $list = foreach ($o in $optCatalog) {
       $c = if ($optChoice.Contains($o.id)) { $optChoice[$o.id] } else { "" }
-      $fit = @($o.best_for -split ';' | Where-Object { $_ -in "alchemist", "b-series", "igpu-xe2", "igpu-140t", "igpu-xe-lpg", "multi-gpu" })
+      $fit = @($o.best_for -split ';' | Where-Object { $_ -in "alchemist", "b-series", "igpu-xe2", "igpu-140t", "igpu-xe-lpg", "igpu-xe-lp", "multi-gpu" })
       $for = if (-not $fit.Count) { "any" } elseif (@($fit | Where-Object { $_ -in $kinds }).Count) { "this PC" } else { "not this PC (" + ($fit -join ", ") + ")" }
       [ordered]@{ id = $o.id; state = $(if ($c) { $c } else { "default" }); default = $o.default; title = $o.title; what = $o.what;
         how = $(if ($o.kind -eq "env") { "$($o.name)=$($o.on)" } else { "$($o.name) $($o.on)".Trim() }); for = $for; output = $o.output;

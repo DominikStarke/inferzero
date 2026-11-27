@@ -4,7 +4,7 @@
 #     or mtp (the --mtp flag) or gpus2 (--gpus 2 or more). "has:B" on A needs "needs:A" on B and the other way round;
 #     "not:" and "or:" go both ways;
 #   - applies: words of the model (dense, moe, moe_std (a standard Qwen MoE, not Flash Next), qsa, flashnext, mtp, h8: a dense Qwen3.5 / 3.8) or of the PC (scripts/pc-kinds.ps1's words:
-#     b-series, alchemist, igpu-140t, igpu-xe2, igpu-xe-lpg, multi-gpu), separated by ";"; empty: any model, any PC;
+#     b-series, alchemist, igpu-140t, igpu-xe2, igpu-xe-lpg, igpu-xe-lp, multi-gpu), separated by ";"; empty: any model, any PC;
 #   - variant: "suffix:value" entries, separated by ";": a suffix of lowercase letters, digits and dashes starting with
 #     a dash, unique over the catalog, and a value (the option's value then, "on" for a flag without one).
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_launcher_options.ps1
@@ -25,7 +25,7 @@ $bad = New-Object System.Collections.Generic.List[string]
 foreach ($c in "id", "tip", "relates", "applies", "variant") { if ($cols -notcontains $c) { $bad.Add("no column '$c'") } }
 $ids = @($rows | ForEach-Object { $_.id })
 $modelWords = @("dense", "moe", "moe_std", "qsa", "flashnext", "mtp", "h8")
-$pcWords = @("b-series", "alchemist", "igpu-140t", "igpu-xe2", "igpu-xe-lpg", "multi-gpu")
+$pcWords = @("b-series", "alchemist", "igpu-140t", "igpu-xe2", "igpu-xe-lpg", "igpu-xe-lp", "multi-gpu")
 $rel = @{}  # "kind|from|to" -> $true
 $suffixes = @{}
 function Split-List([string]$s) { @($s -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
