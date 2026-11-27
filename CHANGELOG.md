@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-28 (unreleased): a contributor kit for the shared GEMM layer's measurements
+
+- **`bench\contrib_kit.ps1`** (Windows) and **`bench/contrib_kit.sh`** (Linux): one command on your card writes one file
+  to attach to the GitHub issue, in about 10-20 minutes a model. It holds:
+  - which kernel each matrix product takes on your GPU (`ARC_GEMM_PLAN=1`), and the start-up lines;
+  - the prompt speed at 512 and 4,096 tokens and the generation speed over 128 tokens, two runs each;
+  - the kernel launches a generated token, and each kernel's launch count;
+  - what `--ctx auto` picks and the GPU memory the server reports for it.
+
+  Usage: `powershell -File bench\contrib_kit.ps1 -Model <model.gguf>` or `bash bench/contrib_kit.sh --model <model.gguf>`
+  (`-Device N` for another GPU, `-Quick` for one run each). The runs use the default settings: switches set in your
+  shell are left out for them. The file has no user or host name, and no paths but the model's file name. Every run
+  goes through the GPU watchdog (`bench/gpu_guard`).
+
 ## 2026-11-27 (unreleased): the golden test set of the shared GEMM layer
 
 - **`tests/gemm_golden.ps1`** records, per model, the hash of `runz --dump-logits` for each kind of path:
