@@ -26,7 +26,7 @@ struct PlanScope {
   PlanScope(Engine* en, const GpuWeight* w, const std::source_location& from)
       : e(en), prev(en->plan_w_), prev_from(en->plan_from_) {
     e->plan_w_ = w;
-    if (!prev) e->plan_from_ = &from;  // (the outermost product's caller: the model file's line)
+    if (!prev_from) e->plan_from_ = &from;  // (the outermost caller's line, a helper's PlanFrom's too: the model file's)
   }
   ~PlanScope() { e->plan_w_ = prev, e->plan_from_ = prev_from; }
   PlanScope(const PlanScope&) = delete;

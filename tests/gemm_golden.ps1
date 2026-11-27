@@ -6,7 +6,8 @@
 # Kinds (each skipped where it does not apply to the model):
 #   base     the fixed prompt (tests/gemm_golden_prompt.txt, ~1,100 tokens) in chunks of 512, then 16 generated tokens
 #   short    a 4-token prompt, 16 generated (the 2-8 row GEMVs)
-#   mtp      base with --mtp (the verification passes), models with an MTP block
+#   mtp      base with --mtp (the verification passes), models with an MTP block: found by "MTP" / "mtp" in the file's
+#            path (the test set's files say so); an MTP file named otherwise skips this kind
 #   slots    runz --slots-check (two conversations alone, then batched): must say OK
 #   host     base with 1 GiB of the weights in host memory (ARC_HOST_WEIGHTS_GB=1): must equal base. Dense models
 #   tp2, tp3 base split over 2 / 3 "GPUs" on the one GPU (ARC_TP_SIM=1 --gpus N): their own hashes
@@ -18,7 +19,9 @@
 # DIFFERS (a path that must equal base does not), CHANGED (a hash unlike the baseline's), SHORT (it generated fewer
 # than its 16 tokens: the end-of-text token came first, so less was checked), FAIL or ERROR.
 # Every GPU run goes through bench\gpu_guard.ps1. The driver version and the commit are recorded: a baseline holds
-# only for the build and driver it was made with. Windows PowerShell 5.1 and 7.
+# only for the build and driver it was made with. The runs see the defaults plus their own switch: the shell's ARC_*,
+# INFERZERO_* and ZE_* variables are cleared for them (but ARC_DATA_DIR and ZE_AFFINITY_MASK) and put back after,
+# their names in results.tsv's header. Windows PowerShell 5.1 and 7.
 param(
   [string[]]$Models = @(),
   [string[]]$Kinds = @(),
@@ -118,6 +121,19 @@ $rows = New-Object System.Collections.ArrayList
 $bad = 0
 function Get-Sha([string]$f) { if (Test-Path $f) { return (Get-FileHash -Algorithm SHA256 $f).Hash.Substring(0, 16) } return "" }
 
+# (every run sees the defaults plus its own switch only: the ARC_* / INFERZERO_* / ZE_* variables of the caller's
+#  shell are saved, cleared for the runs and put back at the end, so a golden "base" can't be a non-default path.
+#  Kept: ARC_DATA_DIR, where gpu_guard and the engine find the GPU hang marker, and ZE_AFFINITY_MASK, the GPU chosen)
+$keep = @("ARC_DATA_DIR", "ZE_AFFINITY_MASK")
+$saved = @{}
+foreach ($v in @(Get-ChildItem Env: | Where-Object { $_.Name -match "^(ARC_|INFERZERO_|ZE_)" })) {
+  if ($keep -contains $v.Name) { continue }
+  $saved[$v.Name] = $v.Value
+  Remove-Item "Env:$($v.Name)"
+}
+$cleared = @($saved.Keys | Sort-Object) -join " "
+$kept = @($keep | Where-Object { Test-Path "Env:$_" }) -join " "
+try {
 foreach ($m in $Models) {
   $mk = Get-ModelKind $m
   $baseHash = ""
@@ -150,8 +166,9 @@ foreach ($m in $Models) {
         #  The fixed prompt ends mid-sentence so that the models write on; the 27B and 35B stopped at once otherwise)
         $gen = -1
         if ($o -match "generation: (\d+) tokens") { $gen = [int]$Matches[1] }
-        if (-not $hash -or $code -ne 0) { $status = "ERROR" }
-        elseif ($gen -ge 0 -and $gen -lt 16) { $status = "SHORT" }
+        # (no such line: what was generated is unknown, so the run proves nothing: ERROR)
+        if (-not $hash -or $code -ne 0 -or $gen -lt 0) { $status = "ERROR" }
+        elseif ($gen -lt 16) { $status = "SHORT" }
         elseif ($r.expect -eq "base") { $status = $(if ($hash -eq $baseHash) { "ok" } else { "DIFFERS" }) }
       }
       if ($r.id -eq "base" -and $status -ne "ERROR") { $baseHash = $hash }
@@ -167,7 +184,11 @@ foreach ($m in $Models) {
     }
   }
 }
+} finally {
+  foreach ($n in $saved.Keys) { Set-Item "Env:$n" $saved[$n] }  # (the caller's shell as it was)
+}
 $head = @("# tests/gemm_golden.ps1, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), commit $commit", "# driver: $driver",
+          "# cleared for the runs: $(if ($cleared) { $cleared } else { '-' }); kept: $(if ($kept) { $kept } else { '-' })",
           "# baseline: $(if ($Baseline) { $Baseline } else { '-' })", "model`tkind`texpect`thash`tstatus`tseconds")
 $res = Join-Path $Out "results.tsv"
 [IO.File]::WriteAllText($res, (($head + $rows) -join "`n") + "`n", (New-Object Text.UTF8Encoding $false))
