@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-27 (unreleased): `ARC_XBUF=1` reads the expert file through the OS file cache (manoreken2, PR #100)
+## 2026-11-27 (2026.11.27.01): `ARC_XBUF=1` reads the expert file through the OS file cache (manoreken2, PR #100)
 
 - **`ARC_XBUF=1`** (opt-in): a mixture-of-experts model's expert file is read through the operating system's file cache
   instead of unbuffered. On a machine whose RAM can hold the whole file, an expert missed by the GPU's cache and the
@@ -12,14 +12,14 @@
   - **Logits:** unchanged (the same bytes are read).
   - **Linux** is not measured yet.
 
-## 2026-11-27 (unreleased): `ARC_GV_SMALL`, a generation test for small Xe-LPG iGPUs
+## 2026-11-27 (2026.11.27.01): `ARC_GV_SMALL`, a generation test for small Xe-LPG iGPUs
 
 - **`ARC_GV_SMALL=1` / `2`** (off by default), for Xe-LPG iGPUs with at most 640 hardware threads, such as a 64-EU
   Core Ultra 200S desktop (#97). `1` runs generation's GEMVs at 4 rows a sub-group, which gave such an iGPU +13.6 %.
   `2` also reads every Q4_K / Q5_K matrix straight into registers. The output is the same bit for bit. Both are slower
   on our 112-EU Core Ultra 5 125H, so they apply only to the smaller GPUs, once measured there.
 
-## 2026-11-27 (unreleased): serverz stops at once as a container's first process; no crash on an empty warm-up token
+## 2026-11-27 (2026.11.27.01): serverz stops at once as a container's first process; no crash on an empty warm-up token
 
 - **`podman stop` / `docker stop` stop serverz at once** when it is the container's first process (#102). As PID 1 the
   kernel gives it no default action for SIGTERM / SIGINT, so a stop waited its 15 s and killed it. serverz now ends at
@@ -28,14 +28,14 @@
 - **A model whose tokenizer gives no token for "Hi" no longer crashes serverz at start** (#102, a tiny test model): the
   kernels' warm-up is skipped with a warning, and they compile on the first request.
 
-## 2026-11-27 (unreleased): generation reads weights in host memory in short pieces on discrete cards
+## 2026-11-27 (2026.11.27.01): generation reads weights in host memory in short pieces on discrete cards
 
 - **A matrix kept in host memory is read in pieces of at most 4 MB per GEMV launch** on discrete cards (#99). On an Arc
   A380 the Qwen3.5 4B at a 131K context keeps 0.43 GiB of its weights in host memory. Its first generated token hung the
   GPU, and the driver reset it; the last kernel recorded was this GEMV, reading over PCIe. The pieces give the same
   results bit for bit. `ARC_HOST_GEMV_MB=N` sets the size, `0` keeps one launch. Integrated GPUs are unchanged.
 
-## 2026-11-27 (unreleased): Q5_K weights decoded 3.5x faster for prompts (a Pro B70's Q5_K files ~10x)
+## 2026-11-27 (2026.11.27.01): Q5_K weights decoded faster for prompts (3.5x on a 125H; a Pro B70's Q5_K decode took ~10x Q4_K's)
 
 - **Q5_K matrices decode to the prompt GEMMs' int8 form 3.5-3.8x faster** (#101). The decoder's loops for Q5_K were
   left rolled by the compiler, so it reached its per-block values through slow indirect register accesses. On a Pro
@@ -44,13 +44,13 @@
   149 -> 39-43 ms per 4K prompt. The decoded weights are the same bit for bit (the 4B / 9B logits with H8 and without).
   Q2_K / Q4_K are unchanged.
 
-## 2026-11-27 (unreleased): the Docker image includes ffmpeg
+## 2026-11-27 (2026.11.27.01): the Docker image includes ffmpeg
 
 - **`docker/Dockerfile` installs ffmpeg** (#104). On Linux the server decodes every image, and audio and video files,
   with ffmpeg, and the image had none: a request with an image (an opencode client and the 27B on a B60) failed with
   "ffmpeg missing" until it was installed in the container by hand.
 
-## 2026-11-26 (unreleased: in the next release): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
+## 2026-11-26 (2026.11.27.01): drafting verification keeps its old path for weights decoded per chunk on Xe-LPG
 
 - **Verification passes of more than 8 rows** (a DFlash2 block of 16) no longer take H8 for weights decoded per chunk on
   Xe-LPG iGPUs: they take the path they had before 2026.11.26.03. Only a model like a Qwen3.8 27B UD-Q4_K_XL with a
