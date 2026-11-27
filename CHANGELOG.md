@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-11-27 (unreleased): API only for use behind a reverse proxy
+## 2026-11-27 (2026.11.27.04): API only for use behind a reverse proxy
 
 - **`serverz --no-webui`** (or `INFERZERO_NO_WEBUI=1`) **serves only the OpenAI-compatible API**: `/v1/chat/completions`,
   `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/messages`, `/v1/responses`, `/v1/audio/transcriptions` /
@@ -21,7 +21,7 @@
 - **The 403s a reverse proxy meets** (a host name instead of 127.0.0.1, or forwarding headers) now say how to set one
   up: forward to 127.0.0.1 with `Host: 127.0.0.1` and no `X-Forwarded-For` / `X-Real-IP`. The rules are unchanged.
 
-## 2026-11-27 (unreleased): the server warms up a split model's kernels too
+## 2026-11-27 (2026.11.27.04): the server warms up a split model's kernels too
 
 - **`serverz --gpus N` (both `--split tensor` and `--split layer`) warms up the kernels before it serves**, as on one
   GPU. Before, a split model skipped the warm-up, and its first request waited while every GPU built its kernels:
