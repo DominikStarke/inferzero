@@ -413,16 +413,28 @@
     // (save_state, not the host snapshot: the KV caches ARE the context. Saving only the recurrent states restores a
     //  position whose attention sees nothing, and the model repeats itself -- that was the fault of 2026-11-25. On a
     //  split every shard writes its own part at the same time, TpEngine::save_parts_run_all.)
+    // (its exact length up front: a vector that grows by doubling holds the old and the new buffer at once, which at a
+    //  256K conversation is 8 GiB more than the state itself -- the save then failed with std::bad_alloc, 2026-11-27)
     std::vector<uint8_t> snap;
-    const bool snap_ok = eng_.save_state([&snap](const void* p, size_t n) {
-      snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
-      return true;
-    }, last_gen_cut_);
+    bool snap_ok = false;
+    try {
+      snap.reserve(eng_.saved_size(last_gen_cut_));
+      snap_ok = eng_.save_state([&snap](const void* p, size_t n) {
+        snap.insert(snap.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+        return true;
+      }, last_gen_cut_);
+    } catch (const std::exception& x) {
+      LOG_WRN("session cache: the conversation (%zu tokens) was not saved (no room for its %zu MB state: %s)\n",
+              cached_.size(), eng_.saved_size(last_gen_cut_) >> 20, x.what());
+      return;
+    }
     if (!snap_ok) {
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read)\n", cached_.size());
       return;
     }
     const uint64_t bytes = head.size() * 4 + snap.size();
+    // (the state is moved into the writer's pieces, not copied: one copy of it in RAM, so the room the background write
+    //  needs is its own size plus the 2 GiB left over -- counting it twice refused saves that would have fit, 2026-11-27)
     const bool bg = plat::ram_available() > bytes + (2ull << 30);
     auto failed = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::thread> writer;
@@ -431,7 +443,7 @@
     if (bg) {
       auto pieces = std::make_shared<std::vector<std::vector<uint8_t>>>();
       pieces->emplace_back((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size()));
-      pieces->emplace_back(snap.begin(), snap.end());
+      pieces->push_back(std::move(snap));
       ok = true;
       if (ok)
         writer = start_writer([pieces, file, failed] {
