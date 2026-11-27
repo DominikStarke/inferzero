@@ -491,6 +491,17 @@ bit. Each set is recorded with its build and driver version, since the f32 parts
 The DPAS emulations (`ARC_MOE_RG_XEMU`, `ARC_GDN_XEMU`, the attention one) cover moe_rg, DeltaNet and attention on
 the laptop. `gemm_x8`, `gemm_xw` and `gemm_x16` stay contributor-only.
 
+**Generation at every depth** (the user, 2026-11-28: generation covered, not prefill only, for short, medium and long
+prompts up to the prompt size limit). Kind 1 checks generation after ~1,100 tokens only, but decode changes route with
+depth (the attention past short contexts splits over the keys, design 3.7a) and the KV cache grows. So a **depth**
+kind:
+- prompt lengths: short (4), medium (512, 4,096), long (16,384, 32,768, 65,536, 131,072) and **the limit**: the
+  context `--ctx auto` gives the model on that GPU, minus the generated tokens. Each length up to the limit only;
+- the prompt is the fixed text repeated to the length (real text, so the model keeps writing), then **64 generated
+  tokens**, all hashed (`--dump-logits` holds every step);
+- base path only, not the fusion and option matrix, since it's long: the long lengths run under a `-Long` switch.
+  On the laptop the 27B's 163,840 alone is about half an hour;
+- the splits (tp2 / tp3 / layer) at medium and at their own limit.
 **The harness:** `tests/gemm_golden.ps1` (merged 2026-11-28, 5d63cc2) runs these kinds through `bench\gpu_guard.ps1`
 and writes `results.tsv` to a temp folder. A row is one of:
 - ok;
@@ -537,7 +548,10 @@ Lengths: pp512, pp4096, tg128 after 512; pp16384 for the 35B and Inkling. Three 
 - **The step is judged on the pairwise difference,** which cancels the slow thermal drift. It's blocked when its median
   difference is below zero by more than max(2 %, 2 x the spread of the pairs' differences), on two such blocks.
 - **The table below is the reference level:** what "normal" is on a card, so a large drop shows even without a pair.
-
+- **Generation at depth, not after pp512 only** (the user, 2026-11-28). Each model's tg128 after prompts of 4, 512,
+  4,096, 16,384, 32,768, 65,536, 131,072 tokens and its limit (the `--ctx auto` context on that card), with the per-step
+  times so the slope over depth shows. The prompt speed at each length too (pp at the same lengths). A step is judged
+  at every depth it reaches, with the pairs rule above.
 **The laptop, Xe-LPG** (the Developer, 2026-11-28; Core Ultra 5 125H, driver 32.0.101.9175, main 089a927). Three
 rounds, the model order reversed each round, 20 s pauses. pp: 9 samples (3 passes x 3 rounds); tg: 3. tok/s, median
 (spread):
@@ -638,6 +652,7 @@ It's deleted **during** migration, when its route reaches "old path deleted", wi
 - the device, driver and release;
 - A's plan log;
 - E's pp512 / pp4096 / tg128 x 2;
+- **generation at depth** (2026-11-28): pp and tg128 after 4,096, 32,768 and 131,072 tokens and at the model's limit on that card, once each (a `-Depth` option, ~10-30 more minutes a model; off with `-Quick`);
 - G's launch counts;
 - F's `--ctx auto` memory line;
 
