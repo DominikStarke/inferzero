@@ -48,6 +48,7 @@ struct ZMem {
 struct ZKernel {
   ze_kernel_handle_t k;
   std::string name;
+  std::string opts;  // (its program's build options: ARC_GEMM_PLAN=1's log, zero/gemm_plan.h)
   uint32_t gx = 0, gy = 0, gz = 0;  // group size last set
   // the value each argument was last given (as passed to Level Zero: a buffer as its device pointer then, which the
   // engine's slots repoint): the same value again is not set again (a launch keeps the arguments it was appended with)
@@ -1731,6 +1732,7 @@ struct ClRt {
   cl_kernel kernel(cl_program prog, const char* name) {
     ZKernel* k = new ZKernel{};
     k->name = name;
+    k->opts = prog->opts;
     ze_kernel_desc_t kd{ZE_STYPE_KERNEL_DESC, nullptr, 0, name};
     const ze_result_t r = zeKernelCreate(prog->m, &kd, &k->k);
     if (r != ZE_RESULT_SUCCESS) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-27 (unreleased): `ARC_GEMM_PLAN=1`, a log of which kernel each step takes
+
+- **`ARC_GEMM_PLAN=1`** logs one line the first time each distinct case launches:
+  - the role (`gemm_gate`, `rmsnorm_quant`, ...), the weight type, the rows (load, 1, 2-8 or a prompt chunk) and where
+    the weight's rows are (host memory, a resident W8 copy, or decoded just in time);
+  - the kernel with its `-D` options, its grid and work-group size;
+  - what a fused launch fuses (gate+up, norm+rot, swiglu+quant, ...);
+  - the launch's line in the source and the model-file line that asked for the product;
+  - the GPU, and a split model's shard or stage.
+
+  When the model is freed, a summary line gives its routes, kernels and fused forms. It records what ran, after the
+  start checks, the memory plan and the row counts have decided, so it is the source for the inventory of every GEMM
+  path (docs/gemm-inventory.md). Logging only: the logits are the same with it on and off. Off by default.
+
 ## 2026-11-27 (unreleased): two silent paths refused with a message
 
 - **Inkling 2 Mini is refused on `--split layer`** with a message, as it already was on `--gpus N` (the tensor split).
