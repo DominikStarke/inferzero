@@ -80,6 +80,29 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, a saved conversation's state is held once, not twice** (`zero/mgpu/engine_tp.h`,
+  `zero/engine_sessions.h`, `tools/server_cache.h`; found while sizing a 256K conversation).
+  - **The fault:** `save_parts_run_all` collected every shard's part and then copied them into the sink's buffer, and
+    the sink grew by doubling. At a 256K conversation the 9 GiB state needed 18 GiB of RAM and the save failed with
+    `std::bad_alloc` — a 500 to the client, and the conversation processed again on its next request.
+  - **The change:**
+    - `saved_size()` sums the shards' parts on a split model (`Engine::saved_size_split`); it read shard 0's alone.
+    - `save_parts_run_all` reserves each part exactly and lets it go as soon as it is written, shard 0's before the
+      others are waited for.
+    - `save_current` reserves the sink and moves it into the writer's pieces instead of copying it; a `bad_alloc` is a
+      warning line, not a 500.
+  - **Measured**, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, peak RSS against the RSS right before the save:
+
+    | conversation | state | peak before | peak after |
+    |---|---:|---:|---:|
+    | 32K tokens | 1,706 MB | +2,820 MiB | **+1,879 MiB** |
+    | 128K tokens | 5,022 MB | not measured | **+6,365 MiB**, 12.5 s |
+
+    The saved file is bit-identical to the old build's (md5 `c75a61b16b31c86ad90e75fc0f3e84e6`). Round trip at 64K:
+    32,817 of 32,845 prompt tokens from the cache, 17.0 s -> 2.7 s, the answers right across the restart.
+  - **What a conversation costs on disk** (int8 KV, the same model): 34.5 KiB a token — 8K 867 MB, 32K 1.66 GiB,
+    128K 4.90 GiB, 256K 9.22 GiB — plus 598 MiB of DeltaNet states whatever the length.
+
 - **2026-11-27, serverz warms up split models too** (`tools/server_load.h`, `zero/engine.h`; the user: "maybe we need
   to add warm up for all gpus", zchef2k's first request ~15 s on 2 x A770 with `--split layer`, #102).
   - **The change:**

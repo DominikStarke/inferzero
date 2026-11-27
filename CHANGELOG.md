@@ -179,6 +179,15 @@
 - Five code comments that described what a model supports out of date are corrected (Inkling 2's, the NPU's, the
   splits', batched decoding's, the multi-GPU sums').
 
+## 2026-11-27: a saved conversation's state is held once, not twice
+
+- **A long conversation's save no longer needs twice its size in RAM.** `TpEngine::save_parts_run_all` kept every shard's part and then copied them into the sink's buffer, and the sink grew by doubling: at a 256K conversation the 9 GiB state needed 18 GiB, and the save failed with `std::bad_alloc` (a 500 to the client, the conversation processed again next time). Three changes:
+  - **`saved_size()` sums the shards' parts on a split model** (`zero/engine_sessions.h`, `Engine::saved_size_split` in `zero/mgpu/engine_tp.h`): it read shard 0's part alone, a fraction of the state the server reserves for.
+  - **`save_parts_run_all` reserves each part exactly and lets it go as soon as it is written**, shard 0's before the others are waited for. A vector that grows by doubling holds the old and the new buffer at once.
+  - **`save_current` reserves the sink and moves it into the writer's pieces** instead of copying it (`tools/server_cache.h`); a `bad_alloc` is a warning line, not a 500.
+- **Measured**, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, peak RSS against the RSS right before the save: a 32K conversation (1,706 MB) **+2,820 -> +1,879 MiB**; a 128K one (5,022 MB) **+6,365 MiB**, 12.5 s. The saved file is bit-identical to the old build's (md5 `c75a61b16b31c86ad90e75fc0f3e84e6`). Round trip at 64K: 32,817 of 32,845 prompt tokens from the cache, 17.0 s -> 2.7 s, the answers right across the restart.
+- **What a conversation costs on disk** (the same model, int8 KV): 34.5 KiB a token, so 8K is 867 MB, 32K 1.66 GiB, 128K 4.90 GiB and 256K 9.22 GiB. The DeltaNet states add 598 MiB whatever the length. `--session-cache-gb` holds that many conversations at once (LRU).
+
 ## 2026-11-27 (2026.11.27.04): API only for use behind a reverse proxy
 
 - **`serverz --no-webui`** (or `INFERZERO_NO_WEBUI=1`) **serves only the OpenAI-compatible API**: `/v1/chat/completions`,

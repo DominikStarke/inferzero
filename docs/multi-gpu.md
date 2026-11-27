@@ -774,6 +774,22 @@ Measured on 2 B60s: an 8K conversation is 871 MB, 1.5 s to save, 0.9 s to load, 
 reusable and the same answer across the restart. Going back to a conversation after another one in between: 3,990 of
 3,995 tokens from the cache, 0.57 s.
 
+**What a save costs in RAM (2026-11-27).** The state is copied off the GPUs into host memory before it goes to disk,
+so the save needs room for it. It is held **once**: each shard's part is reserved at its exact length and let go as
+soon as it is written, and the sink is moved into the writer's pieces rather than copied. Before, the parts and the
+sink were both alive and the sink grew by doubling — at a 256K conversation the 9 GiB state needed 18 GiB and the
+save failed with `std::bad_alloc`.
+
+| conversation | state on disk | peak RSS of the save |
+|---|---:|---:|
+| 32K tokens | 1.66 GiB | +1.9 GiB |
+| 128K tokens | 4.90 GiB | +6.4 GiB, 12.5 s |
+| 256K tokens | 9.22 GiB | ~+9.5 GiB (the state's own size) |
+
+The size is 34.5 KiB a token (int8 KV: 17 layers with a KV cache, 4 kv heads, 256-wide heads, 520 bytes a head and
+position) plus 598 MiB of DeltaNet states, which do not grow with the context. A save that does not fit is a warning
+line and the conversation is processed again next time; it is not a failed request.
+
 `--split layer` keeps both off, as its stages are engines of their own.
 
 
