@@ -109,67 +109,27 @@ saves a round trip; most items take a minute on a small change.
   - messages go through the log (`LOG_ERR` / `LOG_WRN` / `LOG_INF`, [docs/logging.md](docs/logging.md)), not
     `fprintf(stderr)`.
 
-**Pull requests.** Small and focused, with the numbers before and after from your hardware in the description. We
-merge after checking the results on the hardware we have, and rewrite the CHANGELOG and docs text in the project's own
-format, so don't spend time polishing those; the credit stays yours in the CHANGELOG and the commit.
+**Pull requests.** [docs/pull-requests.md](docs/pull-requests.md) says how a change gets in:
+- an issue first for anything beyond a small fix;
+- one topic per pull request, rebased on `main`;
+- what the description must hold (the template asks for it): accuracy, speed measured A B B A, the start lines, spills, what wasn't tested;
+- how it's reviewed, and what doesn't merge.
+
+We merge after checking the results on the hardware we have, and rewrite the CHANGELOG and docs text in the project's
+own format, so don't spend time polishing those; the credit stays yours in the CHANGELOG and the commit.
 
 ## 3. A new model
 
-A new architecture is a lot of code to keep working, so it starts with an issue, not a pull request. Say which model,
-why (how it does against the models inferzero already runs, in real use rather than only benchmark tables), and where
-its graph is defined (for example llama.cpp's `src/models/<name>.cpp`). We decide on the model's quality first: LFM2
-(#94) was fast but weaker in use, and wasn't taken. Wait for a yes on the issue before writing the engine part.
+A new model starts with an issue, not a pull request, and is listed only when it runs everywhere the models here run:
+- every weight type the engine reads;
+- every GPU kind, from Iris Xe to the B70;
+- tensor parallel over 2-4 GPUs and the layer split, unlike cards included;
+- the memory plans and `--ctx auto`;
+- several conversations at once, snapshots and saved sessions, drafting, the encoders, the launchers;
+- every switch that applies to its layers.
 
-**Where the code goes.** Inkling 2 Mini is the most recent model added and the example to follow:
-- **`zero/engine_<model>.h`:** the model's part of the Engine class, included inside the class body. Everything that is
-  only this model's lives there: its hyperparameters (`load_hparams_<model>`), its weights, and its layer's forward
-  pass. See `zero/engine_inkling.h`.
-- **One hook per place outside that file,** each a short call under the model's flag (`if (hp.<model>) ...`), and all
-  of them listed at the top of your file, as `engine_inkling.h` does:
-  - the architecture name in `load_hparams` (`zero/engine_setup.h`);
-  - `build_kernels` / `load_weights` (`zero/engine_load.h`);
-  - `alloc_buffers` (`zero/engine_alloc.h`);
-  - `forward` / `run_layer` (`zero/engine.h`);
-  - `ctx_bytes` (`zero/engine_slots.h`).
-
-  Nothing else in those files changes.
-- **Kernels: reuse first.**
-  - **Matrix products:** the model's matrices go through the engine's own calls (`matmul`, `matmul1`) with the weight
-    types it already reads. Those choose the GEMM / GEMV and the per-GPU paths, XMX and H8 among them.
-  - **The other steps:** norms, quantization, attention, DeltaNet and the MoE routing and expert kernels already exist
-    (`gemm.cl`, `decode.cl`, `ops*.cl`, `moe.cl`). Read them before writing a kernel.
-  - **Only steps no existing kernel covers** go in a new part, `zero/kernels/ops_<model>.cl`, added last to
-    `KernelParts::kOps` (`zero/clrt.h`): a part builds together with the parts before it. A new activation or a norm
-    of the model's own are examples.
-- **The f32 reference:** `tools/ref_forward.cpp` must run the model (a `tools/ref_<model>.h`, as `ref_inkling2.h`),
-  because every accuracy check is measured against it. A model without a reference doesn't merge.
-- **The server:** the architecture's chat template and special tokens, if they're new, and its entry in the model
-  catalog (`tools/server_catalog.h`).
-- **`docs/<model>.md`:** the graph's source, what runs, what is refused, and the numbers.
-
-**What not to do:**
-- **No new GEMM or GEMV kernel, and no copy of an existing kernel with small changes.** If an existing kernel needs a
-  variant, add a `-D` build option to it: off by default, and the kernel bit for bit unchanged without it.
-- **No change to another model's results.** Check that a Qwen3.5 dense model, a mixture-of-experts model and Gemma 4
-  give the same logits before and after your branch (`runz --dump-logits`, hashes equal), and put the hashes in the pull
-  request.
-- **No new `ARC_*` switches** unless a measurement needs one. There are over 300, and fewer is the goal.
-- **No code in `zero/xe2/` (discrete cards) or `zero/mgpu/` (several GPUs)** in a model pull request. A model starts on
-  the shared path.
-- **No silent gaps.** Refuse at load, with a clear message, whatever the model doesn't support yet: several
-  conversations at once (`--slots`), drafting, saved sessions, several GPUs. Inkling refuses them the same way.
-- **No Python,** conversion scripts included, and no new library dependencies.
-
-**In order:** correctness first (one conversation, the KL against the reference within the limits in section 2), then
-speed in later pull requests.
-
-**A redesign is planned.** The GEMM layer and the kernel files will be reorganized: one shared GEMM layer, the steps
-around it fused per GPU, and fewer switches. It will change how `engine.h` calls the matrix products and how the
-kernel files are laid out. To keep your rebase small when that lands:
-- keep everything model-specific in your own files, behind the hooks above;
-- call the engine's `matmul` / `matmul1` and helpers, never a GEMM or GEMV kernel directly;
-- rebase on `main` before you open the pull request, and again before it merges. A pull request that conflicts with
-  the redesign is rebased before merging; ask in the pull request if a conflict isn't clear.
+[docs/new-model.md](docs/new-model.md) says what that means in detail, where the code goes (Inkling 2 Mini is the
+example), what not to do, and how each part is tested.
 
 ## Talk
 
