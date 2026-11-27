@@ -71,8 +71,9 @@
   state saved without them restores a position whose attention sees nothing. Its size is therefore the context's,
   not the model's: 34.5 KiB a token on the 27B (int8 KV, 17 layers with a cache, 4 kv heads, 256-wide heads), so
   8K is 867 MB and 256K 9.22 GiB, plus 598 MiB of DeltaNet states that do not grow with the context. The bytes are
-  copied off the GPUs in batches of up to 256 MB and held **once** in host memory before they go to disk. On a split
-  model every shard's part is written, in rank order, with a length in front of each
+  copied off the GPUs in batches of up to 256 MB and written to the disk as they come, so the save holds one batch
+  plus the writer's queue (at most 1 GiB), not the whole state. On a split model every shard's part is written, in
+  rank order, with a length in front of each
   ([multi-gpu.md](multi-gpu.md#the-caches-on-disk-on-a-split-model-2026-11-25)).
 - Compiled kernels are cached in `%USERPROFILE%\.inferzero\kernels` (keyed by source, options and driver), so
   only the first use of a kernel variant pays the driver's compile time.

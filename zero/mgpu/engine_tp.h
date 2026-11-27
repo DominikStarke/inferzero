@@ -1084,35 +1084,44 @@ class TpEngine {
   // (the parts and the sink hold the state once between them, not twice: each part goes out and is let go as soon as
   //  it is there, shard 0's before the others are waited for. At a 256K conversation the state is 9 GiB, and holding
   //  it twice was 18 GiB of RAM -- the save then failed with std::bad_alloc, 2026-11-27)
+  // (the sink must see the parts in rank order, but every shard reads at the same time: shard 0 streams straight into
+  //  the sink (it runs on the calling thread), the others write their part to a file of its own and it is streamed
+  //  into the sink afterwards. So no shard's part is ever held whole in RAM -- one 256 MB piece at a time, as
+  //  segs_out reads them. The temp files are removed as they are copied)
   template <class Out_>
   bool save_parts_run_all(const Out_& out, int keep_from, bool host_snapshot) {
-    std::vector<std::shared_ptr<std::vector<uint8_t>>> part((size_t)n_);
+    std::vector<std::string> tmp((size_t)n_);
     std::vector<std::exception_ptr> errs((size_t)n_);
     auto one = [&, this](int r) {
       Engine& s = *shards_[r];
-      part[(size_t)r] = std::make_shared<std::vector<uint8_t>>();
-      std::shared_ptr<std::vector<uint8_t>> mine = part[(size_t)r];
       TpEngine* const saved = s.tp_engine_;
       s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
       errs[(size_t)r] = nullptr;
       try {
-        // (its exact length up front: a vector that grows by doubling holds the old and the new buffer at once, which
-        //  at a 256K conversation is 8 GiB more than the part itself)
-        mine->reserve(s.saved_size(keep_from));
-        if (!s.save_state([mine](const void* p, size_t k) {
-              mine->insert(mine->end(), (const uint8_t*)p, (const uint8_t*)p + k);
-              return true;
-            }, keep_from, host_snapshot))
-          errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("save_state"));
+        if (r == 0) {  // (this thread: straight into the sink, in rank order)
+          // (the part's length in front, as load_parts_run_all reads it: known before the bytes, from the layout)
+          const int64_t len = (int64_t)s.saved_size(keep_from);
+          if (!out(&len, 8) || !s.save_state(out, keep_from, host_snapshot))
+            errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("save_state"));
+        } else {
+          tmp[(size_t)r] = state_tmp_path(r);
+          FILE* f = fopen(tmp[(size_t)r].c_str(), "wb");
+          if (!f) throw std::runtime_error("cannot write " + tmp[(size_t)r]);
+          bool ok = false;
+          try {
+            ok = s.save_state(f, keep_from, host_snapshot);
+          } catch (...) {
+            fclose(f);
+            std::error_code ec;
+            std::filesystem::remove(tmp[(size_t)r], ec);
+            throw;
+          }
+          if (fclose(f) != 0 || !ok) throw std::runtime_error("save_state to " + tmp[(size_t)r]);
+        }
       } catch (...) {
         errs[(size_t)r] = std::current_exception();
       }
       s.tp_engine_ = saved;
-    };
-    // (each part with its length in front: load_parts_run_all needs to know where one ends and the next starts)
-    auto put = [&out](const std::vector<uint8_t>& pc) {
-      const int64_t len = (int64_t)pc.size();
-      return out(&len, 8) && (len == 0 || out(pc.data(), (size_t)len));
     };
     // (shard 0 runs here (this thread IS its engine), the others on their own threads: run_on would wait for shard 0
     //  in wait_done, which this thread never leaves -- "GPU 1 still has a job running")
@@ -1128,19 +1137,50 @@ class TpEngine {
     }
     if (n_ > 1) start_others([&](int r) { one(r); });
     one(0);
-    bool ok = !errs[0] && part[0] && put(*part[0]);
-    part[0].reset();
+    bool ok = !errs[0];
     if (n_ > 1)
       for (const auto& e : wait_others())
         if (e) ok = false;
     for (int r = 1; r < n_ && ok; ++r) {
-      if (errs[(size_t)r] || !part[(size_t)r]) {
+      if (errs[(size_t)r]) {
         ok = false;
         break;
       }
-      ok = put(*part[(size_t)r]);
-      part[(size_t)r].reset();
+      // (its length in front, as shard 0's: the file's own size, known before it is copied)
+      std::error_code sz;
+      const int64_t len = (int64_t)std::filesystem::file_size(tmp[(size_t)r], sz);
+      ok = !sz && out(&len, 8) && copy_file_into(tmp[(size_t)r], out);
+      std::error_code ec;
+      std::filesystem::remove(tmp[(size_t)r], ec);
     }
+    if (!ok)  // (a failed save leaves no temp files behind)
+      for (int r = 1; r < n_; ++r) {
+        std::error_code ec;
+        std::filesystem::remove(tmp[(size_t)r], ec);
+      }
+    return ok;
+  }
+  // a shard's part in a file of its own, streamed into the sink a piece at a time
+  static std::string state_tmp_path(int r) {
+    std::error_code ec;
+    const std::filesystem::path d = std::filesystem::temp_directory_path(ec);
+    const std::string base = "inferzero-tp" + std::to_string(r) + "-" + std::to_string((uint64_t)time(nullptr)) + "-" +
+                             std::to_string((uint64_t)(uintptr_t)&d);
+    return (ec ? std::filesystem::path(".") : d / base).string();
+  }
+  template <class Out_>
+  static bool copy_file_into(const std::string& path, const Out_& out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::vector<uint8_t> buf((size_t)256 << 20);
+    bool ok = true;
+    for (;;) {
+      const size_t n = fread(buf.data(), 1, buf.size(), f);
+      if (n && !(ok = out(buf.data(), n))) break;
+      if (n < buf.size()) break;  // (EOF, or a read error: ferror below)
+    }
+    ok = ok && !ferror(f);
+    fclose(f);
     return ok;
   }
 

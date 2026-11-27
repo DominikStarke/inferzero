@@ -55,6 +55,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -925,6 +926,78 @@ class Server {
     uint64_t bytes = 0, used = 0;
     std::shared_ptr<std::thread> writer;          // the file is being written in the background
     std::shared_ptr<std::atomic<bool>> failed;    // ... and that write failed
+  };
+  // A background write fed piece by piece: the state is copied off the GPUs in pieces of up to 256 MB and each goes
+  // to the writer as soon as it is read, so the save holds one piece in RAM, not the whole state (a 256K conversation
+  // is 9 GiB). The writer thread opens the file, writes the pieces in order and renames it when the last one is in.
+  // push() blocks while the queue holds `kQueueBytes` (the writer is behind: the disk is the limit, not the RAM).
+  class PieceWriter {
+   public:
+    static constexpr size_t kQueueBytes = (size_t)1 << 30;  // (pieces waiting for the disk)
+    PieceWriter(std::string file, std::shared_ptr<std::atomic<bool>> failed)
+        : file_(std::move(file)), failed_(std::move(failed)) {
+      th_ = std::thread([this] { run(); });
+    }
+    ~PieceWriter() { finish(); }
+    PieceWriter(const PieceWriter&) = delete;
+    PieceWriter& operator=(const PieceWriter&) = delete;
+    // false once the write failed: the caller stops reading the GPUs
+    bool push(std::vector<uint8_t>&& piece) {
+      std::unique_lock<std::mutex> lk(mu_);
+      room_.wait(lk, [&] { return *failed_ || queued_ + piece.size() <= kQueueBytes || done_; });
+      if (*failed_ || done_) return false;
+      queued_ += piece.size();
+      q_.push_back(std::move(piece));
+      have_.notify_one();
+      return true;
+    }
+    // the last piece is in: waits for the file (and its rename); false if the write failed
+    bool finish() {
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (done_) return !*failed_;
+        done_ = true;
+      }
+      have_.notify_one();
+      room_.notify_all();
+      if (th_.joinable()) th_.join();
+      return !*failed_;
+    }
+
+   private:
+    void run() {
+      FILE* f = fopen((file_ + ".tmp").c_str(), "wb");
+      bool w = f != nullptr;
+      for (;;) {
+        std::vector<uint8_t> pc;
+        {
+          std::unique_lock<std::mutex> lk(mu_);
+          have_.wait(lk, [&] { return !q_.empty() || done_; });
+          if (q_.empty()) break;  // (done_ and nothing left)
+          pc = std::move(q_.front());
+          q_.pop_front();
+          queued_ -= pc.size();
+          room_.notify_all();
+        }
+        if (w) w = fwrite(pc.data(), 1, pc.size(), f) == pc.size();
+      }
+      if (f) w = fclose(f) == 0 && w;
+      std::error_code e;
+      if (w) std::filesystem::rename(file_ + ".tmp", file_, e);
+      if (!w || e) {
+        std::filesystem::remove(file_ + ".tmp", e);
+        *failed_ = true;
+        LOG_WRN("session cache: could not write %s (disk full or the folder not writable?)\n", file_.c_str());
+      }
+    }
+    std::string file_;
+    std::shared_ptr<std::atomic<bool>> failed_;
+    std::thread th_;
+    std::mutex mu_;
+    std::condition_variable have_, room_;
+    std::deque<std::vector<uint8_t>> q_;
+    size_t queued_ = 0;
+    bool done_ = false;
   };
   // waits for a background write of s; false if it failed
   static bool written(SavedConv& s) {
