@@ -165,5 +165,11 @@ void plan_summary(const char* when = "freed") const {
           std::filesystem::path(f_.path).filename().string().c_str(),
           tp_on() ? (" shard " + std::to_string(opt.tp_rank)).c_str() : "", plan_seen_.size(), plan_kernels_.size(),
           fused.empty() ? "-" : fused.c_str());
+  // (the memory the engine counts (gpu_bytes: what --ctx auto plans with) against the device memory allocated now
+  //  (zrt's own sum of zeMemAllocDevice, every buffer, the ones made at the first prompt too): a gap is a buffer the
+  //  memory plan does not count. Per GPU: with ARC_TP_SIM every shard is on GPU 0's sum; docs/gemm-inventory.md F)
+  LOG_INF("gemm-plan memory (%s): counted by the engine %.3f GiB, device memory allocated now %.3f GiB%s\n", when,
+          gpu_bytes / 1073741824.0, zrt::D().device_bytes / 1073741824.0,
+          tp_on() ? " (this GPU's, every shard on it)" : "");
 }
  private:  // (as the class body around this part's include, zero/engine.h)
