@@ -7,7 +7,7 @@
 <meta name="description" content="Prompt processing and generation speed of inferzero on every setup tested: Core Ultra laptops and mini PCs, Arc A-series and B-series cards, Data Center GPU Max, several GPUs, model by model.">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="inferzero: free, open-source AI on your Intel PC">
-<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel Core Ultra graphics and Arc cards. Free, open source, no cloud.">
+<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek-V4.1-Flash on Intel Core Ultra graphics and Arc cards. Free, open source, no cloud.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://rizagp.github.io/inferzero/banner.png">
 <meta property="og:image:width" content="2560">
@@ -347,7 +347,7 @@
         <tr><td>DeepSeek-V4.1-Flash UD-Q8_K_XL</td><td class="n">61 / 10.8</td><td class="n">47 / 12.4</td><td class="n">55 / 15.6</td><td class="n">66 / 9.8</td></tr>
       </tbody>
     </table></div>
-    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4#issuecomment-7077057933">#4</a>, <code>--bench-pp 4096 --n 128 --gpus N</code>, Windows (the sums through host memory). The slowdown of the releases after 2026.11.14.05 is fixed: the 27B over 4 cards takes 17.4 ms a token again (48.8 ms in the slow releases, 18.4 on 2026-11-07). Generation gains 1.9-2.3x on 4 cards for the dense models; the prompt barely gains, since the sums after each layer take nearly all of its time (being worked on). DeepSeek on several cards is slower than on one in places, probably one card's experts missing its cache more than the others' (being looked into). Gemma does not split yet.</p>
+    <p class="note">manoreken2, <a href="https://github.com/rizagp/inferzero/issues/4#issuecomment-7077057933">#4</a>, <code>--bench-pp 4096 --n 128 --gpus N</code>, Windows (the sums through host memory). The slowdown of the releases after 2026.11.14.05 is fixed: the 27B over 4 cards takes 17.4 ms a token again (48.8 ms in the slow releases, 18.4 on 2026-11-07). Generation gains 1.9-2.3x on 4 cards for the dense models; the prompt barely gains, since the sums after each layer take nearly all of its time (being worked on). DeepSeek-V4.1-Flash on several cards is slower than on one in places, probably one card's experts missing its cache more than the others' (being looked into). Gemma does not split yet.</p>
     <h3 class="sub">Release 2026.11.21.01 (one of the slow releases), every model over 1-4 cards (prompt 4K / generation, tok/s)</h3>
     <div class="tbl"><table>
       <thead><tr><th>Model</th><th class="n">1 card</th><th class="n">2 cards</th><th class="n">3 cards</th><th class="n">4 cards</th></tr></thead>

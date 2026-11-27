@@ -7,7 +7,7 @@
 <meta name="description" content="How to split one model over several Intel Arc GPUs with inferzero, when it is faster, and how to turn on direct GPU-to-GPU copies (P2PDMA) on Linux for the best speed.">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="inferzero: free, open-source AI on your Intel PC">
-<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek models on Intel Core Ultra graphics and Arc cards. Free, open source, no cloud.">
+<meta property="og:description" content="Run Qwen, Gemma 4 and DeepSeek-V4.1-Flash on Intel Core Ultra graphics and Arc cards. Free, open source, no cloud.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://rizagp.github.io/inferzero/banner.png">
 <meta property="og:image:width" content="2560">
@@ -78,7 +78,7 @@
       <li><b>Linux launcher:</b> <code>./zero-launcher.sh --gpus 2</code>.</li>
       <li><b>Server or benchmark</b> (from the package folder; <code>bin\</code> on Windows): <code>./bin/serverz -m &lt;model.gguf&gt; --gpus 2</code>, or <code>./bin/runz &lt;model.gguf&gt; --gpus 2 --bench-pp 4096 --n 128</code>.</li>
     </ul>
-    <p>Qwen models (dense, the 35B-A3B, Flash Next) and DeepSeek-V4.1 split; a model that cannot be split loads on one GPU. Gemma 4 is not split yet, and drafting (MTP) is off on a split model. Several conversations at once (<code>--slots</code>) work split too.</p>
+    <p>Qwen models (dense, the 35B-A3B, Flash Next) and DeepSeek-V4.1-Flash split; a model that cannot be split loads on one GPU. Gemma 4 is not split yet, and drafting (MTP) is off on a split model. Several conversations at once (<code>--slots</code>) work split too.</p>
   </div>
 </section>
 
