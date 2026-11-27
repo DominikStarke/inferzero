@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-27 (unreleased): the launchers tell Iris Xe / UHD from Meteor Lake; options for H8 and the expert file cache
+
+- **The launchers tell the iGPUs apart by their PCI device ID**, as the engine does. Iris Xe and UHD Graphics (Tiger /
+  Alder / Raptor Lake) were taken for Meteor Lake on Windows, with its options and its NPU setting on PCs that have no
+  NPU. On Linux they had no kind, and an Arrow Lake-S desktop was taken for the Arc 140T. Now 0x7Dxx is Meteor Lake /
+  Arrow Lake-S (the 140T's 0x7D51 / 0x7DD1 excepted), and any other Intel iGPU is a new kind, "Iris Xe / UHD".
+- **The options pages list "Prompts without H8"** (`ARC_H8=0`: faster short prompts on models decoded per prompt, such
+  as the 9B) and **"Expert file through the OS file cache"** (`ARC_XBUF=1`). More precise prompt reading now lists
+  Meteor Lake / Arrow Lake-S, where H8 runs since 2026.11.26.03.
+
 ## 2026-11-27 (unreleased): the expert file through the OS file cache when it is needed
 
 - **`ARC_XBUF` is decided at load when it is not set.** The OS file cache is used when the GPU's expert cache and the

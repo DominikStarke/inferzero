@@ -26,7 +26,7 @@ function Read-OptionCatalog([string]$path) {
 $script:SwModelWords = [ordered]@{ dense = "dense models"; moe = "MoE models"; moe_std = "standard MoE models"; qsa = "QSA models"; flashnext = "Flash Next"
   mtp = "models with MTP"; h8 = "dense Qwen3.5 / 3.8 models" }
 $script:SwPcWords = [ordered]@{ "b-series" = "Arc B-series"; "alchemist" = "Arc A-series"; "igpu-140t" = "Arc 140T"
-  "igpu-xe2" = "Lunar Lake / Panther Lake"; "igpu-xe-lpg" = "Meteor Lake" }
+  "igpu-xe2" = "Lunar Lake / Panther Lake"; "igpu-xe-lpg" = "Meteor Lake / Arrow Lake-S"; "igpu-xe-lp" = "Iris Xe / UHD" }
 
 function Split-SwList([string]$s) { @("$s" -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 function Join-SwOr([string[]]$a) {

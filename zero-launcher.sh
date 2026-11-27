@@ -404,7 +404,7 @@ opt_menu() {  # the menu's options screen: a number to change, Enter to go back
 # catalog apply, the one-line reason when one does not, and each one's tip. The same rules as the Windows launcher's
 # scripts/launcher-switches.ps1; tests/test_zero_launcher.sh checks both against tests/launcher_switch_cases.tsv.
 # The state: SW_WORDS (the model's words: dense moe moe_std qsa flashnext mtp h8), SW_PC (this PC's: b-series alchemist
-# igpu-140t igpu-xe2 igpu-xe-lpg multi-gpu; empty: not known, nothing greyed for the PC), SW_GPUS, SW_DRAFTING (1 when
+# igpu-140t igpu-xe2 igpu-xe-lpg igpu-xe-lp multi-gpu; empty: not known, nothing greyed for the PC), SW_GPUS, SW_DRAFTING (1 when
 # Drafting is on) and the choices in OPTC
 declare -A CT_title=() CT_applies=() CT_relates=() CT_default=() CT_on=() CT_off=() CT_variant=() CT_tip=() CT_output=() CT_cost=()
 CT_IDS=()
@@ -451,7 +451,7 @@ sw_or() {  # words joined "a, b or c"
 sw_mword() { case "$1" in dense) printf 'dense models';; moe) printf 'MoE models';; moe_std) printf 'standard MoE models';; qsa) printf 'QSA models';; flashnext) printf 'Flash Next';;
   mtp) printf 'models with MTP';; h8) printf 'dense Qwen3.5 / 3.8 models';; esac; }
 sw_pword() { case "$1" in b-series) printf 'Arc B-series';; alchemist) printf 'Arc A-series';; igpu-140t) printf 'Arc 140T';;
-  igpu-xe2) printf 'Lunar Lake / Panther Lake';; igpu-xe-lpg) printf 'Meteor Lake';; esac; }
+  igpu-xe2) printf 'Lunar Lake / Panther Lake';; igpu-xe-lpg) printf 'Meteor Lake / Arrow Lake-S';; igpu-xe-lp) printf 'Iris Xe / UHD';; esac; }
 sw_title() { case "$1" in mtp) printf 'Drafting';; gpus2) printf '2 or more GPUs';; *) printf '%s' "${CT_title[$1]:-$1}";; esac; }
 sw_value() { [[ "${CT_on[$1]}" == "<"* ]]; }  # (a value option, such as budget: not a switch)
 sw_default() {  # on / off, or auto when the engine picks it by the PC or the model
@@ -492,7 +492,7 @@ sw_names_v() {  # KIND WORD...: the words' names joined "a, b or c" in SW_NAMES,
         mtp) nm='models with MTP';; h8) nm='dense Qwen3.5 / 3.8 models';; *) nm=$w;; esac
     else
       case "$w" in b-series) nm='Arc B-series';; alchemist) nm='Arc A-series';; igpu-140t) nm='Arc 140T';;
-        igpu-xe2) nm='Lunar Lake / Panther Lake';; igpu-xe-lpg) nm='Meteor Lake';; *) nm=$w;; esac
+        igpu-xe2) nm='Lunar Lake / Panther Lake';; igpu-xe-lpg) nm='Meteor Lake / Arrow Lake-S';; igpu-xe-lp) nm='Iris Xe / UHD';; *) nm=$w;; esac
     fi
     if [ $i -eq 1 ]; then out=$nm; elif [ $i -eq $n ]; then out+=" or $nm"; else out+=", $nm"; fi
   done
@@ -504,7 +504,7 @@ sw_reason_v() {  # ID: sw_reason's reason in SW_WHY (empty: it applies) and its 
   SW_KIND=""; SW_WHY=""
   sw_list_a ap "${CT_applies[$id]}"
   for w in "${ap[@]}"; do
-    case "$w" in dense|moe|moe_std|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg) pw+=("$w");; multi-gpu) multi=1;; esac
+    case "$w" in dense|moe|moe_std|qsa|flashnext|mtp|h8) mw+=("$w");; b-series|alchemist|igpu-140t|igpu-xe2|igpu-xe-lpg|igpu-xe-lp) pw+=("$w");; multi-gpu) multi=1;; esac
   done
   if [ ${#mw[@]} -gt 0 ]; then
     any=0; for w in "${mw[@]}"; do sw_has "$SW_WORDS" "$w" && any=1; done
@@ -553,16 +553,22 @@ sw_tipline() {  # ID: what it needs, goes with or excludes, the output, the cost
   printf '%s' "${p[*]}"
 }
 sw_pc_kinds() {  # this PC's words, from the PCI names of its Intel GPUs (lspci); nothing when lspci is missing
-  local names l k="" discrete=0
-  names=$(lspci 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel) || true
+  local names l k="" discrete=0 id
+  # (lspci -nn: the PCI device IDs too, 2026-11-27. The iGPUs by ID as the engine's zrt::xe_lpg: 0x7D51 / 0x7DD1 the
+  #  Arc 140T (Arrow Lake-H, 8-lane XMX), any other 0x7Dxx Xe-LPG (Meteor Lake, Arrow Lake-S), any other Intel iGPU
+  #  Xe-LP (Iris Xe, UHD). By name before: "Arrow Lake" took Arrow Lake-S for the 140T, and Xe-LP had no kind)
+  names=$(lspci -nn 2>/dev/null | grep -Ei 'vga|display|3d' | grep -i intel) || true
   while IFS= read -r l; do
     [ -n "$l" ] || continue
+    id=""; [[ "$l" =~ 8086:([0-9a-fA-F]{4}) ]] && id=$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-F' 'a-f')
     if [[ "$l" =~ B3[0-9]0|140V|130V|Lunar|Panther ]]; then k+=" igpu-xe2"; [[ "$l" =~ B3[0-9]0|Panther ]] && k+=" igpu-ptl"
-    elif [[ "$l" =~ 140T|Arrow\ Lake ]]; then k+=" igpu-140t"
+    elif [[ "$l" =~ 140T ]] || [ "$id" = 7d51 ] || [ "$id" = 7dd1 ]; then k+=" igpu-140t"
     elif [[ "$l" =~ DG2|Alchemist|A[0-9]{3}[^0-9] ]]; then k+=" alchemist"; discrete=$((discrete + 1))
       [[ "$l" =~ A770 ]] && k+=" alchemist-a770"  # (best-setups.tsv's need a770: the only Alchemist with 16 GB, #99)
     elif [[ "$l" =~ Battlemage|BMG|B[0-9]{2,3}[^0-9] ]]; then k+=" b-series"; discrete=$((discrete + 1))
-    elif [[ "$l" =~ Meteor|Arc ]]; then k+=" igpu-xe-lpg"; fi
+    elif [[ "$l" =~ ^00:02\.0 ]]; then  # (an Intel iGPU is always 00:02.0: a Max / Flex card or another device unmatched
+      [[ "$id" == 7d* ]] && k+=" igpu-xe-lpg" || k+=" igpu-xe-lp"  #  above gets no kind, as before; the Researcher's review)
+    fi
   done <<< "$names"
   [ $discrete -gt 1 ] && k+=" multi-gpu"
   # (multi-same: those cards all of one PCI device ID, the only ones tensor parallel takes together)
