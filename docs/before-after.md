@@ -80,6 +80,21 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, `ARC_XBUF=1` (opt-in): the expert file through the OS file cache** (`src/platform.h` AsyncFile::open's
+  `buffered`: no FILE_FLAG_NO_BUFFERING / O_DIRECT, no O_DIRECT probe; `zero/expert_store.h` reads it once at open, one
+  start line). manoreken2's PR #100, merged with our own text.
+  - **manoreken2:** DeepSeek-V4.1-Flash-1017 UD-Q8_K_XL, 4 x Pro B60, 1 TB RAM, Windows, A B B A
+    (20261127b_runz_abba.txt): pp8192 (run 2) 64.0 / 63.2 -> 95.8 / 96.2 tok/s, TG4096 16.3 / 16.5 -> 15.8 / 15.9. The
+    NVMe drive stays mostly idle with the switch, where without it it reads the same file over and over.
+  - **hansong80:** 2 x A770 (16 GB each), 96 GB RAM, Qwen3.6-35B-A3B UD-IQ4_XS (14.7 GiB of experts, 81 % in the cards'
+    caches, the rest in the RAM tier), `--bench-pp 4096 --n 64`, A B B A: pp 2,762.0 / 2,767.5 / 2,762.9 / 2,761.0;
+    tg64 36.92 (the first, cold run: 1,309 expert misses) / 45.56 / 45.86 / 45.62. No gain where the experts already fit.
+  - **The laptop:** the 35B UD-IQ4_XS (experts streamed from the SSD), 480 tokens of USAGE.md + 32 generated. Logits the
+    same bit for bit on main, the merge, and the merge with `ARC_XBUF=1` twice (F354268F...); tg32 20.38 / 20.96 /
+    21.16 / 21.02 tok/s.
+  - Opt-in: a tier record is also held in the file cache (RAM counted twice), and generation was ~3 % lower on the
+    B60 box. Linux (page cache, O_DIRECT off) not measured.
+
 - **2026-11-27, `ARC_GV_SMALL=1` / `2` (opt-in, a test): small Xe-LPG iGPUs' GEMV choices** (`zero/engine.h`
   gemv1_rows). Only on an iGPU without XMX that is Xe-LPG with at most 640 hardware threads (`ARC_GV_SMALL_ANY=1`: any
   iGPU, for testing).

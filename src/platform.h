@@ -201,23 +201,26 @@ class AsyncFile {
   AsyncFile& operator=(const AsyncFile&) = delete;
   ~AsyncFile() { close(); }
   // 0: open with `slots` slots; 1: the file cannot be opened; 2: the slots' events cannot be made
-  int open(const char* path, int slots) {
+  // buffered: reads go through the OS file cache (no FILE_FLAG_NO_BUFFERING, no O_DIRECT), so records read once may
+  // be found in RAM later: ARC_XBUF in zero/expert_store.h, for machines whose RAM can hold the whole file. The
+  // reads stay aligned, they simply lose the requirement. Default: unbuffered, the cache never fills.
+  int open(const char* path, int slots, bool buffered = false) {
     close();
     if (slots < 1 || slots > kMaxSlots) return 2;
     n_ = slots;
 #ifdef _WIN32
-    h_ = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
-                     nullptr);
+    h_ = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                     buffered ? FILE_FLAG_OVERLAPPED : FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
     if (h_ == INVALID_HANDLE_VALUE) return 1;
     for (int s = 0; s < n_; ++s)
       if (!(ev_[s] = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return 2;
 #else
-    fd_ = ::open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
-    direct_ = fd_ >= 0;
+    fd_ = buffered ? ::open(path, O_RDONLY | O_CLOEXEC) : ::open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
+    direct_ = fd_ >= 0 && !buffered;
     if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_RDONLY | O_CLOEXEC);  // (a filesystem without O_DIRECT: cached)
     if (fd_ < 0) return 1;
-    {  // (a filesystem that takes O_DIRECT at open but refuses its reads, EINVAL: a block larger than 4 KB, some FUSE
-       //  and network ones: tried once here, on one aligned block, and opened cached then)
+    if (!buffered) {  // (a filesystem that takes O_DIRECT at open but refuses its reads, EINVAL: a block larger than
+                      //  4 KB, some FUSE and network ones: tried once here, on one aligned block, and opened cached)
       void* probe = nullptr;
       if (posix_memalign(&probe, 4096, 4096) == 0) {
         const ssize_t r = pread(fd_, probe, 4096, 0);

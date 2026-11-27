@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-27 (unreleased): `ARC_XBUF=1` reads the expert file through the OS file cache (manoreken2, PR #100)
+
+- **`ARC_XBUF=1`** (opt-in): a mixture-of-experts model's expert file is read through the operating system's file cache
+  instead of unbuffered. On a machine whose RAM can hold the whole file, an expert missed by the GPU's cache and the
+  RAM tier then comes from RAM instead of the SSD, and the SSD stays mostly idle. DeepSeek-V4.1-Flash on four Pro B60s
+  with 1 TB of RAM (Windows, manoreken2): an 8K prompt 63-64 -> 96 tok/s, generation 16.3-16.5 -> 15.8-15.9.
+  - **Where the experts already fit** the GPU cache and the RAM tier, it gains nothing (hansong80's two A770s, the
+    Qwen3.6 35B-A3B: the same speed once warm).
+  - **Costs:** a record in the RAM tier is then also held in the file cache, so it counts RAM twice.
+  - **Logits:** unchanged (the same bytes are read).
+  - **Linux** is not measured yet.
+
 ## 2026-11-27 (unreleased): `ARC_GV_SMALL`, a generation test for small Xe-LPG iGPUs
 
 - **`ARC_GV_SMALL=1` / `2`** (off by default), for Xe-LPG iGPUs with at most 640 hardware threads, such as a 64-EU
