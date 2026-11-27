@@ -662,7 +662,7 @@ struct ExpertStore {
  private:
   static constexpr int kQD = 16;
   Slot slots_[2 * kQD] = {};
-  plat::AsyncFile af_;  // (the expert file, unbuffered; slots_[i] reads on its slot i)
+  plat::AsyncFile af_;  // (the expert file, unbuffered or, ARC_XBUF, through the OS file cache; slots_[i] reads on its slot i)
   bool buffered_ = false;  // (af_ opened through the OS file cache: ARC_XBUF, or the engine's rule)
 
   struct Header {

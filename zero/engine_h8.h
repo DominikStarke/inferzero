@@ -309,7 +309,8 @@
   // (on by default in the Arc 140T preset since 2026-11-17: a 140T's 27B 4K prompt 368.3 -> 382.1 tok/s, logits
   //  identical (PascalSoftwares, issue #5, release .07). On discrete cards since 2026-11-18: a Pro B70's 27B 4K prompt
   //  2,890 -> 2,972 tok/s, h8_act 88.4 -> 60.3 ms and the norm 69.7 -> 60.0, hashes equal (joshdev-de, issue #27,
-  //  7368768); the B60's no gain of 11-14 was before the 128-register default. iGPUs off; =0 off, =1 on)
+  //  7368768); the B60's no gain of 11-14 was before the 128-register default. Other iGPUs off, Xe-LPG as
+  //  below; =0 off, =1 on)
   // (Xe-LPG with H8 (h8_dp4a_, zero/xe2/engine_xe2.h), 2026-11-26: on for rotation blocks of up to 512 (hb, from the
   //  norm's row length), the form that does not spill there. The laptop's 4B (2,560-wide rows: HB 512), 4K prompt,
   //  two alternated rounds: h8_act + the norm 297-305 -> 244-249 ms, tok/s within noise (883-914 -> 887-919), logits

@@ -80,6 +80,37 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, fixes from the Researcher's review of the day's changes** (`zero/engine.h`, `engine_load*.h`,
+  `engine_stream.h`, `engine_drafters.h`, `engine_inkling.h`, `scripts/pc-kinds.ps1`).
+  - **The changes:**
+    - `GpuWeight::host` is set at every `upload_padded`, not only in `make_weight`, and views take their stack's flag.
+      Missed before: the DeltaNet qz stack and its views, Gemma's weights and output head, the Qwen output head, the
+      drafter heads, Inkling's stacks, and the MoE router + shared gate / up stack.
+    - `ARC_HOST_GEMV_MB`'s default is decided per GPU at each call. It was decided once a process, from the first GPU.
+    - `ARC_GEMV_GU` leaves host weights to the split path.
+    - The automatic `ARC_XBUF` rule runs on discrete cards only.
+    - `ARC_GV_SMALL=2` respects `ARC_GV_K4=0`.
+    - The Windows launcher maps PCI IDs 0x7D51 / 0x7DD1 to the 140T.
+    - The host-memory start line says how the one-token GEMVs run.
+  - **Checks on the laptop** (iGPU, so the piece size defaults to 0 there), logits after 480 prompt tokens + 16
+    generated, against main (254bee8), all bit-identical:
+    - 4B FD80019BB2B03363;
+    - 9B AC0566D93FEBB567;
+    - 35B 3C82741014675164 on one GPU, and BC64319553885402 on two shards (`ARC_TP_SIM=1 --gpus 2`);
+    - 4B with `ARC_HOST_WEIGHTS_GB=1.2`: FD80019BB2B03363, also with `ARC_HOST_GEMV_MB=1`.
+  - **What the flag fix changes (4B, 1.2 GiB forced into host memory, `ARC_HOST_GEMV_MB=1`, `--prof-gen`, 32 tokens):**
+    - The output head now runs in pieces: 32 → 16,448 launches, 273.5 → 461.8 ms. Every other kernel's launch count is
+      unchanged. Before this fix the head escaped the split, as one long launch over host memory: the case #99 guards
+      against.
+    - Token step: 67.1 → 74.4 ms (two runs: 74.4, 74.5), from those launches.
+    - The DeltaNet qz stack (the 4B's UD file mixes types and has none; the 27B GSQ IQ3_S has it), 3 GiB forced
+      into host memory, `ARC_HOST_GEMV_MB=1`, 16 tokens: `gemm_qkvz` 208 → 2,560 launches (135.0 → 187.3 ms),
+      `lm_head` 16 → 10,928; token step 299.4 → 321.6 ms. Logits after 480 tokens + 8 equal main's
+      (E809E8C622634FD7).
+    - Not a cost on iGPUs, where the default is one launch. A discrete card's default (4 MB) gives about a quarter as
+      many pieces; its speed is measured on users' cards.
+  - Memory: unchanged.
+
 - **2026-11-27, a hand-set expert RAM tier capped to the safe room; ignored on iGPUs** (`zero/engine_stream.h`; the
   user: "ARC_XRAM_GB as big as possible when ARC_XBUF is active").
   - **The change:**

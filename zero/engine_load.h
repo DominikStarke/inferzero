@@ -123,6 +123,10 @@
     }
     memcpy(pr, o, 224);
   }
+  // (the last upload_padded put its rows in host memory, plan_tight: each caller copies it into its GpuWeight::host,
+  //  so every matrix in host memory, stacks and heads included, gets matmul1's split; #99, the Researcher's review:
+  //  the DeltaNet qkv + z stack qz, the first matrix of layer 0, never set it before)
+  bool up_host_ = false;
   cl_mem upload_padded(uint32_t type, const uint8_t* data, size_t nbytes, bool tile_ok = false, bool* tiled = nullptr) {
     const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type), nsb = nbytes / bb;
     const bool tile = tile_ok && type == GGML_IQ3_S && bp == 112 && nsb % 2 == 0 && iq3t_env();
@@ -135,6 +139,7 @@
       host_left_ -= total;
       host_bytes_ += total;
     }
+    up_host_ = host;  // (read by every caller that fills a GpuWeight: its host flag, matmul1's split for #99)
     if (opt.dry) {
       if (!host) gpu_bytes += total;
       return nullptr;
@@ -270,11 +275,8 @@
     w.type = type;
     w.N = N;
     w.K = K;
-    {
-      const size_t hb0 = host_bytes_;  // (upload_padded puts the first matrices in host memory, plan_tight: which this was)
-      w.raw = view ? *view : upload_padded(type, data, nbytes, K % 512 == 0, &w.iq3t);  // (a view: its stack's flag, set there)
-      w.host = !view && host_bytes_ != hb0;
-    }
+    w.raw = view ? *view : upload_padded(type, data, nbytes, K % 512 == 0, &w.iq3t);  // (a view: its stack's flag, set there)
+    w.host = !view && up_host_;  // (a view: its stack's, set by the caller as iq3t is)
     // Q8_0 (per-32 float scales) is fastest in its own repacked kernel; everything else goes through W8. The
     // repacked copy is kept only with resident weights of a dense model; otherwise (MoE: ~1.5 GB of Q8_0 matrices
     // stored twice, or just-in-time models) prompt chunks decode the raw rows into the same form (decode_w8, PER32).
@@ -429,6 +431,7 @@
     L.qz.K = E;
     L.qz.role = kRoles - 1;
     L.qz.raw = upload_padded(type, cat.data(), cat.size(), E % 512 == 0, &L.qz.iq3t);
+    L.qz.host = up_host_;
     has_qz_ = true;
     const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
     auto view = [&](int row0, int N) -> cl_mem {
@@ -445,9 +448,11 @@
     L.qkv = make_weight(type, tq.data, tq.nbytes, C, E, weight_role(p + "attn_qkv.weight"), &vq);
     L.z = make_weight(type, tz.data, tz.nbytes, Di, E, weight_role(p + "attn_gate.weight"), &vz);
     L.qkv.iq3t = L.z.iq3t = L.qz.iq3t;  // (views of the stack: its layout; rows start at whole pairs)
+    L.qkv.host = L.z.host = L.qz.host;  // (and its memory)
     if (L.qz_ab) {
       const cl_mem va = view(C + Di, nab);
       L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, weight_role(p + "ssm_alpha.weight"), &va);  // (nab % 64 == 0: not padded)
+      L.ab.host = L.qz.host;  // (a view of the stack: its memory)
     } else {
       L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), tp_rows(nab), E, weight_role(p + "ssm_alpha.weight"));
     }

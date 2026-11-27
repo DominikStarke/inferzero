@@ -33,7 +33,10 @@ function Get-PcKinds {
       #  'Graphics' and were taken for Meteor Lake, with its options and best-setups.tsv's NPU row on PCs without one;
       #  Arrow Lake-S says only "Intel(R) Graphics". 0x7Dxx: Xe-LPG, as the engine's zrt::xe_lpg)
       $dev = if ("$($vc.PNPDeviceID)" -match 'DEV_([0-9A-Fa-f]{4})') { $Matches[1].ToUpper() } else { "" }
-      if ($dev -match '^7D') { $k += "igpu-xe-lpg" } else { $k += "igpu-xe-lp" }
+      # (0x7D51 / 0x7DD1: Arrow Lake-H's 140T, often named only "Intel(R) Arc(TM) Graphics": its own kind, as the
+      #  engine's 140T preset; the Researcher's review, 2026-11-27)
+      if ($dev -eq '7D51' -or $dev -eq '7DD1') { $k += "igpu-140t" }
+      elseif ($dev -match '^7D') { $k += "igpu-xe-lpg" } else { $k += "igpu-xe-lp" }
     }
   }
   if ($discrete -gt 1) { $k += "multi-gpu" }
