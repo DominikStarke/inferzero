@@ -19,6 +19,7 @@ static bool plan_on() {
 const GpuWeight* plan_w_ = nullptr;
 const std::source_location* plan_from_ = nullptr;
 bool plan_fwd_ = false;  // (the constructor has finished: its launches were the load's, "M load")
+const zrt::Dev* plan_dev_ = nullptr;  // (this engine's GPU, taken in the constructor: the memory line's sum)
 struct PlanScope {
   Engine* e;
   const GpuWeight* prev;
@@ -167,9 +168,12 @@ void plan_summary(const char* when = "freed") const {
           fused.empty() ? "-" : fused.c_str());
   // (the memory the engine counts (gpu_bytes: what --ctx auto plans with) against the device memory allocated now
   //  (zrt's own sum of zeMemAllocDevice, every buffer, the ones made at the first prompt too): a gap is a buffer the
-  //  memory plan does not count. Per GPU: with ARC_TP_SIM every shard is on GPU 0's sum; docs/gemm-inventory.md F)
-  LOG_INF("gemm-plan memory (%s): counted by the engine %.3f GiB, device memory allocated now %.3f GiB%s\n", when,
-          gpu_bytes / 1073741824.0, zrt::D().device_bytes / 1073741824.0,
-          tp_on() ? " (this GPU's, every shard on it)" : "");
+  //  memory plan does not count. The sum of this engine's own GPU (plan_dev_, taken at its construction), not of the
+  //  calling thread's: the server calls this on its thread, where a layer split's stage on GPU 1 is not zrt::cur.
+  //  Several engines on one GPU (ARC_TP_SIM's shards, the stages under it) share its sum; docs/gemm-inventory.md F)
+  const zrt::Dev& d = plan_dev_ ? *plan_dev_ : zrt::D();
+  LOG_INF("gemm-plan memory (%s): counted by the engine %.3f GiB, device memory allocated now %.3f GiB on GPU %d%s\n",
+          when, gpu_bytes / 1073741824.0, d.device_bytes / 1073741824.0, d.index,
+          tp_on() || opt.pp_size > 1 ? " (that GPU's sum: every engine on it)" : "");
 }
  private:  // (as the class body around this part's include, zero/engine.h)

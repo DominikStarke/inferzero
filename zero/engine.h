@@ -317,6 +317,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   double load_ms = 0;
 
   Engine(const std::string& path, const EngineOptions& o) : opt(o), f_(path), path_(path) {
+    plan_dev_ = &zrt::D();  // (this engine's GPU: the caller set zrt::cur to it; ARC_GEMM_PLAN's memory line)
     // (a constructor that throws runs no destructor: what init() made on the GPU so far is freed here, or a failed
     //  model switch in the server would keep it until the process ends)
     try {
