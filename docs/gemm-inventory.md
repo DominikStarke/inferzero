@@ -66,8 +66,212 @@ The code side is read from the choice functions' conditions (matmul1, gemv_gu, g
 h8_igpu_rows_ok, layer_moe's branch order, p140_take, the xe2 defaults per kind), not their comments. The history side
 comes from CHANGELOG.md, docs/before-after.md, docs/audit-*.md and BUGS.md. The two are merged with each row's source.
 
-| Kind | What it protects | Where (file:line) | Added by (commit) | Proof (test or hash) | Source |
-|---|---|---|---|---|---|
+### The code side (the Developer, 2026-11-28, read at main 6fb85d7)
+
+Read from the code's conditions, not the comments. The findings marked "checked" were re-read by hand, and the Researcher re-read findings 1 and 4. "golden" is tests\gemm_golden.ps1 and its kind; "run_tests" is tests\run_tests.ps1. "(no comment)" means no comment says why. A row whose test is "none" is unproven: Phase 1 must not move it without adding one, or keep it unchanged and prove it by the golden hashes.
+
+#### Findings (not changed: Phase 0 is inventory; each goes to a fix after Phase 0 or with its migration turn)
+
+1. **XMX verdict cache per device only (checked).** engine.h:489-494 `xmx_by_dev[cl_.device_id]`; the speed check is skipped when `p140_` is on (engine_setup.h:857). In one server process on an Arc 140T, the first model loaded decides XMX for every later model on that GPU, its speed check included or not.
+2. **"512-byte aligned" views are a comment only.** engine_stream.h:563 says so (rgu_rows rounded to 128 rows, engine_sessions.h:858); nothing checks it, and zrt's clCreateSubBuffer checks bounds only (clrt.h:1044-1052). The qz and Inkling stack views have no alignment rule.
+3. **Staged W8 written without a size check.** matmul1 / h8_prepare decode into `stage_q_[role]` relying on `stage_need_*` / `ensure_stage` having covered every weight (engine.h:1722-1726; engine_alloc.h:207-209; engine_sessions.h:862-870).
+4. **The spill warning is said once per name + options, not per GPU (checked).** clrt.h:1762-1765: the same kernel spilling on a second GPU kind of a layer split is not reported again.
+5. **CL_CHECK exits with _Exit(1) (checked)**, no destructors, no marker (clrt.h:89-97): a CL error is neither a hang (3) nor a lost device (4).
+6. engine.h:1729 (`stage_packed_` reset) is mis-indented under the `if` above it (cosmetic; the logic is what the braces say).
+
+#### B.1 zero/engine.h
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| guard | head softcap epilogue only for the head, softcap > 0, not `q2_nocap_` | 1309 | run_tests 4c |
+| invariant | two-pass: the head's softcap applies to the sum of both passes | 1413-1414 | run_tests 4c |
+| guard | fused two-pass GEMV (`q2_fuse_`) only at T <= 4 | 1416 | golden short / mtp |
+| guard | no second pass when `!q2mm_ \|\| q2_off_`; the drafter forces one pass (engine_drafters.h:71-72) | 1420 | run_tests 4c |
+| guard | two-pass with a fused epilogue (acc > 1) throws | 1421 | none |
+| invariant | second pass reads aq_/asc_/absum_ at q2 offsets, skipped when fused (buffers x2: engine_alloc.h:10, 42, 44) | 1422-1430, 1395-1401 | run_tests 4c |
+| guard | two-pass head over > 8 rows throws | 1434 | none |
+| invariant | `q2mm_` decided once (q2_init): Gemma but E2B/E4B, Flash Next with ARC_FN_Q2, Qwen3 unless ARC_Q3_Q2=0 | 1387-1392 | run_tests 4c |
+| invariant | `gemv_v_ok` type list (IQ3_S excluded: "measured" only) | 1320-1321 | none |
+| guard | ARC_GVROWS outside 1-8 ignored; forced count only if <= N | 1330-1331, 1338 | none |
+| invariant | Xe-HPC: 1 row unless ARC_GVROWS | 1335 | none |
+| invariant | gemv_v rows: N > 4096 or K >= 8192 -> 4, but IQ4_XS / Q6_K / Q4_0 | 1343-1344 | golden base |
+| guard | tiled IQ3_S never on gemv_v | 1451 | none |
+| guard | K4 rule: !q2mm_, not the head; default Q5_K, N >= 8192, N >= 2K, iGPU, no XMX | 1461-1464 | none |
+| guard | ARC_GV_SMALL: iGPU, no XMX, Xe-LPG <= 640 threads (or SMALL_ANY) | 1474-1476 | none |
+| guard | GV_SMALL=2 widening needs gv_k4 != 0, !q2mm_, not the head | 1477-1478 | none |
+| invariant | Alchemist (sg8 + XMX + discrete + unbatched): vk types 1 row | 1488 | none |
+| guard | ARC_GEMV_ROWS / gv_small overrides only for !vk and N <= 65536 | 1492-1493 | none |
+| invariant | default rows 1 / 2 / 4 / 2 by N, then xe2_gemv_rows | 1495 | golden base / short |
+| invariant | host_gemv_mb: 0 on an iGPU, 4 MB discrete, per call | 1499-1502 | golden host |
+| guard | gemv_gu: env, T == 1, !q2mm_, both raw, same type/N/K, not the head | 1518-1520 | golden fusion GEMV_GU=1 |
+| guard | gemv_gu: iq3t must match | 1521 | none |
+| guard | gemv_gu: host weights refused | 1522 | golden host |
+| guard | gemv_gu: N % grows refused | 1528 | none |
+| invariant | gemv_gu kernel / rows cached on g at first use, never re-evaluated | 1523-1534 | none |
+| guard | gemv split-K: refused when off, ARC_GEMV_ROWS set, no thread count, N > 65536, MoE | 1556-1557 | none |
+| guard | SPLITK_FORCE: power of two 2-8, <= steps | 1573 | none |
+| guard | host-CPU GEMV (ARC_HOST_CPU) only with act32 | 1593 | none |
+| invariant | one-token kernel cached per weight (g1k[q2_fuse_], g1rows, g1vk, g1srows, g1split) | 1602-1626 | none |
+| guard | GV_PROBE never on vk types or the head | 1613 | none |
+| guard | split-K GEMV excluded for fused two-pass, iq3t, probe, head, GEMV_DEEP | 1617-1619 | none |
+| guard | fused two-pass GEMV with an epilogue throws | 1631 | none |
+| guard | host pieces only if host, not fused, split 1, host_mb > 0, rows > host_mb; whole row groups | 1646-1648 | golden host |
+| invariant | GEMV grid / WG 256 for gemv_v or split | 1660-1661 | none |
+| invariant | 2-8 rows: vk adds IQ3_S (untiled) and Qwen3 Q8_0 fused | 1682 | golden mtp |
+| invariant | 2-8 rows: Q6_K 1, T < 6 -> 4 / 2, then xe2_gemv_mt_rows | 1689-1697 | golden mtp |
+| guard | 2-8 rows two-pass fuse only when q2_fuse_ && vk && a <= 1 | 1696 | run_tests 4c |
+| guard | GEMM: ldc % 4 or c_off % 4 throws | 1714-1716 | none |
+| guard | h8_takes tested first on the GEMM path | 1719 | golden option H8=0 |
+| invariant | staged W8 re-decoded unless owner and not the H8 form | 1725-1730 | golden base |
+| guard | x16 GEMM tried first, falls back when it returns false | 1732 | none |
+| invariant | 140T preset tile choice (32 tokens / cg 2; 16 / cg 1; else xe2_cg_for) | 1735-1737, 1743 | xmx_check mode 1 |
+| guard | GEMM shape Mp % tm, N % 16, K % 256 throws | 1745-1747 | none |
+| invariant | ARC_GEMM_SPLIT: 0-4096, default 17; only a != 2 and K > 8192; pieces 2+ accumulate | 1751, 1754, 1759 | none |
+| invariant | wgy doubles while it divides Mp / tm, up to ARC_GEMM_WGY 8 (no comment) | 1756 | none |
+| guard | decode_w8: N % 16 throws | 1277 | none |
+| invariant | decode_w8 WG halves until it divides N; vb needs lx >= 64 and Q8_0 / Q4_0 (no comment on 64) | 1286-1287 | none |
+| guard | decode_w8_sl: no requant, nsb <= 16, N % 16, <= 32 KB, not IQ1_M / IQ1_S (no comment on IQ1 / 32 KB) | 1291-1292 | none |
+| guard | short-prompt 8-row passes only when !keep_rows, !w8_resident, !stream_, n <= few, max_chunk >= 64 | 752-753 | golden short |
+| invariant | Mp: >= 128 rounded to 128 (capped at max_chunk), else to 16 | 758, 802-805 | none |
+
+#### B.2 zero/engine_h8.h
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| guard | h8_init: (ARC_H8 \|\| p140_ \|\| h8_auto_ \|\| h8_dp4a_) && !q2mm_ && !npu | 84 | golden option |
+| guard | f32 source only when H8R, not ARC_H8_INT, !hc, !gemma | 77, 85-88 | none |
+| invariant | h8_block: largest power of two <= cap dividing K, >= 256 | 108-116 | none |
+| guard | h8_ok: role 0-10, qtype Q8_0 / 100-103, K % 256, N % 16; H8R K / hb <= 32, K <= 130000 | 117-121 | none |
+| guard | h8_takes: T > 8, !q2mm_, h8_ok, 140T take rule, resident or h8_igpu_rows_ok | 265-267 | golden base / option |
+| invariant (A1) | resident W8 always takes H8 (rotated in place); the plain GEMM never reads a rotated copy | 266, 276-278 | h8_e2e_check |
+| guard (spec_) | h8_dp4a_ without ARC_H8: not in verification passes for JIT weights | 285 | golden mtp |
+| guard | 16-lane-XMX iGPU: H8 from Mp >= ARC_H8_MIN (256) | 286-288 | none |
+| guard | h8_swi_ok: env, H8R, f32 copy, h8_takes(down) | 290-293 | golden fusion H8_SWI=0 |
+| guard | h8_norm_env defaults: p140_ \|\| discrete non-Xe-HPC \|\| (h8_dp4a_ && hb <= 512) | 319-323 | golden fusion H8_NORM=0 |
+| guard | rmsnorm_h8 falls back on any of 11 conditions (no share scope, wide rows, K / hb > 16, row > 60 KB ...) | 331-332 | golden fusion |
+| invariant | h8_pre_live_ cleared by rmsnorm_quant / ~H8Share / any rotation; used only if Mp and K match | 255, 347, 464-465 | golden fusion H8_NORM=0 |
+| guard | h8_out_env default only for discrete sg8 (Alchemist) | 358-361 | none |
+| guard | h8_out_ok: rmsnorm_h8's row limits | 362-366 | none |
+| invariant | rotation reuse only if K, M, act32 and the source match | 467-470 | golden fusion H8_REUSE=0 |
+| guard | H8 GEMM without h8_act in its call throws (h8_input_check) | 456-459, 589, 610 | none |
+| guard | h8_act with an f32 source without H8R throws | 485 | none |
+| guard | h8_e2e_check A/B/A on layer 0's qkv; skipped for MoE / hc / gemma / ds41 / inkling, ARC_H8_E2E=0, dry | 393-455 (engine.h:605) | itself |
+| invariant | e2e Restore keeps resident rotated entries | 427-441 | none |
+| guard | h8_dec_ok: one-pass decode+rotate type list, hb >= 512, N % 16 (no comment on IQ1) | 193-202 | none |
+| guard | h8_prepare: a resident weight asked for packed order throws | 498 | none |
+| invariant (A1) | resident copy rotated once; p140_res_ keeps them unrotated; w8_part_auto erases the mark on a fresh decode | 497-506; engine_load.h:260 | h8_e2e_check (#80) |
+| invariant | staged H8 re-decoded unless owner, H8 flag and packed order match | 514 | golden base |
+| guard | H8SB scales buffer grown when small | 542-544 | none |
+| invariant | h8_splits: 17 superblocks iGPU / 140T, 34 discrete; never with a == 2 (decides bits) | 567-572 | none |
+| guard | ARC_H8_Q2 with fused SwiGLU throws | 579 | none |
+| guard | H8R int32: a piece over 133,000 values throws | 593-598 | none |
+| guard | packed operands not taken by gemm_xw8: throws | 617-618 | xw_check |
+| guard | H8 GEMM shape throws | 625-626 | none |
+
+#### B.3 zero/xe2/engine_xe2.h and the setup (engine.h)
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| guard | h8_dp4a_wanted: not with ARC_H8, XMX, discrete, non-Xe-LPG, moe/gemma/hc/qwen3/ds41/inkling, !h8_row; resident yes, else gate Q4_K / Q5_K | xe2:60-68 | none |
+| guard | h8_auto_wanted: XMX, 16 lanes, not moe/gemma/hc/qwen3 | xe2:69-72 | golden option |
+| guard | p140_wanted: XMX (or test), sg8, resident rule, not moe/gemma/hc/qwen3, H8R | xe2:79-92 | xmx_check mode 1 |
+| guard | p140_take: qtype 100-103, Mp >= 512 (768 res), Mp % 32, N % 32 (no comment on N % 32) | xe2:30-32 | xmx_check 140T |
+| invariant | setup order q2_init -> p140_ -> h8_auto_ -> h8_dp4a_ -> h8_init -> p140_ &= h8_ | engine.h:455-465 | none |
+| invariant | h8_cg_for: 4 groups with h8_auto_ on discrete when (N/16) % 4 == 0 | xe2:75-78 | xmx_check mode 1 |
+| invariant | xehpc_on / xe2_g21 / t1280 / moe_grf: per engine | xe2:133-137, 150-162, 217-227 | none |
+| invariant | xe2_cg_for only with xe2_ or ARC_GEMM_CG, (N/16) % cg | xe2:230-240 | xmx_check (cg <= 4) |
+| invariant | xe2_gemv_rows / mt_rows / wg rules | xe2:309-352 | golden mtp (mt) |
+| guard | 8-lane iGPU: XMX off unless FORCE / TRY / p140_ | engine.h:474-479 | none |
+| guard | xmx_check mode 0 once per device_id; 2D retried without; sets xmx_ / slow. **Finding 1** | engine.h:487-531 | start-up |
+| guard | xmx_check(1) for H8 keyed by device, qtype, cg, 140t, env, 2d; failure drops p140_ / h8_auto_ / h8_, keeps XMX | engine.h:536-551 | start-up |
+| guard | p140_ / h8_auto_ without xmx_: off | engine.h:554-561 | none |
+| invariant | H8 off after checks: h8f_off_ dropped, kernels rebuilt | engine.h:566-570 | none |
+| guard | x16: wanted rule; x16_check once per device; shape refusals | xe2:823-847, 882, 911-1003 | x16_check |
+| guard | xw_init / xw_check per key; fall back DPASW -> split barrier -> C_RND -> 2D -> off | engine_xw.h:1060-1198 | xw_check |
+| guard | rgx_first_use: DP4a vs XMX copy byte compare per type key; differs or no room -> DP4a for that type, layer back to decode + GEMM | engine_moe_xw.h:78-127, 43-53; engine_moe.h:614-616 | itself |
+| guard | rgx_kernel build failure -> DP4a (soft_fail) | engine_moe_xw.h:55-66 | none |
+
+#### B.4 zero/engine_setup.h
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| guard | gemm_self_check: Q8_0 64 x 1024 vs CPU; rel > 1e-3 -> warning + driver_warning, never a refusal; ARC_SELF_CHECK=0 skip, =2 fake | 612-694 (engine.h:472) | ARC_SELF_CHECK=2 |
+| guard | xmx_check mode 0: qtypes x act32 x store / split / add / swiglu, bit for bit vs DP4a; MoE tiles | 735-780 | start-up |
+| guard | MoE x8 failure on sg8: moe_x8_ok_ off, dense XMX kept | 781-813 | none |
+| guard | mode 1 140T cases | 817-846 | start-up |
+| guard | speed check: XMX must be 3 % faster on 512 x 17408 x 5120; skipped with FORCE / p140_ / TRY (**finding 1**) | 857-907 | start-up |
+| guard | build exceptions -> DP4a; GpuWaitError rethrown | 909-916 | none |
+| invariant | p140_res_ only with ARC_140T_RES, resident, not TP, discrete | 437-440 | none |
+
+#### B.5 zero/engine_moe.h (layer_moe, line 8)
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| invariant | q2on / q2f / q2g (fused per tile, two-pass on the GEMM) | 99-102 | run_tests 4c 26B |
+| invariant | tile size rules; ARC_MOE_TM_SMALL in {0,1,2,4,8,16} | 87-94, 106 | none |
+| invariant | max_tiles grid, extra WGs exit | 167 | none |
+| guard | gemm_ok: moe_group_, Fp == F, moe_gemm_layer_ok, !tp_moe, !ds41 | 196 | run_tests 35B |
+| guard | rg_ok: moe_std, tm 16, T >= rg_min or q2g, F % 64, layer ok, !ds41 (no comment on tm / F % 64 here) | 197 | run_tests 35B |
+| invariant | gate/up order: moe_rg -> moe_gemm -> per tile gateup_q -> GSQ legacy | 212-219, 447-458 | run_tests 35B; golden 35B |
+| invariant | down order: moe_rg -> moe_gemm (tm 16, T >= 1152) -> per tile down_q -> GSQ legacy (no comment on tm 16) | 215-216, 470-481 | same |
+| guard | moe_gemm_part_ok: W8 type, not Q8_0 / Q4_0, variant < 2 | 527-533 | none |
+| guard | moe_gemm_pad_on: discrete 16-lane, padded F, not gemma | 544-554 | none |
+| guard | moe_rg_type list | 562-570 | none |
+| guard | XCPU path: xc_, T == 1, !use_gemm, moe_std, xsplit, !q2g, (!tp_moe \|\| xsplit_tp) | 337 | none |
+| guard | xsplit_tp off unless ARC_XSPLIT_TP=1 (F30) | 523-526 | none |
+| guard | xcpu_layer_ok: discrete 16-lane default, moe_std, not gemma / inkling | xe2/engine_xcpu.h:50-55, 72-79 | none |
+| invariant | xgpu: GPU tiles skipped when the CPU took every expert | 416, 452, 460, 475 | none |
+| invariant | moe_rg two-pass then moe_gelu_mul | 597-629 | run_tests 4c 26B |
+| invariant | moe_gemm sub-buffers per group (+kRawSlack, clamped) | 640-648 | none |
+
+#### B.6 Layout contracts
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| invariant | kRawSlack = 1024 bytes after the last superblock (GEMV reads past a row) | engine_load.h:98, 134, 178 | none |
+| invariant | superblocks padded to 8 bytes | src/quants.h:857; engine_load.h:131 | test_quant_rows (CPU) |
+| guard | IQ3_S tiling only K % 512, bp 112, nsb even, ARC_IQ3S_TILE; reported to w.iq3t | engine_load.h:132-133, 278 | none |
+| invariant | host flag: up_host_ copied by every upload_padded caller | engine_load.h:137-142, 279; engine_load_gemma.h:142, 158, 254, 265, 270; engine_stream.h:574; engine_drafters.h:751; engine_inkling.h:273 | golden host |
+| invariant | views copy their stack's iq3t / host by hand | engine_load.h:450-455; engine_stream.h:583; engine_inkling.h:290-291 | golden host |
+| invariant | view size N * sbr + kRawSlack | engine_load.h:439; engine_stream.h:588; engine_inkling.h:277 | none |
+| invariant | "512-byte aligned" views: comment only (**finding 2**) | engine_stream.h:563 | none |
+| invariant | w8_bytes_q = N*K, w8_bytes_h = N/8 * K/256 * 320 | src/quants.h:832-833 | none |
+| invariant | stage_need_q_/h_ max per role; ensure_stage for later weights; no size check at the write (**finding 3**) | engine_load.h:285-286, 311-316; engine_stream.h:584-585; engine_alloc.h:207-209; engine_sessions.h:862-870; engine.h:1722-1726 | none |
+| invariant | H8SB scales sized stage_need_h_ / 8 + 64 | engine_h8.h:135 | none |
+
+#### B.7 Process-wide statics tied to a device
+
+None: no `static const` initializer calls zrt::integrated(), xe_lpg(), cl_.xmx or a device id (single-line and multi-line static lambdas in zero/*.h, zero/xe2/*.h, zero/mgpu/*.h). Caches keyed by device: xmx_by_dev (engine.h:488-489, **finding 1**), h8_known (537-538), x16 known (xe2:834-835), the xw maps (engine_xw.h:1060-1079), first_for_device (engine.h:1245-1246). Not keyed by device: the spill warning's set (clrt.h:1762-1765, **finding 4**), once_flag messages (xe2:154, engine_moe_xw.h:122).
+
+#### B.8 Cache keys
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| invariant | kernel binary = fnv1a(src, opts, device_id = CL name + driver); a damaged binary is recompiled | clrt.h:1643, 1412, 1708-1716 | none |
+| invariant | warm marker = fnv1a(sources, model path, warm_key_extra (all ARC_*), split_key, mtp / dflash / drafts / max_chunk / device_id, "w3") | engine.h:994-1033 | none |
+| invariant | split_key: "\|tp<n>\|fnv(tp.cl)" or "\|pp<n>" + each stage's range@gpu_id | tools/server_load.h:393-411 | none |
+
+#### B.9 Failure paths
+
+| kind | protects | file:line | test |
+|---|---|---|---|
+| guard | CL_CHECK: message + _Exit(1) (**finding 5**) | clrt.h:89-97 | none |
+| guard | check_marker: a marker from this boot (< 12 h) -> _Exit(3); ARC_IGNORE_HANG warns | gpu_fail.h:161-196; clrt.h:1481 | gpu_guard |
+| guard | gpu_fatal: Hang 3 / Lost 4 write the marker; ze_exit 0x70000001 -> 4, else 5 | gpu_fail.h:29, 218-241, 262-264 | gpu_guard |
+| guard | ARC_GPU_WAIT_S >= 5 s; a longer wait -> Hang | clrt.h:371-383, 409-411 | gpu_guard |
+| guard | per-kernel wait (ARC_ZE_WATCH / SYNC_EACH) -> Hang | clrt.h:1165-1169, 1320-1329 | none |
+| guard | ARC_GPU_FAULT_TEST=hang / lost | clrt.h:398-404; gpu_fail.h:268-276 | manual |
+| guard | launch: g == 0 none; g > 2^32 refused; failed append -> ze_exit | clrt.h:1251-1255, 1308-1313 | none |
+| invariant | run(..., nullptr): suggestion shrunk until it divides; a given lws that does not divide -> -54 | clrt.h:1260-1280 | none |
+| guard | spill warning once per name + opts (**finding 4**) | clrt.h:1753-1770 | none |
+| guard | cancel: between chunks; per layer only when !w8_resident; layer-major start and after each layer (TP barrier); never inside matmul or generation | engine.h:745-766, 806-862; engine_sessions.h:221-238 | none |
+| guard | ARC_FAIL_PASS: the N-th verify / batched pass throws after writing its state | engine_slots.h:386-391; tools/server_load.h:431 | tests/fail_inject.ps1 |
+
+Not tested by any dedicated test: every logic_error / runtime_error shape refusal in matmul1 and h8_matmul.
+
+### The history side
+
+To come (the Researcher): each row's commit and the bug or audit that added it, from CHANGELOG.md, docs/before-after.md, docs/audit-*.md and BUGS.md, merged into the rows above.
 
 ## C. The golden test set
 
