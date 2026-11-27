@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-11-27 (unreleased): API only for use behind a reverse proxy
+
+- **`serverz --no-webui`** (or `INFERZERO_NO_WEBUI=1`) **serves only the OpenAI-compatible API**: `/v1/chat/completions`,
+  `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/messages`, `/v1/responses`, `/v1/audio/transcriptions` /
+  `translations`, plus `/health` and `/props`. Everything else answers 404, for every client, this computer included:
+  - the web UI and its files;
+  - projects, memory, MCP, the tools (the terminal, web search, the file tools);
+  - saved files and chats, sessions, slots, the server settings, remote access, `/metrics`.
+
+  A chat request may not name a saved file, and an OCR request may not save to a folder. This is for use from other
+  machines behind a reverse proxy, which adds TLS and a key. A proxy on the same machine connects from 127.0.0.1, so
+  without this mode its requests would pass as "this computer" and reach the local-only endpoints. One start line
+  says so: "API only: /v1/*, /health, /props (--no-webui)". Off by default: the local app is unchanged.
+- **The launchers have the option:**
+  - Windows: "API only (no web UI)" in the advanced options, and `zero-server -NoWebui`;
+  - Linux: `zero-launcher.sh --no-webui`.
+
+  When it is on, the web UI is not opened after the start.
+- **The 403s a reverse proxy meets** (a host name instead of 127.0.0.1, or forwarding headers) now say how to set one
+  up: forward to 127.0.0.1 with `Host: 127.0.0.1` and no `X-Forwarded-For` / `X-Real-IP`. The rules are unchanged.
+
 ## 2026-11-27 (unreleased): the server warms up a split model's kernels too
 
 - **`serverz --gpus N` (both `--split tensor` and `--split layer`) warms up the kernels before it serves**, as on one

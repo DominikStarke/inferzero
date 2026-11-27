@@ -60,6 +60,7 @@ param(
   [string]$Alias = "",
   [switch]$NoWebTools,
   [switch]$NoTerminal,
+  [switch]$NoWebui,
   [string]$LogFile = "",
   [string]$LogVerbosity = "",
   [string]$Whisper = "",
@@ -183,7 +184,7 @@ function Find-Opt([string]$id) {
 $presetDir = Join-Path $stateDir "presets"
 $presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
   "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb",
-  "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "LogFile", "LogVerbosity", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "NoWebui", "LogFile", "LogVerbosity", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
   "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
 function Preset-Path([string]$n) {
@@ -594,6 +595,8 @@ Options for start / restart:
   -Mmproj <file>                 the image projector, when it is not the one next to the model
   -Alias <name>                  the model's id in the API (default: the list's)
   -NoWebTools / -NoTerminal      the web UI without its web tools / its terminal
+  -NoWebui                       API only: /v1/* (the OpenAI-compatible API), /health and /props, no web UI; for
+                                 use from other machines behind a reverse proxy (TLS, a key), see USAGE.md
   -LogFile <file> / -LogVerbosity error|warn|info|debug   the server's log (docs/logging.md)
   -DFlash <folder>|off           a DFlash2 drafter of your own: its snapshot folder (with config.json and
                                  model.safetensors), e.g. for a fine-tuned variant the model list does not
@@ -1352,6 +1355,7 @@ foreach ($fp in @(@("MtpModel", $MtpModel, "--mtp-model"), @("Mmproj", $Mmproj, 
 }
 if ($NoWebTools) { $extra += "--no-web-tools" }
 if ($NoTerminal) { $extra += "--no-terminal" }
+if ($NoWebui) { $extra += "--no-webui" }  # (API only: /v1/*, /health, /props; behind a reverse proxy, USAGE.md)
 if ($LogVerbosity) { $extra += @("--log-verbosity", $LogVerbosity) }
 # (the chosen speed / accuracy options: flags here, environment variables just before the server starts; both in the
 #  key, so a changed choice restarts a running server)
@@ -1373,7 +1377,7 @@ if ($TensorSplit) { $extra += @("--tensor-split", $TensorSplit) }
 $extraKey = "$($extra -join ' ')|think $ThinkBudget$(if ($optFx.envs.Count) { '|env ' + (($optFx.envs.Keys | ForEach-Object { "$_=$($optFx.envs[$_])" }) -join ' ') })"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb", "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal",
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Fast", "SplitLayer", "TensorSplit", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes", "Opt", "NoOpt", "DefaultOpt", "ExpertRamGb", "ExpertCacheGb", "ExpertCachePct", "MtpModel", "Mmproj", "Alias", "NoWebTools", "NoTerminal", "NoWebui",
   "LogFile", "LogVerbosity" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
@@ -1601,10 +1605,12 @@ while ($true) {
 Write-Progress -Activity $barActivity -Completed
 $nctx = (Invoke-RestMethod "$base/props" -TimeoutSec 5).n_ctx
 if ($m -eq $none) {
-  Say ("Ready after {0:N0} s: speech to text only (web UI {1}/, Transcripts tab); a chat model loads when a chat asks for one" -f ((Get-Date) - $t0).TotalSeconds, $base)
+  Say ("Ready after {0:N0} s: speech to text only ({1}); a chat model loads when a chat asks for one" -f ((Get-Date) - $t0).TotalSeconds,
+    $(if ($NoWebui) { "API only: $base/v1/audio/transcriptions" } else { "web UI $base/, Transcripts tab" }))
   return
 }
-Say ("Ready after {0:N0} s: {1}, context {2:N0} (web UI {3}/)" -f ((Get-Date) - $t0).TotalSeconds, $m.alias, $nctx, $base)
+Say ("Ready after {0:N0} s: {1}, context {2:N0} ({3})" -f ((Get-Date) - $t0).TotalSeconds, $m.alias, $nctx,
+  $(if ($NoWebui) { "API only: $base/v1" } else { "web UI $base/" }))
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if ($true) {
   # the engine's own lines: the expert cache (MoE) or that the model has no experts to stream

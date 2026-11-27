@@ -347,8 +347,9 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
   bool ocr_dirs(const HttpRequest& rq, const Json& body, const std::filesystem::path& fallback, OcrDirs& d, HttpResponse& rs) {
     const std::string folder = body["ocr_save"]["folder"].str(), chat = body["chat_id"].str();
     // (a page another local program serves: no .md anywhere, the chat's folder neither; a client with no Origin,
-    //  the server's own page and a remote session's page may)
-    if (!ocr_from_page_ok(rq)) {
+    //  the server's own page and a remote session's page may. A foreign request never: a page of another local server,
+    //  or any request to a server run API only (--no-webui), whose clients may name no folder of this computer)
+    if (rq.foreign || !ocr_from_page_ok(rq)) {
       rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save: from this server's own page or a client on this computer only\"}}");
       return false;
     }

@@ -353,6 +353,7 @@ $prefixBox = New-Num 0 512 8 0 70
 $noPrefixChk = New-Check "no prefix cache"
 $noSwapChk = New-Check "keep the loaded model (requests do not switch models)"
 $netChk = New-Check "reachable from other computers (0.0.0.0)"
+$apiOnlyChk = New-Check "API only (no web UI)"
 $f32Chk = New-Check "f32 attention (tests)"
 $noMtpChk = New-Check "no speculative decoding"
 $visionBox = New-Combo @("on", "off") 60
@@ -578,6 +579,8 @@ $presetPanel.AutoSize = $true; $presetPanel.WrapContents = $false; $presetPanel.
 [void](Add-Opt "Preset" $presetPanel -Advanced)
 [void](Add-Opt "Port" $portBox -Advanced)
 $netPanel = Add-Opt "Network" $netChk -Advanced
+[void](Add-Opt "" $apiOnlyChk -Advanced)
+Hook-Tip $apiOnlyChk "For use from other machines behind a reverse proxy (TLS, a key); see USAGE.md. Only the OpenAI-compatible API (/v1), /health and /props answer; the web UI does not open. zero-server -NoWebui (serverz --no-webui)"
 # the addresses other apps connect to (OpenAI / Anthropic / Ollama formats), with a Copy button each
 $apiPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $apiPanel.AutoSize = $true; $apiPanel.WrapContents = $false; $apiPanel.Margin = New-Object System.Windows.Forms.Padding(0)
@@ -672,7 +675,7 @@ $fields = [ordered]@{
   preserve_think = $keepThinkChk; whisper = $whisperBox; asr = $asrBox; whisper_device = $whDevBox; whisper_max = $whMaxBox
   host = $hostBox; expert_ram = $xramBox; expert_cache = $xcacheBox; driver_reserve = $drvBox; asr_slots = $asrSlotsBox
   mtp_model = $mtpModelBox; mmproj = $mmprojBox; alias = $aliasBox; log_file = $logFileBox; log_v = $logVBox
-  no_web = $noWebChk; no_term = $noTermChk
+  no_web = $noWebChk; no_term = $noTermChk; api_only = $apiOnlyChk
 }
 function Get-Field($k) {
   $c = $fields[$k]
@@ -989,7 +992,7 @@ function Fill-Defaults {
     network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $true
     preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
     host = ""; expert_ram = -1; expert_cache = 0; driver_reserve = 0.5; asr_slots = 1; mtp_model = ""; mmproj = ""; alias = ""
-    log_file = ""; log_v = "info"; no_web = $false; no_term = $false
+    log_file = ""; log_v = "info"; no_web = $false; no_term = $false; api_only = $false
   }
   foreach ($k in $fields.Keys) {
     Put-Field $k $(if ($script:over.ContainsKey($k)) { $script:over[$k] } else { $v[$k] })
@@ -1593,6 +1596,7 @@ function Get-StartArgs([switch]$Speech) {
       "log_v" { $a += @("-LogVerbosity", "$v") }
       "no_web" { if ($v) { $a += "-NoWebTools" } }
       "no_term" { if ($v) { $a += "-NoTerminal" } }
+      "api_only" { if ($v) { $a += "-NoWebui" } }
       "attn_f32" { if ($v) { $a += "-AttnF32" } }
       # (no_mtp and vision: the Drafting and Images switches above; a preset's NoMtp / Vision set them)
       "slots" { $a += @("-Slots", [int]$v) }
@@ -1671,7 +1675,7 @@ $paramToField = [ordered]@{ Ctx = "ctx"; Chunk = "chunk"; MtpDrafts = "drafts"; 
   Whisper = "whisper"; Asr = "asr"; WhisperDevice = "whisper_device"; WhisperMaxMinutes = "whisper_max"; Port = "port"
   ExpertRamGb = "expert_ram"; ExpertCacheGb = "expert_cache"; DriverReserveGb = "driver_reserve"; AsrSlots = "asr_slots"
   MtpModel = "mtp_model"; Mmproj = "mmproj"; Alias = "alias"; LogFile = "log_file"; LogVerbosity = "log_v"; NoWebTools = "no_web"
-  NoTerminal = "no_term" }
+  NoTerminal = "no_term"; NoWebui = "api_only" }
 $script:presetName = ""
 $script:presetFilling = $false
 function Load-PresetList([string]$select = "") {
@@ -2157,7 +2161,8 @@ $timer.Add_Tick({
           if ($code -ne 0) { Show-ActionFailed $code }
           elseif ($what -eq "start") {
             if ($form.Visible -eq $false -and $tray.Visible) { $tray.ShowBalloonTip(3000, "inferzero", "Ready: $last", "Info") }
-            if ($openWebChk.Checked -or $script:openWeb) {
+            # (API only: the server has no web UI to open)
+            if (($openWebChk.Checked -or $script:openWeb) -and -not $apiOnlyChk.Checked) {
               $script:openWeb = $false
               Start-Process "$(Base)/"  # (the web UI, in the default browser)
             }
