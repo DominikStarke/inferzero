@@ -39,15 +39,23 @@ $hide = @(@($Model | ForEach-Object { Split-Path (Resolve-Path $_).Path -Parent 
 $hide += , @($env:USERPROFILE, "~")
 # (then the user and computer names wherever they stand as a word, a folder of a drive or OneDrive's included; names
 #  under 3 characters are left, or "a" would eat the file)
-$names = @(@($env:USERNAME, "<user>"), @($env:COMPUTERNAME, "<host>")) | Where-Object { $_[0] -and $_[0].Length -ge 3 }
-function Hide-Names([string]$s) {
+#  (built with a foreach and ArrayList.Add, not a pipeline: a pipeline that keeps one pair hands back its two strings,
+#  and the foreach below would then replace single letters; the Researcher's review, a 2-letter user name)
+function Get-Names([string]$user, [string]$computer) {
+  $l = New-Object System.Collections.ArrayList
+  foreach ($p in @(@($user, "<user>"), @($computer, "<host>"))) { if ($p[0] -and $p[0].Length -ge 3) { [void]$l.Add($p) } }
+  return , $l
+}
+$names = Get-Names $env:USERNAME $env:COMPUTERNAME
+function Hide-Names([string]$s, $nameList = $null) {
+  if ($null -eq $nameList) { $nameList = $names }
   foreach ($h in $hide) {  # (any casing and either slash: "c:\users\name", "C:/Users/Name")
     if (-not $h[0]) { continue }
     foreach ($p in @($h[0], $h[0].Replace("\", "/"))) {
       $s = [regex]::Replace($s, [regex]::Escape($p), $h[1].Replace('$', '$$'), "IgnoreCase")
     }
   }
-  foreach ($n in $names) {
+  foreach ($n in $nameList) {
     $s = [regex]::Replace($s, "(?<![A-Za-z0-9])" + [regex]::Escape($n[0]) + "(?![A-Za-z0-9])", $n[1], "IgnoreCase")
   }
   return $s
@@ -64,6 +72,15 @@ if ($SelfTest) {
     Write-Host "in:  $t"
     Write-Host "out: $(Hide-Names $t)"
   }
+  # (a user name under 3 characters is left, and only it: the host is still hidden, and no single letter is replaced)
+  $short = Get-Names "jo" $env:COMPUTERNAME
+  $t = "D:\models on $env:COMPUTERNAME, E:\x"
+  $o2 = Hide-Names $t $short
+  Write-Host "in:  $t   (user 'jo')"
+  Write-Host "out: $o2"
+  $ok = ($short.Count -eq 1) -and ($o2 -eq "D:\models on <host>, E:\x")
+  Write-Host "short user name: $(if ($ok) { 'ok' } else { 'WRONG' }) ($($short.Count) pair)"
+  if (-not $ok) { exit 1 }
   return
 }
 
