@@ -80,6 +80,17 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-27, `ARC_GV_SMALL=1` / `2` (opt-in, a test): small Xe-LPG iGPUs' GEMV choices** (`zero/engine.h`
+  gemv1_rows). Only on an iGPU without XMX that is Xe-LPG with at most 640 hardware threads (`ARC_GV_SMALL_ANY=1`: any
+  iGPU, for testing).
+  - **The modes:** `1` runs gemv's matrices of up to 65,536 rows at 4 rows a sub-group; `2` also takes every Q4_K / Q5_K
+    matrix through gemv_v.
+  - **The evidence:** jac2424's 64-EU Arrow Lake-S (#97, Linux 26.40), where `ARC_GEMV_ROWS=4` gave tg64 10.10 -> 11.47
+    (+13.6 %) and the tall Q5_K through gemv_v read 38-41 GB/s against Q4_K's 25-28 through gemv.
+  - **On the laptop** (112 EUs, forced with `_ANY`), the 9B tg64: off 12.15 / 12.45 tok/s, `1` 11.76, `2` 11.52, so not
+    for GPUs this size. The logits are bit for bit the same in all four (BD727501...).
+  - To be measured on the 64-EU part before any default.
+
 - **2026-11-27, one-token GEMVs over host-memory weights in row pieces on discrete cards** (`zero/engine.h` matmul1,
   GpuWeight::host set in load_weight; #99).
   - **The report:** LukaszBrzyszkiewicz's Arc A380, the 4B at `--bench-pp 131072 --must-fit`, 0.43 GiB of the weights in
