@@ -73,7 +73,7 @@
       //    pins ~268 GiB, never run there; the only measured big-tier failure, on Windows, hung the machine).
       //  Earlier: manoreken2's sweep (issue #4, release .10), ARC_XRAM_GB 0 / 8 / 16 / 32 a GPU, 512-token prompt 14.4 /
       //  14.5 / 15.9 / 23.9 tok/s; 48 and 64 a GPU stopped after loading (release .16). ARC_XRAM_GB / --expert-ram-gb N:
-      //  N GiB a GPU, kept, with the warning below)
+      //  N GiB a GPU, capped below to the room the automatic size has (an iGPU ignores it))
       const int N = std::max(1, opt.tp_size);
       const uint64_t share = hp.n_expert > 0 ? (uint64_t)((double)xc_->st.file_bytes * xc_->nloc() / hp.n_expert)
                                              : xc_->st.file_bytes;
@@ -112,7 +112,8 @@
     //  RAM (WDDM's non-local budget, ~half the RAM), on top of what the engine maps already; a tier past it fails the
     //  copies' residency. LukaszBrzyszkiewicz's B70 (#82, 96 GB RAM, Flash Next): a 52.1 GiB tier against a 47.9 GiB
     //  budget, out of memory at the first prompt's copy. The automatic size is capped at the budget less the current
-    //  use and 4 GiB; a size given by hand is kept, with a warning. Linux has no such budget)
+    //  use and 4 GiB; a size given by hand past it is capped to it too, with a line saying so (2026-11-27). Linux
+    //  has no such budget)
     // (a split model: the room divided by N twice, as its automatic size above (each GPU counts the shared pinned
     //  memory, #100), so a hand-set size past it warns at the size that failed there, 48 GiB a GPU; one GPU: once)
     if (!zrt::integrated() && ram > 0 && !tp_sized) {
@@ -126,7 +127,7 @@
                        top = tp_on() ? nb / N : nb, room = (top > nu + margin ? top - nu - margin : 0) / (tp_on() ? N : 1);
         char b[200];
         // (an automatic size: the engine's own, or a layer split's stage share (opt.expert_ram_auto); a size the user
-        //  set is kept with the warning. A stage's share was taken for a hand-set one: no cap, and a warning naming
+        //  set is capped in the branch after this one, with its own line. A stage's share was taken for a hand-set one: no cap, and a warning naming
         //  options never given, issue #82's failure on a split; the audit of 2026-11-23)
         const bool auto_size = ram_gb < 0 || opt.expert_ram_auto;
         if (ram > room && auto_size) {
@@ -187,7 +188,9 @@
     const int N = tp_on() ? std::max(1, opt.tp_size) : 1;
     const uint64_t all = xc_->all_bytes(), held = xc_->cache_bytes + st.ram_cap();
     const double free_ram = (double)plat::ram_available(), after = free_ram - (double)st.ram_cap() * N - 8.0 * GiB;
-    const bool on = forced >= 0 ? forced == 1 : all > held && after >= 16.0 * GiB;
+    // (the rule on discrete cards only, as the tier: an iGPU's cache is that RAM already, and the rule untested there;
+    //  ARC_XBUF=1 still forces it. The Researcher's review)
+    const bool on = forced >= 0 ? forced == 1 : !zrt::integrated() && all > held && after >= 16.0 * GiB;
     if (on) st.reopen_buffered();
     // (one line a load: the engine of GPU 0 of a split model and the first stage of a layer split says it, so a second
     //  model loaded in the same process (serverz's model menu) says its own; the Researcher's review of 697b21c)
@@ -568,6 +571,7 @@
       L.rgu.K = E;
       L.rgu.role = kRoles - 1;
       L.rgu.raw = upload_padded(GGML_Q8_0, cat.data(), cat.size());
+      L.rgu.host = up_host_;
       has_rgu_ = true;
       auto view = [&](int row0, int N, int role) {
         GpuWeight w;
@@ -576,6 +580,7 @@
         w.N = N;
         w.K = E;
         w.role = role;  // (a slot each: kept decoded through a layer-major segment, weight_role)
+        w.host = L.rgu.host;  // (a view of the stack: its memory)
         stage_need_q_[w.role] = std::max(stage_need_q_[w.role], w8_bytes_q(N, E));
         stage_need_h_[w.role] = std::max(stage_need_h_[w.role], w8_bytes_h(N, E));
         if (L.rgu.raw) {  // (+kRawSlack: the GEMV's block reads run past a row's end, up to BBP + 63 bytes for an odd

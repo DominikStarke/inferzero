@@ -267,6 +267,7 @@
     L.stk.N = N, L.stk.K = E;
     L.stk.w.type = type, L.stk.w.N = N, L.stk.w.K = E, L.stk.w.role = kRoles - 1;
     L.stk.w.raw = upload_padded(type, cat.data(), cat.size(), E % 512 == 0, &L.stk.w.iq3t);
+    L.stk.w.host = up_host_;
     const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
     auto view = [&](int row0, int n) -> cl_mem {
       if (!L.stk.w.raw) return nullptr;  // (dry load)
@@ -284,6 +285,7 @@
       m.N = parts[i].N, m.K = E;
       m.w = make_weight(type, t[i]->data, t[i]->nbytes, parts[i].N, E, weight_role(p + parts[i].name), &v);
       m.w.iq3t = L.stk.w.iq3t;  // (a view of the stack: its layout)
+      m.w.host = L.stk.w.host;  // (and its memory)
     }
     // (q, gate and rel: the stack's first rows when rel is in it, else q and gate)
     L.n3 = in[2] ? L.so[2] + parts[2].N : L.so[1] + parts[1].N;

@@ -139,6 +139,7 @@
     if (t.type == GGML_Q8_0 || is_w8_type(t.type)) {
       w.type = t.type;
       w.raw = upload_padded(t.type, t.data, t.nbytes);
+      w.host = up_host_;
       return w;
     }
     std::vector<uint8_t> q8;
@@ -154,6 +155,7 @@
     }
     w.type = GGML_Q8_0;
     w.raw = upload_padded(GGML_Q8_0, q8.data(), q8.size());
+    w.host = up_host_;
     return w;
   }
   cl_mem f32_from(const GgufFile& g, const std::string& name) {
@@ -249,6 +251,7 @@
                                   : quantize_rows_q5_0(v.data(), lm_head_.N, lm_head_.K);
       lm_head_.type = want;
       lm_head_.raw = upload_padded(want, qh.data(), qh.size());
+      lm_head_.host = up_host_;  // (before load_draft_head's own upload)
       load_draft_head(want, qh.data(), qh.size());
       LOG_INF("output head: %s requantized to %s (ARC_HEAD_Q), %.2f GB\n", ggml_type_name(lt.type), ggml_type_name(want),
               qh.size() / 1e9);
@@ -259,10 +262,12 @@
       auto q8 = q4 ? quantize_rows_q4_0(v.data(), lm_head_.N, lm_head_.K) : quantize_rows_q8_0(v.data(), lm_head_.N, lm_head_.K);
       lm_head_.type = q4 ? GGML_Q4_0 : GGML_Q8_0;
       lm_head_.raw = upload_padded(lm_head_.type, q8.data(), q8.size());
+      lm_head_.host = up_host_;  // (before load_draft_head's own upload)
       load_draft_head(lm_head_.type, q8.data(), q8.size());  // (ARC_MTP_VOCAB: engine_drafters.h)
     } else {
       lm_head_.type = lt.type;
       lm_head_.raw = upload_padded(lt.type, lt.data, lt.nbytes);
+      lm_head_.host = up_host_;  // (before load_draft_head's own upload)
       load_draft_head(lt.type, lt.data, lt.nbytes);
     }
   }

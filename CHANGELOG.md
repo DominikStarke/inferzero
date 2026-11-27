@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-27 (unreleased): fixes from the review of the day's changes
+
+- **Weights kept in host memory have their one-token GEMVs split into pieces on every model kind**, not only on
+  some. Since 2026.11.27.01 a discrete card that holds part of a dense model in host memory reads it in pieces of at
+  most 4 MB (#99, the A380's hang). A few kinds of weights were not marked as being in host memory, so they still ran
+  as one long launch: the output head, Qwen's DeltaNet projections, Gemma's weights and output head, the drafters' heads, Inkling's
+  stacked weights, and the MoE models' router with the shared expert's gate and up. Gate and up in one launch (`ARC_GEMV_GU=1`) now leave host weights to the split
+  path. The start line says how those GEMVs run.
+- **A split over an iGPU and a discrete card picks the piece size per GPU**: the first GPU's choice was kept for the
+  whole process.
+- **The expert file goes through the OS file cache automatically on discrete cards only** (an iGPU's GPU memory is the
+  RAM already). `ARC_XBUF=1` still forces it anywhere.
+- **The Windows launcher knows an Arc 140T by its PCI device ID** (0x7D51 / 0x7DD1) when Windows names it only
+  "Intel(R) Arc(TM) Graphics", as the Linux launcher already did.
+- **`ARC_GV_SMALL=2` leaves Q4_K / Q5_K alone when `ARC_GV_K4=0` is set.**
+
 ## 2026-11-27 (unreleased): a hand-set expert RAM tier is capped to what is safe
 
 - **`--expert-ram-gb` / `ARC_XRAM_GB` set by hand above what Windows lets the GPUs map is capped to it**, not only

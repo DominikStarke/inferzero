@@ -587,8 +587,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       tp_loaded();  // (a split model: the host copies of its cut tensors freed)
       if (host_bytes_ && !opt.dry)
         zlog::eprintf("inferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
-                        "sliding-window rings of %d rows\n", host_bytes_ / 1073741824.0, max_chunk,
-                std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256));
+                        "sliding-window rings of %d rows; their one-token GEMVs %s\n", host_bytes_ / 1073741824.0, max_chunk,
+                std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256), host_gemv_note().c_str());
       if (!opt.dry) loadp::step(loadp::st().what, total, total);
     }
     {
@@ -1458,7 +1458,8 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     const int gv_small = gv_small_env > 0 && zrt::integrated() && !cl_.xmx &&
                                  (gv_small_any || (zrt::xe_lpg() && zrt::hw_threads() > 0 && zrt::hw_threads() <= 640))
                              ? gv_small_env : 0;
-    if (gv_small >= 2 && !q2mm_ && &w != &lm_head_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K)) vk = true, k4_rule = false;
+    if (gv_small >= 2 && gv_k4 != 0 && !q2mm_ && &w != &lm_head_ && (w.type == GGML_Q4_K || w.type == GGML_Q5_K))
+      vk = true, k4_rule = false;  // (an explicit ARC_GV_K4=0 wins: no gemv_v for these types)
     // (discrete cards: rows by the GPU's thread count, zero/xe2/engine_xe2.h xe2_gemv_rows)
     // (Alchemist, a discrete card with 8-lane sub-groups: gemv_v's types one row a sub-group, as ARC_GVROWS=1. An A770,
     //  the 27B's --prof-gen over 32 tokens: gemm_down 395.7 -> 321.2 ms, gate / up 284.4 / 280.5 -> 273.0 / 272.7, qkv
@@ -1477,6 +1478,19 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     if (k4_rule && !gvrows_env) return 2;  // (the tall Q5_K rule above: 2 rows, as measured; ARC_GVROWS sets it)
     return xe2_gemv_rows(w, vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2);
   }
+  // A matrix in host memory (plan_tight): the one-token GEMV's piece size in MB, 0 = one launch (matmul1, #99).
+  // ARC_HOST_GEMV_MB read once; the default for this engine's GPU at each call (4 on a discrete card, 0 on an iGPU)
+  double host_gemv_mb() const {
+    static const double env = getenv("ARC_HOST_GEMV_MB") ? std::max(0.0, atof(getenv("ARC_HOST_GEMV_MB"))) : -1.0;
+    return env >= 0 ? env : zrt::integrated() ? 0.0 : 4.0;
+  }
+  std::string host_gemv_note() const {
+    const double mb = host_gemv_mb();
+    if (mb <= 0) return "in one launch";
+    char b[64];
+    snprintf(b, sizeof b, "in pieces of at most %.4g MB (ARC_HOST_GEMV_MB)", mb);
+    return b;
+  }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
   // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
   // one launch of 2F rows instead of two of F (a B60's 27B: 4,096 FFN launches of ~135 us per 32 steps). Off by
@@ -1487,6 +1501,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
         &g == &lm_head_ || &u == &lm_head_)
       return false;
     if (g.iq3t != u.iq3t) return false;  // (one kernel for both: one layout, ARC_IQ3S_TILE)
+    if (g.host || u.host) return false;  // (host memory: matmul1's pieces, #99; one launch of both would read it all)
     if (!g.guk) {
       bool vk = false;
       const int grows = gemv1_rows(g, vk);  // (matmul1's kernel and rows for one of the matrices)
@@ -1602,11 +1617,13 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
       //  (default 4) of host memory, so no launch reads over PCIe for long. #99, an Arc A380's 4B at a 131K context,
       //  0.43 GiB of the weights in host memory: a GPU hang at the first generated token, the last launch gemv_v. Each
       //  piece is the same kernel on a view of its rows, so every row's sum is the one of the whole launch, bit for bit.
-      //  Not the fused two-pass GEMV (its stores) or a split-K launch; ARC_HOST_GEMV_MB=0: one launch as before.
+      //  Not the fused two-pass GEMV (its stores), a split-K launch or gemv_gu's gate + up (it leaves host weights to
+      //  this path); ARC_HOST_GEMV_MB=0: one launch as before.
       //  Discrete cards only: an iGPU's host memory is its own DRAM, no PCIe, and the pieces cost launches there (the
-      //  laptop's 4B with 1.2 GiB forced into host memory, ARC_HOST_WEIGHTS_GB: 53.1 -> 56.7 ms a token, logits equal)
-      static const double host_mb = getenv("ARC_HOST_GEMV_MB") ? std::max(0.0, atof(getenv("ARC_HOST_GEMV_MB")))
-                                    : zrt::integrated() ? 0.0 : 4.0;
+      //  laptop's 4B with 1.2 GiB forced into host memory, ARC_HOST_WEIGHTS_GB: 53.1 -> 56.7 ms a token, logits equal).
+      //  Decided for this engine's GPU at each launch, not once a process: a layer split over an iGPU and a card, or a
+      //  second model on another GPU, kept the first GPU's choice (the Researcher's review)
+      const double host_mb = host_gemv_mb();
       const size_t row_bytes = (size_t)(K / 256) * raw_padded_sb_bytes(w.type);
       if (w.host && !fz && split == 1 && host_mb > 0 && row_bytes > 0 && (double)row_bytes * N > host_mb * 1048576.0) {
         int rp = (int)std::max(1.0, host_mb * 1048576.0 / (double)row_bytes);
