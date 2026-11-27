@@ -1,8 +1,10 @@
 // inferzero tensor parallel: one model split over several GPUs (--gpus N), each GPU running an Engine shard
 // (zero/mgpu/engine_tp_shard.h says what each holds) on a thread of its own, the shards in lockstep.
 //
-// The output projections' partial sums meet in host memory: GPUs that cannot reach each other's memory (Arc B60s on
-// Windows: no peer access, docs/multi-gpu.md) all reach pinned host memory of the one context. Each shard copies its
+// The output projections' partial sums meet in host memory: GPUs that cannot reach each other's memory all reach
+// pinned host memory of the one context. Which way is chosen from the driver, not the OS (choose_sums: peer access
+// reported and the direct copy timed at least 0.8x the host's; ARC_TP_P2P overrides); in practice Windows takes host
+// memory (its B60s report no peer access, docs/multi-gpu.md) and Linux can take P2P. Each shard copies its
 // part there, waits for its GPU, meets the others at a barrier, then adds every shard's part to its residual stream
 // in rank order (the same float sum on every GPU, so their x_ stay identical). Parts alternate between two halves of
 // the buffer: a shard can be one projection ahead of another, never two (it would have passed a barrier the other

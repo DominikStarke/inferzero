@@ -58,7 +58,10 @@ class PpEngine {
     so.pp_begin = c[r];
     so.pp_end = c[r + 1];
     so.pp_size = (int)c.size() - 1;
-    if (r + 2 < (int)c.size()) so.mtp = false;
+    // (no stage drafts, the last neither: before 2026-11-27 the last kept opt.mtp, so runz --split layer --mtp loaded
+    //  the MTP block there while the line below said plain decoding; serverz cleared it first)
+    so.mtp = false;
+    so.dflash.clear();
     // (said once: the stages do not drive MTP or a drafter yet, so a layer split decodes plainly; #92)
     if (o.mtp || !o.dflash.empty()) {
       static std::once_flag said;

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-27 (unreleased): two silent paths refused with a message
+
+- **Inkling 2 Mini is refused on `--split layer`** with a message, as it already was on `--gpus N` (the tensor split).
+  The layer split let it through, but every stage loaded all of Inkling's layers and ran the whole looped model, so each
+  stage ran the model again on the previous stage's output.
+- **Gemma 4 refuses `--dflash`** with a message: DFlash2 drafters are for the Qwen3.8 27B, Qwen3.6 35B-A3B and Flash
+  Next, and Gemma 4 drafts with its own drafter. Before, the option was ignored without a word. The server's automatic
+  search for a DFlash2 drafter now skips the models that can't take one (Gemma 4, DeepSeek-V4.1, Inkling 2). Checked by
+  reading; no Gemma 4 run (no Gemma 4 file on the test laptop).
+- Five code comments that described what a model supports out of date are corrected (Inkling 2's, the NPU's, the
+  splits', batched decoding's, the multi-GPU sums').
+
 ## 2026-11-27 (2026.11.27.04): API only for use behind a reverse proxy
 
 - **`serverz --no-webui`** (or `INFERZERO_NO_WEBUI=1`) **serves only the OpenAI-compatible API**: `/v1/chat/completions`,
