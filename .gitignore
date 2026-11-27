@@ -52,3 +52,6 @@ dist/
 
 # benchmark outputs (bench\run_tests.ps1, website_bench.ps1)
 bench/results/
+
+# the contributor kit's output (bench/contrib_kit.ps1 / .sh): attached to a GitHub issue, never committed
+inferzero-kit-*.txt

@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-11-28 (unreleased): fixes from the audit of the GEMM inventory's tools
+
+- **`ARC_GEMM_PLAN=1`'s summary** has a memory line: the GPU memory the engine counts (what `--ctx auto` plans with)
+  against the device memory allocated on its GPU at that moment, with the GPU's number. A gap is a buffer the memory
+  plan does not count.
+- **The layer split (`--split layer`)** drafts on no stage: the last stage kept the MTP setting before, so
+  `runz --split layer --mtp` loaded the MTP block there while it said it decoded plainly (serverz cleared it already).
+- **`runz` on a split model** (`--gpus N`, `--split layer`) prints the `generation: N tokens` line as on one GPU.
+- **`tests/gemm_golden.ps1`**:
+  - the split rows were all ERROR since that line was required: they pass again, with the same hashes as before;
+  - a fusion row says whether its fused form ran (the `form` column: `taken`, `NOT TAKEN`, `-`), read from
+    `ARC_GEMM_PLAN=1`'s lines only; a row whose form did not run proves nothing, and the summary counts them;
+  - under `-Baseline`, a row the baseline lacks is `MISSING`, a baseline row not run is `GONE`, and a default model
+    not found counts as a failure;
+  - a `switch ARC_BATCH=64` row for the models without MoE.
+- **The contributor kit** (`bench\contrib_kit.ps1`, `bench/contrib_kit.sh`):
+  - it starts only when no other GPU job runs (a server of yours included), and stops only the server it started;
+  - the file also hides this folder (`<inferzero>`), the temporary folder (`<temp>`, its short 8.3 form too), the
+    computer's full DNS name, and any other absolute path (`<path>` plus the file name for a given model, else
+    `<file>`); gpu_guard's own lines are left out;
+  - a warning names any driver variables set (`ZE_*`, `IGC_*`, `NEO*`), which the runs keep;
+  - the memory step's lines appear once (they were doubled on Windows);
+  - on Linux the watchdog is called as `bash bench/gpu_guard.sh`, and every shell script is executable in git and in
+    the Linux package.
+- **The server's quick look at a model's architecture** (which decides whether to look for a DFlash2 drafter) reads
+  every key until `general.architecture`, skipping long strings and the vocabulary, instead of giving up after 32 keys
+  or at a string over 4 KiB.
+- **The engine's count of GPU memory** is atomic: the expert prefetch thread and a split model's shards change it while
+  another thread reads it.
+
 ## 2026-11-28 (unreleased): more fused forms in the golden test set
 
 - **`tests/gemm_golden.ps1`'s fusion rows** now also switch off the DeltaNet fusions (`ARC_GDN_FUSE=0`, every Qwen

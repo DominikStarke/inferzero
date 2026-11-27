@@ -294,8 +294,9 @@
   // so the weights are read once per step instead of once per slot; the parts that follow a sequence (DeltaNet conv
   // and recurrence, RoPE and the K/V write, attention) run per slot on its rows with its state (point_to). Then each
   // slot's MTP block KV / hidden state and DFlash2 context take their row. Returns the logits rows (row b: slot b).
-  // Dense and MoE Qwen models, Gemma 4 (its drafter's verification not batched: batch_verify_ok) and Flash Next (Flash Next without a drafter: its PLE token ids, conv and
-  // history and its QSA blocks per sequence too); every slot's drafts settled; up to 1 + max(drafts, slots - 1) rows.
+  // Dense and MoE Qwen models, Gemma 4 (its drafter's verification not batched: batch_verify_ok) and Flash Next
+  // (Flash Next without a drafter: its PLE token ids, conv and history and its QSA blocks per sequence too); every
+  // slot's drafts settled; up to 1 + max(drafts, slots - 1) rows.
   // The bound slot stays bound.
   bool batch_ok() const { return (!hp.hc || !has_mtp) && opt.attn_int8 && slot_ptrs_.size() > 1; }
   // (not the QSA 27B yet: its tails would need the roll-back per row of the batched pass)

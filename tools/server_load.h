@@ -78,40 +78,50 @@ struct Loaded {  // destroyed in reverse order: the server before the tokenizer 
   std::unique_ptr<Server> srv;
   std::string alias, path;
 };
-// general.architecture from the start of a GGUF's header, without parsing the rest: converters write general.* first,
-// so the read stops there, at most 32 keys in (a value it skips by its size; an array of strings, the vocabulary, is
-// never reached in practice: it ends the search). "" when not found or not a GGUF.
+// general.architecture from a GGUF's header, without parsing the rest: every key read until that one (converters
+// write general.* first, but nothing requires it), each other value skipped by its size, a string array (the
+// vocabulary) string by string. "" when not found, not a GGUF, or the header is damaged: a key count over 65,536, a
+// key or a string over 1 MiB, a nested array, or a read past the file's end (audit 2026-11-28).
 static std::string gguf_arch_peek(const std::string& path) {
   FILE* f = plat::fopen_path(std::filesystem::path(path), "rb");  // (the narrow name, as GgufFile opens it)
   if (!f) return "";
   struct Close { FILE* f; ~Close() { fclose(f); } } close{f};
   auto rd = [&](void* p, size_t n) { return fread(p, 1, n, f) == n; };
+  auto skip = [&](uint64_t n) { return n <= (1ull << 40) && plat::fseek64(f, (int64_t)n, SEEK_CUR) == 0; };
   char magic[4];
   uint32_t ver = 0;
   uint64_t nt = 0, nkv = 0;
   if (!rd(magic, 4) || memcmp(magic, "GGUF", 4) || !rd(&ver, 4) || !rd(&nt, 8) || !rd(&nkv, 8)) return "";
-  auto str = [&](std::string& s) {
-    uint64_t n = 0;
-    if (!rd(&n, 8) || n > 4096) return false;
-    s.resize((size_t)n);
-    return n == 0 || rd(&s[0], (size_t)n);
-  };
+  if (nkv > 65536) return "";
+  const uint64_t kMaxStr = 1ull << 20;
+  auto len = [&](uint64_t& n) { return rd(&n, 8) && n <= kMaxStr; };
   static const int sizes[13] = {1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8};  // (by GGUF value type; 8 string, 9 array)
-  for (uint64_t i = 0; i < nkv && i < 32; ++i) {
-    std::string key, val;
+  for (uint64_t i = 0; i < nkv; ++i) {
+    uint64_t n = 0;
+    std::string key;
     uint32_t t = 0;
-    if (!str(key) || !rd(&t, 4) || t > 12) return "";
+    if (!len(n)) return "";
+    key.resize((size_t)n);
+    if ((n && !rd(&key[0], (size_t)n)) || !rd(&t, 4) || t > 12) return "";
     if (t == 8) {
-      if (!str(val)) return "";
-      if (key == "general.architecture") return val;
+      if (!len(n)) return "";
+      if (key == "general.architecture") {
+        std::string val((size_t)n, '\0');
+        return n == 0 || rd(&val[0], (size_t)n) ? val : "";
+      }
+      if (!skip(n)) return "";
     } else if (t == 9) {
       uint32_t et = 0;
-      uint64_t n = 0;
-      if (!rd(&et, 4) || !rd(&n, 8) || et > 12 || et == 8 || et == 9) return "";  // (strings / nested: stop)
-      // (fseek's offset is a 32-bit long on Windows: an array over 1 GiB ends the search instead)
-      if (n > (1ull << 30) / sizes[et] || fseek(f, (long)(n * sizes[et]), SEEK_CUR)) return "";
-    } else if (fseek(f, sizes[t], SEEK_CUR)) {
-      return "";
+      uint64_t cnt = 0;
+      if (!rd(&et, 4) || !rd(&cnt, 8) || et > 12 || et == 9) return "";  // (nested arrays: never written; stop)
+      if (et == 8) {
+        for (uint64_t j = 0; j < cnt; ++j)
+          if (!len(n) || !skip(n)) return "";
+      } else if (cnt > (1ull << 40) / sizes[et] || !skip(cnt * sizes[et])) {
+        return "";
+      }
+    } else if (!skip(sizes[t])) {
+      return "";  // (a seek past the end succeeds: the next read fails, and ends the search there)
     }
   }
   return "";
