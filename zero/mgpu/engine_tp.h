@@ -301,7 +301,7 @@ inline bool Engine::tp_cancelled() {
 
 // MTP drafting over a split model's vocabulary rows (Engine::tp_draft_conf, engine_tp_shard.h): the shards' highest
 // logit and token, then their softmax sums. Two barriers, no GPU wait of its own: the logits are on the host already.
-inline void Engine::tp_draft_conf(const float* l, size_t nl, int& tok, double& p) {
+inline void Engine::tp_draft_conf(const float* l, size_t nl, int& tok, double& p, const std::vector<int>* ids) {
   TpComm& c = *tp_;
   const int r = opt.tp_rank, n = c.n;
   double mx = -1e30;
@@ -310,7 +310,8 @@ inline void Engine::tp_draft_conf(const float* l, size_t nl, int& tok, double& p
     if ((double)l[i] > mx) mx = l[i], at = i;
   double* sl = c.draft + (size_t)r * 4;
   sl[0] = mx;
-  sl[1] = (double)(tpv_.first + (int64_t)at);
+  // (a reduced draft head: the row's token; else the shard's vocabulary range, row 0 its first)
+  sl[1] = (double)(ids ? (*ids)[at] : tpv_.first + (int64_t)at);
   c.barrier(r);
   double gm = -1e30, gtok = 0;
   for (int k = 0; k < n; ++k)  // (rank order: a tie goes to the lower rank, as the whole vocabulary's first row)

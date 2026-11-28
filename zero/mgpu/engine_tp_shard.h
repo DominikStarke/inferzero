@@ -381,7 +381,8 @@
   // the highest logit over the shards, the token at it and the softmax sums, at two host barriers (TpComm::draft).
   // Every shard decides alike, so mtp_draft's chain stops at the same draft on all of them; `p` is the token's
   // probability in the whole vocabulary. (zero/engine_tp.h: TpComm is incomplete here)
-  void tp_draft_conf(const float* l, size_t nl, int& tok, double& p);
+  // `ids`: the reduced draft head's rows (ARC_MTP_VOCAB), row i the token ids[i]; null: the shard's whole range.
+  void tp_draft_conf(const float* l, size_t nl, int& tok, double& p, const std::vector<int>* ids = nullptr);
   // One sum's buffers: the residual rows it adds to and the partial output it sums; bg: on the sum thread
   // (ARC_TP_OVERLAP: its own kernels and command lists, no profiling)
   struct TpSum {
