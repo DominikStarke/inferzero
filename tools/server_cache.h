@@ -279,7 +279,8 @@
     prefix_dir_ = dir;
     prefix_cap_ = (uint64_t)(cap_gb * 1073741824.0);
   }
-  void open_sessions(const std::string& dir, double cap_gb) {
+  void open_sessions(const std::string& dir, double cap_gb, int per_conv = 3) {
+    kSavedPerConv_ = per_conv;  // (0: no limit beyond --session-cache-gb)
     sess_cap_ = (uint64_t)(cap_gb * 1073741824.0);
     if (!sess_cap_) return;
     sess_dir_ = dir;
@@ -438,10 +439,24 @@
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (see the line before); it is processed again when it comes back\n", cached_.size());
       return;
     }
-    // older states of the same conversation: everything they could resume, this one resumes too
-    for (size_t i = 0; i < saved_.size();)
-      if ((int)common_prefix(saved_[i].tokens, cached_) >= saved_[i].gen_cut) forget(i);
-      else ++i;
+    // older states of the same conversation: the last few stay, each one a fork point of its own. They hold a
+    // recurrent state at their own turn start, and that state cannot be recomputed from the newer one: a fork from
+    // an earlier turn needs it (2026-11-28: an earlier state resumable at 52,546 was deleted here, and a fork at
+    // 53,572 fell back to the system prompt's snapshot at 9,758). Beyond --session-states the oldest go, and the
+    // --session-cache-gb cap prunes the rest (least recently used first).
+    int same = 0;
+    for (const SavedConv& s : saved_)
+      if ((int)common_prefix(s.tokens, cached_) >= s.gen_cut) ++same;
+    while (kSavedPerConv_ > 0 && same >= kSavedPerConv_) {  // (the least recently used of them: the oldest fork point)
+      int lru = -1;
+      for (size_t i = 0; i < saved_.size(); ++i)
+        if ((int)common_prefix(saved_[i].tokens, cached_) >= saved_[i].gen_cut &&
+            (lru < 0 || saved_[i].used < saved_[(size_t)lru].used))
+          lru = (int)i;
+      if (lru < 0) break;
+      forget((size_t)lru);
+      --same;
+    }
     saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, nullptr, failed});
     uint64_t total = 0;
     for (auto& c : saved_) total += c.bytes;

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-28 (unreleased): a saved conversation keeps its turn starts, so a fork resumes there
+
+- **A turn's state is saved when the turn ends.** Before, a conversation reached the disk only once a later request
+  pushed it out of the engine, and that saved its *last* state alone. The recurrent state (DeltaNet) at an earlier
+  turn's start existed only in the GPU's three snapshot slots and was gone by then. Forking a conversation from an
+  earlier turn therefore found no resume point between the system prompt and the head: at 53,572 tokens the best
+  saved state resumed at 9,758, after a 64,806-token conversation's 4 turns had been saved. Now the state at the end
+  of every turn goes to the disk (0.5-0.7 s, behind the answer, off the request), and each is a fork point of its
+  own. Measured on the 27B: a fork at turn 2 of a 5-turn conversation resumed at 3,030 tokens instead of 1,683, and
+  the answer was token-identical to a run that processed the same prompt from scratch ("FORK", 25 of 2,517 prompt
+  tokens left to process against 2,517 cold).
+- **`--session-states N`** (new): how many saved states of one conversation are kept, default 3, 0 = no limit. The
+  old rule dropped every older state as soon as a newer one covered the same tokens, so one conversation could only
+  fork from its head. One state is ~0.8 GiB on the 27B over 4 GPUs (a 65,075-token conversation is 2.73 GiB, of
+  which 1.10 GiB is the KV cache a shard); `--session-cache-gb` still caps the total, oldest first.
+- Each state's save was already streaming to the disk a piece at a time (2026-11-27), so a turn's state costs one
+  piece of RAM, not the whole state.
+
 ## 2026-11-28 (unreleased): the RAM tier no longer runs a split model out of memory (PR #100)
 
 - **The RAM tier stops itself before Windows' limit.** On Windows, before the tier takes each new 1 GiB of pinned
