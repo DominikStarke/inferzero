@@ -127,6 +127,11 @@ static int run(int argc, char** argv) {
     else if (a == "--out") out = next();
     else if (a == "--quick") o.quick = true;
     else if (a == "--offsets") o.offsets = true;
+    else if (a == "--stage") {
+      o.stage = next();
+      if (o.stage != "all" && o.stage != "dense" && o.stage != "fused" && o.stage != "experts")
+        throw std::runtime_error("--stage all | dense | fused | experts");
+    }
     else if (a == "--seed") o.seed = std::stoull(next());
     else if (a == "--types") o.types = next();
     else if (a == "--reps") o.reps = std::max(1, std::stoi(next()));
@@ -135,6 +140,7 @@ static int run(int argc, char** argv) {
   if (!weights.empty()) return weights_stats(weights, out);
   if (model.empty()) {
     fprintf(stderr, "usage: gemm_check --model M.gguf [--out results.tsv] [--quick] [--seed N] [--types Q4_K,IQ3_S] [--reps N] [--offsets]\n"
+                    "                  [--stage all|dense|fused|experts]   (experts: a MoE model's, the 35B-A3B's)\n"
                     "       gemm_check --weights M.gguf [--weights N.gguf ...] [--out stats.tsv]   (no GPU: the rows' means)\n");
     return 1;
   }

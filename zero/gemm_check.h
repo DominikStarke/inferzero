@@ -25,6 +25,9 @@
     //  them (the min fitted to the scale); true, a random min a block, a mean far from 0: a stress for the forms that
     //  rotate (H8R's one scale a column then covers the mean))
     bool offsets = false;
+    // ("all"; "dense": the matrix products alone; "fused": the fused forms; "experts": a MoE model's experts alone, as
+    //  the 35B-A3B runs them, its expert cache leaving little room for the others)
+    std::string stage = "all";
   };
   struct GcRow {
     std::string type, shape, form, ref, kernels, status, note;
@@ -88,8 +91,10 @@
     std::vector<int> Ts = {1, 2, 8, 9, 127, 128, 129};
     if (mmax > 129) Ts.push_back(mmax);
     if (o.quick) Ts = {1, 2, 9, 128};
+    const bool dense = o.stage == "all" || o.stage == "dense", fused = o.stage == "all" || o.stage == "fused";
     for (uint32_t type : types)
       for (const Shape& s : shapes) {
+        if (!dense) break;
         // (a head-sized matrix: the GEMV of one token only, as the head's one-token decode; a prompt's head is 16 rows)
         const bool head = s.N > 100000;
         for (int T : Ts) {
@@ -132,7 +137,7 @@
           }
         }
       }
-    gc_fused(o, types, rows, tm, kmax, mmax);
+    if (fused) gc_fused(o, types, rows, tm, kmax, mmax);
     // (each prompt form's end-to-end error against the plain int8 form's, the one-token GEMV of the same type and shape:
     //  a rotation that does not match its weights', or a decode wrong on both sides, shows here and not in err)
     for (GcRow& r : rows) {
@@ -669,8 +674,24 @@
       e->w8_resident = true;
       struct Back { Engine* e; bool r; ~Back() { e->w8_resident = r; } } back{e, r0};
       w = e->make_weight(type, raw.data(), raw.size(), N, K, role);
+      // (a weight the engine keeps just in time even so (Q8_0 in a MoE model): stage buffers of its size for its role,
+      //  the engine's own put back after. Without them the 35B-A3B's FFN roles, which have none, decoded through a null
+      //  pointer and hung the GPU, 2026-11-28)
+      if (!w.wq) {
+        const int Kp = padded_k(K);
+        sq0 = e->stage_q_[role], sh0 = e->stage_h_[role], role_ = role;
+        sq = e->buf(w8_bytes_q(N, Kp));
+        sh = e->buf(w8_bytes_h(N, Kp) + 64);
+        e->stage_q_[role] = sq, e->stage_h_[role] = sh;
+      }
     }
+    cl_mem sq = nullptr, sh = nullptr, sq0 = nullptr, sh0 = nullptr;
+    int role_ = -1;
     ~GcW() {
+      if (role_ >= 0) {
+        e->stage_q_[role_] = sq0, e->stage_h_[role_] = sh0;
+        e->free_buf(sq), e->free_buf(sh);
+      }
       for (int i = 0; i < kRoles; ++i) e->stage_owner_[i] = nullptr, e->stage_h8_[i] = false, e->stage_packed_[i] = 0;
       auto it = e->h8_col_.find(&w);
       if (it != e->h8_col_.end()) { e->free_buf(it->second); e->h8_col_.erase(it); }
@@ -761,6 +782,7 @@
   std::vector<GcRow> gemm_check_moe(const GcOptions& o) {
     std::vector<GcRow> rows;
     if (!hp.moe || !hp.moe_std || hp.gemma || hp.hc || hp.ds41 || hp.inkling || layers_.empty()) return rows;
+    if (o.stage != "all" && o.stage != "experts") return rows;
     gc_gen_.gc_rng_ = o.seed * 0x9E3779B97F4A7C15ull + 7;
     const int E = hp.n_embd, NE = hp.n_expert, NU = hp.n_expert_used, tm = 16;
     const int Tbig = std::min(max_chunk, 1408) / tm * tm;  // (decode + GEMM: past ARC_MOE_RG_MAX's 1280)
@@ -862,7 +884,16 @@
  private:
   void gc_fused(const GcOptions& o, const std::vector<uint32_t>& types, std::vector<GcRow>& rows, int tm, int kmax, int mmax) {
     const int T0 = cur_T_;
-    struct Back { Engine* e; int t; ~Back() { e->cur_T_ = t; e->h8_pre_live_ = false; e->h8_last_K_ = -1; } } back{this, T0};
+    // (and the stage needs make_weight raises, as gc_case restores them: the engine's own stay as the load set them)
+    struct Back {
+      Engine* e;
+      int t;
+      std::vector<size_t> q, h;
+      ~Back() {
+        e->cur_T_ = t, e->h8_pre_live_ = false, e->h8_last_K_ = -1;
+        std::copy(q.begin(), q.end(), e->stage_need_q_), std::copy(h.begin(), h.end(), e->stage_need_h_);
+      }
+    } back{this, T0, std::vector<size_t>(stage_need_q_, stage_need_q_ + kRoles), std::vector<size_t>(stage_need_h_, stage_need_h_ + kRoles)};
     const int reps = o.quick ? 2 : 6;  // (random sizes a form)
     const float eps = hp.eps;
     (void)eps;

@@ -1277,6 +1277,12 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh, bool iq3t = false, bool mins = false) {
     // (the W8 layout is in groups of 16 rows: a partial last group would write past w8_bytes_q / w8_bytes_h)
     if (N % 16) throw std::runtime_error("decode_w8: N = " + std::to_string(N) + " is not a multiple of 16");
+    // (no buffer to decode into, or too small for it: an error, not a launch. A matrix decoded just in time for a role
+    //  with no stage buffer (a role the load sized none for) wrote through a null pointer and hung the GPU for minutes
+    //  (tools/gemm_check.cpp on the 35B-A3B, 2026-11-28); no model reaches it today)
+    if (!dq || !dh || dq->size < w8_bytes_q(N, K))
+      throw std::runtime_error("decode_w8: no buffer of " + std::to_string(w8_bytes_q(N, K)) + " bytes to decode " +
+                               std::to_string(N) + " x " + std::to_string(K) + " into");
     // big-codebook types decode faster per superblock with the codebook in local memory; the rest per 32-block
     // one work-item per (row, superblock): the superblock is vector-loaded into registers and the codebook staged in
     // local memory (27B, 11K prompt: IQ3_S / IQ4_XS / IQ3_XXS 5.8 -> 2.2 s than a per-32-block kernel)
