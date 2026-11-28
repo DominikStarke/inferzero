@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-28 (unreleased): the RAM tier no longer runs a split model out of memory (PR #100)
+
+- **The RAM tier stops itself before Windows' limit.** On Windows, before the tier takes each new 1 GiB of pinned
+  RAM, it reads how much RAM the GPU maps now. It stops growing a few GiB before the limit (budget / the number of
+  GPUs on a split model), with one line saying so: "the RAM tier stopped at X GiB". The tier fills while the model
+  runs, so a size set too big now costs speed instead of a crash or a hang. 4 Pro B60s with DeepSeek-V4.1-Flash and
+  the automatic size (49.1 GiB a GPU) ran out of memory or hung at 204.5-205.5 GiB mapped; 47 GiB a GPU ran.
+- **The automatic size of a split model** subtracts what the GPUs map outside the tier: every GPU's expert staging
+  (2.2 GiB each there), the sums' buffers and a little more, not only the memory in use when GPU 0 asks (0.0 there:
+  the other GPUs had not made their staging yet). The margin grows with the budget: 8 GiB or 5 %, whichever is more.
+  On that machine: 46.0 GiB a GPU. One GPU: the same, with a margin of 4 GiB or 2.5 %. The checks are plain
+  functions (`zero/xram_plan.h`), tested with these machines' numbers by `tests/test_xram_plan.cpp`, no GPU needed.
+- **A size set by hand** (`--expert-ram-gb`, `ARC_XRAM_GB`) above that is capped to it, with a line, as before; the
+  new estimate makes that line appear at 48 GiB a GPU there. The stop above applies to it too.
+- **serverz's start line marks a switch no program reads:** `ARC_* switches set: ... (unknown: no program reads it,
+  ignored)`, so a mistyped name shows in the log. The list is `src/arc_switches.h`, written by
+  `scripts\gen-switch-list.ps1`; `tests\test_switch_list.ps1` checks that it is current.
+
 ## 2026-11-28 (unreleased): `gemm_check`, today's matrix kernels against CPU references
 
 - **`bin\gemm_check`** (new, `tools/gemm_check.cpp` with `zero/gemm_check.h`): checks the engine's matrix products

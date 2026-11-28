@@ -13,6 +13,7 @@
 #include "../src/gguf.h"
 #include "../src/quants.h"
 #include "xe2/cpu_experts.h"  // (CPU dot products for expert rows in their GGUF blocks, ARC_XCPU: zero/xe2/engine_xcpu.h)
+#include "xram_plan.h"  // (the RAM tier's room and its runtime guard, pure functions: engine_stream.h, tests/test_xram_plan.cpp)
 #include "../src/json.h"
 #include "../src/load_progress.h"
 #include <algorithm>

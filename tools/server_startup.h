@@ -15,6 +15,7 @@ extern char** environ;
 #include <map>
 #include <string>
 #include <vector>
+#include "../src/arc_switches.h"  // (every ARC_* name a program reads: the switches line marks one no program does)
 
 namespace srvstart {
 
@@ -112,7 +113,14 @@ inline std::string switches() {
 #endif
     for (char& c : v)
       if ((unsigned char)c < 0x20) c = '?';
-    o += (o.empty() ? "" : " ") + k + "=" + (secret ? std::string("(set)") : v);
+    // (a name no program here reads: marked, so a mistyped switch shows in the log the user pastes (PR #100: a tier
+    //  size set under a wrong name stayed automatic, unseen). The list: src/arc_switches.h, scripts/gen-switch-list.ps1;
+    //  Windows' names in any case, the list's in upper case)
+    std::string kn = k;
+    for (char& c : kn) c = (char)toupper((unsigned char)c);
+    bool known = false;
+    for (std::string_view s : kArcSwitches) known = known || s == kn;
+    o += (o.empty() ? "" : " ") + k + "=" + (secret ? std::string("(set)") : v) + (known ? "" : " (unknown: no program reads it, ignored)");
   }
   return o.empty() ? "none" : o;
 }

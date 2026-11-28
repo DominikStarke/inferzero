@@ -189,6 +189,7 @@ function Unit($name, $exe, [string[]]$argv, $pattern) {
 Unit "PowerShell scripts parse in 5.1 and 7, text read as UTF-8" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_ps_compat.ps1") "test_ps_compat: all passed"
 Unit "The launchers' option catalog is consistent (tips, relations, applies, variants)" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_launcher_options.ps1") "test_launcher_options: all passed"
 Unit "The launchers' switches: greyed with the right reason, every switch with a tip" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_launcher_switches.ps1") "test_launcher_switches: all passed"
+Unit "The list of ARC_* switches the programs read is current (src/arc_switches.h)" (Get-Command powershell).Source @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tests\test_switch_list.ps1") "is current"
 Unit "HTTP parser (malformed requests)" .\bin\test_http.exe @() "test_http: all passed"
 Unit "API compatibility" .\bin\test_api_compat.exe @() "all passed"
 Unit "web tools (HTML to text, result parsing, address filter)" .\bin\test_web_tools.exe @() "test_web_tools: all passed"
@@ -198,6 +199,7 @@ if (Test-Path .\bin\test_office.exe) { Unit "Excel XLSX read and written, PowerP
 if (Test-Path .\bin\test_pdf_scan.exe) { Unit "scanned PDF pages as images (JPEG, raw, CCITT)" .\bin\test_pdf_scan.exe @() "test_pdf_scan: all passed" }
 if (Test-Path .\bin\test_audio.exe) { Unit "audio: streamed resampling, WAV, MP4 start delay, Ogg Opus" .\bin\test_audio.exe @() "test_audio: all passed" }
 Unit "expert cache pools" .\bin\test_xcache_pools.exe @() "ALL OK"
+Unit "the RAM tier's room and its runtime guard (PR #100's numbers)" .\bin\test_xram_plan.exe @() "ALL OK"
 if (Test-Path .\bin\test_json.exe) { Unit "JSON parser (numbers, escapes, repeated keys)" .\bin\test_json.exe @() "test_json: all passed" }
 if (Test-Path .\bin\test_sampler.exe) { Unit "sampler" .\bin\test_sampler.exe @() "ALL OK" }
 Unit "tool call streaming" .\bin\tool_stream_test.exe @("3000") "ALL OK"
