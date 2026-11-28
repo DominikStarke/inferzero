@@ -10,7 +10,8 @@
 - **The automatic size of a split model** subtracts what the GPUs map outside the tier: every GPU's expert staging
   (2.2 GiB each there), the sums' buffers and a little more, not only the memory in use when GPU 0 asks (0.0 there:
   the other GPUs had not made their staging yet). The margin grows with the budget: 8 GiB or 5 %, whichever is more.
-  On that machine: 46.2 GiB a GPU. One GPU: the same, with a margin of 4 GiB or 2.5 %.
+  On that machine: 46.0 GiB a GPU. One GPU: the same, with a margin of 4 GiB or 2.5 %. The checks are plain
+  functions (`zero/xram_plan.h`), tested with these machines' numbers by `tests/test_xram_plan.cpp`, no GPU needed.
 - **A size set by hand** (`--expert-ram-gb`, `ARC_XRAM_GB`) above that is capped to it, with a line, as before; the
   new estimate makes that line appear at 48 GiB a GPU there. The stop above applies to it too.
 - **serverz's start line marks a switch no program reads:** `ARC_* switches set: ... (unknown: no program reads it,

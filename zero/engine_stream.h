@@ -5,12 +5,14 @@
   // The RAM tier's room on Windows (PR #100, 2026-11-28): zero/xram_plan.h's pure functions (tested on the host,
   // tests/test_xram_plan.cpp), fed what this engine knows it maps outside the tiers: every GPU's expert staging (made by
   // each GPU's xc_->init, so N times this one's on a split, whichever GPUs have made theirs yet) and a split's sum
-  // buffers (max_chunk is set after this, so the option's chunk or the largest default).
-  // manoreken2's 4 Pro B60s, DeepSeek-V4.1-Flash Q8_K_XL: staging 2,295 MiB a GPU; budget 818 / 4 = 204.5, less 9.5
-  // and a margin of 10.2 (5 %): 184.8 in all, 46.2 a GPU, under the 47 that ran (48 failed); the old "in use, read on
+  // buffers (max_chunk is set after this: the option's chunk, or the largest any plan picks for a streamed model, 8,192
+  // (Inkling 2 on a card with 30 GiB or more), and --min-chunk's if larger, so the estimate errs high; the Researcher's
+  // review of c85d0d9: a card's own 8,192 has bigger sum buffers than a default of 4,096 counted).
+  // manoreken2's 4 Pro B60s, DeepSeek-V4.1-Flash Q8_K_XL: staging 2,295 MiB a GPU; budget 818 / 4 = 204.5, less 10.2
+  // (the sums at 8,192 rows) and a margin of 10.2 (5 %): 184.1 in all, 46.0 a GPU, under the 47 that ran (48 failed); the old "in use, read on
   // GPU 0" was 0.0 there and gave 49.1
   uint64_t xram_known_mapped() const {
-    const uint64_t chunk = opt.chunk > 0 ? (uint64_t)opt.chunk : hp.ds41 ? 1024 : 4096;
+    const uint64_t chunk = (uint64_t)std::max(opt.chunk > 0 ? opt.chunk : 8192, opt.min_chunk);
     return xram::known_mapped(opt.tp_size, tp_on(), xc_ ? xc_->stage_bytes : 0, chunk, (uint64_t)hp.n_embd);
   }
   void open_experts() {
@@ -187,6 +189,12 @@
       const int rank = tp_on() ? opt.tp_rank : -1;  // (a split: each GPU's tier stops on its own, its line names it)
       // (the decision itself: zero/xram_plan.h may_take, tested on the host, tests/test_xram_plan.cpp)
       xc_->st.ram_alloc = [zc = xc_->zc, Ng, rank, pinned, said = std::make_shared<std::atomic<bool>>(false)](size_t n) -> char* {
+        // (the check and the allocation one step for the whole process: a split's GPUs fill their tiers on threads of
+        //  their own, and N pieces passing the same check together are N GiB, the guard's whole margin on 4 GPUs; the
+        //  Researcher's review of c85d0d9. One closure type for every GPU's engine, so one mutex; a 1 GiB host allocation
+        //  now and then need not run in parallel)
+        static std::mutex mu;
+        std::lock_guard<std::mutex> lock(mu);
         uint64_t nb = 0, nu = 0;
         if (zrt::video_budget(nb, nu, true) && !xram::may_take(nb, nu, Ng, Ng > 1, n)) {
           if (!said->exchange(true))

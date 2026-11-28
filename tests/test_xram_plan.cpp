@@ -11,10 +11,12 @@ static uint64_t gib(double g) { return (uint64_t)(g * GiB); }
 int main() {
   using namespace xram;
   // manoreken2 (PR #100): 4 Pro B60s, Windows' non-local budget 818.15 GiB, staging 2,295 MiB a GPU, DeepSeek-V4.1's
-  // n_embd 4096, chunk 1024; "in use" read on GPU 0 as 0.0 before GPUs 1-3 made their staging
+  // n_embd 4096; the chunk as engine_stream.h counts it, the largest a plan picks (8,192: its sums 1 GiB, erring high;
+  // his own is 1,024); "in use" read on GPU 0 as 0.0 before GPUs 1-3 made their staging
   const uint64_t budget = gib(818.15), staging = 2295ull << 20;
-  const uint64_t known = known_mapped(4, true, staging, 1024, 4096);
-  CHECK(known > gib(9.2) && known < gib(9.5));  // (4 x (2.24 + 0.0625) + 0.125)
+  const uint64_t known = known_mapped(4, true, staging, 8192, 4096);
+  CHECK(known > gib(10.1) && known < gib(10.3));  // (4 x (2.24 + 0.0625) + 1.0)
+  CHECK(known_mapped(4, true, staging, 1024, 4096) < known);  // (his own chunk: smaller sums)
   const Room r = room(budget, 0, known, 4, true);
   printf("4 B60s: top %.2f, mapped %.2f, margin %.2f, %.2f in all, %.2f a GPU\n", r.top / GiB, r.used / GiB, r.margin / GiB,
          r.total / GiB, r.per_gpu / GiB);
