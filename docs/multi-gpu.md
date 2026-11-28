@@ -733,6 +733,103 @@ is one pointer test (logits bit-identical to the build before). A request's canc
 shard 0 and its answer shared, so every shard stops at the same point.
 
 Not with `--gpus` yet: DFlash2, images, the prompt and session caches on disk, the warm-up.
+Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up.
+Not with `--gpus` yet: DFlash2, images, the warm-up. The prompt and session caches on disk **are** back since
+2026-11-25 (see "The caches on disk" below).
+
+## The caches on disk on a split model (2026-11-25)
+
+`serverz --gpus N` keeps the system-prompt cache again (`--prefix-cache-gb`, on by default); it was off for a split
+model since 2026-11-03, when the split was new. Saved conversations (`--session-cache-gb`) stay off for a split: see
+the last paragraph here.
+
+**Why it needed more than switching them on.** A split model's state is not one engine's: each shard holds its own
+rows of every KV cache and its own DeltaNet states. `Engine::save_state` / `load_state` write and read one engine's
+part, and they are not `TpMirror` calls — a mirrored call runs on shards 1..n-1 at the same time as shard 0's own,
+so every shard would write into the same `FILE*` at once (a 2-GPU server died of that on the first try, 2026-11-25).
+
+So the state goes out **one shard after the other, in rank order** (`Engine::save_state_mirrored`,
+`zero/mgpu/engine_tp.h`): each shard writes its part with `tp_engine_` cleared, so it writes its own rows and not the
+split's again. A load reads them back in the same order. The file therefore holds the whole model's state, and its
+size is the sum of the shards'.
+
+**Measured** (Swift-1.5-Qwen3.8-27B Q4_K_M, 2 Arc Pro B60s, `--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system
+prompt, the same prompt in every start):
+
+| Start | prompt | of it cached | time to first token |
+|---|---|---:|---|
+| 1 (cold) | 2,659 tokens | 0 | **2.19 s** |
+| 2 | 2,659 tokens | 2,643 | **0.63 s** |
+| 3 | 2,659 tokens | 2,643 | **0.63 s** |
+
+3.5x faster to the first token, the answer the same ("Paris"); the cache file is 239 MB and takes 0.34 s to write
+and 0.38 s to load. As on one GPU it only hits when the system prompt is identical.
+
+`--split layer` keeps the system-prompt cache off too: its stages are separate engines with state files of their
+own, not one mirrored call, so a layer split says so once at start.
+
+**Saved conversations (`--session-cache-gb`) work the same way**, and they need the KV caches: they *are* the context.
+Two things had to change for that, both in `zero/mgpu/engine_tp.h`:
+
+- **Every shard writes and reads its part at the same time** (`TpEngine::save_parts_run_all` /
+  `load_parts_run_all`). Shard 0 runs on the calling thread, the others on their own, each into a buffer of its own, and
+  the buffers go to the stream in rank order with a length in front. Doing it one shard after the other held the peers
+  at a sum's barrier until the 120 s timeout — four forms were tried in one afternoon: a segfault from all shards
+  writing one `FILE*`, a machine out of RAM, a deadlock from barriers wrapped around the save, and the timeout again.
+- **The calls inside `load_state` that carry a `TpMirror` have local forms** (`reset_local`, `drop_snapshot_local`,
+  `drop_host_snapshot_local`). Every shard is in `load_state` at once, so a mirrored call there ran a job on peers that
+  were inside the same call: the load failed, and a conversation restored from only the recurrent states put the model
+  at a position whose attention saw nothing — it then repeated itself endlessly.
+
+Measured on 2 B60s: an 8K conversation is 871 MB, 1.5 s to save, 0.9 s to load, with 7,951 of 7,956 prompt tokens
+reusable and the same answer across the restart. Going back to a conversation after another one in between: 3,990 of
+3,995 tokens from the cache, 0.57 s.
+
+**What a save costs in RAM (2026-11-27).** The state goes to the disk **as it is read off the GPUs**, a piece at a
+time: `segs_out` reads 256 MB batches into a buffer of their own, and each goes straight to a writer thread that
+writes it and lets it go. The save therefore holds one piece plus the writer's queue (at most 1 GiB), whatever the
+conversation's length. Before, the whole state was collected in host memory first — and before the fix of the same
+day, twice: at a 256K conversation the 9 GiB state needed 18 GiB and the save failed with `std::bad_alloc`.
+
+| conversation | state on disk | peak RSS of the save |
+|---|---:|---:|
+| 32K tokens | 1.66 GiB | **+0.7 GiB**, 1.6 s |
+| 128K tokens | 4.90 GiB | **+0.35 GiB**, 3.2 s |
+| 256K tokens | 9.22 GiB | **+0.5 GiB**, 4.5 s |
+
+The peak does not grow with the conversation: it is the 256 MB piece, the queue and the writer's own buffers. The
+saved file is byte-identical to the one the whole-state path wrote (md5 `7ab0d8969f740536c7459f59d0507d1b` at 32K,
+`b30a5983d6effe99da680314cfeabe02` at 128K).
+
+On a split model the sink must see the shards' parts in rank order while every shard reads at the same time: shard 0
+streams straight into the sink, the others write their part to a temp file of its own and it is streamed in
+afterwards, a piece at a time. No shard's part is ever held whole in RAM.
+
+The size is 34.5 KiB a token (int8 KV: 17 layers with a KV cache, 4 kv heads, 256-wide heads, 520 bytes a head and
+position) plus 598 MiB of DeltaNet states, which do not grow with the context. A save that does not fit is a warning
+line and the conversation is processed again next time; it is not a failed request.
+
+`--split layer` keeps both off, as its stages are engines of their own.
+
+**Forking from an earlier turn (2026-11-28).** A saved conversation used to reach the disk only when a later request
+pushed it out of the engine, and that saved its *last* state alone: the rule that pruned older ones
+(`common_prefix(saved.tokens, cached_) >= saved.gen_cut`) dropped every earlier state at the same moment. The
+recurrent state at an earlier turn's start exists only in the GPU's snapshot slots and the next turn overwrites it,
+so a fork from an earlier turn had nothing to resume from but a shared system prompt. On a split this is worse than
+on one GPU, because every shard's copy has to be there.
+
+Now the state at the end of **every turn** is saved (`Server::save_turn_state`), each a fork point of its own, and
+`--session-states N` (default 3, 0 = no limit) says how many of one conversation's stay.
+
+| fork at | reusable before | reusable after |
+|---|---:|---:|
+| turn 2 of 5 | 1,683 | **3,030** of 3,060 |
+| turn 4 of 5 | 1,683 | **4,386** of 4,416 |
+
+Measured from a real 4-GPU state (65,075 tokens, 2,929,509,424 B): a shard's part is 1,097.4 MB of KV cache and
+313.9 MB of recurrent state plus 3 snapshots, so one snapshot is ~100 MiB a shard — a state of its own is ~0.8 GiB
+over 4 GPUs.
+
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
 B60s 1,298.9 -> 1,368.8 tok/s, 4 Pro B60s 1,629.6 -> 1,734.0; a 27B IQ4_XS 32K prompt over two Arcs, the second

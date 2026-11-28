@@ -13,11 +13,22 @@
   }
   // save_state() writes through `out` (a file, or memory for a write in the background); saved_size() is its length.
   using Sink = std::function<bool(const void*, size_t)>;
+  // the way in again (Sink is the way out): a file, or a shard's own bytes of a split model's state
+  using Source = std::function<bool(void*, size_t)>;
+  // (a split model: every shard's state, in rank order; defined in zero/mgpu/engine_tp.h where TpEngine is complete)
+  template <class Out_>
+  bool save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot);
+  bool load_state_mirrored(FILE* f);
+  // (a split model: every shard's part, summed; defined in zero/mgpu/engine_tp.h where TpEngine is complete)
+  size_t saved_size_split(int keep_from);
   // host_snapshot = false: without the host snapshot (a state saved exactly where it was taken holds it already)
   bool save_state(FILE* f, int keep_from, bool host_snapshot = true) {
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
   }
   size_t saved_size(int keep_from) {
+    // (a split model: the shards' parts together, each with its length in front -- the server reserves its buffer with
+    //  this before a save, and shard 0's own part alone would be a fraction of it)
+    if (tp_engine_) return saved_size_split(keep_from);  // (zero/mgpu/engine_tp.h)
     if (hp.inkling) return 0;  // (Inkling 2: its 48 cache slots and conv states are not saved yet, zero/engine_inkling.h)
     if (hp.ds41) return ds_saved_size();  // (DeepSeek-V4.1: a layout of its own, zero/engine_ds41.h)
     if (!opt.attn_int8) return 0;
@@ -33,6 +44,9 @@
     return n;
   }
   bool save_state(const Sink& out, int keep_from, bool host_snapshot = true) {
+    // (a split model: TP_MIRROR would run this on every shard at once, and they would all write into the same stream.
+    //  TpEngine::save_state_split drives them one after the other in rank order instead)
+    if (tp_engine_) return save_state_mirrored(out, keep_from, host_snapshot);  // (zero/mgpu/engine_tp.h)
     if (hp.inkling) return false;  // (as saved_size)
     if (hp.ds41) return ds_save_state(out, host_snapshot);
     if (!opt.attn_int8) return false;
@@ -47,23 +61,55 @@
     }
     return ok;
   }
+  // (tests, ARC_STATE_CMP=1: a hash of every byte save_state would write, so a save/load round trip can be compared
+  //  without a model rerun -- zero/mgpu/engine_tp.h's save path sums it over the shards)
+  uint64_t state_hash(int keep_from) {
+    std::vector<int32_t> hdr;
+    std::vector<Seg> segs;
+    save_layout(keep_from, hdr, segs);
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const void* p, size_t n) {
+      const uint8_t* b = (const uint8_t*)p;
+      for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    };
+    mix(hdr.data(), hdr.size() * 4);
+    uint64_t total = 0;
+    segs_out(segs, [&](const void* p, size_t n) {
+      mix(p, n);
+      total += n;
+      return true;
+    });
+    mix(&total, sizeof total);
+    return h;
+  }
   bool load_state(FILE* f) {
+    if (tp_engine_) return load_state_mirrored(f);  // (zero/mgpu/engine_tp.h)
+    return load_state([f](void* p, size_t n) { return fread(p, 1, n, f) == n; });
+  }
+  bool load_state(const Source& in) {
     if (hp.inkling) return false;  // (as saved_size: nothing of it was saved)
-    reset();
-    for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);
-    drop_host_snapshot();
-    if (hp.ds41) return ds_load_state(f);
+    reset_local();  // (not reset(): on a split every shard is in load_state at the same time, and reset()'s TpMirror
+                    //  would run a job on peers that are inside this same call)
+    for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot_local(i);
+    drop_host_snapshot_local();
+    if (hp.ds41) return false;  // (its own layout reads a FILE*, not a Source)
     if (!opt.attn_int8) return false;
     const auto kl = kv_layers();
     std::vector<int32_t> hdr(11);
-    if (!get(f, hdr.data(), hdr.size() * 4)) return false;
+    if (!get(in, hdr.data(), hdr.size() * 4)) return false;
     const int spos = hdr[7], swh = hdr[8], slo = hdr[9];
     if (hdr[0] != kStateMagic || hdr[1] != 2 || hdr[2] != hp.n_layer || hdr[3] != hp.n_embd || hdr[4] != hp.n_vocab ||
         hdr[5] != state_flags() || hdr[6] != (has_mtp ? 1 : 0) || hdr[10] != (int)kl.size() || spos < 0 ||
-        spos > ctx || swh < 0 || swh > ctx || slo < 0)
+        spos > ctx || swh < 0 || swh > ctx || slo < 0) {
+      if (getenv("ARC_STATE_CMP"))
+        zlog::eprintf("inferzero: load_state refused: magic %d/%d, v %d/%d, layer %d/%d, embd %d/%d, vocab %d/%d, "
+                      "flags %d/%d, mtp %d/%d, kvlayers %d/%d, pos %d (ctx %d), slo %d\n",
+                      hdr[0], kStateMagic, hdr[1], 2, hdr[2], hp.n_layer, hdr[3], hp.n_embd, hdr[4], hp.n_vocab,
+                      hdr[5], state_flags(), hdr[6], has_mtp ? 1 : 0, hdr[10], (int)kl.size(), spos, ctx, slo);
       return false;
+    }
     std::vector<int32_t> geo(kl.size() * 5);
-    if (!get(f, geo.data(), geo.size() * 4)) return false;
+    if (!get(in, geo.data(), geo.size() * 4)) return false;
     std::vector<std::pair<int, int>> br;
     for (size_t i = 0; i < kl.size(); ++i) {
       const int* q = &geo[i * 5];
@@ -74,24 +120,24 @@
       br.push_back({q[3], q[4]});
     }
     int32_t ns = 0, hpos = -1;
-    if (!get(f, &ns, 4) || ns < 0 || ns > 8) return false;
+    if (!get(in, &ns, 4) || ns < 0 || ns > 8) return false;
     std::vector<int> sp(ns);
-    if (!get(f, sp.data(), (size_t)ns * 4) || !get(f, &hpos, 4) || hpos < -1 || hpos > ctx) return false;
+    if (!get(in, sp.data(), (size_t)ns * 4) || !get(in, &hpos, 4) || hpos < -1 || hpos > ctx) return false;
     for (int i = 0; i < ns; ++i)  // (snapshot positions: -1 (none) or within the context, else a damaged file)
       if (sp[i] < -1 || sp[i] > ctx) return false;
     for (int i = 0; i < ns; ++i)
       if (sp[i] >= 0) snap_slot(i);
-    bool ok = segs_in(state_segs(kl, br, sp), f);
+    bool ok = segs_in(state_segs(kl, br, sp), in);
     if (ok && hpos >= 0) {
       for (auto& L : layers_)
         if (hp.recurrent(L.il)) {
           hsnap_.S.emplace_back(state_bytes());
           hsnap_.S.emplace_back(conv_bytes());
         }
-      for (auto& v : hsnap_.S) ok = ok && get(f, v.data(), v.size());
+      for (auto& v : hsnap_.S) ok = ok && get(in, v.data(), v.size());
       if (has_mtp) {
         hsnap_.h.resize((size_t)hp.n_embd * 4);
-        ok = ok && get(f, hsnap_.h.data(), hsnap_.h.size());
+        ok = ok && get(in, hsnap_.h.data(), hsnap_.h.size());
       }
     }
     if (!ok) {
@@ -285,6 +331,7 @@
   static bool put(FILE* f, const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }
   static bool put(FILE* f, const std::vector<uint8_t>& v) { return put(f, v.data(), v.size()); }
   static bool get(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
+  static bool get(const Source& in, void* p, size_t n) { return in(p, n); }
   Snap& snap_slot(int slot) {  // GPU snapshot slot with its buffers allocated (as snapshot() does)
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
     Snap& s = snaps_[slot];
@@ -417,10 +464,11 @@
     }
   }
   bool segs_out(const std::vector<Seg>& segs, const Sink& out) {
-    std::vector<uint8_t> hb;
+    // (a buffer of its own per batch, not one reused: the sink may keep the bytes (the session cache hands each piece
+    //  to its writer thread), and a reused buffer would be overwritten under it)
     bool ok = true;
     batches(segs, [&](size_t i, size_t j, size_t n) {
-      hb.resize(n);
+      std::vector<uint8_t> hb(n);
       size_t o = 0;
       for (size_t k = i; k < j; o += segs[k++].n)
         if (segs[k].n)
@@ -431,11 +479,14 @@
     return ok;
   }
   bool segs_in(const std::vector<Seg>& segs, FILE* f) {
+    return segs_in(segs, [f](void* p, size_t n) { return fread(p, 1, n, f) == n; });
+  }
+  bool segs_in(const std::vector<Seg>& segs, const Source& in) {
     std::vector<uint8_t> hb;
     bool ok = true;
     batches(segs, [&](size_t i, size_t j, size_t n) {
       hb.resize(n);
-      if (!(ok = get(f, hb.data(), n))) return false;
+      if (!(ok = get(in, hb.data(), n))) return false;
       size_t o = 0;
       for (size_t k = i; k < j; o += segs[k++].n)
         if (segs[k].n)

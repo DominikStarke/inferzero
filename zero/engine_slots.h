@@ -148,10 +148,121 @@
     hsnap_.pos = pos;
   }
   int host_snapshot_pos() const { return hsnap_.pos; }
+  // The host snapshot on disk, byte for byte (zero/mgpu/engine_tp.h writes every shard's, in rank order): a split
+  // model's state is every shard's, and this is the form small enough to carry -- a 27B's recurrent states are ~13 MB
+  // a shard against the ~700 MB of save_state's KV caches, which is why a split can save these between two steps of a
+  // request and cannot save those.
+  // (a split model: every shard's part, in rank order; zero/mgpu/engine_tp.h)
+  template <class Out_>
+  bool save_host_snapshot_split(const Out_& out) const;
+  bool load_host_snapshot_split(FILE* f);
+  template <class Out_>
+  bool save_host_snapshot(const Out_& out) const {
+    const int32_t pos = hsnap_.pos, ns = (int32_t)hsnap_.S.size();
+    if (!out(&pos, 4) || !out(&ns, 4)) return false;
+    for (const auto& v : hsnap_.S) {
+      const int64_t n = (int64_t)v.size();
+      if (!out(&n, 8) || (n && !out(v.data(), (size_t)n))) return false;
+    }
+    const int64_t hn = (int64_t)hsnap_.h.size();
+    if (!out(&hn, 8) || (hn && !out(hsnap_.h.data(), (size_t)hn))) return false;
+    return true;
+  }
+  // (a split model: every shard's part, in rank order; zero/mgpu/engine_tp.h)
+  template <class Out_>
+  bool save_snap_split(const Out_& out, int slot);
+  bool load_snap_split(FILE* f, int slot);
+  // A VRAM snapshot slot (snapshot(slot)'s buffers) read into host memory and back: the session cache keeps the
+  // snapshots a request takes at its turn's start too, so a conversation that comes back resumes at the last turn
+  // instead of at its first prompt. A slot with no snapshot writes pos = -1 and nothing else.
+  template <class Out_>
+  bool save_snap(const Out_& out, int slot) {
+    const int32_t pos = snapshot_pos(slot);
+    if (!out(&pos, 4)) return false;
+    if (pos < 0) return true;
+    const int32_t ns = (int32_t)(slot < (int)snaps_.size() ? snaps_[slot].S.size() : 0);
+    if (!out(&ns, 4)) return false;
+    Snap& s = snaps_[slot];
+    if (s.pos < 0) return true;
+    const size_t sb = state_bytes();
+    std::vector<std::vector<uint8_t>> S, C;
+    for (size_t i = 0; i < s.S.size(); ++i) {
+      S.push_back(read_buf(s.S[i], sb));
+      C.push_back(read_buf(s.conv[i], conv_bytes()));
+    }
+    for (size_t i = 0; i < S.size(); ++i) {
+      const int64_t n = (int64_t)S[i].size(), m = (int64_t)C[i].size();
+      if (!out(&n, 8) || (n && !out(S[i].data(), (size_t)n))) return false;
+      if (!out(&m, 8) || (m && !out(C[i].data(), (size_t)m))) return false;
+    }
+    std::vector<uint8_t> h;
+    if (s.h) h = read_buf(s.h, mtp_hw() * 4);
+    const int64_t hn = (int64_t)h.size();
+    if (!out(&hn, 8) || (hn && !out(h.data(), (size_t)hn))) return false;
+    return true;
+  }
+  bool load_snap(FILE* f, int slot) {
+    int32_t pos = -1;
+    if (fread(&pos, 4, 1, f) != 1) return false;
+    if (pos < 0) return true;  // (nothing was saved for this slot)
+    int32_t ns = 0;
+    if (fread(&ns, 4, 1, f) != 1 || ns < 0 || ns > 4096) return false;
+    if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
+    Snap& s = snaps_[slot];
+    const size_t sb = state_bytes(), cb = conv_bytes();
+    if (s.S.empty())
+      for (auto& L : layers_)
+        if (hp.recurrent(L.il)) {
+          s.S.push_back(buf(sb));
+          s.conv.push_back(buf(cb));
+        }
+    if ((int)s.S.size() != ns) return false;  // (another model's or another layout's: not this one's state)
+    for (size_t i = 0; i < s.S.size(); ++i) {
+      int64_t n = 0, m = 0;
+      if (fread(&n, 8, 1, f) != 1 || n < 0 || n > ((int64_t)1 << 32)) return false;
+      std::vector<uint8_t> v((size_t)n);
+      if (n && fread(v.data(), 1, (size_t)n, f) != (size_t)n) return false;
+      write_buf(s.S[i], v);
+      if (fread(&m, 8, 1, f) != 1 || m < 0 || m > ((int64_t)1 << 32)) return false;
+      std::vector<uint8_t> w((size_t)m);
+      if (m && fread(w.data(), 1, (size_t)m, f) != (size_t)m) return false;
+      write_buf(s.conv[i], w);
+    }
+    int64_t hn = 0;
+    if (fread(&hn, 8, 1, f) != 1 || hn < 0 || hn > ((int64_t)1 << 32)) return false;
+    if (hn) {
+      std::vector<uint8_t> h((size_t)hn);
+      if (fread(h.data(), 1, (size_t)hn, f) != (size_t)hn) return false;
+      if (!s.h) s.h = buf(mtp_hw() * 4);
+      write_buf(s.h, h);
+    }
+    s.pos = pos;
+    return true;
+  }
+  bool load_host_snapshot(FILE* f) {
+    int32_t pos = -1, ns = 0;
+    if (fread(&pos, 4, 1, f) != 1 || fread(&ns, 4, 1, f) != 1 || ns < 0 || ns > 4096) return false;
+    hsnap_ = HostSnap();
+    hsnap_.pos = pos;
+    hsnap_.S.resize((size_t)ns);
+    for (auto& v : hsnap_.S) {
+      int64_t n = 0;
+      if (fread(&n, 8, 1, f) != 1 || n < 0 || n > ((int64_t)1 << 32)) return false;
+      v.resize((size_t)n);
+      if (n && fread(v.data(), 1, (size_t)n, f) != (size_t)n) return false;
+    }
+    int64_t hn = 0;
+    if (fread(&hn, 8, 1, f) != 1 || hn < 0 || hn > ((int64_t)1 << 32)) return false;
+    hsnap_.h.resize((size_t)hn);
+    if (hn && fread(hsnap_.h.data(), 1, (size_t)hn, f) != (size_t)hn) return false;
+    return true;
+  }
+
   void drop_host_snapshot() {
     TP_MIRROR(drop_host_snapshot(), TpMirror::kNone, 0);
-    hsnap_ = HostSnap();
+    drop_host_snapshot_local();
   }
+  void drop_host_snapshot_local() { hsnap_ = HostSnap(); }  // (no mirror: a split model's load_state runs on all shards)
   bool restore_host() {
     TP_MIRROR(restore_host(), TpMirror::kNone, 0);
     if (hsnap_.pos < 0) return false;

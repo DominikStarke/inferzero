@@ -80,6 +80,66 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-28, a saved conversation keeps the state of every turn's start, so a fork resumes there**
+  (`tools/server_cache.h`, `tools/server_chat.h`, `tools/server.cpp`, `tools/server_load.h`; the user forked a Pi
+  conversation from an earlier point and it was processed again).
+  - **The fault:** a conversation reached the disk only once a later request pushed it out of the engine, and that
+    saved its **last** state alone. The rule that pruned older states —
+    `common_prefix(saved.tokens, cached_) >= saved.gen_cut` — threw away every earlier one at the same moment, so one
+    conversation could only ever fork from its head. The DeltaNet state at an earlier turn's start lives only in the
+    GPU's three snapshot slots and is overwritten by the next turn, so it was gone. In the user's log a fork of a
+    64,806-token conversation at 53,572 resumed at **9,758** (the system prompt's snapshot) and processed 43,814
+    tokens again; a saved state resumable at 52,546 had existed and been deleted.
+  - **The change:**
+    - The state at the end of **every turn** is saved (`Server::save_turn_state`, called before the answer is sent:
+      0.5-0.7 s behind it, off the request). Each is a fork point of its own.
+    - `--session-states N` (default 3, 0 = no limit) sets how many of one conversation's states stay; the old rule
+      that dropped all but the newest is what made forking impossible.
+    - A state already saved under the same tokens and resume points is not written twice.
+  - **Measured**, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, greedy, one conversation of 5 turns:
+
+    | fork at | reusable before | reusable after | prompt tokens processed after |
+    |---|---:|---:|---:|
+    | turn 2 (of 5) | 1,683 (system prompt) | **3,030** | 30 of 3,060 |
+    | turn 4 (of 5) | 1,683 | **4,386** | 30 of 4,416 |
+
+  - **The answers did not change:** the forked run answered "FORK" exactly as a fresh run of the same prompt did
+    with both caches off (`--session-cache-gb 0 --prefix-cache-gb 0`), 35 generated tokens each.
+  - **What a state costs:** ~0.8 GiB on the 27B over 4 GPUs (measured from a real state: a 65,075-token conversation
+    is 2,929,509,424 B, of which 1,097.4 MB a shard is the KV cache and 313.9 MB a shard is the recurrent state plus
+    its 3 snapshots — one snapshot is ~100 MiB a shard). `--session-cache-gb` still caps the total, oldest first.
+  - **Not changed:** `save_current`'s `drop_snapshot(1)`. The prompt-end snapshot it drops sits at `cached_.size()`,
+    the same position the state itself holds, so it is redundant by construction.
+
+- **2026-11-27, a saved conversation's state is held once, not twice** (`zero/mgpu/engine_tp.h`,
+  `zero/engine_sessions.h`, `tools/server_cache.h`; found while sizing a 256K conversation).
+  - **The fault:** `save_parts_run_all` collected every shard's part and then copied them into the sink's buffer, and
+    the sink grew by doubling. At a 256K conversation the 9 GiB state needed 18 GiB of RAM and the save failed with
+    `std::bad_alloc` — a 500 to the client, and the conversation processed again on its next request.
+  - **The change:** the state goes to the disk **as it is read off the GPUs**, a piece at a time, instead of being
+    collected in host memory first.
+    - `segs_out` reads each 256 MB batch into a buffer of its own (it reused one, which only worked while the sink
+      copied the bytes at once).
+    - `save_current` hands every piece to a writer thread (`PieceWriter`, `tools/server.cpp`) that writes it and lets
+      it go; the queue holds at most 1 GiB, so a slow disk slows the save rather than growing the RAM.
+    - `save_parts_run_all` streams shard 0 straight into the sink and has the other shards write their part to a temp
+      file of its own, streamed in afterwards in rank order — every shard still reads at the same time, and no part is
+      ever held whole.
+    - `saved_size()` sums the shards' parts on a split model (`Engine::saved_size_split`); it read shard 0's alone.
+  - **Measured**, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, peak RSS against the RSS right before the save:
+
+    | conversation | state | peak before | peak after |
+    |---|---:|---:|---:|
+    | 32K tokens | 1,706 MB | +2,820 MiB | **+674 MiB**, 1.6 s |
+    | 128K tokens | 5,022 MB | not measured | **+349 MiB**, 3.2 s |
+    | 256K tokens | 9,438 MB | (would not fit) | **+527 MiB**, 4.5 s |
+
+    The peak no longer grows with the conversation. The saved file is byte-identical to the whole-state path's
+    (md5 `7ab0d8969f740536c7459f59d0507d1b` at 32K, `b30a5983d6effe99da680314cfeabe02` at 128K). Round trip at 64K:
+    32,817 of 32,845 prompt tokens from the cache, 16.6 s -> 1.8 s, the answers right across the restart.
+  - **What a conversation costs on disk** (int8 KV, the same model): 34.5 KiB a token — 8K 867 MB, 32K 1.66 GiB,
+    128K 4.90 GiB, 256K 9.22 GiB — plus 598 MiB of DeltaNet states whatever the length.
+
 - **2026-11-27, serverz warms up split models too** (`tools/server_load.h`, `zero/engine.h`; the user: "maybe we need
   to add warm up for all gpus", zchef2k's first request ~15 s on 2 x A770 with `--split layer`, #102).
   - **The change:**
@@ -370,6 +430,48 @@ That property is what every speed change is held to:
       88.7 -> 87.3 and 85.7 -> 85.2 ms. The Q5_K gate / up gain 16-18 % (gate 205 -> 167, 185 -> 155). The Q4_K
       gate / up stay equal. The Q4_K down / qkv and the Q5_K z lose 2-4 %.
     - About 1 % in all, within run-to-run spread: not made the default.
+
+- **2026-11-25, the prompt and session caches on disk on a split model (`serverz --gpus N`):** both were off for a
+  split since the split was new. A split model's state is every shard's, and `TpMirror` cannot carry it — a mirrored
+  call runs on shards 1..n-1 at the same time as shard 0's own, so every shard wrote the same `FILE*` at once (the
+  first 2-GPU server died of it). `Engine::save_state_mirrored` / `load_state_mirrored` write and read the parts one
+  shard after the other in rank order instead. Measured, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s
+  (`--ctx 16384 --chunk 1024 --mtp`, a 2,643-token system prompt, the same prompt every start): time to the first
+  token 2.19 s cold -> 0.63 / 0.63 s on two later starts, 2,643 of 2,659 tokens cached, the answer the same ("Paris").
+  The file is 239 MB, 0.34 s to write and 0.38 s to load. `--split layer` keeps it off (its stages are engines of
+  their own) and says so. **The saved conversations (`--session-cache-gb`) work too**, through the host snapshot
+  instead of `save_state`: the KV caches are position-indexed and ~700 MB a shard on a 34K conversation, and copying
+  them off the GPU between two steps of a request held the shards at each other's sum barrier for the 120 s timeout
+  (three attempts, 2026-11-25, one segfault and one out-of-RAM). The recurrent states are ~13 MB a shard,
+  `snapshot_host()` copies them in milliseconds under a `TpMirror` call, and the parts are written in rank order
+  afterwards. Measured on 2 B60s: 150 MB a conversation, 0.26 s to save, 0.19 s to load, 2,654 of 2,659 prompt tokens
+  reusable. `bench/cache_test.sh` checks both (prefix: 2.2 s cold against 0.7 s warm, the same answer, a file written).
+
+- **2026-11-25, the system-prompt cache on a split model, and Ctrl-C saving the held conversation:** the system-prompt
+  cache was off for a split since the split was new. It goes through `save_state`, whose KV caches are what a restored
+  position needs: `save_state_mirrored` / `load_state_mirrored` write and read every shard's part in rank order.
+  Measured, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, a 2,643-token system prompt: 2.19 s cold against 0.63 s
+  warm, the same answer ("Paris"). Separately, `serverz` now ends on Ctrl-C/SIGTERM instead of dying, so `save_held()`
+  runs: a hard kill never saved anything, and a 48K session was reprocessed from its first token after a restart (a
+  user's log, 2026-11-25).
+- **2026-11-25, measured and not kept: the saved conversations on a split.** A session cache carrying only the host
+  snapshot (~13 MB a shard, no KV caches) restored a position whose attention saw nothing, and the model repeated
+  itself; with `save_state` (~700 MB a shard at 46K) the shards held each other at a sum's barrier for the 120 s
+  timeout, in three different forms (a segfault from all shards writing one `FILE*`, an out-of-RAM machine, then the
+  timeout again). It stays off for a split, with the reason in the code and in docs/multi-gpu.md. The system-prompt
+  cache is unaffected: everything before the restored position is computed within the same request.
+
+- **2026-11-25, both caches on disk on a split model, and Ctrl-C saving the held conversation:** the system-prompt
+  cache and the saved conversations were off for a split since the split was new. They go through `save_state`, whose
+  KV caches are what a restored position needs. Two changes made that possible: every shard writes and reads its part
+  at the same time (`TpEngine::save_parts_run_all` / `load_parts_run_all`; doing it one shard after the other held the
+  peers at a sum's barrier until the 120 s timeout, tried four ways), and the calls inside `load_state` that carry a
+  `TpMirror` have local forms (every shard is in `load_state` at once; without them the load failed and a restored
+  conversation came back without its context, which made the model repeat itself). Measured, Swift-1.5-Qwen3.8-27B
+  Q4_K_M over 2 Arc Pro B60s: an 8K conversation 871 MB, 1.5 s to save, 0.9 s to load, 7,951 of 7,956 tokens reusable,
+  the same answer across the restart; back to a conversation after another one in between 3,990 of 3,995 tokens from
+  the cache, 0.57 s; the system-prompt cache 2.19 s cold against 0.63 s warm. Separately, `serverz` now ends on
+  Ctrl-C/SIGTERM instead of dying, so `save_held()` runs — a hard kill never saved anything.
 
 - **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
   of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a

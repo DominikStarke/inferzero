@@ -32,6 +32,7 @@ struct ServeOpts {
   int think_budget = -1;
   bool preserve_thinking = false;
   double sess_gb = 0.0;
+  int sess_per_conv = 3;  // saved states kept per conversation (each a fork point; 0 = no limit)
   bool prefix_cache = true;
   double prefix_gb = 8.0;  // all models' saved system prompts together (0 = no limit)
   int img_min = 0, img_max = 0;  // image tokens per image (0 = the encoder's default)
@@ -147,8 +148,22 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     so.eo.dflash.clear();  // (the MTP block drafts on every shard: zero/mgpu/engine_tp_shard.h)
     so.dflash_auto = false;
     so.mmproj = "-";
-    so.prefix_cache = false;
-    so.sess_gb = 0;
+    // (the caches on disk work on a split model since 2026-11-25, through save_state whose KV caches the restored
+    //  position needs. Two things made that possible: every shard writes and reads its part AT THE SAME TIME
+    //  (TpEngine::save_parts_run_all / load_parts_run_all -- doing it one shard after the other held the peers at a
+    //  sum's barrier for the 120 s timeout), and the calls inside load_state that carry a TpMirror (reset,
+    //  drop_snapshot, drop_host_snapshot) have local forms, since every shard is in load_state at once. 8K: 871 MB,
+    //  1.5 s to save, 0.9 s to load, 7,951 of 7,956 tokens reusable.)
+    // (a layer split (--split layer) keeps both off: its stages are separate engines with state files of their own, not
+    //  one mirrored call)
+    if (so.split_layer) {
+      if (so.prefix_cache || so.sess_gb > 0)
+        LOG_INF("--gpus %d --split layer: the caches on disk are not on a layer split (its stages keep their own)\n",
+                so.gpus);
+      so.prefix_cache = false;
+      so.sess_gb = 0;
+    }
+    // (both caches work on a tensor split: see the comment above)
   }
   EngineOptions eo = so.eo;
   eo.state_snaps = 3;  // (kSnaps, server.cpp: the memory a model that nearly fills a discrete card keeps for them)
@@ -561,7 +576,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     std::string dir = so.sess_dir;
     if (dir.empty()) dir = app_dir() + ARC_DATA "sessions";
     srv.open_sessions(dir + "/" + mp.stem().string() + "-" + std::to_string(std::filesystem::file_size(mp, ec)) + layout,
-                      so.sess_gb);
+                      so.sess_gb, so.sess_per_conv);
   }
   zlog::eprintf("serving %s as \"%s\"\n", model.c_str(), alias.c_str());
   return L;

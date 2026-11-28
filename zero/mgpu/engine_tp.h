@@ -86,6 +86,8 @@ struct TpComm {
   bool served = false;              // (serverz drives shard 0: TpEngine::serve)
   std::atomic<bool> cancel_now{false};  // (served: shard 0's answer to the request's cancel, for every shard)
   std::vector<double> wait_ms;      // per shard: time in reduce from its GPU wait to the barrier's end
+  // ARC_TP_PROF=1: where a pipelined sum's host time goes, per shard (see tp_reduce_rs_pipe)
+  double prof_evwait = 0, prof_barrier = 0;
   std::vector<int64_t> reduces;       // per shard: how many
   // Failsafe against a GPU that hangs: a shard waiting longer than this at a barrier (ARC_TP_TIMEOUT seconds,
   // default 120: far beyond one layer of a prompt chunk) stops every shard and names the GPUs that did not come.
@@ -598,6 +600,13 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   }
   const auto t0 = std::chrono::steady_clock::now();
   auto waited = [&] { c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+  // (ARC_TP_PROF=1: what the host waits on in a pipelined sum)
+  static const bool prof_on = getenv("ARC_TP_PROF") && atoi(getenv("ARC_TP_PROF")) != 0;
+  auto pb = [&] {  // (a host barrier, timed)
+    const auto q = std::chrono::steady_clock::now();
+    c.barrier(r);
+    if (prof_on) c.prof_barrier += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q).count();
+  };
   // 1. the part to f16 (and range-checked), then its other blocks' pieces put by the copy list, piece by piece
   static const float lim = getenv("ARC_TP_F16_LIMIT") ? (float)atof(getenv("ARC_TP_F16_LIMIT")) : 65504.0f;  // (tests)
   c.flags[r] = 0;
@@ -628,7 +637,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     static std::atomic<long> warned{0};
     if (r == 0 && warned++ < 3) zlog::eprintf("inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
     zrt::event_wait(ev_put(P - 1));
-    c.barrier(r);
+    pb();
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
     zrt::copy_ok(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4);
     zrt::sync();
@@ -648,9 +657,13 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
                  res_off = put_off + (cl_ulong)N * stride;
   for (int p = 0; p < P; ++p) {
     if (p > 0) {
+      const auto q = std::chrono::steady_clock::now();
       zrt::event_wait(ev_put(p));
+      if (prof_on) c.prof_evwait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q).count();
+      const auto q2 = std::chrono::steady_clock::now();
       const int64_t t = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
       c.wait_all(c.put_n.get(), t, r, "a piece of its part");
+      if (prof_on) c.prof_barrier += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q2).count();
     }
     size_t p0, p1;
     piece(r, p, p0, p1);
@@ -1015,6 +1028,163 @@ class TpEngine {
     return spec_;
   }
   void verify_done(int accepted) { run_all([&](int r) { shards_[r]->verify_done(accepted); }); }
+  // load_state on every shard AT THE SAME TIME, each from its own bytes: load_state calls reset() first, which is a
+  // TpMirror call (all shards at one point) -- driving the shards one after the other made shard 0's reset run a job on
+  // peers that were not in load_state yet, which is the barrier fault that left a restored conversation without its
+  // context (2026-11-25).
+  bool load_parts_run_all(const std::vector<const std::vector<uint8_t>*>& part) {
+    std::vector<std::exception_ptr> errs((size_t)n_);
+    std::vector<int> all;
+    for (int r = 0; r < n_; ++r) all.push_back(r);
+    run_on(all, [&, this](int r) {
+      Engine& s = *shards_[r];
+      errs[(size_t)r] = nullptr;
+      if (r >= (int)part.size() || !part[(size_t)r]) {
+        errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("load_state: no part"));
+        return;
+      }
+      const std::vector<uint8_t>* mine = part[(size_t)r];
+      size_t at = 0;
+      TpEngine* const saved = s.tp_engine_;
+      s.tp_engine_ = nullptr;  // (this shard's own part: reset() below must not mirror a job onto its peers, which are
+                               //  in this same call -- that is what made the load fail and left a restored conversation
+                               //  without its context)
+      try {
+        if (!s.load_state([mine, &at](void* p, size_t k) {
+              if (at + k > mine->size()) return false;
+              memcpy(p, mine->data() + at, k);
+              at += k;
+              return true;
+            }))
+          errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("load_state"));
+      } catch (...) {
+        errs[(size_t)r] = std::current_exception();
+      }
+      s.tp_engine_ = saved;
+    }, false, false);
+    for (size_t r = 0; r < errs.size(); ++r) {
+      if (!errs[r]) continue;
+      if (getenv("ARC_STATE_CMP")) {
+        try {
+          std::rethrow_exception(errs[r]);
+        } catch (const std::exception& x) {
+          zlog::eprintf("inferzero: load_parts_run_all: GPU %zu: %s\n", r, x.what());
+        } catch (...) {
+          zlog::eprintf("inferzero: load_parts_run_all: GPU %zu: unknown exception\n", r);
+        }
+      }
+      return false;
+    }
+    return true;
+  }
+  // save_state on every shard AT THE SAME TIME, each into a buffer of its own, then the parts in rank order.
+  // run_on's job is a shard's own turn between two jobs -- it does not stand at a barrier while it runs -- so all of
+  // them can write together; writing them one after the other left the others waiting at a sum's barrier until the
+  // 120 s timeout (2026-11-25). A TpMirror call cannot be used: it runs the shards' jobs and shard 0's own one after
+  // the other, which is the same problem, and every shard writing one stream crashed the first time.
+  // (the parts and the sink hold the state once between them, not twice: each part goes out and is let go as soon as
+  //  it is there, shard 0's before the others are waited for. At a 256K conversation the state is 9 GiB, and holding
+  //  it twice was 18 GiB of RAM -- the save then failed with std::bad_alloc, 2026-11-27)
+  // (the sink must see the parts in rank order, but every shard reads at the same time: shard 0 streams straight into
+  //  the sink (it runs on the calling thread), the others write their part to a file of its own and it is streamed
+  //  into the sink afterwards. So no shard's part is ever held whole in RAM -- one 256 MB piece at a time, as
+  //  segs_out reads them. The temp files are removed as they are copied)
+  template <class Out_>
+  bool save_parts_run_all(const Out_& out, int keep_from, bool host_snapshot) {
+    std::vector<std::string> tmp((size_t)n_);
+    std::vector<std::exception_ptr> errs((size_t)n_);
+    auto one = [&, this](int r) {
+      Engine& s = *shards_[r];
+      TpEngine* const saved = s.tp_engine_;
+      s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
+      errs[(size_t)r] = nullptr;
+      try {
+        if (r == 0) {  // (this thread: straight into the sink, in rank order)
+          // (the part's length in front, as load_parts_run_all reads it: known before the bytes, from the layout)
+          const int64_t len = (int64_t)s.saved_size(keep_from);
+          if (!out(&len, 8) || !s.save_state(out, keep_from, host_snapshot))
+            errs[(size_t)r] = std::make_exception_ptr(std::runtime_error("save_state"));
+        } else {
+          tmp[(size_t)r] = state_tmp_path(r);
+          FILE* f = fopen(tmp[(size_t)r].c_str(), "wb");
+          if (!f) throw std::runtime_error("cannot write " + tmp[(size_t)r]);
+          bool ok = false;
+          try {
+            ok = s.save_state(f, keep_from, host_snapshot);
+          } catch (...) {
+            fclose(f);
+            std::error_code ec;
+            std::filesystem::remove(tmp[(size_t)r], ec);
+            throw;
+          }
+          if (fclose(f) != 0 || !ok) throw std::runtime_error("save_state to " + tmp[(size_t)r]);
+        }
+      } catch (...) {
+        errs[(size_t)r] = std::current_exception();
+      }
+      s.tp_engine_ = saved;
+    };
+    // (shard 0 runs here (this thread IS its engine), the others on their own threads: run_on would wait for shard 0
+    //  in wait_done, which this thread never leaves -- "GPU 1 still has a job running")
+    // (the last job's shards may still be clearing their w_[r].has: wait for them to be ready again)
+    for (int i = 0; i < 200 && n_ > 1; ++i) {
+      bool busy = false;
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (int r = 1; r < n_; ++r) busy = busy || w_[r].has || stuck_[r];
+      }
+      if (!busy) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (n_ > 1) start_others([&](int r) { one(r); });
+    one(0);
+    bool ok = !errs[0];
+    if (n_ > 1)
+      for (const auto& e : wait_others())
+        if (e) ok = false;
+    for (int r = 1; r < n_ && ok; ++r) {
+      if (errs[(size_t)r]) {
+        ok = false;
+        break;
+      }
+      // (its length in front, as shard 0's: the file's own size, known before it is copied)
+      std::error_code sz;
+      const int64_t len = (int64_t)std::filesystem::file_size(tmp[(size_t)r], sz);
+      ok = !sz && out(&len, 8) && copy_file_into(tmp[(size_t)r], out);
+      std::error_code ec;
+      std::filesystem::remove(tmp[(size_t)r], ec);
+    }
+    if (!ok)  // (a failed save leaves no temp files behind)
+      for (int r = 1; r < n_; ++r) {
+        std::error_code ec;
+        std::filesystem::remove(tmp[(size_t)r], ec);
+      }
+    return ok;
+  }
+  // a shard's part in a file of its own, streamed into the sink a piece at a time
+  static std::string state_tmp_path(int r) {
+    std::error_code ec;
+    const std::filesystem::path d = std::filesystem::temp_directory_path(ec);
+    const std::string base = "inferzero-tp" + std::to_string(r) + "-" + std::to_string((uint64_t)time(nullptr)) + "-" +
+                             std::to_string((uint64_t)(uintptr_t)&d);
+    return (ec ? std::filesystem::path(".") : d / base).string();
+  }
+  template <class Out_>
+  static bool copy_file_into(const std::string& path, const Out_& out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::vector<uint8_t> buf((size_t)256 << 20);
+    bool ok = true;
+    for (;;) {
+      const size_t n = fread(buf.data(), 1, buf.size(), f);
+      if (n && !(ok = out(buf.data(), n))) break;
+      if (n < buf.size()) break;  // (EOF, or a read error: ferror below)
+    }
+    ok = ok && !ferror(f);
+    fclose(f);
+    return ok;
+  }
+
   void reset() {  // (the bound slot)
     run_all([&](int r) { shards_[r]->reset(); });
     std::fill(comm_.half.begin(), comm_.half.end(), 0);
@@ -1162,6 +1332,7 @@ class TpEngine {
         return;
       }
       made->tp_ = &comm_;
+      made->tp_engine_ = this;
       shards_[r] = std::move(made);
     };
     run_on({0}, make, false, false);  // (loads: no barrier to show progress, not watched)
@@ -1889,4 +2060,146 @@ inline void TpMirror::finish() {
       at += per;
     }
   }
+}
+
+// A split model's state is every shard's (its KV cache rows, its DeltaNet states): written one shard after the other in
+// rank order, so a load gives each of them its own part back. Not a TpMirror call: the shards would all write the same
+// stream at once (that crashed a 2-GPU server on 2026-11-25).
+inline size_t Engine::saved_size_split(int keep_from) {
+  // (the shards' parts as save_parts_run_all writes them: each with its length in front. Read-only, so it runs on this
+  //  thread for every shard -- no job, no barrier, and the shards stay where they are)
+  size_t n = 0;
+  for (int r = 0; r < tp_engine_->gpus(); ++r) {
+    Engine& s = tp_engine_->shard(r);
+    TpEngine* const saved = s.tp_engine_;
+    s.tp_engine_ = nullptr;  // (this shard's own part, not the split's again)
+    n += 8 + s.saved_size(keep_from);
+    s.tp_engine_ = saved;
+  }
+  return n;
+}
+template <class Out_>
+inline bool Engine::save_state_mirrored(const Out_& out, int keep_from, bool host_snapshot) {
+  // (every shard at the same time, each into a buffer of its own: the shards are between two jobs then, not at a
+  //  barrier. TpEngine::save_parts_run_all)
+  return tp_engine_->save_parts_run_all(out, keep_from, host_snapshot);
+}
+inline bool Engine::load_state_mirrored(FILE* f) {
+  // (the parts as save_parts_run_all wrote them: a length in front of each, then every shard reads its own bytes, all
+  // of them at the same time -- load_state calls reset(), which is a TpMirror call, so driving them one after the other
+  // ran a job on peers that were not in load_state yet, and a restored conversation came back without its context)
+  std::vector<std::vector<uint8_t>> part;
+  for (int r = 0; r < tp_engine_->gpus(); ++r) {
+    int64_t len = 0;
+    if (fread(&len, 8, 1, f) != 1 || len < 0 || len > ((int64_t)1 << 34)) return false;
+    part.emplace_back((size_t)len);
+    if (len && fread(part.back().data(), 1, (size_t)len, f) != (size_t)len) return false;
+  }
+  if (getenv("ARC_STATE_CMP"))
+    zlog::eprintf("inferzero: load parts: %zu shard(s), sizes", part.size()),
+        [&] { for (const auto& v : part) zlog::eprintf(" %zu", v.size()); zlog::eprintf(" bytes\n"); }();
+  std::vector<const std::vector<uint8_t>*> ptrs;
+  for (const auto& v : part) ptrs.push_back(&v);
+  const bool ok = tp_engine_->load_parts_run_all(ptrs);
+  if (!ok && getenv("ARC_STATE_CMP")) zlog::eprintf("inferzero: load_parts_run_all failed\n");
+  return ok;
+}
+
+// A split model's host snapshot on disk: every shard's, in rank order, each with its length in front. snapshot_host()
+// is a TpMirror call (all shards at one point, ~13 MB each, milliseconds), and the parts are written after it returns,
+// one shard after the other -- small enough that a shard is not held long enough for its peers to time out at a sum's
+// barrier, which is what save_state's ~700 MB per shard did on 2026-11-25.
+template <class Out_>
+inline bool Engine::save_host_snapshot_split(const Out_& out) const {
+  if (!tp_engine_) {
+    const int32_t one = 1;
+    if (!out(&one, 4)) return false;
+    std::vector<uint8_t> buf;
+    const bool ok = const_cast<Engine*>(this)->save_host_snapshot([&buf](const void* p, size_t n) {
+      buf.insert(buf.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+      return true;
+    });
+    const int64_t len = (int64_t)buf.size();
+    if (!out(&len, 8) || (len && !out(buf.data(), (size_t)len))) return false;
+    return ok;
+  }
+  const int32_t n = (int32_t)tp_engine_->gpus();
+  if (!out(&n, 4)) return false;
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    Engine& e = tp_engine_->shard(r);
+    std::vector<uint8_t> buf;
+    const bool ok = e.save_host_snapshot([&buf](const void* p, size_t k) {
+      buf.insert(buf.end(), (const uint8_t*)p, (const uint8_t*)p + k);
+      return true;
+    });
+    if (!ok) all_ok = false;
+    const int64_t len = (int64_t)buf.size();
+    if (!out(&len, 8) || (len && !out(buf.data(), (size_t)len))) return false;
+  }
+  return all_ok;
+}
+inline bool Engine::load_host_snapshot_split(FILE* f) {
+  int32_t n = 0;
+  if (fread(&n, 4, 1, f) != 1 || n <= 0 || n > 64) return false;
+  const int gpus = tp_engine_ ? tp_engine_->gpus() : 1;
+  if (n != gpus) return false;  // (saved on another split, or another model: not this one's state)
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    int64_t len = 0;
+    if (fread(&len, 8, 1, f) != 1 || len < 0 || len > ((int64_t)1 << 32)) return false;
+    std::vector<uint8_t> buf((size_t)len);
+    if (len && fread(buf.data(), 1, (size_t)len, f) != (size_t)len) return false;
+    Engine& e = tp_engine_ ? tp_engine_->shard(r) : *this;
+    FILE* mem = tmpfile();
+    if (!mem) return false;
+    const bool wrote = len == 0 || fwrite(buf.data(), 1, (size_t)len, mem) == (size_t)len;
+    if (fseek(mem, 0, SEEK_SET) != 0) { fclose(mem); return false; }
+    const bool ok = wrote && e.load_host_snapshot(mem);
+    fclose(mem);
+    if (!ok) all_ok = false;
+  }
+  return all_ok;
+}
+
+// A VRAM snapshot slot's contents on disk: every shard's, in rank order (Engine::save_snap reads a slot's buffers).
+template <class Out_>
+inline bool Engine::save_snap_split(const Out_& out, int slot) {
+  const int32_t n = tp_engine_ ? (int32_t)tp_engine_->gpus() : 1;
+  if (!out(&n, 4)) return false;
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    Engine& e = tp_engine_ ? tp_engine_->shard(r) : *this;
+    std::vector<uint8_t> buf;
+    const bool ok = e.save_snap([&buf](const void* p, size_t k) {
+      buf.insert(buf.end(), (const uint8_t*)p, (const uint8_t*)p + k);
+      return true;
+    }, slot);
+    if (!ok) all_ok = false;
+    const int64_t len = (int64_t)buf.size();
+    if (!out(&len, 8) || (len && !out(buf.data(), (size_t)len))) return false;
+  }
+  return all_ok;
+}
+inline bool Engine::load_snap_split(FILE* f, int slot) {
+  int32_t n = 0;
+  if (fread(&n, 4, 1, f) != 1 || n <= 0 || n > 64) return false;
+  const int gpus = tp_engine_ ? tp_engine_->gpus() : 1;
+  if (n != gpus) return false;  // (saved on another split)
+  bool all_ok = true;
+  for (int r = 0; r < n; ++r) {
+    int64_t len = 0;
+    if (fread(&len, 8, 1, f) != 1 || len < 0 || len > ((int64_t)1 << 32)) return false;
+    std::vector<uint8_t> buf((size_t)len);
+    if (len && fread(buf.data(), 1, (size_t)len, f) != (size_t)len) return false;
+    Engine& e = tp_engine_ ? tp_engine_->shard(r) : *this;
+    FILE* mem = tmpfile();
+    if (!mem) return false;
+    const bool wrote = len == 0 || fwrite(buf.data(), 1, (size_t)len, mem) == (size_t)len;
+    if (fseek(mem, 0, SEEK_SET) != 0) { fclose(mem); return false; }
+    const bool ok = wrote && e.load_snap(mem, slot);
+    fclose(mem);
+    if (!ok) all_ok = false;
+  }
+  return all_ok;
 }

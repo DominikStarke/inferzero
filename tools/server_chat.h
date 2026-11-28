@@ -1037,6 +1037,12 @@
       last_timings_.set("time", (double)time(nullptr));
     }
 
+    // A turn just ended: save the state here too, so this turn's start stays a fork point of its own. Waiting for
+    // the next request to evict the conversation would save only its last state, and the recurrent state at this
+    // turn's start cannot be recomputed from that one (2026-11-28: a fork at 53,572 found nothing between the
+    // system prompt's snapshot at 9,758 and the head). ~0.5 s of disk behind the answer, off the request.
+    save_turn_state();
+
     if (stream) {
       // (the last chunk carries usage and timings together, as llama-server's does: Unsloth Studio keeps the timings
       //  only from a chunk that has usage, and showed no token statistics)

@@ -51,7 +51,8 @@ A new message processes only itself:
   (38.4 s before).
 - **Session cache**: other conversations are saved to disk and loaded when they come back (8 GB for all models
   together by default, set in the launcher or with `-SessionCacheGb`; other models' oldest go first); **system
-  prompts** are kept on disk per project (Pi).
+  prompts** are kept on disk per project (Pi). A conversation costs 34.5 KiB a token (Qwen3.8 27B: 8K 867 MB, 256K
+  9.22 GiB), so the setting is how many long ones are kept at once.
 - **Two conversations at once** (`--slots 2`): their next tokens run in one engine pass (27B prose 7.3 -> 10.5 tok/s
   together, Gemma 4 26B 19.8 -> 26.2).
 

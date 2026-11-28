@@ -65,6 +65,16 @@
   (GPU). A request resumes from the latest one inside its shared prefix. Gemma 4 has no recurrent state and moves
   back to any position its sliding-window rings still cover. A cancelled prompt rolls the block in progress back
   (DeltaNet states from a host copy taken at the block start) and keeps the blocks before it.
+- **A saved conversation** (`save_state`, `zero/engine_sessions.h`) is the KV caches' rows for positions
+  `[0, pos)` — the sliding-window layers' only from `n_swa` before the resume point — plus the DeltaNet states, the
+  MTP block's cache and hidden state, and the snapshots that hold a position. The KV caches *are* the context: a
+  state saved without them restores a position whose attention sees nothing. Its size is therefore the context's,
+  not the model's: 34.5 KiB a token on the 27B (int8 KV, 17 layers with a cache, 4 kv heads, 256-wide heads), so
+  8K is 867 MB and 256K 9.22 GiB, plus 598 MiB of DeltaNet states that do not grow with the context. The bytes are
+  copied off the GPUs in batches of up to 256 MB and written to the disk as they come, so the save holds one batch
+  plus the writer's queue (at most 1 GiB), not the whole state. On a split model every shard's part is written, in
+  rank order, with a length in front of each
+  ([multi-gpu.md](multi-gpu.md#the-caches-on-disk-on-a-split-model-2026-11-25)).
 - Compiled kernels are cached in `%USERPROFILE%\.inferzero\kernels` (keyed by source, options and driver), so
   only the first use of a kernel variant pays the driver's compile time.
 - Prompts longer than 16,384 tokens go through the layer-major prefill in segments of 16,384, which keeps the

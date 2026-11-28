@@ -680,6 +680,11 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   // Clears the KV cache and recurrent states.
   void reset() {
     TP_MIRROR(reset(), TpMirror::kNone, 0);
+    reset_local();
+  }
+  // reset() without the mirror: for a caller that already runs on every shard at once (a split model's load_state,
+  // whose reset() would otherwise try to mirror a job onto peers that are inside the same call).
+  void reset_local() {
     pos = 0;
     ds_hist_.clear();
     if (hp.inkling) ink_reset();  // (the slots' conv states)
@@ -1181,6 +1186,10 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   }
   void drop_snapshot(int slot) {
     TP_MIRROR(drop_snapshot(slot), TpMirror::kNone, 0);
+    drop_snapshot_local(slot);
+  }
+  // without the mirror: for a caller already running on every shard at once (a split model's load_state)
+  void drop_snapshot_local(int slot) {
     if (slot < (int)snaps_.size()) {
       snaps_[slot].pos = -1;
       if (hp.inkling) snaps_[slot].ring = {};  // (Inkling 2: its window's host copy, ~168 MB, freed with it)

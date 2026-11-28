@@ -279,7 +279,8 @@
     prefix_dir_ = dir;
     prefix_cap_ = (uint64_t)(cap_gb * 1073741824.0);
   }
-  void open_sessions(const std::string& dir, double cap_gb) {
+  void open_sessions(const std::string& dir, double cap_gb, int per_conv = 3) {
+    kSavedPerConv_ = per_conv;  // (0: no limit beyond --session-cache-gb)
     sess_cap_ = (uint64_t)(cap_gb * 1073741824.0);
     if (!sess_cap_) return;
     sess_dir_ = dir;
@@ -406,52 +407,57 @@
     head.insert(head.end(), cached_.begin(), cached_.end());
     head.insert(head.end(), {last_gen_cut_, floor, (int32_t)res.size()});
     head.insert(head.end(), res.begin(), res.end());
-    const uint64_t bytes = head.size() * 4 + eng_.saved_size(last_gen_cut_);
-    const bool bg = plat::ram_available() > bytes + (2ull << 30);
+    // (the host snapshot is the state that is saved, not save_state's KV caches: they are position-indexed and would
+    //  have to be copied off the GPUs, ~700 MB a shard on a 34K conversation, which a split cannot afford between two
+    //  steps of a request -- its shards would hold each other at a sum's barrier. The recurrent states are ~13 MB a
+    //  shard and snapshot_host() copies them in milliseconds, zero/engine_slots.h)
+    // (save_state, not the host snapshot: the KV caches ARE the context. Saving only the recurrent states restores a
+    //  position whose attention sees nothing, and the model repeats itself -- that was the fault of 2026-11-25. On a
+    //  split every shard writes its own part at the same time, TpEngine::save_parts_run_all.)
+    // (the state goes to the disk as it is read off the GPUs, a piece at a time: the save holds one piece in RAM, not
+    //  the whole state. A 256K conversation is 9 GiB, and holding it whole needed that much free RAM -- the save then
+    //  failed with std::bad_alloc, 2026-11-27. The writer thread opens the file, writes the pieces in order and renames
+    //  it when the last one is in; the request goes on meanwhile)
     auto failed = std::make_shared<std::atomic<bool>>(false);
-    std::shared_ptr<std::thread> writer;
-    bool ok;
-    std::error_code ec;
-    if (bg) {
-      auto pieces = std::make_shared<std::vector<std::vector<uint8_t>>>();
-      pieces->emplace_back((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size()));
-      ok = eng_.save_state([&](const void* p, size_t n) {
-        pieces->emplace_back((const uint8_t*)p, (const uint8_t*)p + n);
-        return true;
-      }, last_gen_cut_);
-      if (ok)
-        writer = start_writer([pieces, file, failed] {
-          FILE* f = fopen((file + ".tmp").c_str(), "wb");
-          bool w = f != nullptr;
-          for (const auto& pc : *pieces)
-            if (w) w = fwrite(pc.data(), 1, pc.size(), f) == pc.size();
-          if (f) w = fclose(f) == 0 && w;
-          std::error_code e;
-          if (w) std::filesystem::rename(file + ".tmp", file, e);
-          if (!w || e) {
-            std::filesystem::remove(file + ".tmp", e);
-            *failed = true;
-            LOG_WRN("session cache: could not write %s (disk full or the folder not writable?)\n", file.c_str());
-          }
-        });
-    } else {
-      FILE* f = fopen((file + ".tmp").c_str(), "wb");
-      ok = f && with_file(f, [&] { return fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_); },
-                          file + ".tmp");
-      if (f) ok = fclose(f) == 0 && ok;
-      if (ok) std::filesystem::rename(file + ".tmp", file, ec);
-      ok = ok && !ec;
-      if (!ok) std::filesystem::remove(file + ".tmp", ec);
+    PieceWriter writer(file, failed);
+    uint64_t bytes = head.size() * 4;
+    bool ok = writer.push(std::vector<uint8_t>((const uint8_t*)head.data(), (const uint8_t*)(head.data() + head.size())));
+    if (ok) {
+      try {
+        ok = eng_.save_state([&writer, &bytes](const void* p, size_t n) {
+          bytes += n;
+          return writer.push(std::vector<uint8_t>((const uint8_t*)p, (const uint8_t*)p + n));
+        }, last_gen_cut_);
+      } catch (const std::exception& x) {
+        LOG_WRN("session cache: the conversation (%zu tokens) was not saved (its state could not be read: %s)\n",
+                cached_.size(), x.what());
+        writer.finish();
+        return;
+      }
     }
-    if (!ok) {
+    if (!ok || !writer.finish()) {
       LOG_WRN("session cache: the conversation (%zu tokens) was not saved (see the line before); it is processed again when it comes back\n", cached_.size());
       return;
     }
-    // older states of the same conversation: everything they could resume, this one resumes too
-    for (size_t i = 0; i < saved_.size();)
-      if ((int)common_prefix(saved_[i].tokens, cached_) >= saved_[i].gen_cut) forget(i);
-      else ++i;
-    saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, writer, failed});
+    // older states of the same conversation: the last few stay, each one a fork point of its own. They hold a
+    // recurrent state at their own turn start, and that state cannot be recomputed from the newer one: a fork from
+    // an earlier turn needs it (2026-11-28: an earlier state resumable at 52,546 was deleted here, and a fork at
+    // 53,572 fell back to the system prompt's snapshot at 9,758). Beyond --session-states the oldest go, and the
+    // --session-cache-gb cap prunes the rest (least recently used first).
+    int same = 0;
+    for (const SavedConv& s : saved_)
+      if ((int)common_prefix(s.tokens, cached_) >= s.gen_cut) ++same;
+    while (kSavedPerConv_ > 0 && same >= kSavedPerConv_) {  // (the least recently used of them: the oldest fork point)
+      int lru = -1;
+      for (size_t i = 0; i < saved_.size(); ++i)
+        if ((int)common_prefix(saved_[i].tokens, cached_) >= saved_[i].gen_cut &&
+            (lru < 0 || saved_[i].used < saved_[(size_t)lru].used))
+          lru = (int)i;
+      if (lru < 0) break;
+      forget((size_t)lru);
+      --same;
+    }
+    saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, nullptr, failed});
     uint64_t total = 0;
     for (auto& c : saved_) total += c.bytes;
     try {  // the other models' first (a file system error leaves them)
@@ -465,8 +471,8 @@
       forget(lru - saved_.begin());
     }
     cur_saved_ = true;
-    zlog::eprintf("session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s%s\n", cached_.size(),
-            bytes / 1048576.0, ms_since(t0) / 1000, bg ? " (to memory; written to disk in the background)" : "");
+    zlog::eprintf("session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s\n", cached_.size(),
+            bytes / 1048576.0, ms_since(t0) / 1000);
   }
   // Before a request: keep the held conversation if the request does not continue it, and bring back a saved one
   // that shares more with the request.
@@ -483,13 +489,30 @@
       const int u = usable(P, saved_[i].tokens, saved_[i].resume, saved_[i].floor);
       if (u > bu) { bi = (int)i; bu = u; }
     }
-    if (bi < 0) return;
+    if (bi < 0) {
+      // (nothing was worth loading: said once a conversation is at stake, so a log shows why a start recomputed a long
+      //  prompt -- the prefix cache covered it, the saved one was too little better, or none matched at all)
+      static std::atomic<long> said{0};
+      if (P.size() >= 1024 && said++ < 20)
+        zlog::eprintf("session cache: nothing to load for this %zu-token prompt (best saved: %d tokens reusable, "
+                      "needed %d more than the %d it holds; %zu conversations saved)\n",
+                      P.size(), bu - 512, bu - u_cur, u_cur, saved_.size());
+      return;
+    }
     SavedConv& s = saved_[bi];
     const auto t0 = clk::now();
     const bool done = written(s);  // a background write of this conversation finishes first
     FILE* f = done ? fopen(s.file.c_str(), "rb") : nullptr;
     SavedConv tmp;
-    const bool ok = f && with_file(f, [&] { return read_header(f, tmp) && eng_.load_state(f); });
+    int resumed_at = -1;  // (the position the loaded state stands at: cached_ goes no further than this)
+    int resumed_slot = -1;  // (-1: the host snapshot; else the VRAM slot it came from)
+    const bool ok = f && with_file(f, [&] {
+      if (!read_header(f, tmp)) return false;
+      // (save_state's own form: the KV caches are in it, and they ARE the restored position's context)
+      if (!eng_.load_state(f)) return false;
+      resumed_at = eng_.pos;
+      return true;
+    });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
       LOG_WRN("session cache: could not read %s (damaged, or from another version): forgotten; the conversation is processed again\n", s.file.c_str());
@@ -499,10 +522,15 @@
       cur_saved_ = false;
       return;
     }
+    // (only up to where the loaded state stands: prepare_prefix compares the next request against this, and a longer
+    //  cached_ made it skip tokens the state does not have)
     cached_ = s.tokens;
-    last_gen_cut_ = s.gen_cut;
+    if (resumed_at >= 0 && (size_t)resumed_at < cached_.size()) cached_.resize((size_t)resumed_at);
+    last_gen_cut_ = std::min(s.gen_cut, (int)cached_.size());
     s.used = ++use_clock_;
     cur_saved_ = true;
-    zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable\n",
-            s.tokens.size(), s.bytes / 1048576.0, ms_since(t0) / 1000, bu);
+    zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable "
+                  "(slot %d, resumed at %d; the prompt has %zu)\n",
+            s.tokens.size(), s.bytes / 1048576.0, ms_since(t0) / 1000, bu,
+            resumed_slot, resumed_at, P.size());
   }
