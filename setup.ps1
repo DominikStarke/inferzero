@@ -316,7 +316,7 @@ else {
   if (-not $m4) { Note "the tests need the 4B model: setup -Models 4b -Tests" }
   else {
     [string[]]$tools = @("tools\tok_test.cpp", "tools\chat_render.cpp", "tools\ref_forward.cpp", "tools\tool_stream_test.cpp",
-                         "tests\test_http.cpp", "tests\test_api_compat.cpp", "tests\test_xcache_pools.cpp", "tests\test_sampler.cpp",
+                         "tests\test_http.cpp", "tests\test_api_compat.cpp", "tests\test_xcache_pools.cpp", "tests\test_xram_plan.cpp", "tests\test_sampler.cpp",
                          "tests\test_hc.cpp", "tests\test_quant_rows.cpp", "tests\test_web_tools.cpp",
                          "tests\test_gguf_pack.cpp", "tests\test_json.cpp", "tests\test_fa.cpp",
                          "tests\test_route.cpp", "tests\test_chat_store.cpp", "tests\test_doc_read.cpp",

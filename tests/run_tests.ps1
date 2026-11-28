@@ -199,6 +199,7 @@ if (Test-Path .\bin\test_office.exe) { Unit "Excel XLSX read and written, PowerP
 if (Test-Path .\bin\test_pdf_scan.exe) { Unit "scanned PDF pages as images (JPEG, raw, CCITT)" .\bin\test_pdf_scan.exe @() "test_pdf_scan: all passed" }
 if (Test-Path .\bin\test_audio.exe) { Unit "audio: streamed resampling, WAV, MP4 start delay, Ogg Opus" .\bin\test_audio.exe @() "test_audio: all passed" }
 Unit "expert cache pools" .\bin\test_xcache_pools.exe @() "ALL OK"
+Unit "the RAM tier's room and its runtime guard (PR #100's numbers)" .\bin\test_xram_plan.exe @() "ALL OK"
 if (Test-Path .\bin\test_json.exe) { Unit "JSON parser (numbers, escapes, repeated keys)" .\bin\test_json.exe @() "test_json: all passed" }
 if (Test-Path .\bin\test_sampler.exe) { Unit "sampler" .\bin\test_sampler.exe @() "ALL OK" }
 Unit "tool call streaming" .\bin\tool_stream_test.exe @("3000") "ALL OK"

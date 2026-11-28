@@ -281,7 +281,6 @@ inline constexpr std::string_view kArcSwitches[] = {
     "ARC_SLOT_BYTES",
     "ARC_SPEECH_OOM",
     "ARC_TEST_DRIVER",
-    "ARC_TEST_MAP_BUDGET_GB",
     "ARC_TIGHT_SMALL",
     "ARC_TOOL_CONSTRAINT",
     "ARC_TP_ATT_QSPLIT",
