@@ -2,6 +2,25 @@
 // class is the same text), not a header of its own: expert streaming (mixture-of-experts weights read from the SSD into an expert cache).
 
   // ---------------------------------------------------------------- inferzero expert streaming
+  // The RAM tier's room on Windows (PR #100, 2026-11-28): what the engine maps of RAM outside the tiers, known before it
+  // is all allocated, and the margin above it.
+  // - every GPU's expert staging (xcache.h: 2 x the largest record x ARC_XSTAGE records, made by each GPU's xc_->init,
+  //   so N times this one's on a split, whichever GPUs have made theirs yet), 64 MiB a GPU of other pinned buffers
+  //   (the read bounce buffers, the expert tables), and a split's sum buffers (engine_tp.h comm_.host: 2 x N x the
+  //   chunk x n_embd floats; max_chunk is set after this, so the option's chunk or the largest default);
+  // - manoreken2's 4 Pro B60s, DeepSeek-V4.1-Flash Q8_K_XL: staging 2,295 MiB a GPU, 9.0 GiB in all, the sums 0.5:
+  //   budget 818 / 4 = 204.5, less 9.5 and a margin of 10.2 (5 %): 184.8 in all, 46.2 a GPU, under the 47 that ran
+  //   (48 failed); the old "in use, read on GPU 0" was 0.0 there and gave 49.1
+  uint64_t xram_known_mapped() const {
+    const uint64_t N = tp_on() ? (uint64_t)std::max(1, opt.tp_size) : 1;
+    const uint64_t chunk = opt.chunk > 0 ? (uint64_t)opt.chunk : hp.ds41 ? 1024 : 4096;
+    const uint64_t sums = tp_on() ? 2 * N * chunk * (uint64_t)hp.n_embd * 4 : 0;
+    return N * ((xc_ ? xc_->stage_bytes : 0) + (64ull << 20)) + sums;
+  }
+  // (a split: max(8 GiB, 5 % of budget / N); one GPU: max(4 GiB, 2.5 %), the 4 GiB of before as its floor)
+  uint64_t xram_margin(uint64_t top) const {
+    return tp_on() ? std::max<uint64_t>(8ull << 30, top / 20) : std::max<uint64_t>(4ull << 30, top / 40);
+  }
   void open_experts() {
     xc_ = std::make_unique<XCache>();
     std::vector<std::string> pre(hp.n_layer + 1);
@@ -45,7 +64,11 @@
     uint64_t ram = 0;
     std::string ram_note;
     bool tp_sized = false;  // (a split model's automatic size, from its parts below: Windows' cap already applied)
-    if (ram_gb > 0 && zrt::integrated()) {
+    // (ARC_TEST_MAP_BUDGET_GB, tests only: the runtime guard's budget below faked to this many GiB, so its stop path
+    //  runs where no Windows budget applies (the laptop's iGPU, under ARC_TP_SIM); a hand-set tier is then let through
+    //  on an iGPU too, which it never is otherwise. Keep the tier small there: 14.7 GiB pinned hung the 125H)
+    const double test_budget_gb = getenv("ARC_TEST_MAP_BUDGET_GB") ? atof(getenv("ARC_TEST_MAP_BUDGET_GB")) : 0.0;
+    if (ram_gb > 0 && zrt::integrated() && test_budget_gb <= 0) {
       // (an iGPU never takes the tier, a hand-set size included, 2026-11-27: its GPU memory is that RAM, so pinned
       //  copies of experts it already holds only take RAM from it. A test build that let the laptop's 125H take
       //  ARC_XRAM_GB=64 (14.7 GiB pinned beside 17.4 GiB of GPU buffers on 32 GB) hung the GPU in moe_quant)
@@ -79,13 +102,18 @@
                                              : xc_->st.file_bytes;
       uint64_t nb = 0, nu = 0;
       if (zrt::video_budget(nb, nu, true)) {
-        const uint64_t margin = 8ull << 30, top = nb / N, total = top > nu + margin ? top - nu - margin : 0;
+        // (less what the split maps outside the tiers, not only what is in use as GPU 0 reads it: there GPUs 1-3 had not
+        //  made their staging yet (manoreken2's logs, "in use 0.0" read before them), and the auto size 49.1 a GPU ran
+        //  out of memory or hung where 47 ran; PR #100, 2026-11-28. See xram_room)
+        const uint64_t top = nb / N, used = std::max(nu, xram_known_mapped()), margin = xram_margin(top),
+                       total = top > used + margin ? top - used - margin : 0;
         ram = std::min<uint64_t>(share, total / N);
-        char b[300];
+        char b[360];
         snprintf(b, sizeof b, " (this GPU's share of the experts %.1f GiB; Windows lets the GPUs map %.1f GiB of RAM, / %d "
-                              "GPUs as each counts the shared memory: %.1f, less %.1f in use and 8: %.1f in all, %.1f a GPU; #100)",
-                 share / 1073741824.0, nb / 1073741824.0, N, top / 1073741824.0, nu / 1073741824.0, total / 1073741824.0,
-                 total / N / 1073741824.0);
+                              "GPUs as each counts the shared memory: %.1f, less %.1f mapped outside the tiers (%.1f in use) "
+                              "and %.1f: %.1f in all, %.1f a GPU; #100)",
+                 share / 1073741824.0, nb / 1073741824.0, N, top / 1073741824.0, used / 1073741824.0, nu / 1073741824.0,
+                 margin / 1073741824.0, total / 1073741824.0, total / N / 1073741824.0);
         ram_note = b;
         tp_sized = true;
       } else {
@@ -122,9 +150,11 @@
       const bool say = !tp_on() || opt.tp_rank == 0;  // (a split model: GPU 0 says the hand-set cap for all)
       const double asked = ram_gb > 0 ? ram_gb : ram / 1073741824.0;  // (the size given, before the file's size clipped it)
       if (zrt::video_budget(nb, nu, true) && nb > 0) {
-        // (one GPU: the budget less the use and 4 GiB, as before; a split: budget / N less the use and 8 GiB, / N)
-        const uint64_t N = (uint64_t)std::max(1, opt.tp_size), margin = tp_on() ? 8ull << 30 : 4ull << 30,
-                       top = tp_on() ? nb / N : nb, room = (top > nu + margin ? top - nu - margin : 0) / (tp_on() ? N : 1);
+        // (one GPU: the budget less what is mapped and the margin; a split: budget / N less what the split maps and the
+        //  margin, / N; xram_known_mapped and xram_margin, as the automatic size above)
+        const uint64_t N = (uint64_t)std::max(1, opt.tp_size), top = tp_on() ? nb / N : nb,
+                       used = std::max(nu, xram_known_mapped()), margin = xram_margin(top),
+                       room = (top > used + margin ? top - used - margin : 0) / (tp_on() ? N : 1);
         char b[200];
         // (an automatic size: the engine's own, or a layer split's stage share (opt.expert_ram_auto); a size the user
         //  set is capped in the branch after this one, with its own line. A stage's share was taken for a hand-set one: no cap, and a warning naming
@@ -162,10 +192,36 @@
     }
     if (ram >= (1ull << 30)) {
       // (pinned host memory of the context: every GPU of a split model copies from it)
-      xc_->st.ram_alloc = [zc = xc_->zc](size_t n) -> char* {
+      // The runtime guard (PR #100, 2026-11-28): before each 1 GiB piece, the RAM the GPU maps now (Windows' non-local
+      // usage, the memory line's "RAM the GPU maps") against budget / N less min(4 GiB, a tenth): a piece past it is
+      // refused and the tier stays the size it reached, one line saying so. The tier fills during the run, so a size
+      // set too big (by the estimate above, or by hand) costs speed, not a crash: manoreken2's 4 B60s ran out of memory
+      // or hung at 204.5-205.5 GiB mapped with the tier at 49.1 GiB a GPU. Linux: no budget known, no guard
+      const int Ng = tp_on() ? std::max(1, opt.tp_size) : 1;
+      auto pinned = std::make_shared<std::atomic<uint64_t>>(0);
+      const int rank = tp_on() ? opt.tp_rank : -1;  // (a split: each GPU's tier stops on its own, its line names it)
+      xc_->st.ram_alloc = [zc = xc_->zc, Ng, rank, pinned, test_budget_gb, said = std::make_shared<std::atomic<bool>>(false)](size_t n) -> char* {
+        uint64_t nb = 0, nu = 0;
+        const bool test = test_budget_gb > 0;
+        const bool known = test || zrt::video_budget(nb, nu, true);
+        if (test) nb = (uint64_t)(test_budget_gb * 1073741824.0), nu = pinned->load();  // (the tier's own pieces, faked)
+        if (known && nb > 0) {
+          const uint64_t top = nb / (uint64_t)Ng, gm = std::min<uint64_t>(4ull << 30, top / 10);
+          if (nu + n + gm > top) {
+            if (!said->exchange(true))
+              zlog::eprintf("inferzero: the RAM tier%s stopped at %.1f GiB: Windows lets the GPU%s map %.1f GiB of RAM%s, "
+                            "%.1f in use (a piece more would pass it less %.1f)\n",
+                            rank >= 0 ? (" of GPU " + std::to_string(rank)).c_str() : "", pinned->load() / 1073741824.0,
+                            Ng > 1 ? "s" : "", nb / 1073741824.0, Ng > 1 ? (" (/ " + std::to_string(Ng) + ")").c_str() : "",
+                            nu / 1073741824.0, gm / 1073741824.0);
+            return nullptr;
+          }
+        }
         ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
         void* p = nullptr;
-        return zeMemAllocHost(zc, &hd, n, 4096, &p) == 0 ? (char*)p : nullptr;
+        if (zeMemAllocHost(zc, &hd, n, 4096, &p) != 0) return nullptr;
+        *pinned += n;
+        return (char*)p;
       };
       xc_->st.ram_free = [zc = xc_->zc](char* p) { zrt::mem_free(zc, p); };
       xc_->st.set_ram(ram);
