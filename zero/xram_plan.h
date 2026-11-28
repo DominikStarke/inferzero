@@ -7,6 +7,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 
 namespace xram {
 
@@ -52,6 +53,28 @@ inline bool may_take(uint64_t budget, uint64_t in_use, int n_gpus, bool split, u
   if (budget == 0) return true;
   const uint64_t top = budget / (split ? (uint64_t)std::max(1, n_gpus) : 1);
   return in_use + piece + guard_margin(top) <= top;
+}
+
+// The guard's check and the allocation as one step for the whole process: a split's GPUs fill their tiers on threads
+// of their own, and N pieces passing the same check together are N GiB, the guard's whole margin on 4 GPUs (the
+// Researcher's review of c85d0d9). read(budget, in_use) -> false when the budget is unknown (no stop then);
+// alloc(n) -> the memory or null. *stopped: set when the guard refused (not when the allocation failed).
+inline std::mutex& take_mutex() {
+  static std::mutex m;
+  return m;
+}
+template <typename Read, typename Alloc>
+void* guarded_alloc(Read read, Alloc alloc, int n_gpus, bool split, uint64_t piece, bool* stopped = nullptr,
+                    uint64_t* budget_out = nullptr, uint64_t* in_use_out = nullptr) {
+  std::lock_guard<std::mutex> lock(take_mutex());
+  uint64_t budget = 0, in_use = 0;
+  if (read(budget, in_use) && !may_take(budget, in_use, n_gpus, split, piece)) {
+    if (stopped) *stopped = true;
+    if (budget_out) *budget_out = budget;
+    if (in_use_out) *in_use_out = in_use;
+    return nullptr;
+  }
+  return alloc(piece);
 }
 
 }  // namespace xram
