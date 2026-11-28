@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-28 (unreleased): the reduced draft head works on a split model
+
+- **`ARC_MTP_VOCAB` on `--gpus 2` or more.** The reduced draft head (each MTP draft reads only the N most common
+  tokens' rows of the output head instead of all 248,320) refused a split model: `load_draft_head` returned early on
+  `opt.tp_size > 1`, so the switch did nothing there. Now each GPU keeps the rows of the list that fall in its share
+  of the vocabulary, and the shards' logits are joined as before (`tp_draft_conf` maps a row back through the
+  shard's own `draft_ids_`). The drafts are the tokens one GPU would draft, and the text is the plain run's.
+- **Measured** on two Pro B60s, the 27B, 128 tokens: German 69.3 -> 75.1, English 58.8 -> 63.3, code 60.3 -> 67.4,
+  JSON 71.4 -> 80.9 tok/s (+9 to +13 %); every text bit-identical to the full head's. The `lm_head` read is 19 % of
+  each shard's step, so the gain is smaller than one GPU's (+14 to +19 %).
+- **The list is English- and code-heavy**, so its rows are not spread evenly over the vocabulary: on two B60s one
+  shard holds 31,493 of the 32,768 and the other 1,275. That is memory, not speed (the shards together read the N
+  rows either way). If a GPU would hold none of them, every GPU drafts from the full head, decided alike on every
+  shard from `tp_range` alone (no barrier at load).
+
 ## 2026-11-28 (unreleased): a saved conversation keeps its turn starts, so a fork resumes there
 
 - **A turn's state is saved when the turn ends.** Before, a conversation reached the disk only once a later request

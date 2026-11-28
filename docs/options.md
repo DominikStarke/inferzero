@@ -112,8 +112,8 @@ On Windows: `zero-server start -Opt <id>` turns one on (kept for later starts), 
 - **Best for:** dense, moe.
 - **Cost:** 69 MB of GPU memory (the 4B; more with a wider model); Chinese text drafts less well (the laptop's 4B 31.6 -> 26.7 tok/s), Indonesian about even.
 - **Output:** the same, bit for bit.
-- **Measured:** the laptop's 4B on a coding prompt 35.9-37.3 -> 44.3-45.8 tok/s, the 27B 10.9 -> 12.6; Indonesian 27.4 -> 28.9; Chinese 31.6 -> 26.7.
-- **Note:** needs --mtp.
+- **Measured:** the laptop's 4B on a coding prompt 35.9-37.3 -> 44.3-45.8 tok/s, the 27B 10.9 -> 12.6; Indonesian 27.4 -> 28.9; Chinese 31.6 -> 26.7. Two B60s (`--gpus 2`), the 27B, 128 tokens: German 69.3 -> 75.1, English 58.8 -> 63.3, code 60.3 -> 67.4, JSON 71.4 -> 80.9 tok/s (+9 to +13 %), every text the plain run's.
+- **Note:** needs --mtp. Works on a split model (`--gpus 2` or more) since 2026-11-28: each GPU keeps the rows of the list that fall in its share of the vocabulary, and the shards' logits are joined as before. The list is English- and code-heavy, so the rows are not spread evenly over the vocabulary (two B60s: 31,493 and 1,275 of the 32,768); that is memory, not speed. If a GPU would hold none of them, every GPU drafts from the full head.
 - **Works with:** needs `--mtp`.
 - **In the model list:** as a variant of the models it fits, `-fastdraft`.
 - **More:** [CHANGELOG.md](../CHANGELOG.md), experimental.

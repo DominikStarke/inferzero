@@ -685,6 +685,15 @@ vocabulary rows into shard 0's `spec_logits_host_`, so the server sees the whole
 step. `verify_done` rolls every GPU's state back the same way. Drafting over several slots at once
 (`verify_batch`, `TpMirror::kBatch`) works the same.
 
+**The reduced draft head works here too** (`ARC_MTP_VOCAB=N`, since 2026-11-28). Each GPU keeps the rows of the
+frequency list that fall in its share of the vocabulary, and `tp_draft_conf` maps a row back through that shard's
+own `draft_ids_` instead of adding `tpv_.first`. The drafts are the tokens one GPU would draft, so the text is the
+plain run's. The list is English- and code-heavy and the rows are split evenly by id, so the shares are uneven (two
+B60s: 31,493 and 1,275 of the 32,768) — memory, not speed, since the shards together read the N rows either way. A
+GPU that would hold none of them makes every GPU fall back to the full head; each shard decides that from
+`tp_range` alone, so no barrier is needed at load. Two B60s, the 27B Q4_K_M, 128 tokens: German 69.3 -> 75.1,
+English 58.8 -> 63.3, code 60.3 -> 67.4, JSON 71.4 -> 80.9 tok/s, every text bit-identical.
+
 **Numbers** (4 Arc Pro B60s on PCIe 4.0 x4, Qwen3.8 27B IQ3_S GSQ, same prompt, two runs each, warm):
 
 | GPUs | plain | `--mtp --mtp-drafts 3` | |
