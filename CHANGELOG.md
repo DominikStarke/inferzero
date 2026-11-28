@@ -33,6 +33,19 @@
   - a form this GPU does not take is listed as "not taken". The DeltaNet's fused forms, attention's preparation and
     `ARC_H8_OUT` need a layer's own state: the golden set's fusion rows still prove them on the models.
 
+  On a MoE model (`--stage experts`, the 35B-A3B) it checks the expert paths on the model's own experts, with
+  routings of its own: random, every expert hit, and one expert in every row with half the experts unused. The same
+  rows run at the chunk sizes that pick each path, and each path is compared with the next:
+  - `moe_rg` equals decode + GEMM bit for bit (layers 0, 20 and 39, every routing), as the code says;
+  - the per-tile kernels differ from `moe_rg` by up to 4e-4 of the experts' output range (other kernels, other
+    rounding), and tiles of 8 differ from 16 in their last bits (the down kernel's 4 rows a sub-group against 1);
+  - 8, 4 and 2 slots and one token give the same results; every pass repeats bit for bit.
+
+  `--stage all | dense | fused | experts` runs one part. A model with an expert cache runs the dense and fused parts
+  at `--quick`'s sizes. A case's buffers are checked against the GPU memory left first.
+- **`decode_w8`** refuses a buffer too small for the decoded weight or its scales, or none, with an error, instead of
+  running. `gemm_check`'s first form gave a weight no buffer, on the 35B-A3B, and the GPU hung. No model reaches it.
+
   `gemm_check --weights <model.gguf>` (no GPU) shows where a model's own rows sit: the 4B's, the 27B's and the 35B-A3B's
   are at the centred level. Their largest rotation-block means are in the DeltaNet output projections, about 3x it
   (docs/gemm-inventory.md K).
