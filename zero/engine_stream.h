@@ -191,24 +191,26 @@
       xc_->st.ram_alloc = [zc = xc_->zc, Ng, rank, pinned, said = std::make_shared<std::atomic<bool>>(false)](size_t n) -> char* {
         // (the check and the allocation one step for the whole process: a split's GPUs fill their tiers on threads of
         //  their own, and N pieces passing the same check together are N GiB, the guard's whole margin on 4 GPUs; the
-        //  Researcher's review of c85d0d9. One closure type for every GPU's engine, so one mutex; a 1 GiB host allocation
-        //  now and then need not run in parallel)
-        static std::mutex mu;
-        std::lock_guard<std::mutex> lock(mu);
+        //  Researcher's review of c85d0d9; one mutex for the process, xram::take_mutex; a 1 GiB host allocation now and
+        //  then need not run in parallel)
+        // (zero/xram_plan.h guarded_alloc: the read, the decision, the allocation and the count under its mutex)
+        bool stop = false;
         uint64_t nb = 0, nu = 0;
-        if (zrt::video_budget(nb, nu, true) && !xram::may_take(nb, nu, Ng, Ng > 1, n)) {
-          if (!said->exchange(true))
-            zlog::eprintf("inferzero: the RAM tier%s stopped at %.1f GiB: Windows lets the GPU%s map %.1f GiB of RAM%s, "
-                          "%.1f in use (a piece more would pass it less %.1f)\n",
-                          rank >= 0 ? (" of GPU " + std::to_string(rank)).c_str() : "", pinned->load() / 1073741824.0,
-                          Ng > 1 ? "s" : "", nb / 1073741824.0, Ng > 1 ? (" (/ " + std::to_string(Ng) + ")").c_str() : "",
-                          nu / 1073741824.0, xram::guard_margin(nb / (uint64_t)Ng) / 1073741824.0);
-          return nullptr;
-        }
-        ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
-        void* p = nullptr;
-        if (zeMemAllocHost(zc, &hd, n, 4096, &p) != 0) return nullptr;
-        *pinned += n;
+        void* p = xram::guarded_alloc([](uint64_t& b, uint64_t& u) { return zrt::video_budget(b, u, true); },
+                                      [&](uint64_t m) -> void* {
+                                        ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
+                                        void* q = nullptr;
+                                        if (zeMemAllocHost(zc, &hd, m, 4096, &q) != 0) return nullptr;
+                                        *pinned += m;
+                                        return q;
+                                      },
+                                      Ng, Ng > 1, n, &stop, &nb, &nu);
+        if (stop && !said->exchange(true))
+          zlog::eprintf("inferzero: the RAM tier%s stopped at %.1f GiB: Windows lets the GPU%s map %.1f GiB of RAM%s, "
+                        "%.1f in use (a piece more would pass it less %.1f)\n",
+                        rank >= 0 ? (" of GPU " + std::to_string(rank)).c_str() : "", pinned->load() / 1073741824.0,
+                        Ng > 1 ? "s" : "", nb / 1073741824.0, Ng > 1 ? (" (/ " + std::to_string(Ng) + ")").c_str() : "",
+                        nu / 1073741824.0, xram::guard_margin(nb / (uint64_t)Ng) / 1073741824.0);
         return (char*)p;
       };
       xc_->st.ram_free = [zc = xc_->zc](char* p) { zrt::mem_free(zc, p); };

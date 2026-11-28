@@ -1,7 +1,11 @@
 // The RAM tier's room and its runtime guard (zero/xram_plan.h), host only: the numbers of the machines whose tier failed.
 // Build: .\build.ps1 tests\test_xram_plan.cpp   Run: .\bin\test_xram_plan.exe   (prints ALL OK)
 #include "../zero/xram_plan.h"
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <thread>
+#include <vector>
 
 static int fails = 0;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); ++fails; } } while (0)
@@ -72,6 +76,61 @@ int main() {
   CHECK(room(gib(16), gib(30), 0, 4, true).per_gpu == 0);
   CHECK(room(gib(3), 0, 0, 1, false).per_gpu == 0);  // (under the margin's 4 GiB)
   CHECK(room(gib(5), 0, 0, 1, false).per_gpu == gib(1));
+  // the chunk the sums are counted at: a B70's plan may pick 8,192 rows where the option and the old default said
+  // 4,096; the larger count errs high (engine_stream.h passes the largest a plan picks)
+  CHECK(known_mapped(2, true, staging, 8192, 5120) > known_mapped(2, true, staging, 4096, 5120));
+  CHECK(known_mapped(2, true, staging, 8192, 5120) - known_mapped(2, true, staging, 4096, 5120) ==
+        2ull * 2 * 4096 * 5120 * 4);  // (2 x N x the extra rows x n_embd floats)
+  // many GPUs' threads taking at the edge at once (guarded_alloc): the mapped total never passes the guard's line.
+  // The usage the read sees is what the allocations so far added (the tiers' pinned memory as Windows counts it), with
+  // the room for as many pieces as one thread alone would take (computed below); 16 threads try 40 pieces each.
+  // Without the one mutex, up to 16 could pass a check together (the review's case: 4 GPUs x 1 GiB, the margin's
+  // whole 4 GiB)
+  {
+    const uint64_t b = gib(4 * 10.5), piece = gib(1);  // (top 10.5 a GPU, 1 in use, the guard's margin a tenth: 1.05)
+    std::atomic<uint64_t> used{gib(1)};
+    std::atomic<int> taken{0}, stops{0};
+    auto read = [&](uint64_t& bb, uint64_t& u) { bb = b, u = used.load(); return true; };
+    auto alloc = [&](uint64_t n) -> void* {
+      // (a host allocation takes time: the window between the check and the count, where an unlocked guard lets other
+      //  threads pass the same check; with the window, a build without the lock takes 16+ pieces here)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      used += n;
+      return (void*)1;
+    };
+    std::atomic<int> ready{0};
+    std::vector<std::thread> ts;
+    for (int t = 0; t < 16; ++t)
+      ts.emplace_back([&] {
+        ++ready;
+        while (ready.load() < 16) std::this_thread::yield();  // (all at the edge together)
+        for (int i = 0; i < 40; ++i) {
+          bool st = false;
+          if (guarded_alloc(read, alloc, 4, true, piece, &st)) ++taken;
+          else if (st) ++stops;
+        }
+      });
+    for (auto& t : ts) t.join();
+    const uint64_t top = b / 4;
+    printf("16 threads at the edge: %d pieces taken, %d refused, mapped %.2f of %.2f (the line %.2f)\n", taken.load(),
+           stops.load(), used.load() / GiB, top / GiB, (top - guard_margin(top)) / GiB);
+    int alone = 0;  // (what one thread alone takes from the same start: the concurrent ones must take no more)
+    for (uint64_t u = gib(1); may_take(b, u, 4, true, piece); u += piece) ++alone;
+    CHECK(alone == 8);  // (1 + 8 = 9 <= 10.5 - 1.05)
+    CHECK(taken.load() == alone);
+    CHECK(used.load() + guard_margin(top) <= top);
+    CHECK(stops.load() == 16 * 40 - alone);
+  }
+  // an unknown budget through guarded_alloc: every piece taken, none refused
+  {
+    bool st = false;
+    int n = 0;
+    for (int i = 0; i < 3; ++i)
+      if (guarded_alloc([](uint64_t&, uint64_t&) { return false; }, [](uint64_t) -> void* { return (void*)1; }, 4, true,
+                        gib(1), &st))
+        ++n;
+    CHECK(n == 3 && !st);
+  }
   // a split's margin grows with the budget past 160 GiB a GPU set (5 %), its floor 8 GiB
   CHECK(margin(gib(100), true) == gib(8));
   CHECK(margin(gib(400), true) == gib(20));
