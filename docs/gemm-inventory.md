@@ -683,6 +683,19 @@ rule, not as a separate kernel next to it. One row per fused form in use:
   `-DFUSE_GATES`); the outputs rotated for H8 by the kernels that make them (`ARC_H8_OUT`); the KV store and norms in
   attention's preparation; the multi-GPU sums' fused forms (`tp.cl`).
 
+**H8R's end-to-end error grows with a row's mean over K** (one scale a row after the rotation; `gemm_check`,
+2026-11-28). The rotation puts a rotation block's mean into one coefficient, of size |mean| x sqrt(block), and the
+row's single scale must cover it, so every other value of the row gets coarser:
+- **Synthetic rows:** with centred blocks, H8R's end-to-end error is a median 3.4x the one-token GEMV's (max 8.8x). With
+  block means far from 0 (random mins: `gemm_check`'s `end_to_end_offsets` column, run every time) it rises to 12-38x
+  for the types with a min (Q4_1, Q5_1, Q2_K, Q4_K, Q5_K, Q2_0). The W8 GEMM stays at 1.0x either way.
+- **Real rows** (`gemm_check --weights`: the 4B, the 27B, the 35B-A3B, every matrix, experts included) sit at the
+  centred level. The largest rotation block's |mean| x sqrt(block) / deviation has a 99th percentile of 2.2-4.3 per type,
+  against 2.9-3.7 centred and 24-38 with random mins.
+- **The outliers:** the DeltaNet output projections (`ssm_out`) have the largest maxima, 6.8-10.9 (layer 0 the largest
+  in the 35B and the 27B), about 3x the centred level. That's where H8R loses most on today's models; a catalog rule for
+  H8 should know it.
+
 ### The code side (the Developer, 2026-11-28, read at main 6fb85d7)
 
 Each fused form in use: the unfused chain it replaces, its switch and default, where it's chosen, whether the laptop's plan logs saw it (A), and its proof from the golden set's fusion rows (C: each must equal the model's base hash). "Taken on the laptop" is the Xe-LPG kind only. Other kinds follow the code's defaults and stay unproven until the kit. Spill status per family comes from the kit's start lines (A).

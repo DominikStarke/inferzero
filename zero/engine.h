@@ -1256,6 +1256,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
     CL_CHECK(clEnqueueNDRangeKernel(cl_.queue, k, dims, nullptr, gws, lws, 0, nullptr, profile ? &e : nullptr));
     if (profile) events_.push_back({prof_group_ >= 0 ? std::string(name) + "@" + std::to_string(prof_group_) : std::string(name), e});
     if (plan_on()) plan_note(name, k, dims, gws, lws, loc);  // (after the launch: the group size clrt chose is set)
+    if (gc_log_) gc_note(k);  // (tools/gemm_check.cpp: the kernels a check launched, zero/gemm_check.h)
   }
 #include "gemm_plan.h"  // (ARC_GEMM_PLAN=1: the log of each launch's kernel and options)
   void collect_profile() {
@@ -1276,6 +1277,15 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh, bool iq3t = false, bool mins = false) {
     // (the W8 layout is in groups of 16 rows: a partial last group would write past w8_bytes_q / w8_bytes_h)
     if (N % 16) throw std::runtime_error("decode_w8: N = " + std::to_string(N) + " is not a multiple of 16");
+    // (no buffer to decode into, or too small for it: an error, not a launch. A matrix decoded just in time for a role
+    //  with no stage buffer (a role the load sized none for) wrote through a null pointer and hung the GPU for minutes
+    //  (tools/gemm_check.cpp on the 35B-A3B, 2026-11-28); no model reaches it today)
+    // (the header: 8 words a group and superblock for the per-32 types (decode.cl HSTR), 10 for the rest, the mins form
+    //  (W8_MINS: d, dmin, the scales, the mins) included: w8_bytes_h's size; the Researcher's review of 7f87999)
+    const size_t need_h = is_per32_type(type) && !mins ? w8_bytes_h(N, K) / 10 * 8 : w8_bytes_h(N, K);
+    if (!dq || !dh || dq->size < w8_bytes_q(N, K) || dh->size < need_h)
+      throw std::runtime_error("decode_w8: no buffers of " + std::to_string(w8_bytes_q(N, K)) + " + " + std::to_string(need_h) +
+                               " bytes to decode " + std::to_string(N) + " x " + std::to_string(K) + " into");
     // big-codebook types decode faster per superblock with the codebook in local memory; the rest per 32-block
     // one work-item per (row, superblock): the superblock is vector-loaded into registers and the codebook staged in
     // local memory (27B, 11K prompt: IQ3_S / IQ4_XS / IQ3_XXS 5.8 -> 2.2 s than a per-32-block kernel)
@@ -2171,6 +2181,7 @@ __kernel void rd_strip(__global const uint* p, __global uint* out, int per_item)
   void head(int T) { head_rows(T - 1, 1, out_norm_, has_mtp ? hlast_ : nullptr); }
 
 #include "engine_drafters.h"  // (Speculative decoding)
+#include "gemm_check.h"  // (tools/gemm_check.cpp: today's GEMM forms against CPU references at random sizes)
 
  private:
 };

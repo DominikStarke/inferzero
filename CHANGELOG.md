@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-11-28 (unreleased): `gemm_check`, today's matrix kernels against CPU references
+
+- **`bin\gemm_check`** (new, `tools/gemm_check.cpp` with `zero/gemm_check.h`): checks the engine's matrix products
+  on random weights of every GGUF type it takes, at the shapes that break kernels (N not a multiple of 16, K = 640,
+  F = 1,152 and 512, the head's 200,058 and 248,320 rows) and random ones. It uses 1, 2, 8, 9, 127, 128, 129 and a
+  chunk's rows, with the weights resident and just in time. The weights go through the same load step as a model's, so
+  they take the same kernels. Each result is compared with a CPU sum, in double, of what that kernel itself read:
+  - the raw rows for the one-token and 2-8-token GEMVs;
+  - the W8 form for the prompt GEMM, so Q2_K / Q4_K / Q5_K against their requantized values;
+  - the rotated int8 forms for H8;
+  - decode32's int8 codes for Q4_1, Q5_1 and NVFP4.
+
+  It also runs each case twice and compares the bits, compares the resident and just-in-time results, and lists each
+  case's kernels with their build options, private and spill bytes. A shape past the given model's buffers is listed
+  as skipped, with the reason.
+
+  An `end_to_end` column compares each result with the plain product, the file's weights times the unquantized
+  activations, so it holds the quantization's own error. It is reported, not failed. A prompt form whose end-to-end
+  error is over 8x its type's one-token GEMV is noted. On the laptop the W8 prompt GEMM's median is 1.0x, and H8's
+  is 3.4x: one scale per token over the whole row. Every run also draws the types with a min (Q4_1, Q5_1, Q2_K,
+  Q4_K, Q5_K, Q2_0) a second time with block means far from zero (the `end_to_end_offsets` column). H8's error then
+  rises to 12-30x, the W8 GEMM's stays under 3x: H8's one scale a row after the rotation must cover the row's mean.
+
+  It also checks today's fused forms against their unfused chains, bit for bit, at random sizes:
+  - **equal on the laptop:** the norm and H8's rotation in one kernel (`rmsnorm_h8r`); the SwiGLU in the up GEMM's
+    epilogue; the down GEMM rotating that SwiGLU itself (`ARC_H8_SWI`); stacked matrices against each one alone (one
+    token, 2-8 tokens, a prompt chunk); gate + up in one GEMV (`gemv_gu`, with `ARC_GEMV_GU=1`);
+  - **not equal:** Gemma 4's `add_norm_quant` against `add_rmsnorm` + `rmsnorm_quant`. The residual differs in its last
+    bits (2-4 % of its bytes, under 1e-6 of the range), which flips 0.4-0.7 % of the next input's int8 bytes. No
+    golden row covers it on the laptop (no Gemma 4 file);
+  - a form this GPU does not take is listed as "not taken". The DeltaNet's fused forms, attention's preparation and
+    `ARC_H8_OUT` need a layer's own state: the golden set's fusion rows still prove them on the models.
+
+  On a MoE model (`--stage experts`, the 35B-A3B) it checks the expert paths on the model's own experts, with
+  routings of its own: random, every expert hit, and one expert in every row with half the experts unused. The same
+  rows run at the chunk sizes that pick each path, and each path is compared with the next:
+  - `moe_rg` equals decode + GEMM bit for bit (layers 0, 20 and 39, every routing), as the code says;
+  - the per-tile kernels differ from `moe_rg` by up to 4e-4 of the experts' output range (other kernels, other
+    rounding), and tiles of 8 differ from 16 in their last bits (the down kernel's 4 rows a sub-group against 1);
+  - 8, 4 and 2 slots and one token give the same results; every pass repeats bit for bit.
+
+  `--stage all | dense | fused | experts` runs one part. A model with an expert cache runs the dense and fused parts
+  at `--quick`'s sizes. A case's buffers are checked against the GPU memory left first.
+- **`decode_w8`** refuses a buffer too small for the decoded weight or its scales, or none, with an error, instead of
+  running. `gemm_check`'s first form gave a weight no buffer, on the 35B-A3B, and the GPU hung. No model reaches it.
+
+  `gemm_check --weights <model.gguf>` (no GPU) shows where a model's own rows sit: the 4B's, the 27B's and the 35B-A3B's
+  are at the centred level. Their largest rotation-block means are in the DeltaNet output projections, about 3x it
+  (docs/gemm-inventory.md K).
+
+  Usage: `gemm_check --model <model.gguf> --out <file.tsv> [--quick]`, through `bench\gpu_guard`. It needs a model
+  for the engine's buffers only (its own weights are not checked). On the laptop (the 4B, with H8, and the 27B, W8
+  GEMMs) all 1,222 cases of `--quick` pass, the largest error 7.9e-7 of the output's range; every case repeats bit
+  for bit, and every resident / just-in-time pair is equal. It found NVFP4's one-token GEMV spilling 512-2,912 bytes
+  on Meteor Lake (no model takes that path: Inkling 2's NVFP4 tensors are its experts).
+
 ## 2026-11-28 (unreleased): fixes from the audit of the GEMM inventory's tools
 
 - **`ARC_GEMM_PLAN=1`'s summary** has a memory line: the GPU memory the engine counts (what `--ctx auto` plans with)
