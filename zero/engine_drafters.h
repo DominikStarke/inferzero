@@ -721,37 +721,71 @@
   }
   // (from load_head: the head's raw rows on the host, the type they were uploaded in)
   void load_draft_head(uint32_t type, const uint8_t* data, size_t nbytes) {
-    const int want = mtp_vocab_env(), V = lm_head_.N;
-    if (!want || !opt.mtp || opt.tp_size > 1 || hp.gemma || V <= 0) return;
-    const int N = std::min(V, (want + 63) / 64 * 64);  // (whole groups of 64 rows: the GEMV's row groups)
-    if (N >= V) return;
-    std::vector<char> in(V, 0);
+    const int want = mtp_vocab_env(), V = lm_head_.N;  // (a split model: this shard's rows of the vocabulary)
+    if (!want || !opt.mtp || hp.gemma || V <= 0) return;
+    // (a split model: the list is in the whole vocabulary's ids; every shard picks the same N of them, in the same
+    //  order, and keeps the ones it holds. tp_draft_conf joins the shards' logits, so the drafts are the tokens one
+    //  GPU would draft. The list is English- and code-heavy, so the rows it names are not spread evenly over the
+    //  vocabulary: one shard holds most of them and another a handful. That is only memory, not speed: the shards
+    //  together read the N rows either way)
+    const int Vg = tp_on() ? tpg_.vocab : V;
+    const int N = std::min(Vg, (want + 63) / 64 * 64);  // (whole groups of 64 rows: the GEMV's row groups)
+    if (N >= Vg) return;
+    const int64_t b = tp_on() ? tpv_.first : 0, e = tp_on() ? tpv_.second : Vg;
+    std::vector<char> in(Vg, 0);
     std::vector<int> ids;
     auto take = [&](int id) {
-      if (id >= 0 && id < V && !in[id] && (int)ids.size() < N) in[id] = 1, ids.push_back(id);
+      if (id >= 0 && id < Vg && !in[id] && (int)ids.size() < N) in[id] = 1, ids.push_back(id);
     };
     // (the control and user-defined tokens first: the end of a turn, <think>, the tool-call tags must stay draftable)
     if (const auto* ty = f_.get_ints("tokenizer.ggml.token_type"))
-      for (int i = 0; i < (int)ty->size() && i < V; ++i)
+      for (int i = 0; i < (int)ty->size() && i < Vg; ++i)
         if ((*ty)[i] == 3 || (*ty)[i] == 4) take(i);
-    const std::vector<int> ranked = draft_vocab_file(V);
+    const std::vector<int> ranked = draft_vocab_file(Vg);
     if (ranked.empty()) {
-      LOG_WRN("ARC_MTP_VOCAB=%d: no scripts/draft-vocab/vocab-%d.txt for this vocabulary: the full head drafts\n", want, V);
+      LOG_WRN("ARC_MTP_VOCAB=%d: no scripts/draft-vocab/vocab-%d.txt for this vocabulary: the full head drafts\n", want, Vg);
       return;
     }
     for (int id : ranked) take(id);
-    for (int id = 0; id < V && (int)ids.size() < N; ++id) take(id);  // (past the list: the lowest ids, BPE's first merges)
+    for (int id = 0; id < Vg && (int)ids.size() < N; ++id) take(id);  // (past the list: the lowest ids, BPE's first merges)
+    // (this shard's rows of them: the head's rows are its vocabulary range, so a global id is a local row past its start)
+    std::vector<int> mine;
+    for (int id : ids)
+      if (id >= b && id < e) mine.push_back(id);
+    // (a shard with none of them: the whole model falls back to the full head. The shards' logits are joined, so one
+    //  shard on the full head would draft tokens the others cannot score. Every shard decides alike without asking:
+    //  tp_range is a pure function of the vocabulary and the rank, so each one knows the others' ranges)
+    if (tp_on()) {
+      bool all = true;
+      for (int k = 0; k < opt.tp_size && all; ++k) {
+        const TpRange rr = tp_range(Vg, 16, opt.tp_size, k);
+        bool any = false;
+        for (int id : ids) any = any || (id >= rr.first && id < rr.second);
+        all = any;
+      }
+      if (!all) {
+        static std::once_flag said;
+        std::call_once(said, [] {
+          zlog::eprintf("inferzero: ARC_MTP_VOCAB: a GPU holds none of the reduced head's rows, so every GPU drafts "
+                        "from the full head\n");
+        });
+        return;
+      }
+    }
+    if (mine.empty()) return;
     const size_t rb = nbytes / (size_t)V;
-    std::vector<uint8_t> sub((size_t)N * rb);
-    for (int i = 0; i < N; ++i) memcpy(sub.data() + (size_t)i * rb, data + (size_t)ids[i] * rb, rb);
-    draft_head_.N = N;
+    std::vector<uint8_t> sub(mine.size() * rb);
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < (int64_t)mine.size(); ++i)
+      memcpy(sub.data() + (size_t)i * rb, data + (size_t)(mine[i] - b) * rb, rb);
+    draft_head_.N = (int)mine.size();
     draft_head_.K = lm_head_.K;
     draft_head_.type = type;
     draft_head_.raw = upload_padded(type, sub.data(), sub.size());
     draft_head_.host = up_host_;
-    draft_ids_ = ids;
+    draft_ids_ = mine;
     zlog::eprintf("inferzero: drafts from %d of the %d tokens (ARC_MTP_VOCAB; %d listed, %.0f MB of the head), "
-                  "verification from all\n", N, V, (int)ranked.size(), sub.size() / 1e6);
+                  "verification from all\n", (int)mine.size(), V, (int)ranked.size(), sub.size() / 1e6);
   }
   bool draft_head_on() const { return draft_head_.N > 0; }
 
@@ -818,6 +852,7 @@
   // hist: the tokens before `tok` (positions 0 .. pos - 1, the accepted drafts included). With opt.copy_draft, when the
   // last tokens up to `tok` appeared earlier in it, the tokens that followed there are the drafts (copy drafting, R1)
   std::vector<int> mtp_draft(int tok, int max_drafts, const std::vector<int>* hist = nullptr) {
+    TP_MIRROR(mtp_draft(tok, max_drafts, hist), TpMirror::kNone, 0);
     copy_used_ = false;
     if (dsp_) return dsp_draft(tok, max_drafts);  // (Inkling 2's DSpark drafter, zero/engine_dspark.h)
     if (hist && copy_on()) {
@@ -854,17 +889,26 @@
     if (pos + 1 + max_drafts > ctx) max_drafts = std::max(1, ctx - pos - 1);
     std::vector<int> drafts;
     mtp_rows(toks.data(), hfin_, np + 1, pos - np, true, max_drafts > 1 ? mtp_h_ : nullptr);
-    // (ARC_MTP_VOCAB: the reduced head's N logits, row i the token draft_ids_[i])
+    // (ARC_MTP_VOCAB: the reduced head's N logits, row i the token draft_ids_[i]; a split model holds its share of
+    //  the N rows, tp_draft_conf joins them)
     const size_t nl = draft_head_on() ? (size_t)draft_head_.N : (size_t)hp.n_vocab;
     for (int k = 0;; ++k) {
-      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, nl * 4, mtp_logits_host_.data(), 0, nullptr, nullptr));
-      const auto first = mtp_logits_host_.begin(), last = first + nl;
-      const auto mx = std::max_element(first, last);
-      const int d = draft_head_on() ? draft_ids_[(size_t)(mx - first)] : (int)(mx - first);
+      // (a split model: this shard's rows of the vocabulary, or of the reduced head, joined over the shards)
+      const size_t rows = tp_on() ? (draft_head_on() ? nl : (size_t)n_logits()) : nl;
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, rows * 4, mtp_logits_host_.data(), 0, nullptr, nullptr));
+      int d = 0;
+      double p = 1.0;
+      if (tp_on()) {
+        tp_draft_conf(mtp_logits_host_.data(), rows, d, p, draft_head_on() ? &draft_ids_ : nullptr);  // (token and probability)
+      } else {
+        const auto first = mtp_logits_host_.begin(), last = first + nl;
+        const auto mx = std::max_element(first, last);
+        d = draft_head_on() ? draft_ids_[(size_t)(mx - first)] : (int)(mx - first);
+        if ((int)drafts.size() + 1 < max_drafts) p = 1.0 / softmax_den(&*first, nl, *mx);
+      }
       drafts.push_back(d);
       if ((int)drafts.size() >= max_drafts) break;
-      const double z = softmax_den(&*first, nl, *mx);
-      if (1.0 / z < opt.mtp_min_p) break;  // not confident: verify one draft only
+      if (p < opt.mtp_min_p) break;  // not confident: verify one draft only
       mtp_rows(&d, mtp_h_, 1, pos + 1 + k, true, mtp_h_);
     }
     collect_profile();
@@ -876,6 +920,8 @@
   const std::vector<float>& verify(int tok, const std::vector<int>& drafts) {
     if (dsp_) return dsp_verify(tok, drafts);
     const int T = 1 + (int)drafts.size();
+    // (a split model: the same pass on every shard, their vocabulary rows joined into shard 0's spec_logits_host_)
+    TP_MIRROR(verify(tok, drafts), tp_on() ? TpMirror::kSpec : TpMirror::kNone, T);
     if (drafts.empty() || (int)drafts.size() > max_drafts()) throw std::runtime_error("verify: too many drafts");
     if (pos + T > ctx) throw std::runtime_error("context overflow");
     flush_mtp_pending();
@@ -894,7 +940,8 @@
     spec_ = false;
     pos += T;
     head_rows(0, T, out_norm_, hver_);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * T * 4, spec_logits_host_.data(),
+    // (a split model: this shard's rows of the vocabulary per row; TpMirror::kSpec joins them)
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * T * 4, spec_logits_host_.data(),
                                  0, nullptr, nullptr));
     if (pos > written_hi_) written_hi_ = pos;
     collect_profile();
@@ -903,6 +950,7 @@
   // The first `accepted` drafts of the last verify() turned out right; the rest are dropped.
   void verify_done(int accepted) {
     if (dsp_) return dsp_verify_done(accepted);
+    TP_MIRROR(verify_done(accepted), TpMirror::kNone, 0);  // (a split model: every shard rolls its own state back)
     const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
     const cl_mem dfl_src = vrows_ ? dfl_vrows_ : nullptr;  // (a batched pass: the slot's own copy of its rows)
     vrows_ = false;

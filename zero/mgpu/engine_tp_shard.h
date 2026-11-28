@@ -51,6 +51,7 @@
   int n_logits() const { return lm_head_.N; }  // this engine's logits per row (its vocabulary rows when split)
   const std::vector<float>& logits_host() const { return logits_host_; }
   const std::vector<float>& batch_logits_host() const { return batch_logits_host_; }  // (rows of n_logits())
+  const std::vector<float>& spec_logits_host() const { return spec_logits_host_; }    // (rows of n_logits())
 
  private:
   struct TpGlobal { int nk = 0, nv = 0, nh = 0, nkv = 0, ff = 0, vocab = 0; };
@@ -155,15 +156,16 @@
     hp.n_head = tp_att_qsplit_ ? (int)(tpq_.second - tpq_.first) : hp.n_head_kv * hpg;
     hp.n_ff = (int)(tpf_.second - tpf_.first);
     // (said once: drafting asked for and dropped. hibagus's 2 x B70 ran --gpus 2 --mtp plainly with no line, #92; one B70
-    //  with MTP 69.3 tok/s against two without it 52.7)
-    if (opt.mtp || !opt.dflash.empty()) {
+    //  with MTP 69.3 tok/s against two without it 52.7. Since 2026-11-24 the MTP block drafts on a split model too:
+    //  zero/mgpu/engine_tp_shard.h T(), engine_drafters.h tp_draft_conf)
+    // (a path that is not supported on a split model yet says so; the MTP block above works, DFlash2 does not)
+    if (!opt.dflash.empty()) {
       static std::once_flag said;
       std::call_once(said, [] {
-        zlog::eprintf("inferzero: MTP / drafting is not used on a split model yet (--gpus 2 or more): plain decoding\n");
+        zlog::eprintf("inferzero: DFlash2 is not used on a split model yet (--gpus 2 or more)\n");
       });
+      opt.dflash.clear();
     }
-    opt.mtp = false;
-    opt.dflash.clear();
     opt.npu = 0;  // (slots stay: batched decoding over a split model, TpEngine::forward_batch)
     if (moe)
       zlog::eprintf("inferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
@@ -262,6 +264,10 @@
     if (dot == std::string::npos || il < 0 || il > hp.n_layer) return t;  // ("blk.-1." or no layer: not a split tensor, MG7)
     const std::string s = name.substr(dot + 1);
     const int64_t D = hp.ssm_d_state, hd = hp.head_dim;
+    // (the MTP block's own layer, il == n_layer: a full-attention layer with the FFN of a dense one, split as they are.
+    //  Its nextn.* tensors stay whole on every shard: eh_proj's input is the whole residual row, and every shard's
+    //  copy of it gives the same output, no sum. Never recurrent(): recurrent(n_layer) is true for a 64-layer model)
+    const bool mtp = il == hp.n_layer;
     if (il < hp.n_layer && !hp.ds41 && hp.recurrent(il)) {
       const int64_t nk = tpg_.nk, k0 = tpk_.first, k1 = tpk_.second;
       if (s == "attn_qkv.weight" || s == "ssm_conv1d.weight") {  // channels [q | k | v]
@@ -282,8 +288,19 @@
       }
       if (s == "attn_k.weight" || s == "attn_v.weight") return tp_slice(t, {{g0 * hd, g1 * hd}}, {});
       if (s == "attn_output.weight") return tp_slice(t, {}, {{q0 * hd, q1 * hd}});
+    } else if (mtp && !tp_att_whole_) {
+      // (the MTP block's layer: its attention as any full one, its FFN as below; nextn.* and the norms match nothing
+      //  here and stay whole, as they must: eh_proj reads the whole residual row)
+      const int64_t hpg = tpg_.nh / tpg_.nkv, g0 = tpkv_.first, g1 = tpkv_.second;
+      const int64_t q0 = tp_att_qsplit_ ? tpq_.first : g0 * hpg, q1 = tp_att_qsplit_ ? tpq_.second : g1 * hpg;
+      if (s == "attn_q.weight") {
+        const int64_t per = (int64_t)t.dims[1] / tpg_.nh;
+        return tp_slice(t, {{q0 * per, q1 * per}}, {});
+      }
+      if (s == "attn_k.weight" || s == "attn_v.weight") return tp_slice(t, {{g0 * hd, g1 * hd}}, {});
+      if (s == "attn_output.weight") return tp_slice(t, {}, {{q0 * hd, q1 * hd}});
     }
-    if (il < hp.n_layer && !hp.moe) {
+    if ((il < hp.n_layer || mtp) && !hp.moe) {
       const int64_t f0 = tpf_.first, f1 = tpf_.second;
       if (s == "ffn_gate.weight" || s == "ffn_up.weight") return tp_slice(t, {{f0, f1}}, {});
       if (s == "ffn_down.weight") return tp_slice(t, {}, {{f0, f1}});
@@ -301,7 +318,7 @@
     if (!tp_on() || name.rfind("blk.", 0) != 0) return 1.0;
     const size_t dot = name.find('.', 4);
     const int il = atoi(name.c_str() + 4);
-    if (dot == std::string::npos || il < 0 || il >= hp.n_layer) return 1.0;
+    if (dot == std::string::npos || il < 0 || il > hp.n_layer) return 1.0;
     const std::string s = name.substr(dot + 1);
     const int N = opt.tp_size;
     auto part = [&](int64_t total, int64_t unit) {
@@ -309,6 +326,16 @@
       const TpRange r0 = tp_range(total, unit, N, 0);
       return (double)(r0.second - r0.first) / (double)total;
     };
+    // (the MTP block's layer, il == n_layer: as T() splits it. nextn.* and the attention norms whole, the FFN by
+    //  columns; plan_weights keeps a per-layer matrix of a dense model, and this one is loaded like one)
+    if (il == hp.n_layer) {
+      if (s.rfind("nextn.", 0) == 0 || s == "attn_q_norm.weight" || s == "attn_k_norm.weight") return 1.0;
+      if (!tp_att_whole_ && tpg_.nkv > 0 &&
+          (s == "attn_q.weight" || s == "attn_output.weight" || s == "attn_k.weight" || s == "attn_v.weight"))
+        return part(tpg_.nkv, 1);
+      if (!hp.moe && (s == "ffn_gate.weight" || s == "ffn_up.weight" || s == "ffn_down.weight")) return part(tpg_.ff, 256);
+      return 1.0;
+    }
     if (!hp.ds41 && hp.recurrent(il)) {  // (rows or columns by k-head, and the v-heads that read them: all in the k-heads' share)
       if (s == "attn_qkv.weight" || s == "ssm_conv1d.weight" || s == "attn_gate.weight" || s == "ssm_alpha.weight" ||
           s == "ssm_beta.weight" || s == "ssm_out.weight")
@@ -350,6 +377,12 @@
   }
   bool tp_served() const;  // (zero/engine_tp.h: the server drives this split model)
   bool tp_cancelled();
+  // The draft this shard's vocabulary rows give for the whole vocabulary (MTP drafting on a split model, mtp_draft):
+  // the highest logit over the shards, the token at it and the softmax sums, at two host barriers (TpComm::draft).
+  // Every shard decides alike, so mtp_draft's chain stops at the same draft on all of them; `p` is the token's
+  // probability in the whole vocabulary. (zero/engine_tp.h: TpComm is incomplete here)
+  // `ids`: the reduced draft head's rows (ARC_MTP_VOCAB), row i the token ids[i]; null: the shard's whole range.
+  void tp_draft_conf(const float* l, size_t nl, int& tok, double& p, const std::vector<int>* ids = nullptr);
   // One sum's buffers: the residual rows it adds to and the partial output it sums; bg: on the sum thread
   // (ARC_TP_OVERLAP: its own kernels and command lists, no profiling)
   struct TpSum {

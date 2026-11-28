@@ -14,7 +14,8 @@
 class Engine;
 class PpEngine;
 struct TpMirror {
-  enum Gather { kNone, kLogits, kBatch };  // (what to join: logits_host_, or `rows` rows of batch_logits_host_)
+  enum Gather { kNone, kLogits, kBatch, kSpec, kSpecBatch };  // (what to join: logits_host_, `rows` rows of
+                                                             // batch_logits_host_, or of spec_logits_host_ / batch_logits_host_)
   template <class F>
   TpMirror(bool active, Engine* e, F&& f, Gather g = kNone, int rows = 0) {
     if (active) start(e, std::function<void(Engine&)>(std::forward<F>(f)), g, rows);

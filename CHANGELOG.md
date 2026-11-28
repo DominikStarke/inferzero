@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-28 (unreleased): the reduced draft head works on a split model
+
+- **`ARC_MTP_VOCAB` on `--gpus 2` or more.** The reduced draft head (each MTP draft reads only the N most common
+  tokens' rows of the output head instead of all 248,320) refused a split model: `load_draft_head` returned early on
+  `opt.tp_size > 1`, so the switch did nothing there. Now each GPU keeps the rows of the list that fall in its share
+  of the vocabulary, and the shards' logits are joined as before (`tp_draft_conf` maps a row back through the
+  shard's own `draft_ids_`). The drafts are the tokens one GPU would draft, and the text is the plain run's.
+- **Measured** on two Pro B60s, the 27B, 128 tokens: German 69.3 -> 75.1, English 58.8 -> 63.3, code 60.3 -> 67.4,
+  JSON 71.4 -> 80.9 tok/s (+9 to +13 %); every text bit-identical to the full head's. The `lm_head` read is 19 % of
+  each shard's step, so the gain is smaller than one GPU's (+14 to +19 %).
+- **The list is English- and code-heavy**, so its rows are not spread evenly over the vocabulary: on two B60s one
 ## 2026-11-28 (unreleased): the RAM tier no longer runs a split model out of memory (PR #100)
 
 - **The RAM tier stops itself before Windows' limit.** On Windows, before the tier takes each new 1 GiB of pinned
@@ -365,6 +376,13 @@
 - **Launchers**: the "best measured" setting for the 4B / 9B on Alchemist (resident weights for short prompts, measured on a 16 GB A770) now applies to an A770 only (the need `a770` in `scripts/best-setups.tsv`), not to an A380 or A580. `./zero-launcher.sh`'s check asks for 8 GB of RAM with a discrete card (it asked for 15, so a 14.3 GiB PC with an A380 could not start it); 16 GB on an integrated GPU as before.
 - **The refusal message names the driver on Linux**, not Windows.
 - **A limit**: the engine's own check counts the weights only, not the buffers or the context. So a card where the weights fit but a long context does not (an 8 GB A770 with the 4B) still keeps them resident, and relies on `--ctx auto`'s fallback; `runz` with a large `--ctx` given is refused there rather than falling back, for now.
+
+## 2026-11-24: MTP drafting on several GPUs
+
+- **`--mtp` drafts on a split model too** (`runz --gpus N --mtp`, `serverz --gpus N --mtp`; it was dropped with a line "drafting (MTP / DFlash2) is off for a split model for now", #92). The nextn block is one more layer: its attention and FFN are divided as any layer's, its `nextn.*` tensors stay whole on every GPU. Because the vocabulary rows are split, each draft is one decision over all of them -- each GPU gives its highest logit, that row's token and its softmax sum, two host barriers a draft (`Engine::tp_draft_conf`) -- so every GPU chains and stops at the same draft. The verification pass runs on every GPU and its rows are interleaved into shard 0's, as a plain step's are (`TpMirror::kSpec`); `verify_done` rolls every GPU back alike, and drafting over several slots (`verify_batch`) works. DFlash2 stays one GPU's. 4 Arc Pro B60s, Qwen3.8 27B IQ3_S GSQ: over 2 GPUs 39.5 -> 60.0 tok/s, over 4 GPUs 52.7 -> 75.0 tok/s, two runs each; the same answer token for token, 2.3 drafts a step, 60-71 % accepted. A single GPU's logits are byte-identical to before.
+- **The MTP block's layer is split like the layers it follows** (`zero/mgpu/engine_tp_shard.h`, `T()` and `tp_weight_share`). Its attention was returned unsliced while the load had already made its KV cache from the shard's reduced head count: turning drafting on would have loaded full-width attention weights into a shard-sized cache.
+- **`runz --gpus N --mtp`** runs the same draft / verify / settle loop as one GPU's run and prints how many drafts a step produced and how many were accepted.
+- **DFlash2 on a split model says so once** instead of MTP and it going quiet together.
 
 ## 2026-11-24: Inkling 2 generates with about 190 fewer GPU launches a token
 
