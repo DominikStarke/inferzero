@@ -32,6 +32,7 @@ struct ServeOpts {
   int think_budget = -1;
   bool preserve_thinking = false;
   double sess_gb = 0.0;
+  int sess_per_conv = 3;  // saved states kept per conversation (each a fork point; 0 = no limit)
   bool prefix_cache = true;
   double prefix_gb = 8.0;  // all models' saved system prompts together (0 = no limit)
   int img_min = 0, img_max = 0;  // image tokens per image (0 = the encoder's default)
@@ -575,7 +576,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     std::string dir = so.sess_dir;
     if (dir.empty()) dir = app_dir() + ARC_DATA "sessions";
     srv.open_sessions(dir + "/" + mp.stem().string() + "-" + std::to_string(std::filesystem::file_size(mp, ec)) + layout,
-                      so.sess_gb);
+                      so.sess_gb, so.sess_per_conv);
   }
   zlog::eprintf("serving %s as \"%s\"\n", model.c_str(), alias.c_str());
   return L;

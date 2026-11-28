@@ -800,6 +800,25 @@ line and the conversation is processed again next time; it is not a failed reque
 
 `--split layer` keeps both off, as its stages are engines of their own.
 
+**Forking from an earlier turn (2026-11-28).** A saved conversation used to reach the disk only when a later request
+pushed it out of the engine, and that saved its *last* state alone: the rule that pruned older ones
+(`common_prefix(saved.tokens, cached_) >= saved.gen_cut`) dropped every earlier state at the same moment. The
+recurrent state at an earlier turn's start exists only in the GPU's snapshot slots and the next turn overwrites it,
+so a fork from an earlier turn had nothing to resume from but a shared system prompt. On a split this is worse than
+on one GPU, because every shard's copy has to be there.
+
+Now the state at the end of **every turn** is saved (`Server::save_turn_state`), each a fork point of its own, and
+`--session-states N` (default 3, 0 = no limit) says how many of one conversation's stay.
+
+| fork at | reusable before | reusable after |
+|---|---:|---:|
+| turn 2 of 5 | 1,683 | **3,030** of 3,060 |
+| turn 4 of 5 | 1,683 | **4,386** of 4,416 |
+
+Measured from a real 4-GPU state (65,075 tokens, 2,929,509,424 B): a shard's part is 1,097.4 MB of KV cache and
+313.9 MB of recurrent state plus 3 snapshots, so one snapshot is ~100 MiB a shard — a state of its own is ~0.8 GiB
+over 4 GPUs.
+
 
 **The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
 B60s 1,298.9 -> 1,368.8 tok/s, 4 Pro B60s 1,629.6 -> 1,734.0; a 27B IQ4_XS 32K prompt over two Arcs, the second

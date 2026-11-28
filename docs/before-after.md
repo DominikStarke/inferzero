@@ -80,6 +80,37 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-28, a saved conversation keeps the state of every turn's start, so a fork resumes there**
+  (`tools/server_cache.h`, `tools/server_chat.h`, `tools/server.cpp`, `tools/server_load.h`; the user forked a Pi
+  conversation from an earlier point and it was processed again).
+  - **The fault:** a conversation reached the disk only once a later request pushed it out of the engine, and that
+    saved its **last** state alone. The rule that pruned older states —
+    `common_prefix(saved.tokens, cached_) >= saved.gen_cut` — threw away every earlier one at the same moment, so one
+    conversation could only ever fork from its head. The DeltaNet state at an earlier turn's start lives only in the
+    GPU's three snapshot slots and is overwritten by the next turn, so it was gone. In the user's log a fork of a
+    64,806-token conversation at 53,572 resumed at **9,758** (the system prompt's snapshot) and processed 43,814
+    tokens again; a saved state resumable at 52,546 had existed and been deleted.
+  - **The change:**
+    - The state at the end of **every turn** is saved (`Server::save_turn_state`, called before the answer is sent:
+      0.5-0.7 s behind it, off the request). Each is a fork point of its own.
+    - `--session-states N` (default 3, 0 = no limit) sets how many of one conversation's states stay; the old rule
+      that dropped all but the newest is what made forking impossible.
+    - A state already saved under the same tokens and resume points is not written twice.
+  - **Measured**, Swift-1.5-Qwen3.8-27B Q4_K_M over 2 Arc Pro B60s, greedy, one conversation of 5 turns:
+
+    | fork at | reusable before | reusable after | prompt tokens processed after |
+    |---|---:|---:|---:|
+    | turn 2 (of 5) | 1,683 (system prompt) | **3,030** | 30 of 3,060 |
+    | turn 4 (of 5) | 1,683 | **4,386** | 30 of 4,416 |
+
+  - **The answers did not change:** the forked run answered "FORK" exactly as a fresh run of the same prompt did
+    with both caches off (`--session-cache-gb 0 --prefix-cache-gb 0`), 35 generated tokens each.
+  - **What a state costs:** ~0.8 GiB on the 27B over 4 GPUs (measured from a real state: a 65,075-token conversation
+    is 2,929,509,424 B, of which 1,097.4 MB a shard is the KV cache and 313.9 MB a shard is the recurrent state plus
+    its 3 snapshots — one snapshot is ~100 MiB a shard). `--session-cache-gb` still caps the total, oldest first.
+  - **Not changed:** `save_current`'s `drop_snapshot(1)`. The prompt-end snapshot it drops sits at `cached_.size()`,
+    the same position the state itself holds, so it is redundant by construction.
+
 - **2026-11-27, a saved conversation's state is held once, not twice** (`zero/mgpu/engine_tp.h`,
   `zero/engine_sessions.h`, `tools/server_cache.h`; found while sizing a 256K conversation).
   - **The fault:** `save_parts_run_all` collected every shard's part and then copied them into the sink's buffer, and

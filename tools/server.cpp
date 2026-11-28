@@ -1010,6 +1010,25 @@ class Server {
     std::filesystem::remove(saved_[i].file, ec);
     saved_.erase(saved_.begin() + i);
   }
+  // How many saved states of one conversation the session cache keeps: each holds a recurrent state at its own turn
+  // start (a fork point, ~104 MB a shard on the 27B), and a later turn's state cannot stand in for it. Going back
+  // further than these falls back to an older prefix of the same conversation (a saved system prompt) or a replay.
+  int kSavedPerConv_ = 3;  // --session-states: saved states kept per conversation (see open_sessions)
+  // Saves the state a turn ended at, as a fork point of its own (--session-states of them per conversation stay).
+  // Unlike save_current this keeps saving after the first time: each turn start holds a recurrent state no later
+  // state can stand in for.
+  void save_turn_state() {
+    if (!sess_cap_ || cached_.size() < 1024 || (int)cached_.size() != eng_.pos) return;
+    const std::vector<int> res = current_resume();
+    bool known = false;  // (already saved: the same tokens as the last state, e.g. a second request of one turn)
+    for (const SavedConv& s : saved_)
+      if (s.tokens == cached_ && s.resume == res) known = true;
+    if (known) return;
+    if (cur_saved_) {  // (the held conversation was saved at this exact state: only its newest entry is redundant)
+      cur_saved_ = false;
+    }
+    save_current();
+  }
   std::string sess_dir_;
   uint64_t sess_cap_ = 0, use_clock_ = 0;
   std::vector<SavedConv> saved_;
@@ -1150,6 +1169,7 @@ static int server_main(int argc, char** argv) {
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
       {"--mtp-drafts", "a number, e.g. 3"}, {"--copy-draft", ""}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
       {"--kernels", "a folder"}, {"--session-cache-gb", "GiB, 0 = off"}, {"--session-dir", "a folder"},
+      {"--session-states", "count, 0 = all"},
       {"--slots", "1..8"}, {"--gpus", "1..64"}, {"--split", "tensor or layer"}, {"--tensor-split", "shares a GPU, e.g. 3,1"},
       {"--no-swap", ""}, {"--no-web-tools", ""},
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
@@ -1277,6 +1297,7 @@ static int server_main(int argc, char** argv) {
     else if (a == "--preserve-thinking") so.preserve_thinking = true;
     else if (a == "--kernels") so.eo.kernel_dir = next();
     else if (a == "--session-cache-gb") so.sess_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
+    else if (a == "--session-states") so.sess_per_conv = std::clamp(to_int(a, next()), 0, 64);
     else if (a == "--session-dir") so.sess_dir = next();
     else if (a == "--slots") so.eo.slots = std::clamp(to_int(a, next()), 1, 8);
     else if (a == "--gpus") so.gpus = std::clamp(to_int(a, next()), 1, 64);
@@ -1559,6 +1580,10 @@ static int server_main(int argc, char** argv) {
             "                        and the launcher: 8): switching between conversations loads the other one's state\n"
             "                        instead of processing its prompt again (other models' go first, oldest first)\n"
             "  --session-dir DIR     where they are kept (default " ARC_DATA_HELP "sessions)\n"
+            "  --session-states N    states kept per conversation (default 3, 0 = no limit). Each is a fork point of\n"
+            "                        its own: the recurrent state at a turn's start cannot be recomputed from a later\n"
+            "                        turn's, so forking from an earlier turn needs that turn's state. ~0.8 GiB each on\n"
+            "                        the 27B over 4 GPUs; --session-cache-gb caps the total (oldest go first)\n"
             "  --no-prefix-cache     do not keep system prompts on disk (default: kept in " ARC_DATA_HELP "prefix,\n"
             "                        per project folder for Pi (its 2 latest versions), the 8 latest for other clients;\n"
             "                        a request that starts with one loads it instead of processing it)\n"

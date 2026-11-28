@@ -172,6 +172,14 @@
   writes again, so the server also snapshots the start of the last assistant turn and a new message only processes
   that turn again, not the whole conversation. `--preserve-thinking` (Qwen3.6; Qwen3.8 always does) keeps earlier
   reasoning in the prompt instead: nothing is processed again, the context fills faster.
+- Forking a conversation (inferzero): a request that diverges from a saved conversation **before its head** (Pi's
+  edit-and-retry, a branch taken at an earlier turn) resumes at that turn's start instead of reprocessing the prompt
+  from the system prompt. The recurrent (DeltaNet) state there cannot be recomputed from a later turn's, so the
+  server saves the state at the end of every turn (0.5-0.7 s, behind the answer), and `--session-states N`
+  (default 3, 0 = no limit) says how many of one conversation's states stay; each is a fork point, ~0.8 GiB on the
+  27B over 4 GPUs. `--session-cache-gb` still caps the total, oldest first. Measured: a fork at turn 2 of a 5-turn
+  conversation resumed at 3,030 of 3,060 tokens against 1,683 before, with an answer identical to a run from
+  scratch. Older states than the kept ones fall back to a shared system prompt or a replay.
 - `--mtp`: speculative decoding. Qwen3.5/3.6/3.8: the model's own MTP (multi-token prediction) block in the GGUF
   (`nextn` tensors). Gemma 4: the assistant drafter `mtp-*.gguf` next to the model (found automatically), which
   reads the main model's KV cache. The drafts are verified in one main-model pass and the next token is still
