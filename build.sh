@@ -14,12 +14,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 CXX="${CXX:-g++}"
 declare -A SRC=([runz]=zero/runz.cpp [serverz]=zero/serverz.cpp [mgpu_probe]=zero/mgpu_probe.cpp
-                [ref_forward]=tools/ref_forward.cpp [gpu_bench]=bench/gpu_bench.cpp [xw_peak]=bench/xw_peak.cpp
+                [ref_forward]=tools/ref_forward.cpp [gpu_bench]=bench/gpu_bench.cpp [xw_peak]=bench/xw_peak.cpp [tp_add_bench]=bench/tp_add_bench.cpp
                 [gguf_dump]=tools/gguf_dump.cpp)
 targets=("$@")
 [ ${#targets[@]} -eq 0 ] && targets=(runz serverz mgpu_probe ref_forward gpu_bench gguf_dump)
 for t in "${targets[@]}"; do
-  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe, ref_forward, gpu_bench, gguf_dump, xw_peak)" >&2; exit 2; }
+  [ -n "${SRC[$t]:-}" ] || { echo "build.sh: unknown program '$t' (runz, serverz, mgpu_probe, ref_forward, gpu_bench, gguf_dump, xw_peak, tp_add_bench)" >&2; exit 2; }
 done
 command -v "$CXX" >/dev/null || { echo "build.sh: $CXX not found (sudo apt install g++)" >&2; exit 1; }
 mkdir -p bin

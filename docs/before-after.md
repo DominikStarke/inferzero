@@ -371,6 +371,24 @@ That property is what every speed change is held to:
       gate / up stay equal. The Q4_K down / qkv and the Q5_K z lose 2-4 %.
     - About 1 % in all, within run-to-run spread: not made the default.
 
+- **2026-11-24, `tp_add` four values a thread (a split model's sums):** the kernel reads the other shards' parts out
+  of one pinned host buffer, `stride` floats apart (80 MB between two of them at a 4096-token chunk of the 27B), so a
+  generated token's 128 sums are latency-bound, not bandwidth-bound. A thread now takes four values with
+  `vload4`/`vstore4`, the same sums in the same rank order. 4 Arc Pro B60s, 27B IQ3_S GSQ, 8 tokens profiled:
+  `tp_add` 15.92 -> 13.42 ms (13.1 -> 11.3 % of the GPU time), generation 43.8 -> 48.5 tok/s. Bit-identical:
+  `--dump-logits` over 8 tokens on 4 GPUs, md5 56bd8706a5f76d2064a0cc53567a2d63 before and after.
+- **2026-11-24, `bench/tp_add_bench` (new): the sum kernel on its own.** The same kernel on its own layout, seconds
+  instead of a model's five-minute load, with `--stride-mb`, `--np`, `--values` and `--pinned 0` for the device-buffer
+  form. One B60, 5120 values 80 MB apart: 6.00 / 7.65 / 9.27 us for 2 / 3 / 4 parts -- 1.6 us a part over a 4.3 us
+  floor, and the vector form only 3-4 % faster than the scalar one. What that rules out for the split's speed: a
+  sum's cost is latency, so a token's 128 sums cannot go below ~0.55 ms of floor; and the model's profile showed
+  13.1 us a launch against the kernel's 9.3, the rest being the barrier and copy the profiling event also spans.
+  Measured the same day against the other candidates: `gpu_bench --gemv-layout` reads 433 GB/s even from 8.7 KB
+  blocks (a split's GEMV has no fixed cost per row, the card's peak is 448), `ARC_BATCH=64` and `ARC_GEMV_GRF=256`
+  are both slower (37.5 and 27.9 tok/s against 40.7), and `ARC_TP_P2P=0` changes nothing -- so on 4 GPUs the
+  non-GEMM share of the GPU time (76.9 % GEMM against 93.5 % on one card) is `tp_add` plus the per-shard norms,
+  and the sums' own floor is about 4 % of a token.
+
 - **2026-11-24, MTP drafting on a split model (`--gpus N --mtp`):** the nextn block drafts over the whole
   vocabulary, two host barriers a draft (`Engine::tp_draft_conf`), and verdicts run as any split pass
   (`TpMirror::kSpec`). Measured on 4 Arc Pro B60s (PCIe 4.0 x4), Qwen3.8 27B IQ3_S GSQ, prompt "The capital of France

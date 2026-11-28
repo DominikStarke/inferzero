@@ -3,11 +3,22 @@
 // x[i] += part 0 + part 1 + ... (each GPU's partial sum of an output projection, in pinned host memory), added in
 // rank order so every GPU's residual stream gets the same float sum
 __kernel void tp_add(__global float* x, __global const float* p, ulong off, int n, int np, ulong stride) {
-  const int i = get_global_id(0);
-  if (i >= n) return;
-  float s = x[i];
-  for (int k = 0; k < np; ++k) s += p[off + k * stride + i];
-  x[i] = s;
+  // The parts lie `stride` floats apart (a 4096-token chunk of the 27B: 80 MB), so every k is its own page range and
+  // a generated token's 128 sums read 4 far-apart regions of n_embd values each. A thread takes four values: the
+  // same sums in the same rank order, four loads in flight where one was (the scalar form read 5 GB/s a sum, 15.5 us
+  // of a 35 ms step on 4 B60s). n is rows * n_embd, a multiple of 4 for every model.
+  const int i0 = get_global_id(0) * 4;
+  if (i0 + 3 < n) {
+    float4 s = vload4(0, x + i0);
+    for (int k = 0; k < np; ++k) s += vload4(0, p + off + k * stride + i0);
+    vstore4(s, 0, x + i0);
+    return;
+  }
+  for (int i = i0; i < n; ++i) {  // (a tail of 1-3 values, never reached: n_embd is a multiple of 4)
+    float s = x[i];
+    for (int k = 0; k < np; ++k) s += p[off + k * stride + i];
+    x[i] = s;
+  }
 }
 
 // Prompt chunks (zero/mgpu/engine_tp.h, tp_reduce_rs): a reduce-scatter in f16. Each GPU sends the other GPUs' rows of
@@ -17,12 +28,24 @@ __kernel void tp_add(__global float* x, __global const float* p, ulong off, int 
 // f32 -> f16, rounded to nearest even. A value beyond lim (65504 / GPUs: the sum of every GPU's part must fit f16 too)
 // or not a number sets *flag: then every GPU sums this projection in f32 instead (tp_reduce_rs)
 // (this GPU's own rows [i0, i1) are only checked: tp_rs_sum reads them in f32 and writes its sums over them)
+// f32 -> f16, eight values a thread: one value a thread read 115 GB/s of the card's 448 on a 2048-token chunk's sums
+// (three B60s), and what is left is transaction count, not arithmetic.
 __kernel void tp_half(__global const float* src, __global half* dst, int n, __global int* flag, float lim, int i0, int i1) {
-  const int i = get_global_id(0);
-  if (i >= n) return;
-  const float v = src[i];
-  if (!(fabs(v) <= lim)) *flag = 1;
-  if (i < i0 || i >= i1) vstore_half(v, i, dst);
+  const int i0_ = get_global_id(0) * 8;
+  if (i0_ + 7 < n) {
+    const float8 v = vload8(0, src + i0_);
+    const float a[8] = {v.s0, v.s1, v.s2, v.s3, v.s4, v.s5, v.s6, v.s7};
+    if (!(fabs(a[0]) <= lim) || !(fabs(a[1]) <= lim) || !(fabs(a[2]) <= lim) || !(fabs(a[3]) <= lim) ||
+        !(fabs(a[4]) <= lim) || !(fabs(a[5]) <= lim) || !(fabs(a[6]) <= lim) || !(fabs(a[7]) <= lim))
+      *flag = 1;
+    if (i0_ < i0 || i0_ >= i1) vstore_half8(v, 0, dst + i0_);
+    return;
+  }
+  for (int i = i0_; i < n; ++i) {  // (a tail of fewer than 8: n is rows * n_embd, a multiple of 8 for every model)
+    const float v = src[i];
+    if (!(fabs(v) <= lim)) *flag = 1;
+    if (i < i0 || i >= i1) vstore_half(v, i, dst);
+  }
 }
 
 // this GPU's values [i0, i1): the parts summed in rank order (its own from its memory in f32, the others' in f16 from
